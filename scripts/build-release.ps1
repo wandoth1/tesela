@@ -87,8 +87,12 @@ try {
             $v = $needles[$k]
             if (-not $v -or $v.Length -lt 3) { continue }
             foreach ($form in @($v, $v.Replace('\', '/'))) {
+                # El nombre de usuario es corto y suelto: sin limites de palabra coincidiria con el nombre de un autor en el
+                # texto de una licencia (p. ej. un "Alexander" para quien se llame "Alex"). Como fuga real solo cuenta
+                # si no esta pegado a otras letras o digitos (una ruta, un correo, un nombre de carpeta...).
+                $pattern = if ($k -eq 'USERNAME') { '(?<![A-Za-z0-9])' + [regex]::Escape($form) + '(?![A-Za-z0-9])' } else { [regex]::Escape($form) }
                 foreach ($t in $texts) {
-                    if ($t.IndexOf($form, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) {
+                    if ([regex]::IsMatch($t, $pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
                         $leaks.Add("$($exe.Name): contiene el valor local '$k'")
                         break
                     }
