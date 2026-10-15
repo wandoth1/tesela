@@ -200,9 +200,9 @@ fn la_ventana_principal_tiene_todas_sus_zonas() {
         "Comprimidos",
         "Programas",
         "Otros",
-        "Mixto (sin tipo dominante)",
+        "Mixto",
         "Solo informar",
-        "Sistema / sin medir",
+        "Sistema",
     ] {
         h.get_by_label(t);
     }
@@ -987,5 +987,72 @@ fn escribir_en_el_buscador_en_otra_escritura_carga_su_fuente() {
             .ctx
             .fonts_mut(|f| f.has_glyphs(&egui::FontId::proportional(14.0), "한국어"));
         assert!(ok, "el hangul del buscador debe tener glifo");
+    }
+}
+
+fn harness_sized(o: Options, size: egui::Vec2) -> Harness<'static, App> {
+    let mut h = Harness::builder()
+        .with_size(size)
+        .with_step_dt(0.02)
+        .build_ui_state(|ui, app: &mut App| app.frame(ui), App { opts: o, ui: None });
+    h.run_steps(6);
+    h
+}
+
+const LEGEND: [&str; 10] = [
+    "Vídeo",
+    "Imágenes",
+    "Audio",
+    "Documentos",
+    "Comprimidos",
+    "Programas",
+    "Otros",
+    "Mixto",
+    "Solo informar",
+    "Sistema",
+];
+
+#[test]
+fn la_leyenda_cabe_entera_a_1280x800_sin_desplazarse() {
+    let h = harness(opts(StartScreen::Map(MapStart::default())));
+    assert!(
+        !explore(&h).sidebar_overflow,
+        "la barra lateral no debería desbordar a 1280 x 800"
+    );
+    // El borde inferior visible de la barra lateral es el de la cesta (800 - 56 - 32).
+    let limit = 800.0 - 56.0 - 32.0;
+    for t in LEGEND {
+        let n = h
+            .query_all_by_label(t)
+            .next()
+            .unwrap_or_else(|| panic!("falta {t} en la leyenda"));
+        let r = n.rect();
+        assert!(
+            r.bottom() <= limit + 0.5 && r.top() >= 56.0,
+            "{t} queda fuera de la vista: {r:?}"
+        );
+    }
+}
+
+#[test]
+fn con_la_ventana_minima_la_leyenda_no_se_corta_sin_aviso() {
+    // 960 x 600 es el tamaño mínimo: o cabe, o la barra lateral se desplaza con su barra visible (`sidebar_overflow`).
+    let h = harness_sized(
+        opts(StartScreen::Map(MapStart::default())),
+        vec2(960.0, 600.0),
+    );
+    let limit = 600.0 - 56.0 - 32.0;
+    let all_visible = LEGEND.iter().all(|t| {
+        h.query_all_by_label(t)
+            .next()
+            .is_some_and(|n| n.rect().bottom() <= limit + 0.5)
+    });
+    assert!(
+        all_visible || explore(&h).sidebar_overflow,
+        "contenido cortado y sin barra de desplazamiento"
+    );
+    // Todos los elementos existen para el lector de pantalla aunque haya que desplazarse.
+    for t in LEGEND {
+        assert!(h.query_all_by_label(t).count() >= 1, "{t}");
     }
 }

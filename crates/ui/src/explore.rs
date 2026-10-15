@@ -71,6 +71,8 @@ pub struct Explore {
     pub(crate) root: Root,
     /// Raíces anteriores al abrir agrupaciones "Otros" anidadas (Retroceso vuelve por ellas).
     pub(crate) group_stack: Vec<Root>,
+    /// El contenido de la barra lateral no cabe y se desplaza (se muestra su barra).
+    pub(crate) sidebar_overflow: bool,
     pub(crate) selection: Option<Sel>,
     pub(crate) view: View,
     pub(crate) search: String,
@@ -122,6 +124,7 @@ impl Explore {
             scripts,
             root: Root::node(0),
             group_stack: Vec::new(),
+            sidebar_overflow: false,
             selection: None,
             view: View::Map,
             search: String::new(),
@@ -345,9 +348,13 @@ impl Explore {
                     .inner_margin(Margin::symmetric(12, 16)),
             )
             .show(ui, |ui| {
-                egui::ScrollArea::vertical()
+                // Si el contenido no cabe (ventana pequeña) la barra de desplazamiento es SÓLIDA y siempre visible: nada queda
+                // cortado sin aviso.
+                ui.style_mut().spacing.scroll = egui::style::ScrollStyle::solid();
+                let out = egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| self.sidebar(ui, env));
+                self.sidebar_overflow = out.content_size.y > out.inner_rect.height() + 0.5;
             });
         egui::Panel::right("tesela-details")
             .exact_size(300.0)
@@ -613,40 +620,51 @@ impl Explore {
         let label = env.tr.t("view-recommendations");
         sidebar_item(ui, env, Icon::ShieldCheckmark, &label, false, false, None);
 
-        ui.add_space(14.0);
+        ui.add_space(10.0);
         widgets::section_label(ui, &pal, &env.tr.t("sidebar-types"));
-        for t in FileType::ALL {
-            legend_row(
-                ui,
-                &pal,
-                pal.type_color(t),
-                None,
-                &describe::type_name(env.tr, t),
-            );
-        }
-        ui.add_space(8.0);
-        widgets::section_label(ui, &pal, &env.tr.t("sidebar-grays"));
-        legend_row(
-            ui,
-            &pal,
+        // Los 7 tipos y los 3 grises con significado, en DOS columnas: cabe en 1280 x 800 sin desplazarse.
+        let mut entries: Vec<(egui::Color32, Option<egui::Color32>, String, Option<String>)> =
+            FileType::ALL
+                .iter()
+                .map(|&t| {
+                    (
+                        pal.type_color(t),
+                        None,
+                        describe::type_name(env.tr, t),
+                        None,
+                    )
+                })
+                .collect();
+        entries.push((
             pal.mixed(),
             Some(pal.type_color(FileType::Program)),
-            &env.tr.t("legend-mixed"),
-        );
-        legend_row(
-            ui,
-            &pal,
+            env.tr.t("legend-mixed"),
+            Some(env.tr.t("legend-mixed-tip")),
+        ));
+        entries.push((
             pal.info_only(),
             None,
-            &env.tr.t("legend-info-only"),
-        );
-        legend_row(
-            ui,
-            &pal,
+            env.tr.t("legend-info-only"),
+            Some(env.tr.t("legend-info-only-tip")),
+        ));
+        entries.push((
             pal.system_block(),
             Some(pal.system_border()),
-            &env.tr.t("legend-system"),
-        );
+            env.tr.t("legend-system"),
+            Some(env.tr.t("legend-system-tip")),
+        ));
+        egui::Grid::new("tesela-legend")
+            .num_columns(2)
+            .spacing([6.0, 4.0])
+            .min_col_width(96.0)
+            .show(ui, |ui| {
+                for (i, (fill, strip, text, tip)) in entries.iter().enumerate() {
+                    legend_cell(ui, &pal, *fill, *strip, text, tip.as_deref());
+                    if i % 2 == 1 {
+                        ui.end_row();
+                    }
+                }
+            });
     }
 
     fn status_bar(&mut self, ui: &mut Ui, env: &mut Env) {
@@ -739,15 +757,16 @@ fn bar_frame(fill: egui::Color32) -> egui::Frame {
         .inner_margin(Margin::symmetric(16, 0))
 }
 
-fn legend_row(
+fn legend_cell(
     ui: &mut Ui,
     pal: &Palette,
     fill: egui::Color32,
     strip: Option<egui::Color32>,
     text: &str,
+    tip: Option<&str>,
 ) {
-    ui.horizontal(|ui| {
-        ui.add_space(8.0);
+    let r = ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
         let (rect, _) = ui.allocate_exact_size(vec2(12.0, 12.0), Sense::hover());
         ui.painter().rect_filled(rect, CornerRadius::same(3), fill);
         if let Some(s) = strip {
@@ -755,8 +774,11 @@ fn legend_row(
                 egui::Rect::from_min_max(egui::pos2(rect.left(), rect.bottom() - 3.0), rect.max);
             ui.painter().rect_filled(r, CornerRadius::ZERO, s);
         }
-        ui.label(RichText::new(text).size(13.0).color(pal.text));
+        ui.label(RichText::new(text).size(12.0).color(pal.text));
     });
+    if let Some(t) = tip {
+        r.response.on_hover_text(t);
+    }
 }
 
 /// Elemento de la barra lateral. Devuelve `true` si se pulsó (y está habilitado).
