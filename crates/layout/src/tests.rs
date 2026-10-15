@@ -579,3 +579,124 @@ fn relayout_de_20k_rectangulos_en_menos_de_5_ms() {
     eprintln!("relayout de {n} celdas (con rejilla): mejor de 30 = {best:.2} ms");
     assert!(best < 5.0, "{best:.2} ms para {n} celdas");
 }
+
+// --- "Otros" siempre progresa -------------------------------------------------------------------------------------------
+
+/// Recorre TODAS las agrupaciones "Otros" a partir de `root`: cada una, al abrirse, tiene que reducir el conjunto
+/// (menos hijos que la raíz que la contiene) y acabar mostrando elementos. Devuelve cuántos nodos se vieron como celdas
+/// (cada hijo con tamaño aparece exactamente una vez) y la profundidad máxima de anidamiento.
+fn explore_groups(tree: &Tree, root: Root, size: (u32, u32), depth: usize) -> (usize, usize) {
+    assert!(
+        depth < 8,
+        "anidamiento demasiado profundo: 'Otros' no converge"
+    );
+    let kids = Children::of(tree, root.node);
+    let end = (root.end as usize).min(kids.len());
+    let start = (root.start as usize).min(end);
+    let slice_len = end - start;
+    let mut k = key(size, Depth::One);
+    k.root = root;
+    let l = Layout::compute(tree, k);
+    assert!(
+        !l.cells().is_empty(),
+        "una raíz con elementos con tamaño no puede quedar vacía"
+    );
+    let (mut nodes, mut deepest) = (0usize, depth);
+    for c in l.cells() {
+        match c.kind {
+            CellKind::Node(_) => nodes += 1,
+            CellKind::Others(i) => {
+                let o = l.others()[i as usize];
+                assert!(
+                    (o.count as usize) < slice_len,
+                    "abrir 'Otros' no reduce el conjunto: {} de {slice_len}",
+                    o.count
+                );
+                assert_ne!(o.root(), root, "abrir 'Otros' devuelve la misma raíz");
+                let (n, d) = explore_groups(tree, o.root(), size, depth + 1);
+                nodes += n;
+                deepest = deepest.max(d);
+            }
+        }
+    }
+    (nodes, deepest)
+}
+
+fn flat(n: usize, mut size_of: impl FnMut(usize) -> u64) -> Tree {
+    let kids = (0..n)
+        .map(|i| Spec::File(format!("f{i:06}"), size_of(i)))
+        .collect();
+    build(&Spec::Dir("raiz".into(), kids), None)
+}
+
+#[test]
+fn con_muchos_hijos_iguales_ninguno_cabe_y_otros_se_pagina() {
+    for n in [1500usize, 5000, 20_000] {
+        let t = flat(n, |_| 1_000_000);
+        // 1200 × 800: ninguno de los n hijos llega a 24 × 24 px cuando n > 1666.
+        let l = Layout::compute(&t, key((1200, 800), Depth::Two));
+        let fits = (1200.0 * 800.0 / 576.0) as usize;
+        if n > fits {
+            assert!(
+                l.cells()
+                    .iter()
+                    .all(|c| matches!(c.kind, CellKind::Others(_))),
+                "n = {n}: solo páginas"
+            );
+            assert!(
+                l.others().len() > 1,
+                "n = {n}: más de una página (no un único 'Otros' con todo)"
+            );
+            assert!(l.others().iter().all(|o| (o.count as usize) < n));
+            let total: u32 = l.others().iter().map(|o| o.count).sum();
+            assert_eq!(total as usize, n, "las páginas cubren todos los hijos");
+        }
+        let (nodes, deep) = explore_groups(&t, Root::node(0), (1200, 800), 0);
+        assert_eq!(nodes, n, "n = {n}: cada hijo se ve exactamente una vez");
+        assert!(deep <= 3, "n = {n}: profundidad {deep}");
+    }
+}
+
+#[test]
+fn zipf_de_200k_hijos_se_puede_recorrer_entero_por_otros() {
+    let t = flat(200_000, |i| 4_000_000_000 / (i as u64 + 1) + 4096);
+    let (nodes, deep) = explore_groups(&t, Root::node(0), (1200, 800), 0);
+    assert_eq!(nodes, 200_000);
+    assert!(deep <= 7, "profundidad {deep}");
+}
+
+#[test]
+fn abrir_otros_siempre_cambia_la_raiz_y_muestra_elementos_con_cualquier_viewport() {
+    // Viewports pequeños y grandes, y tamaños mixtos: la propiedad no depende de la forma de la distribución.
+    for (n, size) in [
+        (3000usize, (320u32, 240u32)),
+        (3000, (2560, 1440)),
+        (700, (200, 200)),
+        (50_000, (800, 600)),
+    ] {
+        let mut r = Rng(n as u64);
+        let t = flat(n, |_| 100_000 + r.next() % 50_000);
+        let (nodes, _) = explore_groups(&t, Root::node(0), size, 0);
+        assert_eq!(nodes, n, "n = {n}, viewport {size:?}");
+    }
+}
+
+#[test]
+fn el_sufijo_normal_sigue_funcionando_y_el_cero_no_se_pagina() {
+    // Hijos de tamaños muy distintos: grandes + cola diminuta = un solo 'Otros' sufijo (comportamiento original).
+    let mut kids: Vec<Spec> = (0..5)
+        .map(|i| Spec::File(format!("g{i}"), 1_000_000_000 - i))
+        .collect();
+    kids.extend((0..400).map(|i| Spec::File(format!("c{i:03}"), 100_000 + i)));
+    kids.extend((0..50).map(|i| Spec::File(format!("z{i}"), 0)));
+    let t = build(&Spec::Dir("raiz".into(), kids), None);
+    let l = Layout::compute(&t, key((800, 600), Depth::One));
+    assert_eq!(l.others().len(), 1);
+    assert_eq!(l.others()[0].start, 5);
+    assert_eq!(
+        l.others()[0].count,
+        450,
+        "el sufijo incluye los de tamaño 0, como antes"
+    );
+    assert_eq!(l.others()[0].root().end as usize, 455);
+}

@@ -33,18 +33,28 @@ pub enum Depth {
     Two,
 }
 
-/// Qué se reparte: los hijos visibles de `node` desde la posición `start` (0 = todos; > 0 = el sufijo de una
-/// agrupación "Otros").
+/// Qué se reparte: los hijos visibles de `node` en las posiciones `start..end` (todos = `0..u32::MAX`; otra cosa es
+/// una agrupación "Otros" abierta, que puede ser un sufijo o una página).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Root {
     pub node: NodeId,
     pub start: u32,
+    pub end: u32,
 }
 
 impl Root {
     /// Todos los hijos de `node`.
     pub fn node(node: NodeId) -> Root {
-        Root { node, start: 0 }
+        Root {
+            node,
+            start: 0,
+            end: u32::MAX,
+        }
+    }
+
+    /// ¿Es una agrupación "Otros" abierta (y no la carpeta entera)?
+    pub fn is_group(&self) -> bool {
+        self.start > 0 || self.end != u32::MAX
     }
 }
 
@@ -138,7 +148,7 @@ pub struct Cell {
 /// Valor de [`Cell::parent`] en las celdas de nivel 0.
 pub const NO_CELL: u32 = u32::MAX;
 
-/// Agrupación "Otros": los hijos visibles `start..start + count` de `parent`.
+/// Agrupación "Otros": los hijos visibles `start..start + count` de `parent` (un sufijo o una página).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Others {
     pub parent: NodeId,
@@ -154,6 +164,7 @@ impl Others {
         Root {
             node: self.parent,
             start: self.start,
+            end: self.start + self.count,
         }
     }
 }
@@ -192,52 +203,83 @@ impl Layout {
         let viewport = Rect::new(0.0, 0.0, w, h);
 
         let kids = Children::of(tree, key.root.node);
-        let start = (key.root.start as usize).min(kids.len());
+        let end = (key.root.end as usize).min(kids.len());
+        let start = (key.root.start as usize).min(end);
         let alloc_of = |i: usize| tree.node(kids.get(i)).alloc;
         let area = (w as f64) * (h as f64);
-        let total: f64 = (start..kids.len()).map(|i| alloc_of(i) as f64).sum();
+        let total: f64 = (start..end).map(|i| alloc_of(i) as f64).sum();
 
         if total > 0.0 && area > 0.0 {
             let scale = area / total;
             let min_area = (params.min_group_px as f64).powi(2);
+            let n = end - start;
             // Los hijos van de mayor a menor: los que miden menos de `min_area` son un sufijo (búsqueda binaria).
-            let big = start
-                + partition(kids.len() - start, |i| {
-                    alloc_of(start + i) as f64 * scale >= min_area
-                });
+            let big = start + partition(n, |i| alloc_of(start + i) as f64 * scale >= min_area);
             // Hijos con tamaño: los de `alloc == 0` (al final) no tienen área y no se reparten.
-            let sized = start + partition(kids.len() - start, |i| alloc_of(start + i) > 0);
-            // El sufijo candidato a "Otros" son los que quedan por debajo del área mínima, con tamaño o sin él.
-            let group_count = kids.len() - big;
-            let group_bytes: u64 = (big..kids.len())
-                .map(alloc_of)
-                .fold(0u64, u64::saturating_add);
-            // Un grupo de un solo elemento no tiene sentido, ni uno que no pesa nada.
-            let grouped = group_count >= 2 && group_bytes > 0;
-            // Sin grupo, se reparten todos los que tienen tamaño (aunque alguno mida menos de 24×24 px).
-            let prefix_end = if grouped { big } else { sized };
-            let mut vals: Vec<f64> = (start..prefix_end).map(|i| alloc_of(i) as f64).collect();
-            if grouped {
-                vals.push(group_bytes as f64);
-            }
-            let mut rects = Vec::with_capacity(vals.len());
-            squarify(&vals, total, viewport, &mut rects);
-            for (k, r) in rects.iter().enumerate() {
-                let kind = if k < prefix_end - start {
-                    CellKind::Node(kids.get(start + k))
-                } else {
+            let sized = start + partition(n, |i| alloc_of(start + i) > 0);
+            // Entradas del nivel 0 antes de repartirlas: (valor, qué es).
+            let mut items: Vec<(f64, CellKind)> = Vec::new();
+            let add_group =
+                |others: &mut Vec<Others>, first: usize, last: usize, stats: &mut LayoutStats| {
+                    let bytes: u64 = (first..last).map(alloc_of).fold(0u64, u64::saturating_add);
                     others.push(Others {
                         parent: key.root.node,
-                        start: big as u32,
-                        count: group_count as u32,
-                        bytes: group_bytes,
+                        start: first as u32,
+                        count: (last - first) as u32,
+                        bytes,
                     });
-                    stats.grouped += group_count;
-                    CellKind::Others(others.len() as u32 - 1)
+                    stats.grouped += last - first;
+                    (bytes as f64, CellKind::Others(others.len() as u32 - 1))
                 };
+            if big == start && sized > start {
+                // NINGÚN hijo llega a 24×24 px (muchos hijos de tamaño parecido): agruparlos a todos daría una raíz
+                // idéntica y "Otros" no avanzaría nunca. Se PAGINA: páginas de `page` hijos consecutivos, cada una un
+                // "Otros" que, al abrirse, reparte solo sus elementos. Con `page >= area / min_area` el mayor de una
+                // página mide al menos el área mínima, así que abrir una página siempre muestra elementos, y como la
+                // página es más pequeña que el conjunto, abrir "Otros" siempre reduce el conjunto.
+                let fit = ((area / min_area).floor() as usize).max(2);
+                let page = fit.max((sized - start).div_ceil(fit));
+                let mut pages: Vec<(usize, usize, u64)> = Vec::new();
+                let mut s = start;
+                while s < sized {
+                    let e = (s + page).min(sized);
+                    let bytes: u64 = (s..e).map(alloc_of).fold(0u64, u64::saturating_add);
+                    pages.push((s, e, bytes));
+                    s = e;
+                }
+                // Las páginas van de mayor a menor (los hijos van ordenados): las que no llegan al área mínima se
+                // funden en una sola agrupación final (la primera siempre llega: tiene al menos 1/páginas del total).
+                let big_pages =
+                    partition(pages.len(), |p| pages[p].2 as f64 * scale >= min_area).max(1);
+                for &(s, e, _) in &pages[..big_pages] {
+                    items.push(add_group(&mut others, s, e, &mut stats));
+                }
+                if big_pages < pages.len() {
+                    let (s, e) = (pages[big_pages].0, pages[pages.len() - 1].1);
+                    items.push(add_group(&mut others, s, e, &mut stats));
+                }
+            } else {
+                // El sufijo candidato a "Otros" son los que quedan por debajo del área mínima, con tamaño o sin él.
+                let group_count = end - big;
+                let group_bytes: u64 = (big..end).map(alloc_of).fold(0u64, u64::saturating_add);
+                // Un grupo de un solo elemento no tiene sentido, ni uno que no pesa nada.
+                let grouped = group_count >= 2 && group_bytes > 0;
+                // Sin grupo, se reparten todos los que tienen tamaño (aunque alguno mida menos de 24×24 px).
+                let prefix_end = if grouped { big } else { sized };
+                for i in start..prefix_end {
+                    items.push((alloc_of(i) as f64, CellKind::Node(kids.get(i))));
+                }
+                if grouped {
+                    items.push(add_group(&mut others, big, end, &mut stats));
+                }
+            }
+            let vals: Vec<f64> = items.iter().map(|it| it.0).collect();
+            let mut rects = Vec::with_capacity(vals.len());
+            squarify(&vals, total, viewport, &mut rects);
+            for (r, it) in rects.iter().zip(&items) {
                 cells.push(Cell {
                     rect: *r,
-                    kind,
+                    kind: it.1,
                     level: 0,
                     parent: NO_CELL,
                 });

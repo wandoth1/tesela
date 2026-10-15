@@ -129,7 +129,7 @@ impl MapState {
     pub(crate) fn begin_zoom_out(&mut self, animate: bool, from: Root) {
         self.pending = None;
         self.anim = None;
-        if !animate || from.start > 0 {
+        if !animate || from.is_group() {
             return;
         }
         if let Some(e) = &self.mesh {
@@ -491,10 +491,10 @@ fn draw_labels(
 fn map_label(ex: &Explore, env: &Env) -> String {
     let tr = env.tr;
     let tree = &ex.tree;
-    let (kids, start) = ex.shown_children();
+    let shown = ex.shown_children();
     let mut s = tr.ta(
         "map-label",
-        args!["name" => describe::display_name(tree, ex.root.node, tr), "n" => tr.int(kids.len().saturating_sub(start) as u64)],
+        args!["name" => describe::display_name(tree, ex.root.node, tr), "n" => tr.int(shown.len() as u64)],
     );
     // La agrupación "Otros" no tiene widget propio: se anuncia aquí para quien no ve el mapa.
     if let Some(l) = &ex.map.layout {

@@ -67,6 +67,8 @@ pub struct Explore {
     /// Versión de los datos para la caché del layout (cambia con el árbol; en el inc. 3, con el overlay).
     pub(crate) version: u64,
     pub(crate) root: Root,
+    /// Raíces anteriores al abrir agrupaciones "Otros" anidadas (Retroceso vuelve por ellas).
+    pub(crate) group_stack: Vec<Root>,
     pub(crate) selection: Option<Sel>,
     pub(crate) view: View,
     pub(crate) search: String,
@@ -80,6 +82,25 @@ pub struct Explore {
     /// El buscador tiene el foco del teclado (las teclas de navegación no actúan mientras se escribe).
     search_focused: bool,
     search_hits: Option<(String, Root, Arc<Vec<NodeId>>)>,
+}
+
+/// Los hijos que se están mostrando (la carpeta entera o una agrupación "Otros" abierta).
+pub(crate) struct Shown {
+    kids: tesela_layout::Children,
+    start: usize,
+    end: usize,
+}
+
+impl Shown {
+    pub(crate) fn len(&self) -> usize {
+        self.end - self.start
+    }
+    pub(crate) fn get(&self, i: usize) -> NodeId {
+        self.kids.get(self.start + i)
+    }
+    pub(crate) fn iter(&self) -> impl Iterator<Item = NodeId> + '_ {
+        (self.start..self.end).map(|i| self.kids.get(i))
+    }
 }
 
 /// Número que identifica el árbol en la caché (un contador por proceso).
@@ -96,6 +117,7 @@ impl Explore {
             info,
             version: next_version(),
             root: Root::node(0),
+            group_stack: Vec::new(),
             selection: None,
             view: View::Map,
             search: String::new(),
@@ -150,9 +172,9 @@ impl Explore {
             }
         }
         if let Some(n) = &start.select {
-            let (kids, s) = self.shown_children();
-            if let Some(id) = kids
-                .iter_from(s)
+            if let Some(id) = self
+                .shown_children()
+                .iter()
                 .find(|&c| self.tree.name_lossy(c) == n.as_str())
             {
                 self.selection = Some(Sel::Node(id));
@@ -172,7 +194,7 @@ impl Explore {
 
     /// ¿Se puede subir un nivel?
     pub fn can_up(&self) -> bool {
-        self.root.start > 0 || self.root.node != 0
+        self.root.is_group() || self.root.node != 0
     }
 
     /// Sube un nivel (de una agrupación "Otros" vuelve a su carpeta). La carpeta de la que se sale queda seleccionada.
@@ -181,8 +203,11 @@ impl Explore {
             return;
         }
         let from = self.root;
-        let (target, select) = if from.start > 0 {
-            (Root::node(from.node), None)
+        let (target, select) = if from.is_group() {
+            (
+                self.group_stack.pop().unwrap_or(Root::node(from.node)),
+                None,
+            )
         } else {
             let parent = self.tree.parent(from.node).unwrap_or(0);
             (Root::node(parent), Some(Sel::Node(from.node)))
@@ -205,6 +230,11 @@ impl Explore {
             return false;
         }
         self.map.begin_zoom_in(self.animate, sel);
+        if matches!(sel, Sel::Group(_)) {
+            self.group_stack.push(self.root);
+        } else {
+            self.group_stack.clear();
+        }
         self.root = target;
         self.selection = None;
         self.scroll_to_selection = true;
@@ -226,12 +256,13 @@ impl Explore {
                 }
                 cur = p;
             }
-            found || self.root.start > 0 && self.root.node == id
+            found || self.root.is_group() && self.root.node == id
         };
         if ancestor {
             self.map.begin_zoom_out(self.animate, self.root);
         }
         self.root = Root::node(id);
+        self.group_stack.clear();
         self.selection = None;
         self.scroll_to_selection = true;
     }
@@ -242,11 +273,11 @@ impl Explore {
     }
 
     /// Hijos (visibles) que está mostrando ahora el mapa o la lista.
-    pub(crate) fn shown_children(&self) -> (tesela_layout::Children, usize) {
-        (
-            tesela_layout::Children::of(&self.tree, self.root.node),
-            self.root.start as usize,
-        )
+    pub(crate) fn shown_children(&self) -> Shown {
+        let kids = tesela_layout::Children::of(&self.tree, self.root.node);
+        let end = (self.root.end as usize).min(kids.len());
+        let start = (self.root.start as usize).min(end);
+        Shown { kids, start, end }
     }
 
     /// Texto de la ruta de un elemento (solo para mostrar o copiar).
@@ -270,9 +301,9 @@ impl Explore {
         {
             return Some(hits.clone());
         }
-        let (kids, start) = self.shown_children();
-        let hits: Vec<NodeId> = kids
-            .iter_from(start)
+        let hits: Vec<NodeId> = self
+            .shown_children()
+            .iter()
             .filter(|&c| describe::fold(&self.tree.name_lossy(c)).contains(&q))
             .collect();
         let hits = Arc::new(hits);
@@ -441,11 +472,10 @@ impl Explore {
             chain.push(p);
         }
         chain.reverse();
-        let group = (self.root.start > 0).then(|| {
-            let (kids, start) = self.shown_children();
-            let n = kids.len().saturating_sub(start);
-            let bytes: u64 = kids.iter_from(start).map(|c| self.tree.node(c).alloc).sum();
-            (n, bytes)
+        let group = self.root.is_group().then(|| {
+            let sh = self.shown_children();
+            let bytes: u64 = sh.iter().map(|c| self.tree.node(c).alloc).sum();
+            (sh.len(), bytes)
         });
         let last_is_current = group.is_none();
         let skip = chain.len().saturating_sub(4);

@@ -15,20 +15,20 @@ use tesela_model::NodeId;
 const ROW_H: f32 = 32.0;
 
 enum Items {
-    Children(tesela_layout::Children, usize),
+    Children(crate::explore::Shown),
     Hits(std::sync::Arc<Vec<NodeId>>),
 }
 
 impl Items {
     fn len(&self) -> usize {
         match self {
-            Items::Children(c, start) => c.len().saturating_sub(*start),
+            Items::Children(c) => c.len(),
             Items::Hits(h) => h.len(),
         }
     }
     fn get(&self, i: usize) -> NodeId {
         match self {
-            Items::Children(c, start) => c.get(start + i),
+            Items::Children(c) => c.get(i),
             Items::Hits(h) => h[i],
         }
     }
@@ -39,10 +39,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
     let pal = env.pal;
     let items = match ex.search_matches() {
         Some(h) => Items::Hits(h),
-        None => {
-            let (c, s) = ex.shown_children();
-            Items::Children(c, s)
-        }
+        None => Items::Children(ex.shown_children()),
     };
     let n = items.len();
     let total: u64 = ex.tree.node(ex.root.node).alloc.max(1);
