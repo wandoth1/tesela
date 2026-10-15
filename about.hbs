@@ -1,0 +1,28 @@
+# Avisos de terceros
+
+Tesela se distribuye bajo MIT OR Apache-2.0 (ver LICENSE-MIT y LICENSE-APACHE). Incluye los componentes de terceros que se
+listan abajo, cada uno bajo su propia licencia. Este archivo se genera con `cargo about` (ver about.toml y about.hbs); no se
+edita a mano.
+
+Iconos: Fluent UI System Icons, Microsoft Corporation, licencia MIT.
+
+## Licencias usadas
+
+{{#each overview}}
+- {{name}} ({{count}} componente(s))
+{{/each}}
+
+{{#each licenses}}
+## {{name}}
+
+Usada por:
+
+{{#each used_by}}
+- {{crate.name}} {{crate.version}}{{#if crate.repository}} ({{crate.repository}}){{/if}}
+{{/each}}
+
+```text
+{{{text}}}
+```
+
+{{/each}}

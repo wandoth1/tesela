@@ -133,6 +133,8 @@ pub enum Action {
     Rescan,
     SetTheme(ThemePref),
     SetLanguage(LangPref),
+    /// Abre la ventana "Acerca de".
+    ShowAbout,
 }
 
 /// Lo que las pantallas necesitan de la interfaz mientras dibujan.
@@ -165,6 +167,7 @@ pub struct TeselaUi {
     drives: Vec<DriveInfo>,
     drives_rx: Option<Receiver<Vec<DriveInfo>>>,
     folder_rx: Option<Receiver<Option<PathBuf>>>,
+    about: crate::about::About,
     /// Ventana principal, padre (modal) del selector de carpeta.
     parent: Option<crate::platform::ParentWindow>,
     pub(crate) screen: Screen,
@@ -191,6 +194,7 @@ impl TeselaUi {
             drives: Vec::new(),
             drives_rx: None,
             folder_rx: None,
+            about: crate::about::About::default(),
             parent: None,
             screen: Screen::Home,
             notice: None,
@@ -430,6 +434,7 @@ impl TeselaUi {
                         self.folder_rx = Some(rx);
                     }
                 }
+                Action::ShowAbout => self.about.open = true,
                 Action::SetTheme(t) => {
                     self.settings.theme = t;
                     self.settings_dirty = true;
@@ -454,6 +459,7 @@ impl TeselaUi {
             return;
         }
         self.poll(&ctx);
+        self.about.handle_escape(&ctx);
         let pal = theme::palette(&ctx);
         let mut actions = Vec::new();
         {
@@ -480,6 +486,7 @@ impl TeselaUi {
             }
         }
         self.apply(&ctx, actions);
+        self.about.show(&ctx, &self.tr, &pal);
         self.ensure_fonts(&ctx);
     }
 

@@ -1,0 +1,15 @@
+# Configuracion de `cargo about` (genera THIRD-PARTY-NOTICES.md a partir de about.hbs). Regenerar con:
+#   cargo about generate --locked -o THIRD-PARTY-NOTICES.md about.hbs
+# Solo cubre lo que se compila en el producto (Windows x64, sin dependencias de desarrollo ni de compilacion); las licencias
+# aceptadas son las mismas que permite `deny.toml`.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Unicode-3.0",
+    "BSL-1.0",
+    "ISC",
+    "Zlib",
+]
+targets = ["x86_64-pc-windows-msvc"]
+ignore-dev-dependencies = true
+ignore-build-dependencies = true

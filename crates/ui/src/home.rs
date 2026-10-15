@@ -91,6 +91,11 @@ pub fn settings_button(ui: &mut Ui, env: &mut Env) {
                 acts.push(Action::SetLanguage(pref));
             }
         }
+        ui.separator();
+        if ui.button(tr.t("about")).clicked() {
+            acts.push(Action::ShowAbout);
+            ui.close();
+        }
     });
     env.actions.extend(acts);
 }

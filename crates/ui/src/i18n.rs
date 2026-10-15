@@ -304,6 +304,14 @@ mod catalog_tests {
     /// Las fuentes de la interfaz, más la parte NO de pruebas de este mismo archivo (usa `percent`).
     fn all_sources() -> Vec<(&'static str, &'static str)> {
         let mut v = SOURCES.to_vec();
+        // `about.rs` sin sus pruebas (que citan texto de los avisos).
+        v.push((
+            "about.rs",
+            include_str!("about.rs")
+                .split("#[cfg(test)]")
+                .next()
+                .unwrap(),
+        ));
         v.push((
             "i18n.rs",
             include_str!("i18n.rs")

@@ -1234,3 +1234,60 @@ fn los_controles_alcanzables_con_tab_muestran_el_foco() {
         "buscador: sin anillo de foco"
     );
 }
+
+#[test]
+fn acerca_de_muestra_la_version_y_los_avisos_de_terceros_y_no_cambia_los_ajustes() {
+    for (start, ajustes, acerca, avisos) in [
+        (
+            StartScreen::Home,
+            "Ajustes",
+            "Acerca de Tesela",
+            "Avisos de terceros",
+        ),
+        (
+            user_folder(),
+            "Ajustes",
+            "Acerca de Tesela",
+            "Avisos de terceros",
+        ),
+    ] {
+        let mut h = harness(opts(start));
+        assert!(h.query_by_label_contains("Versión ").is_none());
+        h.get_by_label(ajustes).click();
+        h.run_steps(3);
+        h.get_by_label(acerca).click();
+        h.run_steps(4);
+        // La ventana lleva la versión del producto, la licencia y el botón de los avisos.
+        h.get_by_label(&format!("Versión {}", crate::about::VERSION));
+        h.get_by_label_contains("Licencia: MIT o Apache-2.0");
+        assert!(
+            h.query_by_label_contains("MIT License").is_none(),
+            "los avisos van plegados"
+        );
+        h.get_by_label(avisos).click();
+        h.run_steps(4);
+        // El botón y la primera línea del texto.
+        assert!(h.query_all_by_label_contains("Avisos de terceros").count() >= 2);
+        h.get_by_label_contains("Licencias usadas");
+        // Escape la cierra.
+        h.key_press(Key::Escape);
+        h.run_steps(3);
+        assert!(h.query_by_label_contains("Versión ").is_none());
+        // Abrirla no es un cambio de ajustes (no se guarda nada).
+        assert!(h.state_mut().ui_mut().take_settings_change().is_none());
+    }
+}
+
+#[test]
+fn acerca_de_sale_en_ingles_con_el_idioma_en_ingles() {
+    let mut o = opts(StartScreen::Home);
+    o.settings.language = LangPref::En;
+    let mut h = harness(o);
+    h.get_by_label("Settings").click();
+    h.run_steps(3);
+    h.get_by_label("About Tesela").click();
+    h.run_steps(4);
+    h.get_by_label(&format!("Version {}", crate::about::VERSION));
+    h.get_by_label_contains("License: MIT or Apache-2.0");
+    h.get_by_label("Third-party notices");
+}

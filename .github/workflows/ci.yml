@@ -70,7 +70,10 @@ jobs:
         shell: pwsh
         run: ./scripts/build-release.ps1
       # El ejecutable arranca y responde sin crear la ventana (--version no abre la interfaz) y no se pasa del presupuesto
-      # de tamaño (PLAN.md §4: ≲ 16 MB). No se lanza la interfaz: el runner no tiene GPU (wgpu usaría WARP) y no aporta nada.
+      # de tamaño. PLAN.md §4 fija el objetivo en ≲ 16 MB (unos 15,3 MiB); el CI solo falla por encima de 18 MiB (unos
+      # 18,9 MB), un margen deliberado para que una variación del compilador o de las dependencias avise (el tamaño se
+      # imprime siempre) sin romper el CI, pero un salto grande sí. No se lanza la
+      # interfaz: el runner no tiene GPU (wgpu usaría WARP) y no aporta nada.
       - name: Humo del ejecutable
         shell: pwsh
         run: |

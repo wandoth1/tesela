@@ -5,6 +5,7 @@
 //! * [`map`]: el treemap como `Mesh` teselado una vez y cacheado.
 //! * [`demo`]: árbol sintético y determinista para `tesela --demo`.
 
+mod about;
 pub mod app;
 pub mod demo;
 pub mod describe;
