@@ -16,10 +16,9 @@ allow = [
     "Apache-2.0",
     "Unicode-3.0",
     # Incremento 2 (egui, wgpu, winit, arboard...): cada una la exige al menos un crate sin alternativa en OR.
-    "BSD-3-Clause",   # moxcms, pxfm (decodificacion de imagenes de egui)
     "BSL-1.0",        # clipboard-win, error-code (portapapeles)
     "ISC",            # libloading (wgpu-hal)
-    "Zlib",           # foldhash, bytemuck, raw-window-handle, cursor-icon...
+    "Zlib",           # foldhash (hashbrown, wgpu); los demas Zlib del arbol tienen alternativa MIT o Apache-2.0
     # Fuentes de reserva que egui embebe con `default_fonts` (epaint_default_fonts, "(MIT OR Apache-2.0) AND OFL-1.1 AND
     # Ubuntu-font-1.0"). Son los unicos datos que se redistribuyen en el exe; Tesela prefiere las fuentes del sistema.
     "OFL-1.1",
