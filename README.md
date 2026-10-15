@@ -41,14 +41,41 @@ Estado del MVP v0.1: hecho el modelo (`tesela-model`) y el escáner de solo lect
 ```powershell
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace            # los tests solo usan árboles sintéticos en %TEMP%	esela-test-<uuid>
+cargo test --workspace            # los tests solo usan árboles sintéticos en %TEMP%\tesela-test-<uuid>
 cargo deny check
 cargo run --release -p tesela-scan -- <ruta> --top 20   # solo lectura; opciones en la cabecera de crates/tesela-scan/src/main.rs
+pwsh -File scripts/build-release.ps1                     # release SIN rutas de la máquina en los binarios (y lo comprueba)
 ```
 
-**Privacidad:** el repositorio es público y no puede contener datos de ninguna máquina (hardware, usuario, rutas, tamaños de
-discos reales, resultados de escaneos). Tras clonar, instala el hook que lo comprueba antes de cada commit:
-`pwsh -File scripts/install-hooks.ps1` (`scripts/privacy-check.ps1 -All` revisa todo el árbol; el CI lo ejecuta).
+### Privacidad
+
+El repositorio es público y **no puede contener datos de ninguna máquina**: hardware, sistema, usuario, rutas, tamaños de
+discos reales ni resultados de escaneos (los ejemplos, capturas y fixtures son siempre sintéticos).
+
+- **Instala los hooks tras clonar:** `pwsh -File scripts/install-hooks.ps1`. `pre-commit` revisa lo que está en staging
+  (contenido del índice y nombres de archivo) y `commit-msg` revisa el mensaje. Exigen **PowerShell 7 (`pwsh`)**; sin él, o
+  sin `scripts/privacy-check.ps1` en el worktree, el commit se bloquea con un mensaje claro.
+- `scripts/privacy-check.ps1 -All` revisa todo el árbol (el CI lo ejecuta con `-GenericOnly`). Busca SID, rutas de perfil
+  reales, unidades D:–Z:, hardware, antivirus y builds de Windows; en local añade el usuario, el equipo y el perfil leídos
+  del entorno en tiempo de ejecución. Se decodifica UTF-8 y UTF-16, se revisan cadenas de binarios y se rechazan las imágenes.
+  `docs/spike-results.md` no puede existir y `spike/` pasa las reglas no ligadas a rutas.
+- **Lista negra local (opcional, no versionada):** crea `<git-common-dir>/privacy-denylist` (en un clon normal,
+  `.git/privacy-denylist`; en un worktree, el `.git` del repositorio principal; `git rev-parse --git-common-dir` lo dice) con
+  **un término por línea**. Coincidencia literal sin distinguir mayúsculas; se ignoran las líneas vacías y las que empiezan por
+  `#`. Sirve para nombres propios (carpetas, programas, equipos) que ningún patrón genérico puede conocer.
+- Pruebas del propio check, con `pwsh` y con Windows PowerShell 5.1:
+  `pwsh -File scripts/tests/privacy-check.tests.ps1` y `pwsh -File scripts/tests/privacy-check.tests.ps1 -Shell powershell`.
+- `scripts/build-release.ps1` compila con `--remap-path-prefix` calculado en tiempo de ejecución (`trim-paths` de cargo sigue
+  siendo inestable y el prefijo depende de la máquina, así que no cabe en `.cargo/config.toml`) y falla si el `.exe` contiene el
+  usuario, el perfil, el repositorio o el toolchain.
+
+### Notas de diseño del escáner
+
+- Los directorios de la nube (OneDrive y similares, reparse points con etiqueta de nube) **sí se recorren**; el resto de reparse
+  points de directorio no se siguen. No hay forma de crear placeholders reales en el CI: solo se prueban la clasificación y el
+  builder con atributos sintéticos.
+- NTFS refresca de forma diferida el `mtime` y el tamaño propio de un directorio en el índice de su padre (que es lo que lista el
+  escáner): justo tras escribir, pueden ir atrasados.
 
 ## Licencia
 
