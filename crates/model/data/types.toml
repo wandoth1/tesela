@@ -1,0 +1,25 @@
+# Tabla extensión -> tipo de archivo (PLAN.md §3.5). Las extensiones van en minúsculas y sin el punto.
+# Todo lo que no aparece aquí es "otros". Una extensión no puede estar en dos tipos (lo comprueba un test).
+
+video = [
+    "mp4", "m4v", "mkv", "avi", "mov", "wmv", "flv", "webm", "mpg", "mpeg", "m2ts", "mts", "ts", "3gp", "vob", "ogv",
+]
+image = [
+    "jpg", "jpeg", "png", "gif", "bmp", "webp", "tif", "tiff", "heic", "heif", "avif", "svg", "ico", "raw", "cr2",
+    "cr3", "nef", "arw", "dng", "psd", "xcf",
+]
+audio = [
+    "mp3", "flac", "wav", "aac", "m4a", "ogg", "oga", "opus", "wma", "aiff", "aif", "mid", "midi", "amr",
+]
+document = [
+    "pdf", "doc", "docx", "odt", "rtf", "txt", "md", "xls", "xlsx", "ods", "csv", "ppt", "pptx", "odp", "epub",
+    "mobi", "pages", "numbers", "key", "tex", "one", "pub", "vsd", "vsdx",
+]
+archive = [
+    "zip", "rar", "7z", "tar", "gz", "tgz", "bz2", "xz", "zst", "lz4", "cab", "iso", "img", "wim", "esd", "vhd",
+    "vhdx", "vmdk", "dmg",
+]
+program = [
+    "exe", "dll", "sys", "msi", "msix", "appx", "msp", "msu", "bat", "cmd", "ps1", "com", "scr", "ocx", "drv",
+    "lib", "pdb", "jar", "apk", "so",
+]
