@@ -704,7 +704,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
     if !animating {
         draw_labels(&painter, env, ex, entry, &params);
         // Veladura de la búsqueda.
-        if let Some(hits) = ex.search_matches() {
+        if let Some(hits) = ex.search_set() {
             let veil = pal.bg.gamma_multiply(0.72);
             for c in layout.cells().iter().filter(|c| c.level == 0) {
                 let matches = match c.kind {

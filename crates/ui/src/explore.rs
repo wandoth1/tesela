@@ -86,6 +86,8 @@ pub struct Explore {
     /// El buscador tiene el foco del teclado (las teclas de navegación no actúan mientras se escribe).
     search_focused: bool,
     search_hits: Option<(String, Root, Arc<Vec<NodeId>>)>,
+    /// Los mismos aciertos como conjunto (para la veladura del mapa: pertenencia en O(1)).
+    search_set: Option<(String, Root, Arc<std::collections::HashSet<NodeId>>)>,
 }
 
 /// Los hijos que se están mostrando (la carpeta entera o una agrupación "Otros" abierta).
@@ -136,6 +138,7 @@ impl Explore {
             focus_search: false,
             search_focused: false,
             search_hits: None,
+            search_set: None,
         }
     }
 
@@ -295,6 +298,21 @@ impl Explore {
     }
 
     /// Nodos de la carpeta actual cuyo nombre contiene la búsqueda (sin distinguir mayúsculas), o `None` sin búsqueda.
+    /// Los aciertos de la búsqueda como conjunto, o `None` sin búsqueda. Se recalcula solo si cambia la búsqueda o la raíz.
+    pub(crate) fn search_set(&mut self) -> Option<Arc<std::collections::HashSet<NodeId>>> {
+        let hits = self.search_matches()?;
+        let q = describe::fold(self.search.trim());
+        if let Some((cq, croot, set)) = &self.search_set
+            && *cq == q
+            && *croot == self.root
+        {
+            return Some(set.clone());
+        }
+        let set: Arc<std::collections::HashSet<NodeId>> = Arc::new(hits.iter().copied().collect());
+        self.search_set = Some((q, self.root, set.clone()));
+        Some(set)
+    }
+
     pub(crate) fn search_matches(&mut self) -> Option<Arc<Vec<NodeId>>> {
         let q = describe::fold(self.search.trim());
         if q.is_empty() {

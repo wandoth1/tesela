@@ -181,21 +181,14 @@ impl Tr {
 
     /// Porcentaje entero (`19 %` en español, `19%` en inglés).
     pub fn pct(&self, p: f64) -> String {
-        let n = p.round().clamp(0.0, 100.0) as u64;
-        match self.lang {
-            Lang::Es => format!("{n} %"),
-            Lang::En => format!("{n}%"),
-        }
+        let n = p.round().clamp(0.0, 100.0) as i64;
+        self.ta("percent", &[("n", Arg::Num(n))])
     }
 
     /// Porcentaje con la parte decimal solo si es menor del 10 % (`3,4 %`, `27 %`); para cuotas pequeñas.
     pub fn pct_fine(&self, p: f64) -> String {
         if p > 0.0 && p < 10.0 {
-            let s = self.dec(p, 1);
-            match self.lang {
-                Lang::Es => format!("{s} %"),
-                Lang::En => format!("{s}%"),
-            }
+            self.ta("percent-fine", &[("v", Arg::Str(self.dec(p, 1)))])
         } else {
             self.pct(p)
         }
@@ -308,6 +301,19 @@ mod catalog_tests {
         ("widgets.rs", include_str!("widgets.rs")),
     ];
 
+    /// Las fuentes de la interfaz, más la parte NO de pruebas de este mismo archivo (usa `percent`).
+    fn all_sources() -> Vec<(&'static str, &'static str)> {
+        let mut v = SOURCES.to_vec();
+        v.push((
+            "i18n.rs",
+            include_str!("i18n.rs")
+                .split("#[cfg(test)]")
+                .next()
+                .unwrap(),
+        ));
+        v
+    }
+
     /// Identificadores de mensaje de un `.ftl`: las líneas que empiezan por `id =` (sin sangría).
     fn ids(src: &str) -> BTreeSet<String> {
         src.lines()
@@ -356,7 +362,7 @@ mod catalog_tests {
                 let all = crate::args![
                     "name" => "x", "files" => "x", "size" => "x", "total" => "x", "time" => "x", "pct" => "x", "free" => "x",
                     "used" => "x", "ago" => "x", "explained" => "x", "done" => 1u64, "n" => 2u64, "count" => "2",
-                    "parent" => "x", "error" => "x", "type" => "x", "label" => "x"
+                    "parent" => "x", "error" => "x", "type" => "x", "label" => "x", "v" => "x"
                 ];
                 assert!(!tr.ta(id, all).is_empty());
             }
@@ -367,7 +373,7 @@ mod catalog_tests {
     fn el_codigo_solo_usa_identificadores_que_existen_y_todos_se_usan() {
         let known = ids(ES);
         let mut used: BTreeSet<String> = BTreeSet::new();
-        for (file, src) in SOURCES {
+        for (file, src) in all_sources() {
             if file == "icons.rs" {
                 continue;
             }
@@ -413,7 +419,7 @@ mod catalog_tests {
             ".checkbox(",
             "section_label(ui, &pal, \"",
         ];
-        for (file, src) in SOURCES {
+        for (file, src) in all_sources() {
             if file == "icons.rs" || file == "platform.rs" {
                 continue;
             }

@@ -48,11 +48,11 @@ fi
     Write-Host "Hook instalado en $path"
 }
 
-New-Hook 'pre-commit' 'exec pwsh -NoProfile -ExecutionPolicy Bypass -File "$script" -Local'
+New-Hook 'pre-commit' 'exec pwsh -NoProfile -File "$script" -Local'
 New-Hook 'commit-msg' @'
 case "$1" in
   /*|?:*) msg="$1" ;;
   *) msg="$PWD/$1" ;;
 esac
-exec pwsh -NoProfile -ExecutionPolicy Bypass -File "$script" -Local -MessageFile "$msg"
+exec pwsh -NoProfile -File "$script" -Local -MessageFile "$msg"
 '@

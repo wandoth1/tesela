@@ -194,10 +194,20 @@ pub fn show_properties(path: &Path) -> bool {
     unsafe { ShellExecuteExW(&mut info) != FALSE }
 }
 
+/// Ruta absoluta de `explorer.exe` (la de `%SystemRoot%`): sin ruta, Windows lo buscaría primero en el directorio
+/// actual del proceso, y un `explorer.exe` plantado ahí se ejecutaría en su lugar.
+pub fn explorer_exe() -> PathBuf {
+    let sys = std::env::var_os("SystemRoot")
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
+    sys.join("explorer.exe")
+}
+
 /// Abre el Explorador con `path` seleccionado (o su carpeta, si es un directorio). No usa `unsafe`.
 pub fn reveal_in_explorer(path: &Path) -> std::io::Result<()> {
     use std::os::windows::process::CommandExt;
-    let mut cmd = std::process::Command::new("explorer.exe");
+    let mut cmd = std::process::Command::new(explorer_exe());
     cmd.raw_arg(format!("/select,\"{}\"", path.display()));
     cmd.spawn().map(|_| ())
 }
@@ -239,6 +249,14 @@ mod tests {
         let p = std::env::temp_dir().join(format!("tesela-test-{}-no-existe", std::process::id()));
         assert!(!p.exists());
         assert!(!show_properties(&p));
+    }
+
+    #[test]
+    fn el_explorador_se_lanza_desde_la_carpeta_del_sistema() {
+        let p = explorer_exe();
+        assert!(p.is_absolute(), "{p:?}");
+        assert!(p.exists(), "{p:?}");
+        assert_eq!(p.file_name().unwrap(), "explorer.exe");
     }
 
     #[test]

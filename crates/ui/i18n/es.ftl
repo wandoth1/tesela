@@ -174,3 +174,5 @@ age-over-3years = El { $pct } no se modifica desde hace más de 3 años
 age-recent = El { $pct } se modificó en el último mes
 age-mixed = Mezcla de archivos recientes y antiguos
 map-has-others = Incluye la agrupación { $label }.
+percent = { $n } %
+percent-fine = { $v } %

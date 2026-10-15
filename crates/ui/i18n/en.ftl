@@ -173,3 +173,5 @@ age-over-3years = { $pct } has not been modified for over 3 years
 age-recent = { $pct } was modified in the last month
 age-mixed = A mix of recent and old files
 map-has-others = Includes the group { $label }.
+percent = { $n }%
+percent-fine = { $v }%
