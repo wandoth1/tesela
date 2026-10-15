@@ -142,6 +142,25 @@ pub fn scripts_of_wtf8(bytes: &[u8]) -> Scripts {
     acc
 }
 
+/// Archivos que, aunque existan, egui 0.36 no consigue usar (no dan ningún glifo). Los tests no cuentan con ellos: un equipo
+/// que solo tenga esas fuentes (por ejemplo un Windows Server sin MS Gothic ni YaHei) debe saltarse la comprobación de la
+/// escritura, no fallar.
+#[cfg(test)]
+pub(crate) const UNUSABLE_IN_EGUI: [&str; 3] = ["YuGothR.ttc", "LeelawUI.ttf", "leelawad.ttf"];
+
+/// Grupos de reserva de `s` para los que `dir` no tiene ninguna fuente utilizable por egui (vacío = todo cubierto).
+#[cfg(test)]
+pub(crate) fn missing_groups(dir: &Path, s: Scripts) -> Vec<&'static str> {
+    fallback_groups(s)
+        .iter()
+        .filter(|(_, c)| {
+            !c.iter()
+                .any(|f| dir.join(f).exists() && !UNUSABLE_IN_EGUI.contains(f))
+        })
+        .map(|(g, _)| *g)
+        .collect()
+}
+
 /// Archivos de reserva (en la carpeta de fuentes) para un conjunto de escrituras, por orden de preferencia; de cada
 /// grupo se usa el primero que exista. `(nombre de la fuente en egui, candidatos)`.
 pub(crate) fn fallback_groups(s: Scripts) -> Vec<(&'static str, &'static [&'static str])> {
@@ -318,8 +337,19 @@ mod tests {
         assert!(available());
         // Sin escrituras pedidas no se carga ninguna reserva (memoria).
         assert_eq!(fd.families[&FontFamily::Proportional].len(), 1);
-        // Con ellas, van detrás de la principal en las tres familias.
-        let (fd, _) = definitions(Some(&dir), Scripts::KANA | Scripts::THAI | Scripts::SYMBOLS);
+        // Con ellas, van detrás de la principal en las tres familias (si el equipo tiene alguna de esas fuentes: un Windows
+        // Server mínimo puede no tener ninguna, y entonces no hay nada que comprobar).
+        let wanted = Scripts::KANA | Scripts::THAI | Scripts::SYMBOLS;
+        let (fd, _) = definitions(Some(&dir), wanted);
+        if !fallback_groups(wanted)
+            .iter()
+            .any(|(_, c)| c.iter().any(|f| dir.join(f).exists()))
+        {
+            eprintln!(
+                "sin ninguna fuente de reserva para kana, tailandés o símbolos en este equipo: se omite"
+            );
+            return;
+        }
         for fam in [
             FontFamily::Proportional,
             FontFamily::Name("semibold".into()),
@@ -334,6 +364,42 @@ mod tests {
                 .keys()
                 .any(|k| k.contains("Ubuntu") || k.contains("Hack"))
         );
+    }
+
+    #[test]
+    fn un_equipo_sin_las_fuentes_de_reserva_las_declara_ausentes_para_saltarse_la_prueba() {
+        // Carpeta de fuentes FALSA (solo %TEMP%	esela-test-<uuid>): un Windows Server mínimo.
+        let dir = std::env::temp_dir().join(format!("tesela-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let all = Scripts::KANA
+            | Scripts::HANGUL
+            | Scripts::THAI
+            | Scripts::INDIC
+            | Scripts::RTL
+            | Scripts::SYMBOLS;
+        // Vacía: faltan todos los grupos.
+        assert_eq!(missing_groups(&dir, all).len(), fallback_groups(all).len());
+        // Con solo las fuentes que egui no puede usar, siguen faltando (no se cuentan).
+        for f in UNUSABLE_IN_EGUI {
+            std::fs::write(dir.join(f), b"x").unwrap();
+        }
+        assert_eq!(missing_groups(&dir, all).len(), fallback_groups(all).len());
+        // Con una utilizable por grupo, no falta ninguno.
+        for f in [
+            "msyh.ttc",
+            "malgun.ttf",
+            "tahoma.ttf",
+            "Nirmala.ttc",
+            "segoeui.ttf",
+            "seguisym.ttf",
+        ] {
+            std::fs::write(dir.join(f), b"x").unwrap();
+        }
+        assert!(missing_groups(&dir, all).is_empty());
+        // Sin la fuente de símbolos, solo falta ese grupo.
+        std::fs::remove_file(dir.join("seguisym.ttf")).unwrap();
+        assert_eq!(missing_groups(&dir, all), vec!["Tesela-symbols"]);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

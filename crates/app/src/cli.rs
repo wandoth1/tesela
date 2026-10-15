@@ -28,6 +28,7 @@ Opciones generales:
 
 Herramientas de desarrollo (no guardan nada):
   --bench-hover <segundos>     mueve un puntero sintetico sobre el mapa e imprime el coste de CPU por frame
+                               (con --demo abre el mapa; sin --demo exige --scan)
   --idle-memory <segundos>     espera con la ventana en reposo e imprime el private working set del proceso
   --screenshot <ruta.png>      guarda una captura de la ventana y sale (solo con --demo y la feature `capture`)
 ";
@@ -176,6 +177,13 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
     if cli.scan.is_some() && cli.demo {
         return Err("--scan y --demo no se combinan".into());
     }
+    // La medición mueve el puntero sobre el MAPA: sin él (inicio sin --scan, o escaneo simulado) no habría nada que medir.
+    if cli.bench_hover.is_some() && cli.scan.is_none() && !cli.demo {
+        return Err("--bench-hover necesita --demo o --scan: mide el mapa, que la pantalla de inicio no tiene".into());
+    }
+    if cli.bench_hover.is_some() && cli.demo && cli.screen == Screen::Scan {
+        return Err("--bench-hover mide el mapa o la lista: usa --screen map o --screen list (o nada: con --demo abre el mapa)".into());
+    }
     Ok(cli)
 }
 
@@ -215,6 +223,15 @@ mod tests {
         assert!(p("--scan").unwrap_err().contains("necesita un valor"));
         assert!(p("--cosa").unwrap_err().contains("desconocido"));
         assert!(p("--bench-hover 0").is_err());
+        // Medir el mapa exige llegar a él: sin --demo ni --scan, o con el escaneo simulado, no hay mapa.
+        assert!(
+            p("--bench-hover 5")
+                .unwrap_err()
+                .contains("--demo o --scan")
+        );
+        assert!(p("--demo --screen scan --bench-hover 5").is_err());
+        assert!(p("--demo --bench-hover 5").is_ok());
+        assert!(p("--scan X --bench-hover 5").is_ok());
         assert!(p("--idle-memory 0").is_err());
         assert_eq!(
             p("--demo --idle-memory 12").unwrap().idle_memory,

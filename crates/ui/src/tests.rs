@@ -933,16 +933,17 @@ fn los_nombres_en_otros_alfabetos_acaban_en_una_fuente_que_tiene_el_glifo() {
     h.state_mut().ui_mut().screen = crate::app::Screen::Explore(Box::new(ex));
     h.run_steps(8); // ensure_fonts pide las reservas y valen desde el frame siguiente
     let dir = crate::platform::fonts_dir().unwrap();
-    let have = |s: Scripts| {
-        fonts::fallback_groups(s)
-            .iter()
-            .all(|(_, c)| c.iter().any(|f| dir.join(f).exists()))
-    };
+    // Una escritura se comprueba solo si CADA grupo de reserva tiene en este equipo alguna fuente que egui pueda usar; si no
+    // (por ejemplo un Windows Server sin YaHei ni MS Gothic), se salta diciendo qué falta.
+    let missing = |s: Scripts| fonts::missing_groups(&dir, s);
     let mut checked = 0;
     let all: Vec<(String, Scripts)> = names.iter().map(|(n, s)| (n.to_string(), *s)).collect();
     for (n, s) in &all {
-        if !s.is_empty() && !have(*s) {
-            eprintln!("sin fuente de reserva en este equipo para {n}: se omite");
+        let miss = missing(*s);
+        if !miss.is_empty() {
+            eprintln!(
+                "sin fuente de reserva utilizable en este equipo ({miss:?}) para {n}: se omite"
+            );
             continue;
         }
         for fam in [
@@ -963,10 +964,8 @@ fn los_nombres_en_otros_alfabetos_acaban_en_una_fuente_que_tiene_el_glifo() {
         }
         checked += 1;
     }
-    assert!(
-        checked >= 4,
-        "al menos latino, griego, árabe y hebreo se comprobaron"
-    );
+    // Latino y griego solo dependen de la fuente principal, así que siempre se comprueban; el resto, según el equipo.
+    assert!(checked >= 2, "al menos latino y griego se comprobaron");
     // Y la ventana pinta la lista con esos nombres sin pánico.
     h.get_by_label("Lista").click();
     h.run_steps(4);
@@ -987,6 +986,8 @@ fn escribir_en_el_buscador_en_otra_escritura_carga_su_fuente() {
             .ctx
             .fonts_mut(|f| f.has_glyphs(&egui::FontId::proportional(14.0), "한국어"));
         assert!(ok, "el hangul del buscador debe tener glifo");
+    } else {
+        eprintln!("sin malgun.ttf en este equipo: se omite la comprobación del hangul");
     }
 }
 

@@ -82,7 +82,10 @@ fn main() -> eframe::Result {
         stress: cli.stress,
     });
     let start = match (cli.demo, cli.screen) {
-        (true, Screen::Home) if cli.stress => StartScreen::Map(MapStart::default()),
+        // `--stress` y `--bench-hover` miden el mapa: con `--demo` y sin `--screen` se abre directamente.
+        (true, Screen::Home) if cli.stress || cli.bench_hover.is_some() => {
+            StartScreen::Map(MapStart::default())
+        }
         (true, Screen::Scan) => StartScreen::Scan(cli.progress.unwrap_or(0.45)),
         (true, Screen::Map | Screen::List) => StartScreen::Map(MapStart {
             list: cli.screen == Screen::List,
@@ -107,7 +110,9 @@ fn main() -> eframe::Result {
         // Si la ventana deja de pintar (minimizada u oculta) la medición no avanzaría nunca: se aborta con un aviso.
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_secs_f32(secs + 40.0 + extra));
-            console::print("tesela: --bench-hover sin resultados: la ventana dejó de pintar");
+            console::print(
+                "tesela: --bench-hover sin resultados: la ventana dejó de pintar o no llegó al mapa",
+            );
             std::process::exit(3);
         });
     }
