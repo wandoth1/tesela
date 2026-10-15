@@ -3,12 +3,43 @@
 //! SEGURIDAD: los tests solo escriben y borran dentro de esa carpeta, creada por el propio test. La guarda comprueba,
 //! antes de borrar nada, que la ruta es hija directa de `%TEMP%` y que su nombre empieza por `tesela-test-`. Los
 //! junctions se eliminan antes como enlaces (nunca se entra en ellos) y los destinos están dentro del mismo árbol.
-#![allow(dead_code)]
+#![allow(dead_code, unsafe_code)]
 
+use std::ffi::c_void;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use windows_sys::Win32::Foundation::HANDLE;
+use windows_sys::Win32::Storage::FileSystem::{
+    FILE_STANDARD_INFO, FileStandardInfo, GetFileInformationByHandleEx,
+};
+
+/// `AllocationSize` de un archivo según `FileStandardInfo` sobre su propio handle (oráculo independiente del
+/// listado de directorio que usa el escáner).
+pub fn allocation_size(path: &Path) -> u64 {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    let f = fs::OpenOptions::new()
+        .access_mode(0x80) // FILE_READ_ATTRIBUTES
+        .share_mode(7)
+        .custom_flags(0x0200_0000) // FILE_FLAG_BACKUP_SEMANTICS
+        .open(path)
+        .expect("abre el archivo para leer atributos");
+    // SAFETY: FILE_STANDARD_INFO es una estructura POD (enteros): todo-ceros es un valor válido.
+    let mut info: FILE_STANDARD_INFO = unsafe { std::mem::zeroed() };
+    // SAFETY: el handle pertenece a `f`, que sigue vivo; el puntero apunta a `info` y se pasa su tamaño exacto.
+    let ok = unsafe {
+        GetFileInformationByHandleEx(
+            f.as_raw_handle() as HANDLE,
+            FileStandardInfo,
+            &mut info as *mut _ as *mut c_void,
+            size_of::<FILE_STANDARD_INFO>() as u32,
+        )
+    };
+    assert_ne!(ok, 0, "GetFileInformationByHandleEx falló");
+    info.AllocationSize.max(0) as u64
+}
 
 pub struct TempTree {
     root: PathBuf,
@@ -82,6 +113,31 @@ impl TempTree {
             String::from_utf8_lossy(&out.stdout)
         );
         self.junctions.push(link);
+    }
+
+    /// Activa la distinción de mayúsculas en `rel` con `fsutil` (no necesita administrador; el directorio debe estar
+    /// vacío). Devuelve `false` si el sistema no lo admite: el test debe saltarse.
+    pub fn case_sensitive(&self, rel: &str) -> bool {
+        let dir = if rel.is_empty() {
+            self.root.clone()
+        } else {
+            self.path(rel)
+        };
+        let ok = Command::new("fsutil")
+            .args(["file", "setCaseSensitiveInfo"])
+            .arg(&dir)
+            .arg("enable")
+            .output()
+            .is_ok_and(|o| o.status.success());
+        if !ok {
+            return false;
+        }
+        // Comprobación real: `X` y `x` deben poder coexistir.
+        let (a, b) = (dir.join("CsProbe"), dir.join("csprobe"));
+        let both = fs::create_dir(&a).is_ok() && fs::create_dir(&b).is_ok();
+        let _ = fs::remove_dir(&a);
+        let _ = fs::remove_dir(&b);
+        both
     }
 
     /// Deniega a todos listar el contenido de `rel` (para provocar ERROR_ACCESS_DENIED). Se restaura al soltar.

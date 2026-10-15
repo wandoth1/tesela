@@ -39,15 +39,22 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tesela_model::{Batch, BuildError, EntryData, FinishOptions, Tree, TreeBuilder, flags};
 use walker::{NO_PRIO, Shared, Task, WorkerOut, WorkerState};
 
-/// Hilos por defecto: la mejora se satura entre 8 y 16 en las mediciones de la fase 0 (docs/spike-results.md §2.2).
-pub const DEFAULT_THREADS: usize = 16;
+/// Tope de hilos por defecto: en las mediciones de la fase 0 la mejora se satura entre 8 y 16 hilos
+/// (docs/fase-0-conclusiones.md).
+pub const MAX_DEFAULT_THREADS: usize = 16;
+
+/// Hilos por defecto: `min(16, 2 × núcleos lógicos disponibles)`.
+pub fn default_threads() -> usize {
+    let cores = std::thread::available_parallelism().map_or(2, std::num::NonZero::get);
+    MAX_DEFAULT_THREADS.min(2 * cores)
+}
 
 /// Opciones de un escaneo.
 #[derive(Clone, Debug)]
 pub struct ScanOptions {
     /// Carpeta o volumen a escanear.
     pub root: PathBuf,
-    /// Hilos de escaneo (por defecto [`DEFAULT_THREADS`]).
+    /// Hilos de escaneo (por defecto [`default_threads`]).
     pub threads: usize,
     /// Usar la cola prioritaria con las rutas conocidas (por defecto sí). Solo afecta a las que cuelgan de `root`.
     pub known_paths: bool,
@@ -64,6 +71,9 @@ pub struct ScanOptions {
     /// Bandera de cancelación externa (por ejemplo, la de un manejador de Ctrl+C). Si ya está activada al empezar, solo
     /// se lista la raíz. [`ScanHandle::cancel`] activa la misma bandera.
     pub cancel: Option<Arc<AtomicBool>>,
+    /// Solo para tests y herramientas: sustituye el espacio del volumen y trata la ruta como un volumen completo,
+    /// lo que permite probar de punta a punta el cálculo del "espacio no explicado" sobre un árbol sintético.
+    pub volume_override: Option<VolumeSpace>,
 }
 
 impl ScanOptions {
@@ -71,7 +81,7 @@ impl ScanOptions {
     pub fn new(root: impl Into<PathBuf>) -> ScanOptions {
         ScanOptions {
             root: root.into(),
-            threads: DEFAULT_THREADS,
+            threads: default_threads(),
             known_paths: true,
             priority_paths: None,
             force_find: false,
@@ -79,6 +89,7 @@ impl ScanOptions {
             volume_gap: true,
             now_unix: None,
             cancel: None,
+            volume_override: None,
         }
     }
 }
@@ -166,6 +177,8 @@ pub struct ScanSummary {
     pub full_volume: bool,
     /// Rutas prioritarias recorridas.
     pub priority: Vec<PriorityResult>,
+    /// Se agotaron los ids provisionales (más de 4 000 millones de entradas): el árbol está incompleto.
+    pub ids_exhausted: bool,
     /// Error del builder (no debería ocurrir: significaría más de 4 000 M de entradas o 4 GiB de nombres).
     pub build_error: Option<BuildError>,
 }
@@ -260,9 +273,9 @@ pub fn start(opts: ScanOptions) -> Result<ScanHandle, ScanError> {
     }
     let root_w = sys::wide(&root);
     let display_root = dunce::simplified(&root).to_path_buf();
-    let full_volume = drive_root(&root).is_some();
+    let full_volume = drive_root(&root).is_some() || opts.volume_override.is_some();
 
-    let attr_h = sys::open_dir(&root_w, sys::FILE_READ_ATTRIBUTES)
+    let attr_h = sys::open_dir(&root_w, sys::FILE_READ_ATTRIBUTES, false)
         .map_err(|c| ScanError::Root(io_err(c)))?;
     let root_meta = sys::dir_meta(&attr_h).map_err(|c| ScanError::Root(io_err(c)))?;
     let fs_name = sys::fs_name(&attr_h).unwrap_or_default();
@@ -304,12 +317,16 @@ pub fn start(opts: ScanOptions) -> Result<ScanHandle, ScanError> {
         tag: 0,
         prio: NO_PRIO,
         claim: false,
+        cloud: false,
     };
     let mut st = WorkerState::new();
     let root_stats = walker::process_dir(&sh, &tx, &root_task, true, &mut st)
         .map_err(|c| ScanError::Root(io_err(c)))?;
     let mut top = vec![TopLevel::new(OsString::new())];
     top.extend(st.top_names.drain(..).map(TopLevel::new));
+    if st.top_overflow {
+        top.push(TopLevel::new(OsString::from("(otras carpetas)")));
+    }
     let _ = progress.top.set(top);
     walker::account(&sh, &root_task, &root_stats);
     let mut children = std::mem::take(&mut st.children);
@@ -327,7 +344,7 @@ pub fn start(opts: ScanOptions) -> Result<ScanHandle, ScanError> {
             .map(|t| {
                 let name = t.path.rsplit(|&c| c == b'\\' as u16).next().unwrap_or(&[]);
                 priority::RootChild {
-                    name_lower: OsString::from_wide(name).to_string_lossy().to_lowercase(),
+                    name: OsString::from_wide(name),
                     id: t.id,
                     tag: t.tag,
                 }
@@ -380,6 +397,7 @@ pub fn start(opts: ScanOptions) -> Result<ScanHandle, ScanError> {
         root_w,
         display_root,
         full_volume,
+        volume_override: opts.volume_override,
         fs_name,
         volume_gap: opts.volume_gap,
         dedup: opts.dedup_hard_links,
@@ -406,6 +424,7 @@ struct Ctx {
     root_w: Vec<u16>,
     display_root: PathBuf,
     full_volume: bool,
+    volume_override: Option<VolumeSpace>,
     fs_name: String,
     volume_gap: bool,
     dedup: bool,
@@ -423,6 +442,7 @@ fn run(ctx: Ctx) -> ScanResult {
         root_w,
         display_root,
         full_volume,
+        volume_override,
         fs_name,
         volume_gap,
         dedup,
@@ -467,10 +487,17 @@ fn run(ctx: Ctx) -> ScanResult {
     });
     let elapsed_scan = t0.elapsed();
 
-    let cancelled = cancel.load(Ordering::SeqCst) && sh.pending.load(Ordering::SeqCst) != 0;
-    let volume = sys::volume_space(&root_w)
-        .ok()
-        .map(|(total, free)| VolumeSpace { total, free });
+    // "Parar y ver": hubo cancelación Y quedó trabajo sin hacer. Que `pending` sea 0 no basta: al cancelar se descartan
+    // los subdirectorios recién descubiertos sin contarlos (`dropped`).
+    let ids_exhausted = sh.id_overflow.load(Ordering::SeqCst);
+    let cancel_flag = cancel.load(Ordering::SeqCst);
+    let unfinished = sh.pending.load(Ordering::SeqCst) != 0 || sh.dropped.load(Ordering::SeqCst);
+    let mut cancelled = ids_exhausted || (cancel_flag && unfinished);
+    let volume = volume_override.or_else(|| {
+        sys::volume_space(&root_w)
+            .ok()
+            .map(|(total, free)| VolumeSpace { total, free })
+    });
     let mut fo = FinishOptions::new(now_unix);
     fo.dedup_hard_links = dedup;
     if full_volume && volume_gap && !cancelled && build_err.is_none() {
@@ -479,6 +506,8 @@ fn run(ctx: Ctx) -> ScanResult {
     let t1 = Instant::now();
     let tree = builder.finish(&fo);
     let elapsed_build = t1.elapsed();
+    // Segunda red: si el árbol quedó con directorios sin listar tras cancelar, también cuenta como detenido.
+    cancelled |= cancel_flag && tree.stats().incomplete_dirs > 0;
 
     let mut errors_by_code: BTreeMap<u32, u64> = BTreeMap::new();
     let mut error_samples = Vec::new();
@@ -525,8 +554,23 @@ fn run(ctx: Ctx) -> ScanResult {
         volume,
         full_volume,
         priority,
+        ids_exhausted,
         build_error: build_err,
     };
     sh.progress.finished.store(true, Ordering::SeqCst);
     ScanResult { tree, summary }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn los_hilos_por_defecto_son_min_16_y_dos_veces_los_nucleos() {
+        let n = default_threads();
+        let cores = std::thread::available_parallelism().map_or(2, std::num::NonZero::get);
+        assert!((1..=MAX_DEFAULT_THREADS).contains(&n));
+        assert_eq!(n, MAX_DEFAULT_THREADS.min(2 * cores));
+        assert_eq!(ScanOptions::new(".").threads, n);
+    }
 }

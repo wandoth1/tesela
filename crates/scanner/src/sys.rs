@@ -55,9 +55,17 @@ impl Drop for DirHandle {
 
 /// Abre un directorio (o un volumen raíz) en SOLO LECTURA: `access` es `FILE_LIST_DIRECTORY` o
 /// `FILE_READ_ATTRIBUTES`; se comparte con todos (lectura, escritura y borrado) para no estorbar a nadie, y se abre el
-/// propio reparse point en vez de seguirlo. Devuelve el código de error de Windows si falla.
-pub fn open_dir(path: &[u16], access: u32) -> Result<DirHandle, u32> {
+/// propio reparse point en vez de seguirlo (salvo con `follow_reparse`, solo para carpetas de la nube). Devuelve el
+/// código de error de Windows si falla.
+pub fn open_dir(path: &[u16], access: u32, follow_reparse: bool) -> Result<DirHandle, u32> {
     let p = with_nul(path);
+    // Un reparse point normal se abre a si mismo (no se sigue). Solo las carpetas de la nube (OneDrive...) se abren
+    // dejando actuar a su filtro, que es lo que permite listarlas.
+    let flags = if follow_reparse {
+        FILE_FLAG_BACKUP_SEMANTICS
+    } else {
+        FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT
+    };
     // SAFETY: `p` es una cadena UTF-16 terminada en NUL que vive durante la llamada; los demás argumentos son
     // constantes o punteros nulos permitidos por la API (sin atributos de seguridad ni plantilla).
     let h = unsafe {
@@ -67,7 +75,7 @@ pub fn open_dir(path: &[u16], access: u32) -> Result<DirHandle, u32> {
             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
             std::ptr::null(),
             OPEN_EXISTING,
-            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+            flags,
             std::ptr::null_mut(),
         )
     };
@@ -139,24 +147,35 @@ pub struct EntryInfo {
 /// daría el recorrido general: el tamaño propio de un directorio que da el listado de su padre puede diferir del que
 /// da `FileStandardInfo` sobre el directorio abierto, y sus `FileId` son los que se comparan al adoptar.
 pub fn find_entry(parent: &[u16], name: &[u16]) -> Result<Option<EntryInfo>, u32> {
-    let h = open_dir(parent, FILE_LIST_DIRECTORY)?;
+    let h = open_dir(parent, FILE_LIST_DIRECTORY, false)?;
     let mut buf = vec![0u64; BUF_BYTES / 8];
     let wanted = String::from_utf16_lossy(name).to_lowercase();
-    let mut found: Option<EntryInfo> = None;
+    let info = |e: &RawEntry| EntryInfo {
+        attrs: e.attrs,
+        logical: e.logical,
+        alloc: e.alloc.unwrap_or(0),
+        file_id: e.file_id,
+        reparse_tag: e.reparse_tag,
+        mtime_filetime: e.mtime_filetime,
+    };
+    // Una carpeta que distingue mayúsculas puede tener hermanos `Temp`, `temp` y `TEMP`: gana siempre la coincidencia
+    // EXACTA. La insensible solo vale como respaldo y solo si es única (con varias no se sabe cuál es).
+    let mut exact: Option<EntryInfo> = None;
+    let mut insensitive: Option<EntryInfo> = None;
+    let mut insensitive_count = 0u32;
     enum_dir_extd(&h, &mut buf, &mut |e| {
-        let exact = e.name == name;
-        if found.is_none() && (exact || String::from_utf16_lossy(e.name).to_lowercase() == wanted) {
-            found = Some(EntryInfo {
-                attrs: e.attrs,
-                logical: e.logical,
-                alloc: e.alloc.unwrap_or(0),
-                file_id: e.file_id,
-                reparse_tag: e.reparse_tag,
-                mtime_filetime: e.mtime_filetime,
-            });
+        if e.name == name {
+            exact = Some(info(e));
+        } else if String::from_utf16_lossy(e.name).to_lowercase() == wanted {
+            insensitive_count += 1;
+            insensitive = Some(info(e));
         }
     })?;
-    Ok(found)
+    Ok(exact.or(if insensitive_count == 1 {
+        insensitive
+    } else {
+        None
+    }))
 }
 
 /// Una entrada de directorio, independiente de la API que la leyó.
@@ -271,6 +290,16 @@ pub fn enum_dir_extd(
     }
 }
 
+/// Handle de búsqueda de `FindFirstFileExW`, cerrado al soltarlo (también si `emit` entra en pánico).
+struct FindHandle(HANDLE);
+
+impl Drop for FindHandle {
+    fn drop(&mut self) {
+        // SAFETY: `self.0` es el handle de búsqueda válido que devolvió `FindFirstFileExW`; solo se cierra aquí.
+        unsafe { FindClose(self.0) };
+    }
+}
+
 /// Respaldo: `FindFirstFileExW(FindExInfoBasic, LARGE_FETCH)`. No da `AllocationSize` ni `FileId`.
 pub fn enum_dir_find(path: &[u16], emit: &mut dyn FnMut(&RawEntry)) -> Result<(), u32> {
     let mut pat = Vec::with_capacity(path.len() + 3);
@@ -298,6 +327,7 @@ pub fn enum_dir_find(path: &[u16], emit: &mut dyn FnMut(&RawEntry)) -> Result<()
         // SAFETY: `GetLastError` no tiene precondiciones.
         return Err(unsafe { GetLastError() });
     }
+    let h = FindHandle(h);
     loop {
         let len = fd
             .cFileName
@@ -318,12 +348,10 @@ pub fn enum_dir_find(path: &[u16], emit: &mut dyn FnMut(&RawEntry)) -> Result<()
                     | fd.ftLastWriteTime.dwLowDateTime as i64,
             });
         }
-        // SAFETY: `h` es el handle de búsqueda válido que devolvió `FindFirstFileExW`; `fd` es escribible.
-        if unsafe { FindNextFileW(h, &mut fd) } == 0 {
+        // SAFETY: `h.0` es el handle de búsqueda válido que devolvió `FindFirstFileExW`; `fd` es escribible.
+        if unsafe { FindNextFileW(h.0, &mut fd) } == 0 {
             // SAFETY: `GetLastError` no tiene precondiciones.
             let e = unsafe { GetLastError() };
-            // SAFETY: `h` es válido y se cierra una única vez, justo aquí.
-            unsafe { FindClose(h) };
             return if e == ERROR_NO_MORE_FILES {
                 Ok(())
             } else {
@@ -391,7 +419,7 @@ mod tests {
     }
 
     fn collect_extd(path: &[u16]) -> BTreeMap<String, (u64, u64, u128, u32)> {
-        let h = open_dir(path, FILE_LIST_DIRECTORY).expect("abre");
+        let h = open_dir(path, FILE_LIST_DIRECTORY, false).expect("abre");
         let mut buf = vec![0u64; BUF_BYTES / 8];
         let mut out = BTreeMap::new();
         enum_dir_extd(&h, &mut buf, &mut |e| {
@@ -433,13 +461,16 @@ mod tests {
     fn open_dir_falla_con_un_codigo_si_no_existe() {
         let mut p = manifest_dir();
         p.extend(r"\no-existe-tesela".encode_utf16());
-        assert!(matches!(open_dir(&p, FILE_LIST_DIRECTORY), Err(2 | 3)));
+        assert!(matches!(
+            open_dir(&p, FILE_LIST_DIRECTORY, false),
+            Err(2 | 3)
+        ));
     }
 
     #[test]
     fn meta_del_directorio_coincide_con_su_listado() {
         let path = manifest_dir();
-        let h = open_dir(&path, FILE_READ_ATTRIBUTES).unwrap();
+        let h = open_dir(&path, FILE_READ_ATTRIBUTES, false).unwrap();
         let m = dir_meta(&h).unwrap();
         assert_ne!(m.file_id, 0);
         assert!(m.attrs & 0x10 != 0, "es un directorio");
@@ -448,7 +479,7 @@ mod tests {
         let listed = collect_extd(&path);
         let mut src = path.clone();
         src.extend(r"\src".encode_utf16());
-        let hs = open_dir(&src, FILE_READ_ATTRIBUTES).unwrap();
+        let hs = open_dir(&src, FILE_READ_ATTRIBUTES, false).unwrap();
         let ms = dir_meta(&hs).unwrap();
         assert_eq!(listed["src"].2, ms.file_id);
     }
@@ -478,7 +509,7 @@ mod tests {
         assert!(total > 0 && free <= total);
         let c = cluster_bytes(&path).unwrap();
         assert!(c.is_power_of_two() && c >= 512);
-        let h = open_dir(&path, FILE_READ_ATTRIBUTES).unwrap();
+        let h = open_dir(&path, FILE_READ_ATTRIBUTES, false).unwrap();
         assert!(!fs_name(&h).unwrap().is_empty());
     }
 

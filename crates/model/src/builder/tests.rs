@@ -1157,3 +1157,68 @@ fn los_acumuladores_saturan_en_vez_de_desbordar() {
     assert_eq!(tree.node(0).alloc, u64::MAX);
     assert_eq!(tree.hist(0).dominant_type(), Some(FileType::Video));
 }
+
+#[test]
+fn las_carpetas_de_la_nube_con_reparse_si_se_recorren() {
+    // Directorio con REPARSE|CLOUD (OneDrive): se recorre, cuenta como directorio y, si no llega su lote, es INCOMPLETE.
+    let cloud_dir = |name: &str, children: Vec<Item>| {
+        let mut d = Item::dir(name, children);
+        d.flags |= flags::REPARSE | flags::CLOUD;
+        d
+    };
+    let root = Item::dir(
+        "ROOT",
+        vec![
+            cloud_dir("nube", vec![Item::file("a.txt", 4096)]),
+            cloud_dir("nube-pendiente", vec![Item::file("b.txt", 4096)]),
+        ],
+    );
+    // `emit` solo entra en los directorios sin REPARSE: aquí hay que entregar los lotes de la nube a mano.
+    let mut b = TreeBuilder::new();
+    let mut r = Batch::detached(0);
+    r.push(
+        0,
+        b"ROOT",
+        EntryData {
+            flags: flags::DIR,
+            ..EntryData::default()
+        },
+    );
+    b.add_batch(r).unwrap();
+    let mut l = Batch::listing(0, 1);
+    for c in root.dir.as_ref().unwrap() {
+        l.push(
+            0,
+            &c.name,
+            EntryData {
+                flags: c.flags,
+                ..EntryData::default()
+            },
+        );
+    }
+    b.add_batch(l).unwrap();
+    let mut inner = Batch::listing(1, 10);
+    inner.push(
+        1,
+        b"a.txt",
+        EntryData {
+            alloc: 4096,
+            logical: 4096,
+            ..EntryData::default()
+        },
+    );
+    b.add_batch(inner).unwrap();
+    let t = b.finish(&FinishOptions::new(NOW));
+    let nube = t.child_by_name(0, b"nube").unwrap();
+    let pend = t.child_by_name(0, b"nube-pendiente").unwrap();
+    assert_eq!(t.node(nube).alloc, 4096, "su contenido cuenta");
+    assert_eq!(t.node(nube).flags & flags::INCOMPLETE, 0);
+    assert_eq!(t.node(pend).flags & flags::INCOMPLETE, flags::INCOMPLETE);
+    assert_eq!(
+        t.stats().reparse_dirs,
+        0,
+        "no son reparse points 'sin seguir'"
+    );
+    assert_eq!(t.stats().dirs, 3);
+    assert_eq!(t.stats().incomplete_dirs, 1);
+}

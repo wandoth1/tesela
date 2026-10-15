@@ -17,8 +17,8 @@ use tesela_model::{Batch, EntryData};
 
 /// Carpeta de primer nivel ya listada (la raíz se lista antes de resolver nada).
 pub(crate) struct RootChild {
-    /// Nombre en minúsculas, para comparar sin distinguir mayúsculas.
-    pub name_lower: String,
+    /// Nombre EXACTO tal como lo lista el disco (una carpeta que distingue mayúsculas puede tener `Temp` y `temp`).
+    pub name: OsString,
     pub id: u32,
     pub tag: u16,
 }
@@ -37,6 +37,20 @@ pub(crate) struct Resolved {
 
 fn lower(s: &std::ffi::OsStr) -> String {
     s.to_string_lossy().to_lowercase()
+}
+
+/// Carpeta de primer nivel `name`: la coincidencia EXACTA gana; la insensible a mayúsculas solo es un respaldo y
+/// solo vale si es única.
+fn find_root_child<'a>(children: &'a [RootChild], name: &OsString) -> Option<&'a RootChild> {
+    if let Some(c) = children.iter().find(|c| c.name == *name) {
+        return Some(c);
+    }
+    let lowered = lower(name);
+    let mut hits = children.iter().filter(|c| lower(&c.name) == lowered);
+    match (hits.next(), hits.next()) {
+        (Some(c), None) => Some(c),
+        _ => None,
+    }
 }
 
 /// (prefijo en minúsculas, componentes normales con su mayúscula original).
@@ -84,10 +98,8 @@ pub(crate) fn resolve(
         let (prefix, comps) = split(&canon);
         if prefix != root_prefix
             || comps.len() <= root_comps.len()
-            || !comps
-                .iter()
-                .zip(&root_comps)
-                .all(|(a, b)| lower(a) == lower(b))
+            // Ambas rutas son canónicas (mayúsculas reales del disco): la comparación es exacta.
+            || comps[..root_comps.len()] != root_comps[..]
         {
             continue;
         }
@@ -95,32 +107,27 @@ pub(crate) fn resolve(
         accepted.push((canon, rel));
     }
     // 2. Las más cercanas a la raíz primero; una ruta dentro de otra ya aceptada (o repetida) sobra.
-    accepted.sort_by_key(|(_, rel)| (rel.len(), rel.iter().map(|c| lower(c)).collect::<Vec<_>>()));
-    let key = |rel: &[OsString]| rel.iter().map(|c| lower(c)).collect::<Vec<_>>().join("\\");
-    let mut kept_keys: Vec<String> = Vec::new();
+    accepted.sort_by_key(|(_, rel)| (rel.len(), rel.clone()));
+    let key = |rel: &[OsString]| -> Vec<OsString> { rel.to_vec() };
+    let mut kept_keys: Vec<Vec<OsString>> = Vec::new();
     let mut out = Resolved::default();
     let mut planned: Vec<Planned> = Vec::new();
-    let mut by_key: HashMap<String, NodeRef> = HashMap::new();
+    let mut by_key: HashMap<Vec<OsString>, NodeRef> = HashMap::new();
     let mut ids_of_target: Vec<(NodeRef, u16, PathBuf)> = Vec::new();
 
     'cand: for (canon, rel) in accepted {
         let k = key(&rel);
-        if kept_keys
-            .iter()
-            .any(|a| k == *a || k.starts_with(&format!("{a}\\")))
-        {
+        // Igual o dentro de otra ya aceptada (comparación exacta: `Temp` y `temp` pueden ser carpetas distintas).
+        if kept_keys.iter().any(|a| k.starts_with(a)) {
             continue;
         }
         // Carpeta de primer nivel: ya existe.
-        let Some(c1) = root_children
-            .iter()
-            .find(|c| c.name_lower == lower(&rel[0]))
-        else {
+        let Some(c1) = find_root_child(root_children, &rel[0]) else {
             continue;
         };
         let tag = c1.tag;
         let mark = planned.len();
-        let mut added: Vec<String> = Vec::new();
+        let mut added: Vec<Vec<OsString>> = Vec::new();
         let mut parent = NodeRef::Existing(c1.id);
         let mut cur = root.join(&rel[0]);
         for (i, name) in rel.iter().enumerate().skip(1) {
@@ -217,6 +224,7 @@ pub(crate) fn resolve(
             tag,
             prio: idx as u16,
             claim: true,
+            cloud: false,
         });
         out.targets.push(canon);
     }

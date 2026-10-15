@@ -27,6 +27,12 @@ pub fn is_cloud(attrs: u32, reparse_tag: u32) -> bool {
     tag_is_cloud || attrs & (ATTR_RECALL_ON_OPEN | ATTR_RECALL_ON_DATA_ACCESS) != 0
 }
 
+/// ¿Es un reparse point de la nube (etiqueta `IO_REPARSE_TAG_CLOUD*`)? Estos directorios SÍ se recorren (su filtro
+/// permite listarlos); el resto de reparse points de directorio (junctions, symlinks, montajes) no se siguen.
+pub fn is_cloud_reparse(attrs: u32, reparse_tag: u32) -> bool {
+    is_reparse(attrs) && (reparse_tag & !0xF000) == 0x9000_001A
+}
+
 /// Flags de una entrada del listado.
 pub fn entry_flags(attrs: u32, reparse_tag: u32) -> u16 {
     let mut f = 0;
@@ -91,6 +97,20 @@ mod tests {
         // Otras etiquetas de reparse no son de la nube, y la etiqueta sin el atributo REPARSE se ignora.
         assert_eq!(entry_flags(0x20 | 0x400, 0x8000_0017), flags::REPARSE); // WOF
         assert_eq!(entry_flags(0x20, 0x9000_001A), 0);
+    }
+
+    #[test]
+    fn solo_los_reparse_de_la_nube_se_recorren() {
+        assert!(is_cloud_reparse(0x10 | 0x400, 0x9000_001A));
+        assert!(is_cloud_reparse(0x10 | 0x400, 0x9000_B01A));
+        assert!(!is_cloud_reparse(0x10 | 0x400, 0xA000_0003), "junction");
+        assert!(!is_cloud_reparse(0x10 | 0x400, 0xA000_000C), "symlink");
+        assert!(
+            !is_cloud_reparse(0x10, 0x9000_001A),
+            "sin el atributo REPARSE_POINT la etiqueta no vale"
+        );
+        // Un atributo de recuperación sin reparse es CLOUD pero no un reparse de la nube.
+        assert!(!is_cloud_reparse(0x10 | 0x0040_0000, 0));
     }
 
     #[test]

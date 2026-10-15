@@ -35,6 +35,8 @@ pub(crate) struct Task {
     /// Tarea inicial de una ruta prioritaria: hay que reclamarla antes de recorrerla (el recorrido general puede
     /// haber llegado antes y adoptado ya ese directorio).
     pub claim: bool,
+    /// Carpeta de la nube (reparse point con etiqueta de nube): se abre dejando actuar a su filtro.
+    pub cloud: bool,
 }
 
 /// Qué es un directorio cuyo `FileId` conocemos de antemano (cadena de ancestros de las rutas prioritarias).
@@ -77,6 +79,10 @@ pub(crate) struct Shared {
     pub store_ids: bool,
     /// Los ids provisionales se agotaron.
     pub id_overflow: AtomicBool,
+    /// Se descartaron subdirectorios pendientes por cancelación: el árbol queda incompleto aunque `pending` llegue a 0.
+    pub dropped: AtomicBool,
+    /// Un hilo trabajador entró en pánico.
+    pub panicked: AtomicBool,
 }
 
 impl Shared {
@@ -101,6 +107,8 @@ impl Shared {
             cluster,
             store_ids,
             id_overflow: AtomicBool::new(false),
+            dropped: AtomicBool::new(false),
+            panicked: AtomicBool::new(false),
         }
     }
 
@@ -151,6 +159,8 @@ pub(crate) struct WorkerState {
     pub children: Vec<Task>,
     /// Solo se rellena al procesar la raíz: nombres de las carpetas de primer nivel (índice = etiqueta - 1).
     pub top_names: Vec<OsString>,
+    /// Había más carpetas de primer nivel que `MAX_TOP_NAMES`: las sobrantes comparten la última etiqueta.
+    pub top_overflow: bool,
     pub errors: BTreeMap<u32, u64>,
     pub error_samples: Vec<(u32, Vec<u16>)>,
 }
@@ -163,6 +173,7 @@ impl WorkerState {
             names: Vec::new(),
             children: Vec::new(),
             top_names: Vec::new(),
+            top_overflow: false,
             errors: BTreeMap::new(),
             error_samples: Vec::new(),
         }
@@ -173,6 +184,21 @@ impl WorkerState {
         if self.error_samples.len() < 10 {
             self.error_samples.push((code, path.to_vec()));
         }
+    }
+}
+
+/// Carpetas de primer nivel con acumulador propio. Las etiquetas son `u16`: de más carpetas, las sobrantes comparten
+/// una última etiqueta ("otras") en vez de dar la vuelta y atribuirse a otra carpeta.
+pub(crate) const MAX_TOP_NAMES: usize = 65_000;
+
+/// Etiqueta de la carpeta de primer nivel `name` (índice + 1; 0 es "archivos de la raíz").
+fn top_tag(names: &mut Vec<OsString>, overflow: &mut bool, cap: usize, name: &[u16]) -> u16 {
+    if names.len() < cap {
+        names.push(OsString::from_wide(name));
+        names.len() as u16
+    } else {
+        *overflow = true;
+        (cap + 1) as u16
     }
 }
 
@@ -210,7 +236,13 @@ fn stage(entries: &mut Vec<Staged>, names: &mut Vec<u16>, cluster: u64, e: &RawE
 }
 
 /// Lista un directorio y deja las entradas en `entries`/`names`. Devuelve el código de error de Windows si falla.
-fn list_dir(sh: &Shared, path: &[u16], is_root: bool, st: &mut WorkerState) -> Result<(), u32> {
+fn list_dir(
+    sh: &Shared,
+    path: &[u16],
+    cloud: bool,
+    is_root: bool,
+    st: &mut WorkerState,
+) -> Result<(), u32> {
     let WorkerState {
         buf,
         entries,
@@ -221,7 +253,7 @@ fn list_dir(sh: &Shared, path: &[u16], is_root: bool, st: &mut WorkerState) -> R
     names.clear();
     let cluster = sh.cluster;
     if !sh.find_mode.load(Ordering::Relaxed) {
-        let h: DirHandle = sys::open_dir(path, FILE_LIST_DIRECTORY)?;
+        let h: DirHandle = sys::open_dir(path, FILE_LIST_DIRECTORY, cloud)?;
         match sys::enum_dir_extd(&h, buf, &mut |e| stage(entries, names, cluster, e)) {
             Ok(()) => return Ok(()),
             Err(code) if UNSUPPORTED_CODES.contains(&code) => {
@@ -253,7 +285,7 @@ pub(crate) fn process_dir(
     st: &mut WorkerState,
 ) -> Result<DirStats, u32> {
     st.children.clear();
-    if let Err(code) = list_dir(sh, &task.path, is_root, st) {
+    if let Err(code) = list_dir(sh, &task.path, task.cloud, is_root, st) {
         if !is_root {
             st.note_error(code, &task.path);
             sh.progress.errors.fetch_add(1, Ordering::Relaxed);
@@ -271,13 +303,16 @@ pub(crate) fn process_dir(
         names,
         children,
         top_names,
+        top_overflow,
         ..
     } = st;
     for e in entries.iter() {
         let name = &names[e.name_off as usize..e.name_off as usize + e.name_len as usize];
-        let mut fl = classify::entry_flags(e.attrs, e.reparse_tag);
+        let fl = classify::entry_flags(e.attrs, e.reparse_tag);
         let is_dir = fl & flags::DIR != 0;
-        if is_dir && fl & flags::REPARSE != 0 {
+        // Las carpetas de la nube (OneDrive...) son reparse points pero SÍ se recorren: su filtro permite listarlas.
+        let cloud_dir = is_dir && classify::is_cloud_reparse(e.attrs, e.reparse_tag);
+        if is_dir && fl & flags::REPARSE != 0 && !cloud_dir {
             // Junction, symlink o punto de montaje de directorio: no se sigue y mide 0.
             batch.push_utf16(
                 task.id,
@@ -307,15 +342,13 @@ pub(crate) fn process_dir(
             stats.alloc += e.alloc;
             continue;
         }
-        // Directorio real.
-        fl &= !flags::REPARSE;
+        // Directorio real (o de la nube).
         stats.dirs += 1;
         stats.alloc += e.alloc;
         let child_path = join(&task.path, name);
         let adopted = adopt.and_then(|m| (e.file_id != 0).then(|| m.get(&e.file_id)).flatten());
         let child_tag = if is_root {
-            top_names.push(OsString::from_wide(name));
-            top_names.len() as u16
+            top_tag(top_names, top_overflow, MAX_TOP_NAMES, name)
         } else {
             task.tag
         };
@@ -341,6 +374,7 @@ pub(crate) fn process_dir(
                     tag: child_tag,
                     prio: task.prio,
                     claim: false,
+                    cloud: cloud_dir,
                 });
             }
             Some(a) => {
@@ -354,6 +388,7 @@ pub(crate) fn process_dir(
                             tag: a.tag,
                             prio: NO_PRIO,
                             claim: false,
+                            cloud: false,
                         });
                     }
                     AdoptKind::Target(idx) => {
@@ -369,6 +404,7 @@ pub(crate) fn process_dir(
                                 tag: a.tag,
                                 prio: idx,
                                 claim: false,
+                                cloud: false,
                             });
                         }
                     }
@@ -478,6 +514,43 @@ pub(crate) struct WorkerOut {
     pub error_samples: Vec<(u32, Vec<u16>)>,
 }
 
+/// Espera de un hilo sin trabajo: primero gira, luego cede el turno y por último duerme con una pausa que crece
+/// (de 50 µs a 3,2 ms) para no consumir CPU mientras otros hilos terminan directorios grandes.
+#[derive(Default)]
+struct Backoff {
+    step: u32,
+}
+
+impl Backoff {
+    fn reset(&mut self) {
+        self.step = 0;
+    }
+
+    fn wait(&mut self) {
+        self.step = self.step.saturating_add(1);
+        match self.step {
+            1..=32 => std::hint::spin_loop(),
+            33..=256 => std::thread::yield_now(),
+            s => {
+                let exp = (s - 256).min(6);
+                std::thread::sleep(std::time::Duration::from_micros(50 << exp));
+            }
+        }
+    }
+}
+
+/// Al soltarse durante un pánico (unwind) cancela el escaneo.
+struct PanicGuard<'a>(&'a Shared);
+
+impl Drop for PanicGuard<'_> {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            self.0.panicked.store(true, Ordering::SeqCst);
+            self.0.cancel.store(true, Ordering::SeqCst);
+        }
+    }
+}
+
 /// Bucle de un hilo de escaneo.
 pub(crate) fn worker_loop(
     sh: &Shared,
@@ -486,15 +559,18 @@ pub(crate) fn worker_loop(
     stealers: &[Stealer<Task>],
     me: usize,
 ) -> WorkerOut {
+    // Si este hilo entra en pánico, cancela el escaneo para que los demás salgan y el coordinador no se cuelgue
+    // esperando una tarea que nadie va a terminar.
+    let _guard = PanicGuard(sh);
     let mut st = WorkerState::new();
-    let mut idle = 0u32;
+    let mut backoff = Backoff::default();
     loop {
         if sh.cancel.load(Ordering::Relaxed) {
             break;
         }
         match next_task(sh, &local, stealers, me) {
             Some(task) => {
-                idle = 0;
+                backoff.reset();
                 if task.claim && sh.target_claimed(task.prio).swap(true, Ordering::AcqRel) {
                     // El recorrido general llegó antes a esta carpeta y la está escaneando él.
                     finish_task(sh, &task);
@@ -502,7 +578,12 @@ pub(crate) fn worker_loop(
                 }
                 if let Ok(stats) = process_dir(sh, &tx, &task, false, &mut st) {
                     account(sh, &task, &stats);
-                    if !sh.cancel.load(Ordering::Relaxed) {
+                    if sh.cancel.load(Ordering::Relaxed) {
+                        // Se descartan subdirectorios: aunque `pending` llegue a 0, el árbol queda incompleto.
+                        if !st.children.is_empty() {
+                            sh.dropped.store(true, Ordering::SeqCst);
+                        }
+                    } else {
                         push_children(sh, &local, &mut st.children);
                     }
                 }
@@ -512,19 +593,92 @@ pub(crate) fn worker_loop(
                 if sh.pending.load(Ordering::SeqCst) == 0 {
                     break;
                 }
-                idle += 1;
-                if idle < 64 {
-                    std::hint::spin_loop();
-                } else if idle < 2048 {
-                    std::thread::yield_now();
-                } else {
-                    std::thread::sleep(std::time::Duration::from_micros(100));
-                }
+                backoff.wait();
             }
         }
     }
     WorkerOut {
         errors: st.errors,
         error_samples: st.error_samples,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn shared() -> Shared {
+        Shared::new(
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Progress::default()),
+            4096,
+            true,
+        )
+    }
+
+    fn w(s: &str) -> Vec<u16> {
+        s.encode_utf16().collect()
+    }
+
+    #[test]
+    fn las_etiquetas_de_primer_nivel_no_dan_la_vuelta_al_pasar_del_tope() {
+        let (mut names, mut overflow) = (Vec::new(), false);
+        let tags: Vec<u16> = ["a", "b", "c", "d", "e"]
+            .iter()
+            .map(|n| top_tag(&mut names, &mut overflow, 3, &w(n)))
+            .collect();
+        assert_eq!(
+            tags,
+            [1, 2, 3, 4, 4],
+            "las sobrantes comparten la etiqueta cap + 1"
+        );
+        assert!(overflow);
+        assert_eq!(names.len(), 3);
+        // Con el tope real, la etiqueta más alta cabe en u16 sin envolver.
+        assert!(MAX_TOP_NAMES < u16::MAX as usize);
+    }
+
+    #[test]
+    fn agotar_los_ids_cancela_el_escaneo_y_lo_marca() {
+        let sh = shared();
+        assert_eq!(sh.reserve_ids(5), 0);
+        assert!(!sh.id_overflow.load(Ordering::SeqCst));
+        sh.ids.store(u32::MAX - 5, Ordering::SeqCst);
+        sh.reserve_ids(10);
+        assert!(sh.id_overflow.load(Ordering::SeqCst));
+        assert!(sh.cancel.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn un_panico_en_un_hilo_cancela_para_que_los_demas_salgan() {
+        let sh = shared();
+        let r = std::thread::scope(|s| {
+            s.spawn(|| {
+                let _guard = PanicGuard(&sh);
+                panic!("pánico provocado por el test");
+            })
+            .join()
+        });
+        assert!(r.is_err());
+        assert!(sh.panicked.load(Ordering::SeqCst));
+        assert!(sh.cancel.load(Ordering::SeqCst));
+        // Sin pánico, soltar la guarda no cancela nada.
+        let sh = shared();
+        drop(PanicGuard(&sh));
+        assert!(!sh.cancel.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn la_espera_crece_hasta_un_tope_y_se_reinicia_al_encontrar_trabajo() {
+        let mut b = Backoff::default();
+        for _ in 0..300 {
+            b.wait();
+        }
+        assert_eq!(b.step, 300);
+        let t = std::time::Instant::now();
+        b.wait(); // ya en la fase de sueño: 50 µs << 6 como mucho
+        assert!(t.elapsed() < std::time::Duration::from_millis(500));
+        b.reset();
+        assert_eq!(b.step, 0);
     }
 }

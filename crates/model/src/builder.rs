@@ -212,7 +212,9 @@ impl TreeBuilder {
                 continue;
             }
             let id = id as u32;
-            if r.flags & flags::DIR != 0 && r.flags & flags::REPARSE == 0 && !enumerated.get(id) {
+            // Los reparse points de directorio no se recorren (no son INCOMPLETE), salvo los de la nube, que sí.
+            let followed = r.flags & flags::REPARSE == 0 || r.flags & flags::CLOUD != 0;
+            if r.flags & flags::DIR != 0 && followed && !enumerated.get(id) {
                 r.flags |= flags::INCOMPLETE;
             }
             if failed.get(id) {
@@ -299,7 +301,7 @@ impl TreeBuilder {
                     *d = d.saturating_add(s);
                 }
                 dst.files = dst.files.saturating_add(child.files);
-                if r.flags & flags::REPARSE != 0 {
+                if r.flags & flags::REPARSE != 0 && r.flags & flags::CLOUD == 0 {
                     stats.reparse_dirs += 1;
                 } else {
                     stats.dirs += 1;

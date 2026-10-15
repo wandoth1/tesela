@@ -42,7 +42,7 @@ const USAGE: &str = "uso: tesela-scan <ruta> [--threads N] [--top N] [--json arc
 fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut a = Args {
         root: PathBuf::new(),
-        threads: tesela_scanner::DEFAULT_THREADS,
+        threads: tesela_scanner::default_threads(),
         top: 20,
         json: None,
         no_priority: false,
@@ -113,6 +113,7 @@ fn flag_names(f: u16) -> Vec<&'static str> {
         (flags::CLOUD, "cloud"),
         (flags::HARDLINK, "hardlink"),
         (flags::INCOMPLETE, "incomplete"),
+        (flags::INCOMPLETE_BELOW, "incomplete_below"),
         (flags::SYSTEM_INFO, "system_info"),
         (flags::ERROR, "error"),
     ]
@@ -277,7 +278,8 @@ fn report(args: &Args, r: &ScanResult, mem: Option<(u64, u64, u64)>) {
             } else {
                 tree.name_lossy(id).into_owned()
             };
-            let inc = if n.flags & flags::INCOMPLETE != 0 {
+            // "≥": el directorio o algo de lo que contiene no se llegó a recorrer entero.
+            let inc = if n.flags & (flags::INCOMPLETE | flags::INCOMPLETE_BELOW) != 0 {
                 " ≥"
             } else {
                 ""
