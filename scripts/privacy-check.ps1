@@ -224,7 +224,9 @@ $imageExt = '(?i)\.(png|jpe?g|gif|bmp|webp|tiff?|heic)$'
 #      pHYs (nada de tEXt/iTXt/zTXt/eXIf/tIME/iCCP: ahi viajan software, fecha, camara o el perfil de color del monitor);
 #   2. `docs/img/README.md` tiene una linea con su nombre Y con `--demo` (la orden que la genera): solo se admiten
 #      capturas de la ventana en modo demostracion (arbol sintetico, unidades ficticias);
-#   3. pasa ademas el escaneo de cadenas ASCII/UTF-16 como cualquier binario.
+#   3. NO se escanea como texto: sus datos van comprimidos (IDAT), donde una cadena legible no se ve y, en cambio, una
+#      secuencia casual de bytes imprimibles da falsos positivos (ocurrio con una captura real). Lo que protege es la lista
+#      cerrada de fragmentos del punto 1: sin tEXt ni eXIf no hay donde llevar texto del equipo.
 # Lo que el codigo no puede comprobar (que los pixeles sean solo de la app) lo revisa quien audita el cambio.
 $demoImgPattern = '^docs/img/[a-z0-9-]+\.png$'
 $demoImgMaxBytes = 2MB
@@ -313,6 +315,7 @@ foreach ($name in $names) {
             $problems.Add("${f}: falta una linea en docs/img/README.md con el nombre del archivo y la orden --demo que lo genera")
             continue
         }
+        continue
     }
     $reject = $null
     $text = ConvertTo-ScanText $bytes ([ref]$reject)

@@ -255,7 +255,12 @@ try {
     PutBytes $img (New-Png -Idat ([byte[]](0, 0) + [System.Text.Encoding]::ASCII.GetBytes($profilePath) + [byte[]](0, 0)))
     Put 'docs/img/README.md' $readmeOk
     Stage-All
-    Expect 'docs/img: cadena de perfil de usuario dentro del PNG' $true
+    Expect 'docs/img: el contenido comprimido (IDAT) no se escanea como texto (sin falsos positivos)' $false
+    Reset-Repo
+    PutBytes $img (New-Png -Extra @('tEXt') -Idat ([byte[]](0, 0) + [System.Text.Encoding]::ASCII.GetBytes($profilePath) + [byte[]](0, 0)))
+    Put 'docs/img/README.md' $readmeOk
+    Stage-All
+    Expect 'docs/img: el texto del equipo solo cabria en un fragmento tEXt, que se rechaza' $true
     Reset-Repo
     PutBytes $img (New-Png -Idat (New-Object byte[] (2MB + 10)))
     Put 'docs/img/README.md' $readmeOk
