@@ -9,7 +9,7 @@ use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use windows_sys::Win32::Foundation::{FALSE, TRUE};
 use windows_sys::Win32::Storage::FileSystem::{
-    GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW,
+    GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW,
 };
 use windows_sys::Win32::System::Com::{
     COINIT_APARTMENTTHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize,
@@ -47,10 +47,14 @@ pub struct DriveInfo {
     /// Etiqueta del volumen (vacía si no tiene).
     pub label: String,
     pub kind: DriveKind,
-    /// Bytes totales.
+    /// Capacidad del VOLUMEN en bytes (no la cuota del usuario).
     pub total: u64,
-    /// Bytes libres.
+    /// Bytes libres en el VOLUMEN entero. `total - free` es lo usado: el anillo de uso y el "espacio no explicado"
+    /// usan solo estas dos (mismo ámbito).
     pub free: u64,
+    /// Bytes disponibles para el usuario (ámbito usuario): menor que `free` si hay una cuota de disco. Solo se
+    /// enseña como nota aparte en la tarjeta; nunca se resta de `total`.
+    pub available: u64,
 }
 
 impl DriveInfo {
@@ -153,12 +157,11 @@ fn query_drive(letter: char, kind: DriveKind) -> Option<DriveInfo> {
     // SAFETY: `old` es un `u32` escribible; el modo de error es por hilo y se restaura al terminar.
     let changed = unsafe { SetThreadErrorMode(SEM_FAILCRITICALERRORS, &mut old) } != FALSE;
     let root = wide(&format!("{letter}:\\"));
-    let (mut free_caller, mut total, mut free) = (0u64, 0u64, 0u64);
-    // SAFETY: `root` termina en NUL y los tres punteros son escribibles.
-    let ok = unsafe { GetDiskFreeSpaceExW(root.as_ptr(), &mut free_caller, &mut total, &mut free) };
-    let info = if ok == FALSE || total == 0 {
-        None
-    } else {
+    // Capacidad y libre del volumen, y disponible para el usuario, por separado (ver `tesela_scanner::VolumeSpace`).
+    let space = tesela_scanner::volume_space(Path::new(&format!("{letter}:\\")))
+        .ok()
+        .filter(|v| v.total > 0);
+    let info = if let Some(space) = space {
         let mut name = [0u16; 261];
         // SAFETY: `root` termina en NUL; `name` tiene la longitud indicada; el resto de salidas son opcionales (nulas).
         let got = unsafe {
@@ -183,9 +186,12 @@ fn query_drive(letter: char, kind: DriveKind) -> Option<DriveInfo> {
             letter,
             label,
             kind,
-            total,
-            free,
+            total: space.total,
+            free: space.free,
+            available: space.available,
         })
+    } else {
+        None
     };
     if changed {
         // SAFETY: restaura el valor que devolvió la llamada anterior en este mismo hilo.
@@ -454,8 +460,15 @@ mod tests {
             kind: DriveKind::Fixed,
             total: 1000,
             free: 250,
+            available: 250,
         };
         assert_eq!(d.used_percent(), 75);
+        // La cuota no cambia el porcentaje usado del volumen.
+        let q = DriveInfo {
+            available: 10,
+            ..d.clone()
+        };
+        assert_eq!(q.used_percent(), 75);
         let z = DriveInfo { total: 0, ..d };
         assert_eq!(z.used_percent(), 0);
     }

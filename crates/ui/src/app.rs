@@ -301,6 +301,12 @@ impl TeselaUi {
         }
     }
 
+    /// Sustituye las unidades que enseña el inicio (para los tests).
+    #[cfg(test)]
+    pub(crate) fn set_drives(&mut self, drives: Vec<DriveInfo>) {
+        self.drives = drives;
+    }
+
     /// La exploración, mutable (para los tests).
     #[allow(dead_code)]
     pub(crate) fn explore_mut(&mut self) -> Option<&mut Explore> {

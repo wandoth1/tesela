@@ -41,6 +41,7 @@ home-no-drives = No se ha encontrado ninguna unidad. Puedes analizar una carpeta
 drive-used = { $pct } % usado
 drive-used-word = usado
 drive-free-of = { $free } libres de { $total }
+drive-quota = Disponible para tu cuenta (cuota): { $avail }
 drive-almost-full = Casi lleno
 drive-local-disk = Disco local
 drive-removable-disk = Disco extraíble

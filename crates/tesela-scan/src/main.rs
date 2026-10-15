@@ -232,6 +232,13 @@ fn report(out: &mut dyn Write, args: &Args, r: &ScanResult, mem: Option<(u64, u6
                 gib(v.total),
                 gib(v.free)
             );
+            if v.quota_limited() {
+                outln!(
+                    out,
+                    "Cuota de disco: disponible para tu usuario {} (menos que lo libre del volumen; el espacio no explicado usa solo magnitudes del volumen)",
+                    gib(v.available)
+                );
+            }
             if s.full_volume && !s.cancelled {
                 let pct = if used > 0 {
                     st.unexplained_alloc as f64 * 100.0 / used as f64
@@ -391,7 +398,7 @@ fn json_doc(args: &Args, r: &ScanResult) -> String {
             "groups": st.hardlink_groups, "extra_entries": st.hardlink_extra_entries,
             "alloc_saved": st.hardlink_alloc_saved, "logical_saved": st.hardlink_logical_saved,
         },
-        "volume": s.volume.map(|v| json!({"total": v.total, "free": v.free})),
+        "volume": s.volume.map(|v| json!({"total": v.total, "free": v.free, "available": v.available})),
         "errors_by_code": s.errors_by_code,
         "ids_exhausted": s.ids_exhausted,
         "top": top,

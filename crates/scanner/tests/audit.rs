@@ -63,10 +63,7 @@ fn el_espacio_no_explicado_se_calcula_de_punta_a_punta_con_un_volumen_inyectado(
     t.write("b/c.bin", 20_000);
     let mut o = opts(&t);
     o.priority_paths = Some(vec![]);
-    o.volume_override = Some(VolumeSpace {
-        total: 10 << 30,
-        free: 4 << 30,
-    });
+    o.volume_override = Some(VolumeSpace::new(10 << 30, 4 << 30));
     let r = scan(o.clone()).unwrap();
     r.tree.check_invariants().unwrap();
     assert!(r.summary.full_volume && !r.summary.cancelled);
@@ -81,11 +78,17 @@ fn el_espacio_no_explicado_se_calcula_de_punta_a_punta_con_un_volumen_inyectado(
     );
     assert_eq!(r.tree.node(last).alloc, used - st.scanned_alloc);
     assert_eq!(r.tree.node(0).alloc, used);
+    // Con cuota de disco, lo disponible para el usuario no entra en el cálculo (es de otro ámbito): sale lo mismo.
+    let mut quota = VolumeSpace::new(10 << 30, 4 << 30);
+    quota.available = 1 << 30;
+    assert!(quota.quota_limited() && quota.used() == used);
+    let mut oq = o.clone();
+    oq.volume_override = Some(quota);
+    let rq = scan(oq).unwrap();
+    assert_eq!(rq.tree.stats().unexplained_alloc, used - st.scanned_alloc);
+    assert_eq!(rq.summary.volume, Some(quota));
     // Si lo usado es menor que lo escaneado se recorta a 0 y no hay nodo.
-    o.volume_override = Some(VolumeSpace {
-        total: 10 << 30,
-        free: (10 << 30) - 100,
-    });
+    o.volume_override = Some(VolumeSpace::new(10 << 30, (10 << 30) - 100));
     let r = scan(o).unwrap();
     assert_eq!(r.tree.stats().unexplained_alloc, 0);
     assert!(
@@ -118,10 +121,7 @@ fn cancelar_con_cualquier_retardo_nunca_deja_espacio_no_explicado_sobre_un_arbol
         for _ in 0..4 {
             let mut o = opts(&t);
             o.priority_paths = Some(vec![]);
-            o.volume_override = Some(VolumeSpace {
-                total: 10 << 30,
-                free: 4 << 30,
-            });
+            o.volume_override = Some(VolumeSpace::new(10 << 30, 4 << 30));
             let h = tesela_scanner::start(o).unwrap();
             std::thread::sleep(std::time::Duration::from_micros(delay_us));
             h.cancel();

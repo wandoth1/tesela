@@ -116,6 +116,13 @@ discos reales ni resultados de escaneos (los ejemplos, capturas y fixtures son s
   atrasado. Su tamaño propio es 0 en el listado del padre (el espacio real que ocupa el directorio va al bloque de datos del
   sistema, es decir, al "espacio no explicado").
 
+- **Espacio del volumen y cuotas de disco:** se distinguen tres magnitudes de ámbitos distintos (`NtQueryVolumeInformationFile`
+  con `FileFsFullSizeInformation`; `GetDiskFreeSpaceExW` mezcla la cuota del usuario con el libre del volumen y solo es el
+  respaldo cuando no hay cuota): la **capacidad** y el **libre del volumen**, y lo **disponible para el usuario** (menor si hay una cuota).
+  La interfaz enseña el anillo de uso, "X libres de Y" y el "espacio no explicado" SOLO con las dos del volumen
+  (`total - libre - escaneado`); si hay cuota añade una línea aparte "Disponible para tu cuenta (cuota)". Si no se puede
+  conocer la capacidad real del volumen (cuota y consulta no soportada), no se calcula el espacio no explicado.
+
 ### Licencias de terceros
 
 - **Dependencias de Rust:** [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) lista cada componente que se compila en el `.exe` con el texto de su licencia. Se genera con [`cargo about`](https://github.com/EmbarkStudios/cargo-about) y la configuración de `about.toml` y `about.hbs`; no se edita a mano. Para regenerarlo tras cambiar dependencias: `cargo install cargo-about --locked --features cli` (una vez) y `cargo about generate --locked -o THIRD-PARTY-NOTICES.md about.hbs`. El archivo va **incrustado en el ejecutable** y se puede leer desde la propia aplicación: Ajustes, "Acerca de Tesela", "Avisos de terceros".

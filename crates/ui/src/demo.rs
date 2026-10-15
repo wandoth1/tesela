@@ -36,6 +36,7 @@ pub fn drives() -> Vec<DriveInfo> {
             kind: DriveKind::Fixed,
             total: 476 * GIB,
             free: 38 * GIB,
+            available: 38 * GIB,
         },
         DriveInfo {
             letter: 'E',
@@ -43,6 +44,7 @@ pub fn drives() -> Vec<DriveInfo> {
             kind: DriveKind::Fixed,
             total: 932 * GIB,
             free: 722 * GIB,
+            available: 722 * GIB,
         },
         DriveInfo {
             letter: 'F',
@@ -50,6 +52,7 @@ pub fn drives() -> Vec<DriveInfo> {
             kind: DriveKind::Removable,
             total: 64 * GIB,
             free: 52 * GIB,
+            available: 52 * GIB,
         },
     ]
 }

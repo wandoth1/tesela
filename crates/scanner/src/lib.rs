@@ -131,13 +131,56 @@ pub enum ApiUsed {
     Mixed,
 }
 
-/// Espacio del volumen de la ruta escaneada.
+/// Espacio del volumen de la ruta escaneada, en tres magnitudes de ÁMBITOS distintos (no se mezclan):
+/// capacidad y libre del VOLUMEN, y disponible para el USUARIO (cuota de disco). El "espacio no explicado" usa solo las
+/// dos del volumen (`total - free`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VolumeSpace {
-    /// Bytes totales.
+    /// Capacidad del volumen en bytes (ámbito volumen, no la cuota del usuario).
     pub total: u64,
-    /// Bytes libres (`lpTotalNumberOfFreeBytes`).
+    /// Bytes libres en el volumen entero (ámbito volumen).
     pub free: u64,
+    /// Bytes disponibles para el usuario que escanea (ámbito usuario): menor que `free` si hay una cuota de disco.
+    pub available: u64,
+}
+
+impl VolumeSpace {
+    /// Un volumen sin cuota: lo disponible para el usuario es todo lo libre.
+    pub fn new(total: u64, free: u64) -> VolumeSpace {
+        VolumeSpace {
+            total,
+            free,
+            available: free,
+        }
+    }
+
+    /// ¿Limita una cuota de disco lo que el usuario puede usar (menos disponible para él que libre en el volumen)?
+    pub fn quota_limited(&self) -> bool {
+        self.available < self.free
+    }
+
+    /// Usado en el volumen (`total - free`), el único valor comparable con lo escaneado.
+    pub fn used(&self) -> u64 {
+        self.total.saturating_sub(self.free)
+    }
+}
+
+impl From<sys::VolumeSizes> for VolumeSpace {
+    fn from(v: sys::VolumeSizes) -> VolumeSpace {
+        VolumeSpace {
+            total: v.total,
+            free: v.free,
+            available: v.available,
+        }
+    }
+}
+
+/// Espacio del volumen que contiene `path` (capacidad y libre del volumen, y disponible para el usuario). SOLO LECTURA.
+/// Puede bloquearse con unidades de red o medios que no responden: llamar desde un hilo con plazo.
+pub fn volume_space(path: &Path) -> Result<VolumeSpace, std::io::Error> {
+    sys::volume_space(&sys::wide(path))
+        .map(VolumeSpace::from)
+        .map_err(io_err)
 }
 
 /// Resultado de una ruta prioritaria.
@@ -504,11 +547,7 @@ fn run(ctx: Ctx) -> ScanResult {
     let cancel_flag = cancel.load(Ordering::SeqCst);
     let unfinished = sh.pending.load(Ordering::SeqCst) != 0 || sh.dropped.load(Ordering::SeqCst);
     let mut cancelled = ids_exhausted || (cancel_flag && unfinished);
-    let volume = volume_override.or_else(|| {
-        sys::volume_space(&root_w)
-            .ok()
-            .map(|(total, free)| VolumeSpace { total, free })
-    });
+    let volume = volume_override.or_else(|| sys::volume_space(&root_w).ok().map(VolumeSpace::from));
     let mut fo = FinishOptions::new(now_unix);
     fo.dedup_hard_links = dedup;
     if full_volume && volume_gap && !cancelled && build_err.is_none() {

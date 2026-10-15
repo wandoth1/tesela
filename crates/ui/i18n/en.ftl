@@ -40,6 +40,7 @@ home-no-drives = No drives found. You can analyze a folder.
 drive-used = { $pct }% used
 drive-used-word = used
 drive-free-of = { $free } free of { $total }
+drive-quota = Available to your account (quota): { $avail }
 drive-almost-full = Almost full
 drive-local-disk = Local disk
 drive-removable-disk = Removable disk

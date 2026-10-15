@@ -8,9 +8,12 @@ use std::ffi::c_void;
 use std::mem::{offset_of, size_of};
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
+use windows_sys::Wdk::Storage::FileSystem::{
+    FileFsFullSizeInformation, NtQueryVolumeInformationFile,
+};
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_INVALID_DATA, ERROR_NO_MORE_FILES, GetLastError, HANDLE,
-    INVALID_HANDLE_VALUE,
+    CloseHandle, ERROR_INVALID_DATA, ERROR_NO_MORE_FILES, ERROR_NOT_SUPPORTED, GetLastError,
+    HANDLE, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, FILE_BASIC_INFO,
@@ -21,6 +24,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     FindFirstFileExW, FindNextFileW, GetDiskFreeSpaceExW, GetDiskFreeSpaceW,
     GetFileInformationByHandleEx, GetVolumeInformationByHandleW, OPEN_EXISTING, WIN32_FIND_DATAW,
 };
+use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 
 pub use windows_sys::Win32::Storage::FileSystem::{FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES};
 
@@ -396,17 +400,121 @@ pub fn enum_dir_find(path: &[u16], emit: &mut dyn FnMut(&RawEntry)) -> Result<()
     }
 }
 
-/// Espacio de un volumen: `(total, libre)` en bytes (`lpTotalNumberOfFreeBytes`, no el libre del usuario con cuota).
-pub fn volume_space(path: &[u16]) -> Result<(u64, u64), u32> {
+/// Espacio de un volumen en TRES magnitudes de ámbitos distintos que no se pueden mezclar:
+///
+/// * `total`: la CAPACIDAD del volumen (ámbito volumen).
+/// * `free`: el espacio libre del VOLUMEN entero (ámbito volumen). `total - free` es lo usado en el volumen, y es lo único
+///   con lo que se puede comparar lo escaneado para el "espacio no explicado".
+/// * `available`: lo disponible para el USUARIO que escanea (ámbito usuario): menor que `free` si hay una cuota de disco.
+///
+/// `GetDiskFreeSpaceExW` mezcla ámbitos (`lpTotalNumberOfBytes` y `lpFreeBytesAvailableToCaller` respetan la cuota,
+/// `lpTotalNumberOfFreeBytes` es del volumen), así que aquí se usa `FileFsFullSizeInformation`, que da las tres por
+/// separado. Si esa consulta no está soportada, solo se recurre a `GetDiskFreeSpaceExW` cuando no hay ninguna cuota que
+/// lo estropee (caller libre == libre del volumen); con cuota no hay forma fiable de saber la capacidad del volumen y se
+/// devuelve un error (el escaneo sigue sin "espacio no explicado").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VolumeSizes {
+    pub total: u64,
+    pub free: u64,
+    pub available: u64,
+}
+
+/// `FILE_FS_FULL_SIZE_INFORMATION` (WDK `ntddk.h`): unidades de asignación del volumen.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct FsFullSize {
+    total_units: i64,
+    caller_available_units: i64,
+    actual_available_units: i64,
+    sectors_per_unit: u32,
+    bytes_per_sector: u32,
+}
+
+impl FsFullSize {
+    fn sizes(&self) -> Option<VolumeSizes> {
+        let unit = (self.sectors_per_unit as u128) * (self.bytes_per_sector as u128);
+        if unit == 0 || self.total_units <= 0 {
+            return None;
+        }
+        let bytes =
+            |units: i64| -> u64 { ((units.max(0) as u128) * unit).min(u64::MAX as u128) as u64 };
+        let total = bytes(self.total_units);
+        let free = bytes(self.actual_available_units).min(total);
+        let available = bytes(self.caller_available_units).min(free);
+        Some(VolumeSizes {
+            total,
+            free,
+            available,
+        })
+    }
+}
+
+/// `NtQueryVolumeInformationFile(FileFsFullSizeInformation)` sobre el handle. Devuelve el NTSTATUS si falla.
+fn nt_full_size(h: &DirHandle) -> Result<VolumeSizes, i32> {
+    let mut info = FsFullSize::default();
+    // SAFETY: `IO_STATUS_BLOCK` es un POD (un puntero/entero y un usize): todo-ceros es válido.
+    let mut iosb: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
+    // SAFETY: `h.0` es un handle de archivo válido; `iosb` y `info` son escribibles y `info` mide exactamente lo que se
+    // indica (la estructura es `repr(C)` con el diseño de FILE_FS_FULL_SIZE_INFORMATION: 3 × i64 y 2 × u32).
+    let status = unsafe {
+        NtQueryVolumeInformationFile(
+            h.0,
+            &mut iosb,
+            &mut info as *mut FsFullSize as *mut c_void,
+            size_of::<FsFullSize>() as u32,
+            FileFsFullSizeInformation,
+        )
+    };
+    if status < 0 {
+        return Err(status);
+    }
+    info.sizes().ok_or(-1)
+}
+
+/// `GetDiskFreeSpaceExW`: (disponible para el usuario, total según la cuota, libre del volumen).
+fn ex_space(path: &[u16]) -> Result<(u64, u64, u64), u32> {
     let p = with_nul(path);
     let (mut avail, mut total, mut free) = (0u64, 0u64, 0u64);
-    // SAFETY: `p` termina en NUL y los tres punteros apuntan a variables locales escribibles.
+    // SAFETY: `p` termina en NUL y los tres punteros apuntan a variables locales escritables.
     let ok = unsafe { GetDiskFreeSpaceExW(p.as_ptr(), &mut avail, &mut total, &mut free) };
     if ok == 0 {
         // SAFETY: `GetLastError` no tiene precondiciones.
         return Err(unsafe { GetLastError() });
     }
-    Ok((total, free))
+    Ok((avail, total, free))
+}
+
+/// Espacio del volumen que contiene `path` (ver [`VolumeSizes`]).
+pub fn volume_space(path: &[u16]) -> Result<VolumeSizes, u32> {
+    volume_space_with(
+        path,
+        |p| {
+            let h = open_dir(p, FILE_READ_ATTRIBUTES, false)?;
+            nt_full_size(&h).map_err(|_| ERROR_NOT_SUPPORTED)
+        },
+        ex_space,
+    )
+}
+
+/// Igual que [`volume_space`] con las dos consultas inyectables (los tests simulan cuotas y fallos).
+fn volume_space_with(
+    path: &[u16],
+    full: impl FnOnce(&[u16]) -> Result<VolumeSizes, u32>,
+    ex: impl FnOnce(&[u16]) -> Result<(u64, u64, u64), u32>,
+) -> Result<VolumeSizes, u32> {
+    if let Ok(v) = full(path) {
+        return Ok(v);
+    }
+    let (avail, total, free) = ex(path)?;
+    if total == 0 || avail != free {
+        // Con cuota (o con valores incoherentes) `total` puede ser el de la cuota y no el del volumen: no se mezclan.
+        return Err(ERROR_NOT_SUPPORTED);
+    }
+    Ok(VolumeSizes {
+        total,
+        free: free.min(total),
+        available: avail.min(total),
+    })
 }
 
 /// Bytes por cluster del volumen que contiene `path` (para estimar `alloc` cuando solo hay `FindFirstFileExW`).
@@ -540,8 +648,8 @@ mod tests {
     #[test]
     fn espacio_de_volumen_cluster_y_sistema_de_archivos() {
         let path = manifest_dir();
-        let (total, free) = volume_space(&path).unwrap();
-        assert!(total > 0 && free <= total);
+        let v = volume_space(&path).unwrap();
+        assert!(v.total > 0 && v.free <= v.total && v.available <= v.free);
         let c = cluster_bytes(&path).unwrap();
         assert!(c.is_power_of_two() && c >= 512);
         let h = open_dir(&path, FILE_READ_ATTRIBUTES, false).unwrap();
@@ -590,5 +698,92 @@ mod tests {
         let t: FILE_ATTRIBUTE_TAG_INFO = query_info(&h, FileAttributeTagInfo).unwrap();
         assert_eq!(t.ReparseTag, 0);
         assert_eq!(dir_meta(&h).unwrap().reparse_tag, 0);
+    }
+
+    #[test]
+    fn la_consulta_real_de_nt_da_las_tres_magnitudes_coherentes() {
+        let path = manifest_dir();
+        let h = open_dir(&path, FILE_READ_ATTRIBUTES, false).unwrap();
+        let v = nt_full_size(&h).expect("FileFsFullSizeInformation");
+        assert!(v.total > 0);
+        assert!(v.available <= v.free && v.free <= v.total, "{v:?}");
+        // Es la misma que da `volume_space`.
+        let w = volume_space(&path).unwrap();
+        assert_eq!(w.total, v.total);
+    }
+
+    #[test]
+    fn con_cuota_la_capacidad_y_lo_libre_siguen_siendo_del_volumen() {
+        // 1000 unidades de 512 B en el volumen; el usuario solo puede usar 100 (cuota); 400 libres de verdad.
+        let info = FsFullSize {
+            total_units: 1000,
+            caller_available_units: 100,
+            actual_available_units: 400,
+            sectors_per_unit: 1,
+            bytes_per_sector: 512,
+        };
+        let v = info.sizes().unwrap();
+        assert_eq!(v.total, 512_000);
+        assert_eq!(v.free, 204_800);
+        assert_eq!(v.available, 51_200);
+        // Usado del volumen = total - libre del volumen (no total - disponible del usuario).
+        assert_eq!(v.total - v.free, 307_200);
+        // Magnitudes absurdas (cuota mayor que lo libre) se recortan: available <= free <= total.
+        let odd = FsFullSize {
+            caller_available_units: 900,
+            ..info
+        };
+        let o = odd.sizes().unwrap();
+        assert!(o.available <= o.free && o.free <= o.total);
+        // Unidad de tamaño 0 o volumen vacío: sin datos.
+        assert!(FsFullSize::default().sizes().is_none());
+        assert!(
+            FsFullSize {
+                bytes_per_sector: 0,
+                ..info
+            }
+            .sizes()
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn si_nt_falla_solo_se_usa_ex_cuando_no_hay_cuota_y_nunca_se_mezclan_ambitos() {
+        let path = manifest_dir();
+        let nt_falla = |_: &[u16]| Err(ERROR_NOT_SUPPORTED);
+        // Sin cuota: lo disponible para el usuario es igual a lo libre del volumen: se puede usar.
+        let v = volume_space_with(&path, nt_falla, |_| Ok((400, 1000, 400))).unwrap();
+        assert_eq!(
+            v,
+            VolumeSizes {
+                total: 1000,
+                free: 400,
+                available: 400
+            }
+        );
+        // Con cuota (disponible != libre del volumen): el total podría ser el de la cuota. No se inventa nada.
+        assert_eq!(
+            volume_space_with(&path, nt_falla, |_| Ok((100, 1000, 400))),
+            Err(ERROR_NOT_SUPPORTED)
+        );
+        // Total 0 o error de Ex: error.
+        assert!(volume_space_with(&path, nt_falla, |_| Ok((0, 0, 0))).is_err());
+        assert_eq!(volume_space_with(&path, nt_falla, |_| Err(5)), Err(5));
+        // Con Nt bien, Ex ni se consulta.
+        let ok = VolumeSizes {
+            total: 10,
+            free: 4,
+            available: 1,
+        };
+        assert_eq!(
+            volume_space_with(&path, |_| Ok(ok), |_| panic!("no hace falta")).unwrap(),
+            ok
+        );
+    }
+
+    #[test]
+    fn ex_space_real_da_valores_coherentes() {
+        let (avail, total, free) = ex_space(&manifest_dir()).unwrap();
+        assert!(total > 0 && avail <= free.max(total));
     }
 }

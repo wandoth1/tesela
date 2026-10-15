@@ -368,7 +368,7 @@ mod catalog_tests {
             for id in &es {
                 assert!(tr.has(id), "{lang:?}: {id}");
                 let all = crate::args![
-                    "name" => "x", "files" => "x", "size" => "x", "total" => "x", "time" => "x", "pct" => "x", "free" => "x",
+                    "name" => "x", "files" => "x", "size" => "x", "total" => "x", "time" => "x", "pct" => "x", "free" => "x", "avail" => "x",
                     "used" => "x", "ago" => "x", "explained" => "x", "done" => 1u64, "n" => 2u64, "count" => "2",
                     "parent" => "x", "error" => "x", "type" => "x", "label" => "x", "v" => "x"
                 ];

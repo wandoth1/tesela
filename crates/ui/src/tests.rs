@@ -1622,3 +1622,28 @@ fn con_una_ventana_modal_abierta_el_teclado_no_navega_por_debajo() {
     h.run_steps(3);
     assert!(h.query_by_label_contains("Versión ").is_none());
 }
+
+#[test]
+fn con_cuota_de_disco_la_tarjeta_distingue_lo_libre_del_volumen_de_lo_disponible_para_el_usuario() {
+    for (lang, quota_label, free_label) in [
+        (
+            LangPref::Es,
+            "Disponible para tu cuenta (cuota)",
+            "libres de",
+        ),
+        (LangPref::En, "Available to your account (quota)", "free of"),
+    ] {
+        let mut o = opts(StartScreen::Home);
+        o.settings.language = lang;
+        let mut h = harness(o);
+        // Sin cuota (la demostración): lo disponible es lo libre y no hay nota.
+        assert!(h.query_by_label_contains(quota_label).is_none());
+        let mut drives = crate::demo::drives();
+        drives[0].available = drives[0].free / 4;
+        h.state_mut().ui_mut().set_drives(drives);
+        h.run_steps(3);
+        // La nota sale (solo en la unidad con cuota) y lo libre del volumen se sigue mostrando entero.
+        assert_eq!(h.query_all_by_label_contains(quota_label).count(), 1);
+        assert!(h.query_all_by_label_contains(free_label).count() >= 3);
+    }
+}

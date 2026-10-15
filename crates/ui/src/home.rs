@@ -164,6 +164,17 @@ fn card(ui: &mut Ui, env: &mut Env, d: &DriveInfo) {
                 ))
                 .color(pal.text_muted),
             );
+            // Con una cuota de disco, lo que el usuario puede usar es menos que lo libre del volumen: nota aparte.
+            if d.available < d.free {
+                ui.label(
+                    RichText::new(
+                        env.tr
+                            .ta("drive-quota", args!["avail" => env.tr.size(d.available)]),
+                    )
+                    .size(12.0)
+                    .color(pal.text_muted),
+                );
+            }
             ui.add_space(2.0);
             if almost_full {
                 widgets::chip(
