@@ -99,28 +99,68 @@ fn env_path(name: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// Rutas conocidas candidatas (sin comprobar que existan ni que cuelguen de la ruta escaneada):
+/// Qué es una ruta conocida (para que la interfaz la nombre).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum KnownKind {
+    /// `%TEMP%` del usuario.
+    UserTemp,
+    /// `Windows\Temp`.
+    WindowsTemp,
+    ChromeCache,
+    EdgeCache,
+    FirefoxCache,
+    /// La carpeta Descargas.
+    Downloads,
+    /// La carpeta de la Papelera del usuario en el volumen.
+    RecycleBin,
+}
+
+/// Rutas conocidas candidatas, con su clase (sin comprobar que existan ni que cuelguen de la ruta escaneada):
 /// `%TEMP%`, `Windows\Temp`, los perfiles de Chrome, Edge y Firefox, Descargas y la carpeta de la Papelera del
 /// usuario actual en el volumen `drive_root` (`C:\`). Esa carpeta solo se LISTA, como todo el escaneo.
-pub fn known_paths(drive_root: Option<&Path>) -> Vec<PathBuf> {
+pub fn known_paths_labeled(drive_root: Option<&Path>) -> Vec<(KnownKind, PathBuf)> {
     let mut v = Vec::new();
     for var in ["TEMP", "TMP"] {
-        v.extend(env_path(var));
+        v.extend(env_path(var).map(|p| (KnownKind::UserTemp, p)));
     }
-    v.extend(env_path("SystemRoot").map(|p| p.join("Temp")));
+    v.extend(env_path("SystemRoot").map(|p| (KnownKind::WindowsTemp, p.join("Temp"))));
     if let Some(local) = env_path("LOCALAPPDATA") {
-        v.push(local.join(r"Google\Chrome\User Data"));
-        v.push(local.join(r"Microsoft\Edge\User Data"));
-        v.push(local.join(r"Mozilla\Firefox\Profiles"));
+        v.push((
+            KnownKind::ChromeCache,
+            local.join(r"Google\Chrome\User Data"),
+        ));
+        v.push((
+            KnownKind::EdgeCache,
+            local.join(r"Microsoft\Edge\User Data"),
+        ));
+        v.push((
+            KnownKind::FirefoxCache,
+            local.join(r"Mozilla\Firefox\Profiles"),
+        ));
     }
     if let Some(roaming) = env_path("APPDATA") {
-        v.push(roaming.join(r"Mozilla\Firefox\Profiles"));
+        v.push((
+            KnownKind::FirefoxCache,
+            roaming.join(r"Mozilla\Firefox\Profiles"),
+        ));
     }
-    v.extend(downloads_dir().or_else(|| env_path("USERPROFILE").map(|p| p.join("Downloads"))));
+    v.extend(
+        downloads_dir()
+            .or_else(|| env_path("USERPROFILE").map(|p| p.join("Downloads")))
+            .map(|p| (KnownKind::Downloads, p)),
+    );
     if let (Some(root), Some(sid)) = (drive_root, current_user_sid()) {
-        v.push(root.join(r"$Recycle.Bin").join(sid));
+        v.push((KnownKind::RecycleBin, root.join(r"$Recycle.Bin").join(sid)));
     }
     v
+}
+
+/// Las mismas rutas sin su clase (lo que usa el escáner para la cola prioritaria).
+pub fn known_paths(drive_root: Option<&Path>) -> Vec<PathBuf> {
+    known_paths_labeled(drive_root)
+        .into_iter()
+        .map(|(_, p)| p)
+        .collect()
 }
 
 #[cfg(test)]
@@ -165,5 +205,35 @@ mod tests {
                 .any(|p| p.ends_with(r"Google\Chrome\User Data"))
                 || std::env::var_os("LOCALAPPDATA").is_none()
         );
+    }
+
+    #[test]
+    fn cada_ruta_conocida_lleva_su_clase() {
+        let labeled = known_paths_labeled(Some(Path::new(r"C:\")));
+        // Mismo contenido y orden que `known_paths`.
+        let plain: Vec<PathBuf> = labeled.iter().map(|(_, p)| p.clone()).collect();
+        assert_eq!(plain, known_paths(Some(Path::new(r"C:\"))));
+        let kind_of = |suffix: &str| {
+            labeled
+                .iter()
+                .find(|(_, p)| p.ends_with(suffix))
+                .map(|(k, _)| *k)
+        };
+        assert_eq!(
+            kind_of(r"Google\Chrome\User Data"),
+            Some(KnownKind::ChromeCache)
+        );
+        assert_eq!(
+            kind_of(r"Microsoft\Edge\User Data"),
+            Some(KnownKind::EdgeCache)
+        );
+        assert_eq!(
+            kind_of(r"Mozilla\Firefox\Profiles"),
+            Some(KnownKind::FirefoxCache)
+        );
+        assert!(labeled.iter().any(|(k, _)| *k == KnownKind::Downloads));
+        assert!(labeled.iter().any(|(k, _)| *k == KnownKind::RecycleBin));
+        assert!(labeled.iter().any(|(k, _)| *k == KnownKind::UserTemp));
+        assert!(labeled.iter().any(|(k, _)| *k == KnownKind::WindowsTemp));
     }
 }

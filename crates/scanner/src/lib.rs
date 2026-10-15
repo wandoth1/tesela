@@ -24,7 +24,7 @@ mod progress;
 mod sys;
 mod walker;
 
-pub use known::{current_user_sid, downloads_dir, known_paths};
+pub use known::{KnownKind, current_user_sid, downloads_dir, known_paths, known_paths_labeled};
 pub use progress::{PriorityTarget, Progress, TopLevel};
 
 use crossbeam_deque::{Stealer, Worker};
