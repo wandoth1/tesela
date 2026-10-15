@@ -204,9 +204,9 @@ walker ─┐                         ┌─ agrega bottom-up (alloc, logical, f
         ├─► registros planos ─►  TreeBuilder ─┤─ dedup hard links por FileId
 MFT ────┘   (Batch por dir)       └─ ordena hijos por tamaño ─► asigna ids finales en BFS ─► Arc<Tree> (CSR)
 ```
-- **Registro plano:** `parent: u32`, `name_off: u32`, `name_len: u16`, `flags: u16`, `alloc: u64`, `logical: u64`, `mtime: u32` (32 B). El walker añade un `file_id: u64` (40 B; en ReFS son 128 bits).
+- **Registro plano:** `parent: u32`, `name_off: u32`, `name_len: u16`, `flags: u16`, `alloc: u64`, `logical: u64`, `mtime: u32` (32 B, campos reordenados para alinear). El `FileId` (u128, por ReFS) va aparte, en el `Batch`, y solo vive durante la construcción.
 - **Orden:** se ordena **una sola vez** en el builder, después de agregar. Como los ids finales se asignan después de ordenar, no hace falta remapear `parent`.
-- **Hard links:** se deduplican **siempre** por FileId en todo el volumen NTFS/ReFS, en el builder, de forma determinista. Se ordena un `Vec<(file_id, idx)>`. Dentro de cada grupo de colisión conserva el tamaño **el enlace con la ruta completa menor en orden lexicográfico**; reconstruir rutas sale barato porque solo se hace con las colisiones. No vale el índice plano, que depende de cómo se repartan los hilos y haría bailar los totales entre ejecuciones. Los demás enlaces se quedan con `alloc = 0` y el flag `HARDLINK`. Coste: +8 B por entrada y un sort despreciable frente al escaneo (medido). En la fase 0, sin dedup se contaba de más un porcentaje pequeño del volumen y una fracción considerable de `C:\Windows`. En FAT/exFAT no aplica. Dentro de una subcarpeta solo se deduplica lo que se ha escaneado.
+- **Hard links:** se deduplican **siempre** por FileId en todo el volumen NTFS/ReFS, en el builder, de forma determinista. Se ordena un `Vec<(file_id, idx)>`. Dentro de cada grupo de colisión conserva el tamaño **el enlace con la ruta completa menor en orden lexicográfico**; reconstruir rutas sale barato porque solo se hace con las colisiones. No vale el índice plano, que depende de cómo se repartan los hilos y haría bailar los totales entre ejecuciones. Los demás enlaces se quedan con `alloc = logical = 0` y el flag `HARDLINK`. El dedup se hace **después del BFS**, solo entre entradas alcanzadas (un huérfano nunca le gana a un enlace real). Coste: +8 B por entrada y un sort despreciable frente al escaneo (medido). En la fase 0, sin dedup se contaba de más un porcentaje pequeño del volumen y una fracción considerable de `C:\Windows`. En FAT/exFAT no aplica. Dentro de una subcarpeta solo se deduplica lo que se ha escaneado.
 
 ### 3.3 Walker
 - Pools dedicados para escaneo, borrado y hashing, para que no compitan entre sí.
@@ -217,13 +217,17 @@ MFT ────┘   (Batch por dir)       └─ ordena hijos por tamaño ─�
 - **Cola prioritaria:** un `Injector` que los workers consultan antes de robar trabajo. Contiene `%TEMP%`, `Windows\Temp`, perfiles de navegador, `$Recycle.Bin\<SID>` y Descargas.
   - Sus ids se reservan de antemano, **junto con la cadena de ancestros** (p. ej. `C:\Users\<usuario>\AppData\Local`), creada como nodos `INCOMPLETE`. Así "Parar y ver" nunca enseña huérfanos.
   - Cuando el recorrido general llega a uno de esos directorios, **adopta** el id existente en vez de volver a escanearlo. La comparación se hace **por `FileId`** del directorio y no por la ruta en minúsculas, porque NTFS admite carpetas que distinguen mayúsculas.
-- **Hilos:** se ajustan midiendo el rendimiento real; `IncursSeekPenalty` es solo una pista. Observación de la fase 0 (un solo equipo de pruebas con SSD, una ejecución por valor): la mejora se satura pronto y es de varias veces frente a 1 hilo. HDD, USB y red siguen sin medir.
+- **Hilos:** por defecto `min(16, 2 × núcleos)`; los ociosos esperan con backoff creciente. Se ajustan midiendo el rendimiento real; `IncursSeekPenalty` es solo una pista. Observación de la fase 0 (un solo equipo de pruebas con SSD, una ejecución por valor): la mejora se satura pronto y es de varias veces frente a 1 hilo. HDD, USB y red siguen sin medir.
 - **Reparse points:** no se siguen (tamaño 0 y un flag).
-- **OneDrive:** se usa `AllocationSize` y el flag "en la nube".
+- **Carpetas de la nube (OneDrive y similares):** si están **pobladas** se recorren (se abren dejando actuar al filtro de la nube; medido en el inc. 1: sin tráfico de red ni hidratación). Si **no están pobladas** (`RECALL_ON_OPEN` / `RECALL_ON_DATA_ACCESS`) no se recorren: cuentan su `AllocationSize` y quedan `CLOUD|INCOMPLETE`, para no provocar descargas.
+- **Modo de respaldo (`FindFirstFileExW`):** sin `FileId`, así que no hay dedup ni cola prioritaria; `alloc` de archivos estimado (EOF redondeado al clúster) y de directorios 0. Los hard links se cuentan N veces y el hueco puede recortarse a 0: la UI marca ese escaneo como **"aproximado"**.
+- **Datos de directorio del listado del padre:** el `mtime` puede ir atrasado ~1 s justo tras escribir (no sirve para un reescaneo incremental) y el tamaño propio del directorio sale 0 (va al bloque de datos del sistema).
+- **Mayúsculas:** la cola prioritaria y la búsqueda de entradas comparan nombres exactos; la comparación insensible solo es respaldo si es única.
 - **Rutas largas:** `\\?\` + `longPathAware` desde el primer commit. Los nombres se guardan en WTF-8.
 - Cancelación con un `AtomicBool`. Los errores de permiso se cuentan sin abortar.
 - **Progreso en vivo:** contadores atómicos más acumuladores atómicos por carpeta de primer nivel.
-- **"Parar y ver":** el builder trabaja con los batches recibidos y marca `INCOMPLETE` los directorios que aún tenían tareas pendientes.
+- **"Parar y ver":** el builder trabaja con los batches recibidos y marca `INCOMPLETE` los directorios que aún tenían tareas pendientes, e `INCOMPLETE_BELOW` en todos sus ancestros (para el "≥" de la UI). Si hay directorios incompletos el escaneo cuenta como detenido y **no se calcula el bloque de espacio no explicado**.
+- Un pánico en un hilo activa la cancelación (no se cuelga el coordinador); agotar los ids cancela y se informa.
 
 ### 3.4 MFT (v0.3)
 - `ntfs-reader::MftScan` en streaming → registros planos → el mismo `TreeBuilder`.
@@ -239,18 +243,18 @@ MFT ────┘   (Batch por dir)       └─ ordena hijos por tamaño ─�
 struct Node {            // 40 B; hijos contiguos y ordenados por tamaño (lo garantiza el TreeBuilder)
     alloc: u64, logical: u64,
     parent: u32, first_child: u32, child_count: u32,
-    name_off: u32, name_len: u16, flags: u16,   // DIR, REPARSE, CLOUD, HARDLINK, INCOMPLETE, SYSTEM_INFO, ERROR…
+    name_off: u32, name_len: u16, flags: u16,   // DIR, REPARSE, CLOUD, HARDLINK, INCOMPLETE, INCOMPLETE_BELOW, SYSTEM_INFO, ERROR…
     files_below: u32,
 }
 // Columnas laterales (todos los nodos, indexadas por id; los ids BFS mezclan carpetas y archivos):
 //   mtime: Vec<u32>
-//   hist:  Vec<Hist { type_pct: [u8; 7], age_pct: [u8; 5] }>  (12 B; en archivos va vacío)
+//   hist:  Vec<Hist { type_pct: [u8; 7], age_pct: [u8; 5], dominant_type: u8, dominant_age: u8 }>  (14 B)
 ```
-- Los umbrales (>50 % de tipo dominante, 80 % de antigüedad) se calculan **sobre los acumuladores `u64`** en el builder y se guardan como resultado. Los `u8` solo se usan para dibujar y para el tooltip.
+- Los umbrales se calculan **sobre los acumuladores `u64`** (con suma saturada) en el builder y se guardan en `dominant_type` / `dominant_age`. Tipo dominante: estrictamente > 50 % de los bytes. Antigüedad: el tramo más antiguo tal que ≥ 80 % de los bytes están en él o en uno más antiguo; un resultado "reciente" puede significar también "mixto". Un `mtime` desconocido (0) no cuenta para la antigüedad. Pesos = `alloc` tras el dedup. Los `u8` solo se usan para dibujar y para el tooltip.
 - La tabla extensión → tipo es un TOML embebido.
 - **RAM**, estimación que se valida en la fase 0:
-  - En régimen: unos 76 B por entrada (40 del nodo, 4 de mtime, 12 de histogramas y ~20 de nombre), es decir ~76 MB por millón.
-  - Pico durante la construcción: ~100 B por entrada (~100 MB por millón, ~1 GB con 10 M).
+  - En régimen: unos 78 B por entrada (40 del nodo, 4 de mtime, 14 de histogramas y el nombre), medido en el inc. 1; más con nombres largos.
+  - Pico durante la construcción: **≈ 2× el régimen** (registros planos + temporales + árbol final coexisten); depende de la longitud de los nombres.
   - La UI añade unos 65–70 MiB de private working set (medido con wgpu DX12 y el mapa dibujado).
   - **Métrica de memoria:** siempre **private working set** (la columna "Memoria" del Administrador de tareas). El working set total incluye DLL compartidas del driver y da 82–174 MiB con cualquier backend.
 
@@ -289,7 +293,8 @@ struct Node {            // 40 B; hijos contiguos y ordenados por tamaño (lo ga
 `eframe/egui 0.36.2` · `windows 0.62.2` / `windows-sys 0.61.2` (con `windows-core` 0.100 por separado; tolerar duplicados en `cargo-deny`) · `crossbeam-deque 0.8.8` · `crossbeam-channel 0.5.17` · `arc-swap 1.9.2` · `rayon 1.12` · `trash 5.2.9` · `xxhash-rust 0.8.19` · `blake3 1.8.7` · `rustc-hash 2.1.3` · `thiserror 2.0.21` · `dunce 1.0.5` · `embed-manifest 1.5.1` · `rfd 0.17.2` · `serde` + `toml` · `fluent-bundle` · `criterion 0.8.2` · (v0.3) `ntfs-reader 0.6.0` · (v1.0) `usn-journal-rs 0.5.0`.
 
 ### 3.11 Calidad y distribución
-- **CI** en `windows-latest`: `fmt --check`, `clippy -D warnings`, `nextest`, `cargo deny`, build release x64 y cross-compile a ARM64.
+- **CI** en `windows-latest` (acciones fijadas por SHA, `timeout-minutes`, Dependabot): `fmt --check`, `clippy -D warnings`, `cargo test`, `cargo deny` (también semanal), MSRV 1.95, `cargo check` ARM64, build release y **job de privacidad** (`scripts/privacy-check.ps1 -All -GenericOnly` y sus pruebas). En local, hooks `pre-commit` y `commit-msg` con el mismo check y valores locales.
+- **Todo binario publicado se compila con `scripts/build-release.ps1`** (`--remap-path-prefix`), que además verifica que el `.exe` no contiene rutas ni nombres de la máquina.
 - **Tests:**
   - El builder (agregación, orden, dedup de hard links, histogramas y umbrales), el layout y las reglas, todo puro.
   - Árboles sintéticos con semilla.
@@ -309,7 +314,7 @@ Referencia de diseño: un SSD con un volumen de ~1 M de archivos. La memoria se 
 | Fase | Contenido | Hito medible |
 |---|---|---|
 | **0. Spike ✅** | Hecho: ver [fase-0-conclusiones.md](fase-0-conclusiones.md). Backend wgpu DX12 + `Mesh`; API `FileIdExtdDirectoryInfo`; POSIX descartado; Mica descartado; destino de las carpetas de desarrollo diferido a la v0.2 | Cerrado (ronda 4, §9) |
-| **1. MVP v0.1** | Walker + cola prioritaria + TreeBuilder (con dedup de hard links), inicio, pantalla de escaneo con veredicto, treemap (`Mesh` cacheado) + lista + detalles, bloque del sistema, cesta por destino, borrado definitivo + Papelera, protección, Temp/cachés/Papelera/pagefile/hiberfil, resumen, historial de resúmenes, es/en, claro/oscuro. **Entregable: instalador MSI por usuario** + zip portable, generados en CI | 1 M de archivos en < 30 s en caliente; veredicto de rutas conocidas en < 5 s; private working set ≤ 75 MiB en reposo con el mapa dibujado y < 150 MiB en régimen con 1 M de archivos; p99 de CPU por frame < 8 ms con hover; **0 borrados fuera del conjunto permitido** en los tests; el MSI instala, actualiza y desinstala sin administrador |
+| **1. MVP v0.1** | ✅ Inc. 1 (modelo + escáner + CLI `tesela-scan` + CI). Pendiente: inc. 2 interfaz, inc. 3 limpieza, inc. 4 MSI. Walker + cola prioritaria + TreeBuilder (con dedup de hard links), inicio, pantalla de escaneo con veredicto, treemap (`Mesh` cacheado) + lista + detalles, bloque del sistema, cesta por destino, borrado definitivo + Papelera, protección, Temp/cachés/Papelera/pagefile/hiberfil, resumen, historial de resúmenes, es/en, claro/oscuro. **Entregable: instalador MSI por usuario** + zip portable, generados en CI | 1 M de archivos en < 30 s en caliente; veredicto de rutas conocidas en < 5 s; private working set ≤ 75 MiB en reposo con el mapa dibujado y < 150 MiB en régimen con 1 M de archivos; p99 de CPU por frame < 8 ms con hover; **0 borrados fuera del conjunto permitido** en los tests; el MSI instala, actualiza y desinstala sin administrador |
 | **2. v0.2** | Carpetas de desarrollo (con la decisión de destino y "renombrar primero", §2.6), descargas e instaladores viejos, archivos grandes, colorear por antigüedad y riesgo, filtros, Deshacer + `Ctrl+Z`, historial visible, atajos, flechas en el treemap | Relayout de 20k rectángulos < 5 ms |
 | **3. v0.3** | MFT + "Reiniciar como administrador" (con la cesta persistida) + test diferencial | 1 M < 3 s; 10 M < 30 s; totales iguales al walker salvo metadatos NTFS y carpetas denegadas |
 | **4. v1.0** | Duplicados, WinSxS / puntos de restauración, helper elevado, USN incremental, Excluir + exclusiones persistentes, exportar CSV/HTML, menú contextual del Explorador (HKCU), winget, ARM64 publicado, fuzzing, auditoría con lector de pantalla | Reescaneo incremental < 2 s; exe ≲ 16 MB (wgpu DX12 ya ocupa ≈ 10,5 MB); paquetes firmados |
@@ -354,7 +359,7 @@ Pendientes (las tres primeras las hace el usuario):
 - [ ] Marcas registradas del nombre "Tesela" sin revisar.
 
 ## 7. Siguiente paso
-**MVP v0.1** con el flujo de trabajo del proyecto: lo construye un agente Sonnet (esfuerzo alto), lo audita otro Sonnet (muy alto) y después se hace la revisión final con el asesor. Se empieza por el workspace del producto (§3.1), `model` + `scanner` + `TreeBuilder` con sus tests, y el pipeline de CI que genera el MSI.
+**Incremento 2 del MVP: `layout` + interfaz** (sin borrado), con el mismo flujo: construye un Sonnet (alto), audita otro Sonnet (muy alto) y revisión final con el asesor. Capturas y ejemplos, siempre con datos sintéticos.
 
 ## 8. Fuera del alcance (explícito)
 Limpiador de registro, "optimizar" o desfragmentar, desinstalar programas, análisis de red o nube en v1, cuentas, telemetría o anuncios, sunburst o 3D, triturado o recuperación, editor o gestor de archivos completo, reglas automáticas sin intervención del usuario.
@@ -395,6 +400,16 @@ Limpiador de registro, "optimizar" o desfragmentar, desinstalar programas, anál
    - `$Recycle.Bin`, `Default` y `Public` denegadas.
    - El titular suma solo lo Seguro.
    - El MVP borra con `remove_file` y deja POSIX para la v0.2.
+
+**Ronda 5** (incremento 1 del MVP: construcción Sonnet, 2 auditorías Sonnet, revisión con el asesor):
+- `Hist` de 14 B con `dominant_type` / `dominant_age`; regla del 80 % precisada; `mtime` 0 fuera de la antigüedad.
+- Memoria: régimen ~78 B por entrada; pico ≈ 2× el régimen.
+- `Record` de 32 B con el `FileId` aparte; dedup tras el BFS y también con `logical = 0`.
+- Respaldo `FindFirstFileExW`: sin dedup ni cola prioritaria, escaneo "aproximado".
+- `INCOMPLETE_BELOW`; sin bloque de espacio no explicado si hay directorios incompletos.
+- Carpetas de la nube: pobladas se recorren, no pobladas se cuentan sin entrar.
+- Hilos `min(16, 2 × núcleos)`; `cargo test` en vez de nextest; binarios publicados solo con `build-release.ps1`.
+- Privacidad: `privacy-check.ps1` con hooks `pre-commit` y `commit-msg`, lista negra local en `<git-common-dir>/privacy-denylist`, pruebas propias y job de CI.
 
 **Ronda 4** (resultados de la fase 0: construcción Sonnet, auditoría Sonnet, revisión final con el asesor):
 - **UI:** wgpu solo DX12, treemap como `Mesh` cacheado (objetivo p99 < 8 ms), fondo sólido (sin Mica).
