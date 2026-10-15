@@ -4,7 +4,7 @@ La fase 0 midió con binarios de prueba (`spike/`) las hipótesis técnicas del 
 
 > **Privacidad.** Los datos brutos de las mediciones (JSON, CSV y capturas) **no se publican**, porque describen el equipo donde se tomaron. Aquí solo hay resultados a nivel de la aplicación (tamaño del ejecutable, memoria del proceso, coste por frame) y comparaciones relativas. Para reproducir las mediciones en tu equipo, ver [spike/README.md](../spike/README.md); los resultados se quedan en `spike/results/`, que está en `.gitignore`.
 
-Todas las mediciones se hicieron en Windows 11, sin permisos de administrador, en un único equipo de pruebas. Son orientativas, no un benchmark.
+Todas las mediciones se hicieron en Windows, sin permisos de administrador, en un único equipo de pruebas. Son orientativas, no un benchmark.
 
 ## Resumen
 

@@ -104,8 +104,8 @@ Al terminar de limpiar **no se reescanea**: los bloques se encogen con una anima
 | Categoría | Riesgo | Destino | Versión |
 |---|---|---|---|
 | Temporales (`%TEMP%`, `Windows\Temp` si hay acceso), **solo los de más de 24 h** (`min_age` en la regla; "por qué": "Archivos temporales de hace más de un día; los recientes se dejan por si un instalador los está usando") | 🟢 | Definitivo (se saltan los archivos en uso) | MVP |
-| Caché de navegadores (Chrome, Edge, Firefox; las cookies nunca se marcan) | 🟢 | Definitivo | MVP |
-| Papelera ("Vaciar", `SHEmptyRecycleBinW`) | 🟠 | Definitivo (es la acción en sí) | MVP |
+| Caché de navegadores (Chrome, Edge, Firefox): **solo directorios concretos de caché** (Chromium: `Cache`, `Code Cache`, `GPUCache`, `Service Worker\CacheStorage` por perfil, y `ShaderCache`/`GrShaderCache`; Firefox: `cache2` y `startupCache` bajo `%LOCALAPPDATA%`). **El perfil del navegador nunca es caché**: historial, marcadores, cookies, credenciales y almacenamiento persistente jamás son candidatos | 🟢 | Definitivo | MVP |
+| Papelera ("Vaciar") | 🟠 | Definitivo (es la acción en sí). **Alcance enumerado:** se purga solo la lista de elementos capturada al confirmar; lo que entre después no se toca y se informa | MVP |
 | `pagefile.sys`, `hiberfil.sys` (con el consejo de `powercfg /h off`) | 🔺 | — | MVP |
 | `node_modules`, `target`, `.venv`, `__pycache__`, `.gradle`, detectados por un archivo vecino (`package.json`, `Cargo.toml`, `pyvenv.cfg`…) | 🟢 | **Papelera** por defecto ("Se puede reinstalar con un comando. Va a la Papelera por si tenías cambios locales"). **Destino definitivo DIFERIDO a la v0.2:** la fase 0 midió ~2× el umbral de 10 s para 100k archivos, pero en una sola medición. En la v0.2 se repite ≥ 3 veces con un árbol realista, y se prueba **"renombrar primero"**: renombrar la carpeta a un nombre lápida hermano falla si hay archivos abiertos (cierra en seguro) y después se borra la renombrada | v0.2 |
 | Descargas antiguas (> 6 meses), instaladores viejos | 🟠 | Papelera | v0.2 |
@@ -130,7 +130,7 @@ Al terminar de limpiar **no se reescanea**: los bloques se encogen con una anima
 - Los archivos en uso o sin permiso se saltan, se cuentan y se explican en el resumen.
 
 ### 2.8 Espacio no explicado
-- Hay un bloque gris sintético, siempre el último: "**Windows y otros datos del sistema · 40 GB**", con un icono ⓘ. Se calcula como `total − libre − escaneado` (`GetDiskFreeSpaceExW`), medido al terminar.
+- Hay un bloque gris sintético, ordenado por tamaño como un hijo más de la raíz: "**Windows y otros datos del sistema · 40 GB**", con un icono ⓘ. Se calcula como `total − libre − escaneado` (`GetDiskFreeSpaceExW`), medido al terminar.
 - Se recorta a ≥ 0 y se oculta si es menor del 1 %. Solo aparece en el escaneo de un volumen completo y se marca "aproximado".
 - Tooltip: "Incluye archivos de Windows, hibernación, puntos de restauración y carpetas que tu usuario no puede ver. Es normal y no se puede borrar desde aquí". Enlace "Ver el detalle (modo administrador)".
 - Si el hueco supera el 5 %, la barra de estado muestra "El mapa explica 360 de 400 GB. ¿Y el resto?". Aparte se indica "N carpetas sin permiso".
@@ -163,7 +163,7 @@ Al terminar de limpiar **no se reescanea**: los bloques se encogen con una anima
   - Seguro `#107C41` / `#3FB871`
   - Revisar `#B26A00` / `#F2B24D`
   - Solo informar / peligro `#C42B1C` / `#FF6B5E`
-- **Fuentes:** se cargan del sistema en tiempo de ejecución, sin redistribuirlas: `SegUIVar.ttf` si existe (medido: egui aplica `wght` de 300 a 700; `opsz` no se aplica solo), si no `segoeui.ttf` + `segoeuib.ttf`. La ruta se obtiene con `SHGetKnownFolderPath(FOLDERID_Fonts)`, y si falla se usan las fuentes de egui.
+- **Fuentes:** se cargan del sistema en tiempo de ejecución, sin redistribuirlas: `SegUIVar.ttf` si existe (medido: egui aplica `wght` de 300 a 700; `opsz` no se aplica solo), si no `segoeui.ttf` + `segoeuib.ttf`. La ruta se obtiene con `SHGetKnownFolderPath(FOLDERID_Fonts)`. **No se embeben fuentes de egui** (`default_fonts` desactivado); las escrituras no latinas usan reservas del sistema. Si no hubiera ninguna fuente del sistema utilizable, la app avisa y sale.
 - **Iconos:** un subconjunto de unos 30 de **Fluent UI System Icons** (MIT, © Microsoft, confirmado), embebidos. Se ven igual en Win10 y Win11. No se depende de `SegoeIcons.ttf`.
 - **Fondo sólido.** Mica no funciona con wgpu (medido en 4 configuraciones). Solo volvería si se cambiara al plan B `glow`.
 - **Idiomas:** español e inglés desde el día 1 (`fluent-bundle`), sin cadenas literales en el código.
@@ -217,7 +217,7 @@ MFT ────┘   (Batch por dir)       └─ ordena hijos por tamaño ─�
 - **Cola prioritaria:** un `Injector` que los workers consultan antes de robar trabajo. Contiene `%TEMP%`, `Windows\Temp`, perfiles de navegador, `$Recycle.Bin\<SID>` y Descargas.
   - Sus ids se reservan de antemano, **junto con la cadena de ancestros** (p. ej. `C:\Users\<usuario>\AppData\Local`), creada como nodos `INCOMPLETE`. Así "Parar y ver" nunca enseña huérfanos.
   - Cuando el recorrido general llega a uno de esos directorios, **adopta** el id existente en vez de volver a escanearlo. La comparación se hace **por `FileId`** del directorio y no por la ruta en minúsculas, porque NTFS admite carpetas que distinguen mayúsculas.
-- **Hilos:** por defecto `min(16, 2 × núcleos)`; los ociosos esperan con backoff creciente. Se ajustan midiendo el rendimiento real; `IncursSeekPenalty` es solo una pista. Observación de la fase 0 (un solo equipo de pruebas con SSD, una ejecución por valor): la mejora se satura pronto y es de varias veces frente a 1 hilo. HDD, USB y red siguen sin medir.
+- **Hilos:** por defecto `min(16, 2 × núcleos)`; los ociosos esperan con backoff creciente. Se ajustan midiendo el rendimiento real; `IncursSeekPenalty` es solo una pista. Observación de la fase 0 (un solo equipo de pruebas, una ejecución por valor): la mejora se satura pronto y es de varias veces frente a 1 hilo. HDD, USB y red siguen sin medir.
 - **Reparse points:** no se siguen (tamaño 0 y un flag).
 - **Carpetas de la nube (OneDrive y similares):** si están **pobladas** se recorren (se abren dejando actuar al filtro de la nube; medido en el inc. 1: sin tráfico de red ni hidratación). Si **no están pobladas** (`RECALL_ON_OPEN` / `RECALL_ON_DATA_ACCESS`) no se recorren: cuentan su `AllocationSize` y quedan `CLOUD|INCOMPLETE`, para no provocar descargas.
 - **Modo de respaldo (`FindFirstFileExW`):** sin `FileId`, así que no hay dedup ni cola prioritaria; `alloc` de archivos estimado (EOF redondeado al clúster) y de directorios 0. Los hard links se cuentan N veces y el hueco puede recortarse a 0: la UI marca ese escaneo como **"aproximado"**.
@@ -269,14 +269,20 @@ struct Node {            // 40 B; hijos contiguos y ordenados por tamaño (lo ga
   - Se compacta al reescanear.
 - **Deshacer (v0.2):** `trash::os_limited::list/restore_all` (restauran bien, medido en la fase 0). Se casa por `original_path` y hora. Revierte el delta. Solo se ofrece para lo que fue a la Papelera. `list()` es lineal en el tamaño de **TODA la Papelera** (decenas de segundos con 100k elementos), y `delete_all` puede devolver error habiendo movido casi todo. Por eso el resultado se **verifica archivo a archivo**, y Deshacer se ofrece para lotes pequeños o carpetas enteras.
 
-### 3.7 Borrado definitivo
-- Archivos en paralelo en un pool dedicado y directorios después, de abajo arriba.
-- Se usan `std::fs::remove_file` y `remove_dir` en ese pool. El borrado POSIX propio (`FileDispositionInfoEx`) **se descarta**: no es más rápido (medido) y `remove_file` ya recurre a POSIX + `IGNORE_READONLY` con archivos de solo lectura. El caso `FILE_SHARE_DELETE` afecta a cualquier método, así que la protección del navegador abierto (§2.6) es lo que importa.
-- **Reparse points:** medido con junctions. `remove_dir`, `remove_dir_all` y `FileDispositionInfoEx` con `FILE_FLAG_OPEN_REPARSE_POINT` borran el enlace y dejan intacto el destino; `remove_file` y `DeleteFileW` fallan. Nunca se entra en un enlace. Los symlinks de directorio quedan por medir (§6).
-- Se saltan y cuentan `ERROR_SHARING_VIOLATION` y `ACCESS_DENIED`.
-- Progreso con atómicos y cancelación entre entradas.
-- La ruta protegida se vuelve a validar justo antes de cada borrado.
-- Hay modo simulación y un log de lo borrado.
+### 3.7 Borrado seguro (incremento 3)
+Principio: **verificar y actuar sobre el mismo handle**, nunca "comprobar por ruta y borrar por ruta" (cierra la carrera TOCTOU señalada por la auditoría externa).
+
+1. **La aprobación es una identidad.** Al confirmar la cesta, el `cleaner` reabre cada elemento con `FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS` y guarda `(número de serie del volumen, FileId de 128 bits)` (`FileIdInfo`) y `NumberOfLinks` (`FileStandardInfo`). Las rutas solo sirven para volver a encontrar los objetos.
+2. **Borrado definitivo por handle.** Se abre con acceso `DELETE` y **`dwShareMode = 0`**. La apertura exclusiva es a la vez la comprobación de "en uso" (`SHARING_VIOLATION` → se salta y se cuenta), cierra el caso `FILE_SHARE_DELETE` (nadie más lo tiene abierto) e impide la sustitución entre comprobar y actuar. Si el `FileIdInfo` del handle no coincide con lo aprobado → se rechaza ("cambió desde la confirmación"). Después, `SetFileInformationByHandle(FileDispositionInfoEx, DELETE | POSIX_SEMANTICS | IGNORE_READONLY)` sobre **ese mismo handle**.
+3. **Ancestros y recursión.** Windows no tiene `openat`, pero `NtCreateFile` con `OBJECT_ATTRIBUTES.RootDirectory = <handle del padre>` es la apertura relativa. Se abre por handle la raíz de la categoría (`%TEMP%`, el directorio de caché…), se verifica su FileId contra el capturado, y los hijos se enumeran y abren **relativos a ese handle**, cada uno con `FILE_OPEN_REPARSE_POINT`, rechazando cualquier reparse point. Es el patrón con el que se reescribió `std::fs::remove_dir_all` tras CVE-2022-21658. **Frontera de confianza:** los ancestros por encima de la raíz de categoría son del perfil del propio usuario; cambiarlos exige sus propios privilegios, y la app nunca se ejecuta elevada en la v0.1.
+4. **Papelera.** `IFileOperation` trabaja por rutas y no se puede atar a un handle. Mitigación: renombrar primero **por el handle verificado** (`FileRenameInfo`) a un nombre lápida aleatorio en el mismo directorio (falla en seguro si hay algo abierto dentro) y reciclar la ruta lápida con `FOF_ALLOWUNDO | FOFX_RECYCLEONDELETE`. Después, comprobar cada lápida: sigue existiendo → falló; desapareció pero no está en la Papelera → **se eliminó definitivamente** (demasiado grande, red, extraíble) y así se informa. Nunca se convierte en definitivo en silencio. La prueba de `FOF_WANTNUKEWARNING` con `FOF_NO_UI` es obligatoria en el incremento 3.
+5. **Hard links.** No hace falta el FileId en el modelo: si `NumberOfLinks > 1` al aprobar, el elemento se marca en la confirmación ("compartido con otro archivo: no liberará espacio") y se excluye de la estimación de bytes liberados.
+6. **Tres contadores.** "Eliminado definitivamente" y "movido a la Papelera" son sumas de tamaños; **"Liberado ahora" es la diferencia medida de `GetDiskFreeSpaceEx` antes y después** (incluye de forma automática hard links, handles abiertos y borrados definitivos inesperados). Si divergen, se muestran ambos con el motivo en una línea.
+7. **Navegador.** Detectar el proceso es UX ("cierra Chrome"); la garantía es el punto 2: si el navegador arranca a mitad, los archivos restantes fallan la apertura exclusiva y se saltan.
+8. **Paralelismo y progreso.** Archivos en un pool dedicado y directorios después, de abajo arriba; progreso con atómicos y cancelación entre entradas. Se saltan y cuentan `SHARING_VIOLATION` y `ACCESS_DENIED`.
+9. **Modo simulación (`--dry-run`)** que registra las identidades aprobadas sin tocar nada, y log local de lo borrado.
+10. **Tests obligatorios del `cleaner`** sobre árboles en `%TEMP%`, que **compitan con la operación**: sustituir un archivo por otro del mismo tamaño, cambiar un ancestro por un junction, abrir un archivo en exclusiva desde otro hilo… y comprobar rechazo o salto. Toda comparación de rutas, sobre formas canónicas largas (en CI `%TEMP%` es 8.3).
+11. **Reparse points:** medido con junctions: el borrado relativo nunca entra en ellos. Los symlinks de directorio quedan por medir (§6).
 
 ### 3.8 Treemap
 - Algoritmo squarified de Bruls et al., lineal porque los hijos ya vienen ordenados.
@@ -354,7 +360,8 @@ Pendientes (las tres primeras las hace el usuario):
 - [ ] **RDP y Hyper-V sin GPU** con la build wgpu DX12 (y glow como comparación). Instrucciones en fase-0-conclusiones.md (Pendiente).
 - [ ] **Windows 10 22H2:** `FILE_ID_EXTD_DIR_INFO` y `SegUIVar.ttf`.
 - [ ] **Symlinks de directorio** al borrar. No necesita administrador si se activa el Modo de desarrollador.
-- [ ] `FOF_WANTNUKEWARNING` junto con `FOF_NO_UI` y el límite real de la Papelera aplicado (antes de la v0.1).
+- [ ] `FOF_WANTNUKEWARNING` junto con `FOF_NO_UI` y el límite real de la Papelera aplicado: **test obligatorio del incremento 3** (§3.7).
+- [ ] Incremento 4 (MSI): CRT estático sin `VCRUNTIME140.dll` (verificado en los imports del `.exe`); pruebas de ciclo completo sin elevación (instalar, actualizar, reparar, rollback, desinstalar, dos usuarios, app abierta durante la actualización, conservación o borrado explícito de la configuración); validación del paquete final (ejecutables, avisos de terceros, sin rutas locales, firmas EXE/MSI). SignPath exige además reputación verificable, política publicada, roles con MFA, procedencia del build, aprobación manual por release y atributos de producto/versión.
 - [ ] `cargo-wix` con WiX 4/5/6 en GitHub Actions (antes de la v0.1); `winget-releaser`; runner ARM64.
 - [ ] Marcas registradas del nombre "Tesela" sin revisar.
 
@@ -401,6 +408,14 @@ Limpiador de registro, "optimizar" o desfragmentar, desinstalar programas, anál
    - El titular suma solo lo Seguro.
    - El MVP borra con `remove_file` y deja POSIX para la v0.2.
 
+**Ronda 7** (auditoría externa de Astra/ChatGPT sobre 6781a03, triada con el asesor):
+- **B1 (diseño):** el borrado se rediseña como "identidad aprobada + actuar sobre el mismo handle" (§3.7): apertura exclusiva, FileId+volumen, recursión relativa a handles (patrón CVE-2022-21658), Papelera vía lápida renombrada por handle y verificación por elemento, Vaciar con alcance enumerado, hard links detectados por `NumberOfLinks`, "liberado" = diferencia medida del espacio libre.
+- **M2:** las cachés de navegador son solo directorios concretos de caché; el perfil nunca lo es (§2.6).
+- **M1:** `--json` y `--screenshot` no sobrescriben sin `--overwrite`. **M3:** los atajos respetan el control enfocado. **M5/M6:** `privacy-check` revisa el mensaje completo, rechaza formatos opacos y el CI revisa todos los commits del push/PR. **m1–m11 y N1:** en el ciclo de endurecimiento.
+- **M4:** se generalizan las menciones al equipo de medición en la documentación (versión del SO y tipo de disco). No se reescribe el historial: no identifican el equipo.
+- **N2:** el bloque de espacio no explicado se ordena por tamaño; no hay fuentes de reserva de egui.
+- **Incremento 4:** CRT estático (`+crt-static`) y requisitos de MSI/SignPath añadidos a §6.
+
 **Ronda 6** (incremento 2 del MVP: construcción Sonnet, 2 auditorías Sonnet, verificación propia y asesor):
 - Memoria: el objetivo pasa a ~85 B por entrada en régimen (≈ 155 MiB con 1 M); **decisión del usuario**, no se recorta. En reposo con el mapa: ~68 MiB.
 - Fuentes: sin `default_fonts` de egui (no se redistribuyen fuentes OFL/UFL); reservas DEL SISTEMA por escritura (CJK, tailandés, índicas, árabe, hebreo, símbolos), con kana y han siempre juntos. Las pruebas de fuentes se saltan lo que el equipo no tiene (CI en Windows Server).
@@ -426,7 +441,7 @@ Limpiador de registro, "optimizar" o desfragmentar, desinstalar programas, anál
 - **Métricas:** memoria = private working set (≤ 75 MiB en reposo con el mapa); exe ≲ 16 MB.
 - **Borrado:** POSIX propio descartado; la nota de `FILE_SHARE_DELETE` se amplía a `remove_file`/`DeleteFileW`; junctions medidos.
 - **Carpetas de desarrollo:** destino diferido a la v0.2, con "renombrar primero".
-- **Hilos:** se sigue ajustando midiendo (la mejora se satura pronto en un SSD).
+- **Hilos:** se sigue ajustando midiendo (la mejora se satura pronto).
 - **Deshacer:** verificar archivo a archivo.
 - **Entregable:** MSI por usuario desde la v0.1 (decisión del usuario).
 
