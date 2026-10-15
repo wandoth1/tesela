@@ -175,14 +175,13 @@ impl Explore {
                 self.root = Root::node(c);
             }
         }
-        if let Some(n) = &start.select {
-            if let Some(id) = self
+        if let Some(n) = &start.select
+            && let Some(id) = self
                 .shown_children()
                 .iter()
                 .find(|&c| self.tree.name_lossy(c) == n.as_str())
-            {
-                self.selection = Some(Sel::Node(id));
-            }
+        {
+            self.selection = Some(Sel::Node(id));
         }
         if start.list {
             self.view = View::List;

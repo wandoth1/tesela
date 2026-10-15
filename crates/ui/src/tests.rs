@@ -939,7 +939,7 @@ fn los_nombres_en_otros_alfabetos_acaban_en_una_fuente_que_tiene_el_glifo() {
             .all(|(_, c)| c.iter().any(|f| dir.join(f).exists()))
     };
     let mut checked = 0;
-    let mut all: Vec<(String, Scripts)> = names.iter().map(|(n, s)| (n.to_string(), *s)).collect();
+    let all: Vec<(String, Scripts)> = names.iter().map(|(n, s)| (n.to_string(), *s)).collect();
     for (n, s) in &all {
         if !s.is_empty() && !have(*s) {
             eprintln!("sin fuente de reserva en este equipo para {n}: se omite");
