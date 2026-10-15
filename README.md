@@ -32,6 +32,24 @@ Rust · [egui/eframe](https://github.com/emilk/egui) · [windows-rs](https://git
 
 **English:** Tesela is a visual disk space analyzer and cleaner for Windows, written in Rust. Phase 0 (measurement spike) is done and the MVP is pending; see [docs/PLAN.md](docs/PLAN.md) and [docs/fase-0-conclusiones.md](docs/fase-0-conclusiones.md) (in Spanish).
 
+## Desarrollo
+
+Workspace de Cargo en la raíz (`crates/`); `spike/` es el código de medición de la fase 0, con su propio workspace.
+Estado del MVP v0.1: hecho el modelo (`tesela-model`) y el escáner de solo lectura (`tesela-scanner`) con su CLI
+`tesela-scan`; la interfaz, la cesta y la limpieza llegan en los siguientes incrementos.
+
+```powershell
+cargo fmt --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace            # los tests solo usan árboles sintéticos en %TEMP%	esela-test-<uuid>
+cargo deny check
+cargo run --release -p tesela-scan -- <ruta> --top 20   # solo lectura; opciones en la cabecera de crates/tesela-scan/src/main.rs
+```
+
+**Privacidad:** el repositorio es público y no puede contener datos de ninguna máquina (hardware, usuario, rutas, tamaños de
+discos reales, resultados de escaneos). Tras clonar, instala el hook que lo comprueba antes de cada commit:
+`pwsh -File scripts/install-hooks.ps1` (`scripts/privacy-check.ps1 -All` revisa todo el árbol; el CI lo ejecuta).
+
 ## Licencia
 
 Licencia dual a tu elección:
