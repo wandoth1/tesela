@@ -15,9 +15,11 @@ use windows_sys::Win32::System::Com::{
     COINIT_APARTMENTTHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize,
 };
 use windows_sys::Win32::System::Diagnostics::Debug::{SEM_FAILCRITICALERRORS, SetThreadErrorMode};
+use windows_sys::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows_sys::Win32::UI::Shell::{
-    FOLDERID_Fonts, SEE_MASK_FLAG_NO_UI, SEE_MASK_INVOKEIDLIST, SEE_MASK_NOASYNC,
-    SHELLEXECUTEINFOW, SHGetKnownFolderPath, ShellExecuteExW,
+    FOLDERID_Fonts, ILFree, SEE_MASK_FLAG_NO_UI, SEE_MASK_INVOKEIDLIST, SEE_MASK_NOASYNC,
+    SHELLEXECUTEINFOW, SHGetKnownFolderPath, SHOpenFolderAndSelectItems, SHParseDisplayName,
+    ShellExecuteExW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     SPI_GETCLIENTAREAANIMATION, SW_SHOW, SystemParametersInfoW,
@@ -291,22 +293,137 @@ fn show_properties_impl(path: &Path, wait: bool) -> bool {
     unsafe { ShellExecuteExW(&mut info) != FALSE }
 }
 
-/// Ruta absoluta de `explorer.exe` (la de `%SystemRoot%`): sin ruta, Windows lo buscaría primero en el directorio
-/// actual del proceso, y un `explorer.exe` plantado ahí se ejecutaría en su lugar.
-pub fn explorer_exe() -> PathBuf {
-    let sys = std::env::var_os("SystemRoot")
-        .filter(|v| !v.is_empty())
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(r"C:\Windows"));
-    sys.join("explorer.exe")
+/// Por qué no se pudo abrir el Explorador. TIPADO: la interfaz lo traduce (el código `HRESULT` va aparte).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RevealError {
+    /// La ruta no sirve (vacía o con un NUL dentro).
+    InvalidPath,
+    /// `SHParseDisplayName` no pudo crear el identificador de la ruta (`HRESULT`).
+    ParsePath(i32),
+    /// `SHOpenFolderAndSelectItems` falló (`HRESULT`).
+    Open(i32),
 }
 
-/// Abre el Explorador con `path` seleccionado (o su carpeta, si es un directorio). No usa `unsafe`.
-pub fn reveal_in_explorer(path: &Path) -> std::io::Result<()> {
-    use std::os::windows::process::CommandExt;
-    let mut cmd = std::process::Command::new(explorer_exe());
-    cmd.raw_arg(format!("/select,\"{}\"", path.display()));
-    cmd.spawn().map(|_| ())
+impl RevealError {
+    /// El `HRESULT` de Windows, si lo hay.
+    pub fn hresult(&self) -> Option<i32> {
+        match self {
+            RevealError::InvalidPath => None,
+            RevealError::ParsePath(h) | RevealError::Open(h) => Some(*h),
+        }
+    }
+}
+
+impl std::fmt::Display for RevealError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RevealError::InvalidPath => write!(f, "invalid path"),
+            RevealError::ParsePath(h) => {
+                write!(f, "SHParseDisplayName failed (HRESULT {:#010X})", *h as u32)
+            }
+            RevealError::Open(h) => write!(
+                f,
+                "SHOpenFolderAndSelectItems failed (HRESULT {:#010X})",
+                *h as u32
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RevealError {}
+
+/// Identificador de una ruta del shell (PIDL) que se libera al soltarlo.
+struct Pidl(*mut ITEMIDLIST);
+
+impl Drop for Pidl {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            // SAFETY: el puntero lo reservó `SHParseDisplayName` (con el asignador COM) y solo se libera aquí, una vez.
+            unsafe { ILFree(self.0) };
+        }
+    }
+}
+
+/// Crea el PIDL de la ruta a partir de su UTF-16 EXACTO (`path.as_os_str().encode_wide()`, sin pasar por `str`): así
+/// los nombres con unidades de código sueltas (que `display()` o `to_string_lossy()` cambiarían por `U+FFFD`) llegan
+/// intactos al shell. Los prefijos `\\?\` se quitan si es seguro (`dunce`), porque el shell no los entiende bien.
+fn parse_pidl(path: &Path) -> Result<Pidl, RevealError> {
+    let simple = dunce::simplified(path);
+    let wide: Vec<u16> = simple.as_os_str().encode_wide().collect();
+    if wide.is_empty() || wide.contains(&0) {
+        return Err(RevealError::InvalidPath);
+    }
+    let mut z = wide;
+    z.push(0);
+    let mut pidl: *mut ITEMIDLIST = std::ptr::null_mut();
+    // SAFETY: `z` termina en NUL y vive hasta que la llamada vuelve; el contexto de enlace es nulo (permitido), `pidl` es
+    // escribible, y los atributos de entrada y salida son 0 y nulo (no se piden).
+    let hr = unsafe {
+        SHParseDisplayName(
+            z.as_ptr(),
+            std::ptr::null_mut(),
+            &mut pidl,
+            0,
+            std::ptr::null_mut(),
+        )
+    };
+    if hr < 0 || pidl.is_null() {
+        if !pidl.is_null() {
+            // SAFETY: aunque falle, el puntero que haya dejado es del asignador COM y se libera una vez.
+            unsafe { ILFree(pidl) };
+        }
+        return Err(RevealError::ParsePath(if hr < 0 { hr } else { -1 }));
+    }
+    Ok(Pidl(pidl))
+}
+
+/// `SHOpenFolderAndSelectItems` con un PIDL completo: abre la carpeta que contiene el elemento y lo selecciona (con
+/// `cidl = 0`, el propio `pidl` es el elemento). Devuelve el `HRESULT`.
+///
+/// # Safety
+/// `pidl` debe ser nulo (la API lo rechaza con un error) o apuntar a un PIDL válido que viva durante la llamada. COM
+/// tiene que estar inicializado en este hilo.
+unsafe fn shell_open_and_select(pidl: *const ITEMIDLIST) -> i32 {
+    // SAFETY: lo garantiza quien llama; `apidl` es nulo con `cidl = 0` y los flags son 0.
+    unsafe { SHOpenFolderAndSelectItems(pidl, 0, std::ptr::null(), 0) }
+}
+
+/// Hace el trabajo en el hilo actual, que ya tiene COM inicializado.
+fn reveal_on_this_thread(path: &Path) -> Result<(), RevealError> {
+    let pidl = parse_pidl(path)?;
+    // SAFETY: `pidl` es un PIDL válido que vive hasta el final de la función; COM está inicializado (lo hace quien llama).
+    let hr = unsafe { shell_open_and_select(pidl.0) };
+    if hr < 0 {
+        return Err(RevealError::Open(hr));
+    }
+    Ok(())
+}
+
+/// Plazo que se espera al shell antes de darlo por bueno (abrir un Explorador puede tardar).
+const REVEAL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Abre el Explorador con `path` seleccionado (o su carpeta, si es un directorio) con `SHOpenFolderAndSelectItems` y un
+/// PIDL creado desde la ruta UTF-16 EXACTA: funciona con nombres que no se pueden escribir como texto (unidades de código
+/// sueltas), que con `explorer.exe /select,"…"` se perdían. El shell necesita COM: se usa un hilo propio que lo
+/// inicializa, y si no responde en 5 s se da por abierto (el hilo sigue por su cuenta).
+pub fn reveal_in_explorer(path: &Path) -> Result<(), RevealError> {
+    let path = path.to_path_buf();
+    type Job = Box<dyn FnOnce() -> Option<Result<(), RevealError>> + Send>;
+    let jobs: Vec<Job> = vec![Box::new(move || {
+        // SAFETY: `CoInitializeEx` no recibe punteros (nulo = reservado) y se empareja con `CoUninitialize` solo si
+        // tuvo éxito (un `HRESULT` negativo significa que no se inicializó en este hilo).
+        let hr = unsafe { CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32) };
+        let out = reveal_on_this_thread(&path);
+        if hr >= 0 {
+            // SAFETY: la llamada anterior inicializó COM en ESTE hilo.
+            unsafe { CoUninitialize() };
+        }
+        Some(out)
+    })];
+    match collect_with_deadline(jobs, REVEAL_DEADLINE).pop().flatten() {
+        Some(r) => r,
+        None => Ok(()),
+    }
 }
 
 /// La ventana principal como padre de los diálogos del sistema (selector de carpeta): así el diálogo es modal de ELLA
@@ -350,6 +467,7 @@ impl raw_window_handle::HasDisplayHandle for ParentWindow {
 mod tests {
     use super::*;
     use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
+    use std::os::windows::ffi::OsStringExt;
     use windows_sys::Win32::UI::WindowsAndMessaging::GetDesktopWindow;
 
     #[test]
@@ -416,12 +534,98 @@ mod tests {
         assert!(!show_properties(&p));
     }
 
+    /// Inicializa COM en este hilo (como hace `reveal_in_explorer` en el suyo) y ejecuta `f`.
+    fn with_com<T>(f: impl FnOnce() -> T) -> T {
+        // SAFETY: `CoInitializeEx` no recibe punteros (nulo = reservado); se empareja con `CoUninitialize` si tuvo éxito.
+        let hr = unsafe { CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32) };
+        let out = f();
+        if hr >= 0 {
+            // SAFETY: la llamada anterior inicializó COM en ESTE hilo.
+            unsafe { CoUninitialize() };
+        }
+        out
+    }
+
+    /// Carpeta temporal propia (solo se borra lo creado aquí, bajo la carpeta temporal).
+    struct Temp(PathBuf);
+    impl Temp {
+        fn new() -> Temp {
+            let p = std::env::temp_dir().join(format!("tesela-test-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir(&p).unwrap();
+            Temp(p)
+        }
+    }
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     #[test]
-    fn el_explorador_se_lanza_desde_la_carpeta_del_sistema() {
-        let p = explorer_exe();
-        assert!(p.is_absolute(), "{p:?}");
-        assert!(p.exists(), "{p:?}");
-        assert_eq!(p.file_name().unwrap(), "explorer.exe");
+    fn abrir_el_explorador_con_una_ruta_inexistente_da_el_error_tipado_sin_abrir_nada() {
+        let t = Temp::new();
+        let missing = t.0.join("no-existe");
+        match reveal_in_explorer(&missing) {
+            Err(RevealError::ParsePath(hr)) => {
+                assert!(hr < 0);
+                assert_eq!(RevealError::ParsePath(hr).hresult(), Some(hr));
+            }
+            other => panic!("se esperaba ParsePath, salió {other:?}"),
+        }
+        // Rutas inservibles: ni se llama al shell.
+        assert_eq!(
+            reveal_in_explorer(Path::new("")),
+            Err(RevealError::InvalidPath)
+        );
+        let with_nul = PathBuf::from(std::ffi::OsString::from_wide(&[
+            b'a' as u16,
+            0,
+            b'b' as u16,
+        ]));
+        assert_eq!(reveal_in_explorer(&with_nul), Err(RevealError::InvalidPath));
+        // El texto del error es técnico y neutro (la interfaz lo traduce).
+        let text = RevealError::ParsePath(-2147024894).to_string();
+        assert!(text.contains("0x80070002"), "{text}");
+        assert_eq!(RevealError::InvalidPath.hresult(), None);
+    }
+
+    #[test]
+    fn el_pidl_se_crea_desde_el_utf16_exacto_aunque_el_nombre_no_sea_texto() {
+        use std::ffi::OsString;
+        let t = Temp::new();
+        // Un nombre con una unidad de código suelta (válido en NTFS, no representable como texto UTF-8).
+        let name = OsString::from_wide(&[b'x' as u16, 0xD800, b'y' as u16]);
+        let weird = t.0.join(&name);
+        std::fs::write(&weird, b"x").unwrap();
+        assert!(
+            weird.to_string_lossy().contains('\u{FFFD}'),
+            "el nombre no es texto"
+        );
+        with_com(|| {
+            // La ruta EXACTA se resuelve...
+            assert!(
+                parse_pidl(&weird).is_ok(),
+                "la ruta exacta debería resolverse"
+            );
+            // ...y la versión "con pérdidas" (lo que hacía `path.display()`) apunta a otro archivo que no existe.
+            let lossy = PathBuf::from(weird.to_string_lossy().into_owned());
+            assert!(matches!(parse_pidl(&lossy), Err(RevealError::ParsePath(_))));
+            // Una carpeta normal también.
+            assert!(parse_pidl(&t.0).is_ok());
+            // Con prefijo `\\?\` (rutas canónicas del escáner) también.
+            let verbatim = PathBuf::from(format!(r"\\?\{}", t.0.display()));
+            assert!(parse_pidl(&verbatim).is_ok());
+        });
+    }
+
+    #[test]
+    fn la_llamada_al_shell_rechaza_un_pidl_nulo_sin_abrir_ninguna_ventana() {
+        let hr = with_com(|| {
+            // SAFETY: un PIDL nulo está permitido por el contrato de la función (la API lo rechaza con un error); COM está
+            // inicializado en este hilo.
+            unsafe { shell_open_and_select(std::ptr::null()) }
+        });
+        assert!(hr < 0, "HRESULT {hr:#X}");
     }
 
     #[test]

@@ -56,6 +56,9 @@ error-scan-panicked = a scan thread failed unexpectedly
 error-scan-startup-lost = the start of the scan was interrupted
 error-scan-cancelled = the scan was cancelled
 error-open-explorer = Explorer could not be opened: { $error }
+error-reveal-invalid = the path is not valid
+error-reveal-parse = Windows does not recognize the path ({ $detail })
+error-reveal-open = Explorer could not show it ({ $detail })
 
 # Scan
 scan-title = While we scan your disk…

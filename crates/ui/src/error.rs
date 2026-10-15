@@ -4,6 +4,7 @@
 
 use crate::args;
 use crate::i18n::Tr;
+use crate::platform::RevealError;
 use tesela_scanner::ScanError;
 
 /// Por qué no pudo empezar (o acabar) un análisis.
@@ -39,6 +40,23 @@ impl StartError {
     }
 }
 
+/// El aviso de que no se pudo abrir el Explorador: "No se pudo abrir el Explorador: …" (el código de Windows, aparte).
+pub fn reveal_message(tr: &Tr, e: &RevealError) -> String {
+    let reason = match e {
+        RevealError::InvalidPath => tr.t("error-reveal-invalid"),
+        RevealError::ParsePath(h) => {
+            tr.ta("error-reveal-parse", args!["detail" => hresult_text(*h)])
+        }
+        RevealError::Open(h) => tr.ta("error-reveal-open", args!["detail" => hresult_text(*h)]),
+    };
+    tr.ta("error-open-explorer", args!["error" => reason])
+}
+
+/// `HRESULT` en hexadecimal (`0x80070002`), el detalle técnico que se enseña aparte.
+fn hresult_text(h: i32) -> String {
+    format!("{:#010X}", h as u32)
+}
+
 /// Un aviso que la pantalla de inicio enseña hasta que se lanza otro análisis. Se guarda TIPADO y se traduce al pintarlo.
 #[derive(Debug)]
 pub enum Notice {
@@ -61,6 +79,39 @@ mod tests {
 
     fn io(code: i32) -> std::io::Error {
         std::io::Error::from_raw_os_error(code)
+    }
+
+    #[test]
+    fn el_error_de_abrir_el_explorador_se_traduce_en_los_dos_idiomas() {
+        let es = Tr::new(Lang::Es);
+        let en = Tr::new(Lang::En);
+        for (e, want_es, want_en) in [
+            (
+                RevealError::InvalidPath,
+                "la ruta no es válida",
+                "the path is not valid",
+            ),
+            (
+                RevealError::ParsePath(-2147024894),
+                "Windows no reconoce la ruta (0x80070002)",
+                "Windows does not recognize the path (0x80070002)",
+            ),
+            (
+                RevealError::Open(-2147024809),
+                "el Explorador no pudo mostrarla (0x80070057)",
+                "Explorer could not show it (0x80070057)",
+            ),
+        ] {
+            let (m_es, m_en) = (reveal_message(&es, &e), reveal_message(&en, &e));
+            assert!(
+                m_es.starts_with("No se pudo abrir el Explorador: "),
+                "{m_es}"
+            );
+            assert!(m_en.starts_with("Explorer could not be opened: "), "{m_en}");
+            assert!(m_es.contains(want_es), "{m_es}");
+            assert!(m_en.contains(want_en), "{m_en}");
+            assert!(!m_es.contains("SHParseDisplayName") && !m_en.contains("SHOpenFolder"));
+        }
     }
 
     #[test]

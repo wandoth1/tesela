@@ -57,6 +57,9 @@ error-scan-panicked = un hilo del análisis falló de forma inesperada
 error-scan-startup-lost = el arranque del análisis se interrumpió
 error-scan-cancelled = el análisis se canceló
 error-open-explorer = No se pudo abrir el Explorador: { $error }
+error-reveal-invalid = la ruta no es válida
+error-reveal-parse = Windows no reconoce la ruta ({ $detail })
+error-reveal-open = el Explorador no pudo mostrarla ({ $detail })
 
 # Escaneo
 scan-title = Mientras analizamos tu disco…

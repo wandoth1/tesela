@@ -999,7 +999,7 @@ pub(crate) fn menu_items(ui: &mut Ui, env: &mut Env, ex: &mut Explore, sel: Sel)
         let p = tree.path(node);
         if let Err(e) = platform::reveal_in_explorer(&p) {
             ex.toast = Some((
-                tr.ta("error-open-explorer", args!["error" => e.to_string()]),
+                crate::error::reveal_message(tr, &e),
                 ui.input(|i| i.time) + 3.0,
             ));
         }

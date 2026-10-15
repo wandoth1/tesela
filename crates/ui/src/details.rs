@@ -272,8 +272,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
                     && let Err(e) = platform::reveal_in_explorer(&tree.path(id))
                 {
                     ex.toast = Some((
-                        env.tr
-                            .ta("error-open-explorer", args!["error" => e.to_string()]),
+                        crate::error::reveal_message(env.tr, &e),
                         ui.input(|i| i.time) + 3.0,
                     ));
                 }
