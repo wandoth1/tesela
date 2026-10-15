@@ -1,0 +1,26 @@
+[package]
+name = "fonts-mica"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# Igual que ui-treemap: se elige UNO (`--no-default-features --features glow` para glow).
+default = ["wgpu"]
+wgpu = ["eframe/wgpu"]
+glow = ["eframe/glow"]
+
+[dependencies]
+spike-common = { path = "../common" }
+eframe.workspace = true
+egui.workspace = true
+serde_json.workspace = true
+png = "0.18.1"
+env_logger = { version = "0.11", default-features = false, features = ["auto-color", "humantime"] }
+log = "0.4"
+raw-window-handle = "0.6.2"
+windows-sys = { workspace = true, features = [
+  "Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_UI_Shell",
+  "Win32_System_Com", "Win32_UI_WindowsAndMessaging", "Wdk_System_SystemServices", "Win32_UI_Controls", "Win32_System_SystemInformation",
+] }

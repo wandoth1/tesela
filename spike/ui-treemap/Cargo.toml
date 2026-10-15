@@ -1,0 +1,24 @@
+[package]
+name = "ui-treemap"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+# Hay que elegir exactamente UNA de: wgpu-all (todos los backends de wgpu: Vulkan, DX12, GL), wgpu-dx12 (wgpu solo con
+# el backend DX12, como dice PLAN.md §1) o glow. Siempre con `--no-default-features`.
+default = ["wgpu-all"]
+wgpu = []                                   # marca interna: activa el código de wgpu (la activan wgpu-all y wgpu-dx12)
+wgpu-all = ["wgpu", "eframe/wgpu"]
+wgpu-dx12 = ["wgpu", "eframe/wgpu_no_default_features", "dep:wgpu"]
+glow = ["eframe/glow"]
+
+[dependencies]
+spike-common = { path = "../common" }
+eframe.workspace = true
+egui.workspace = true
+serde_json.workspace = true
+raw-window-handle = "0.6.2"
+wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "dx12", "wgsl"], optional = true }
+windows-sys = { workspace = true, features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }

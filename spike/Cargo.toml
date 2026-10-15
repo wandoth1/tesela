@@ -1,0 +1,30 @@
+# Workspace PROPIO del spike de la fase 0 (código desechable de medición).
+# No es el workspace del producto (ese irá en la raíz del repositorio).
+[workspace]
+resolver = "3"
+members = ["common", "ui-treemap", "enum-bench", "trash-bench", "delete-bench", "fonts-mica"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+# Versiones verificadas con `cargo search` el 2026-10-15 (coinciden con PLAN.md §3.10).
+eframe = { version = "0.36.2", default-features = false, features = ["accesskit", "default_fonts"] }
+egui = { version = "0.36.2", default-features = false }
+windows-sys = "0.61.2"
+crossbeam-deque = "0.8.8"
+crossbeam-channel = "0.5.17"
+rayon = "1.12.0"
+trash = "5.2.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1.0.154"
+uuid = { version = "1.28.0", features = ["v4"] }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+panic = "unwind"
