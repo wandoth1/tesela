@@ -298,22 +298,57 @@ impl Tree {
     /// posición en el arena de nombres), `mtime`, histogramas y cifras. Dos escaneos del mismo árbol lógico dan
     /// árboles estructuralmente iguales aunque los ids provisionales o el arena difieran.
     pub fn structural_eq(&self, other: &Tree) -> bool {
-        self.nodes.len() == other.nodes.len()
-            && self.stats == other.stats
-            && self.mtime == other.mtime
-            && self.hist == other.hist
-            && (0..self.nodes.len() as u32).all(|i| {
-                let (a, b) = (self.node(i), other.node(i));
-                a.alloc == b.alloc
-                    && a.logical == b.logical
-                    && a.parent == b.parent
-                    && a.first_child == b.first_child
-                    && a.child_count == b.child_count
-                    && a.name_len == b.name_len
-                    && a.flags == b.flags
-                    && a.files_below == b.files_below
-                    && self.name_bytes(i) == other.name_bytes(i)
-            })
+        self.first_difference(other).is_none()
+    }
+
+    /// Primera diferencia estructural entre dos árboles (ver [`Tree::structural_eq`]), descrita en texto, o `None`.
+    pub fn first_difference(&self, other: &Tree) -> Option<String> {
+        if self.nodes.len() != other.nodes.len() {
+            return Some(format!(
+                "{} nodos frente a {}",
+                self.nodes.len(),
+                other.nodes.len()
+            ));
+        }
+        if self.stats != other.stats {
+            return Some(format!(
+                "cifras distintas: {:?} frente a {:?}",
+                self.stats, other.stats
+            ));
+        }
+        for i in 0..self.nodes.len() as u32 {
+            let (a, b) = (self.node(i), other.node(i));
+            let same = a.alloc == b.alloc
+                && a.logical == b.logical
+                && a.parent == b.parent
+                && a.first_child == b.first_child
+                && a.child_count == b.child_count
+                && a.name_len == b.name_len
+                && a.flags == b.flags
+                && a.files_below == b.files_below
+                && self.name_bytes(i) == other.name_bytes(i);
+            if !same {
+                return Some(format!(
+                    "nodo {i} ({}): {a:?} frente a {b:?}",
+                    self.name_lossy(i)
+                ));
+            }
+            if self.mtime(i) != other.mtime(i) {
+                return Some(format!(
+                    "nodo {i} ({}): mtime {} frente a {}",
+                    self.name_lossy(i),
+                    self.mtime(i),
+                    other.mtime(i)
+                ));
+            }
+            if self.hist(i) != other.hist(i) {
+                return Some(format!(
+                    "nodo {i} ({}): histogramas distintos",
+                    self.name_lossy(i)
+                ));
+            }
+        }
+        None
     }
 
     /// Comprueba las invariantes del formato; devuelve la primera que falle. Las usan los tests del builder y del

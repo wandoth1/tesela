@@ -332,6 +332,9 @@ pub(crate) fn process_dir(
                         file_id: 0,
                     },
                 );
+                if task.prio != NO_PRIO {
+                    prio_inc(sh, task.prio);
+                }
                 children.push(Task {
                     path: child_path,
                     id,
@@ -354,7 +357,12 @@ pub(crate) fn process_dir(
                         });
                     }
                     AdoptKind::Target(idx) => {
-                        if !sh.target_claimed(idx).swap(true, Ordering::AcqRel) {
+                        // Se cuenta ANTES de reclamar: si la tarea inicial de esta ruta falla su reclamación y
+                        // termina entre medias, el contador no puede llegar a 0 y marcarla como hecha antes de tiempo.
+                        prio_inc(sh, idx);
+                        if sh.target_claimed(idx).swap(true, Ordering::AcqRel) {
+                            prio_dec(sh, idx);
+                        } else {
                             children.push(Task {
                                 path: child_path,
                                 id: a.id,
@@ -392,35 +400,36 @@ pub(crate) fn account(sh: &Shared, task: &Task, s: &DirStats) {
     }
 }
 
-/// Marca una tarea como terminada (y su ruta prioritaria como hecha si era la última).
-fn finish_task(sh: &Shared, task: &Task) {
-    if task.prio != NO_PRIO
-        && let Some(t) = sh
-            .progress
-            .priority
-            .get()
-            .and_then(|v| v.get(task.prio as usize))
+/// Cuenta una tarea más pendiente en la ruta prioritaria `idx`.
+fn prio_inc(sh: &Shared, idx: u16) {
+    if let Some(t) = sh.progress.priority.get().and_then(|v| v.get(idx as usize)) {
+        t.pending.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
+/// Descuenta una tarea de la ruta prioritaria `idx`; si era la última, la ruta está hecha.
+fn prio_dec(sh: &Shared, idx: u16) {
+    if let Some(t) = sh.progress.priority.get().and_then(|v| v.get(idx as usize))
         && t.pending.fetch_sub(1, Ordering::AcqRel) == 1
     {
         t.done.store(true, Ordering::Release);
     }
+}
+
+/// Marca una tarea como terminada (y su ruta prioritaria como hecha si era la última).
+fn finish_task(sh: &Shared, task: &Task) {
+    if task.prio != NO_PRIO {
+        prio_dec(sh, task.prio);
+    }
     sh.pending.fetch_sub(1, Ordering::SeqCst);
 }
 
-/// Publica los tareas hijas: se cuentan ANTES de terminar la tarea padre, así `pending == 0` solo ocurre cuando de
+/// Publica las tareas hijas: se cuentan ANTES de terminar la tarea padre, así `pending == 0` solo ocurre cuando de
 /// verdad no queda trabajo. Las de rutas prioritarias van a la cola prioritaria compartida; el resto, a la cola local.
 fn push_children(sh: &Shared, local: &Worker<Task>, children: &mut Vec<Task>) {
     sh.pending.fetch_add(children.len(), Ordering::SeqCst);
     for c in children.drain(..) {
         if c.prio != NO_PRIO {
-            if let Some(t) = sh
-                .progress
-                .priority
-                .get()
-                .and_then(|v| v.get(c.prio as usize))
-            {
-                t.pending.fetch_add(1, Ordering::AcqRel);
-            }
             sh.prio_hint.fetch_add(1, Ordering::Relaxed);
             sh.prio.push(c);
         } else {

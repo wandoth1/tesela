@@ -68,6 +68,16 @@ fn file_logical_sum(tree: &Tree) -> u64 {
         .sum()
 }
 
+/// Escaneo previo descartado. NTFS refresca el `mtime` de un directorio en el índice de su padre (el que usa el
+/// listado) de forma diferida, al cerrarse los handles del directorio: justo tras crear un árbol, un primer
+/// escaneo puede ver un `mtime` de directorio 1 s más antiguo que los siguientes. Los tests que comparan dos
+/// escaneos del mismo árbol lo asientan primero.
+fn settle(t: &TempTree) {
+    let mut o = opts(t);
+    o.priority_paths = Some(vec![]);
+    scan(o).expect("escaneo de asentamiento");
+}
+
 /// Suma de lo que ocupan los propios directorios (su alloc menos el de sus hijos).
 fn dirs_own_sum(tree: &Tree) -> u64 {
     (0..tree.len() as u32)
@@ -306,6 +316,7 @@ fn adopcion_por_file_id_de_las_rutas_prioritarias() {
     t.write("m/n/f3.bin", 40_000);
     t.write("m/g.bin", 9_000);
     t.write("fuera/f4.bin", 7_000);
+    settle(&t);
     // Referencia: sin cola prioritaria.
     let mut base = opts(&t);
     base.priority_paths = Some(vec![]);
@@ -382,6 +393,7 @@ fn la_ruta_prioritaria_de_primer_nivel_y_la_profunda_dan_el_mismo_arbol() {
     t.write("p/q/r/f.bin", 10_000);
     t.write("p/q/s.bin", 10_000);
     t.write("otro/g.bin", 10_000);
+    settle(&t);
     let mut a = opts(&t);
     a.priority_paths = Some(vec![]);
     let reference = scan(a).unwrap().tree;
@@ -513,6 +525,7 @@ fn el_resultado_no_depende_del_numero_de_hilos() {
         t.write(&format!("d{i}/s/b.bin"), 4096 * (i % 4 + 1));
     }
     t.hard_link("d1/a1.bin", "d5/enlace.bin");
+    settle(&t);
     let one = {
         let mut o = opts(&t);
         o.threads = 1;
@@ -522,7 +535,9 @@ fn el_resultado_no_depende_del_numero_de_hilos() {
         let mut o = opts(&t);
         o.threads = threads;
         let r = scan(o).unwrap();
-        assert!(r.tree.structural_eq(&one), "{threads} hilos");
+        if let Some(d) = r.tree.first_difference(&one) {
+            panic!("{threads} hilos: {d}");
+        }
     }
 }
 
