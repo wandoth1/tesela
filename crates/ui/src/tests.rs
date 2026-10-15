@@ -836,3 +836,42 @@ fn cada_boton_deshabilitado_da_su_propia_pista() {
     );
     assert_eq!(h.query_all_by_label(hint).count(), 0);
 }
+
+/// Color con que se pinta de verdad el texto `text` en la salida del último frame.
+fn painted_text_color(h: &Harness<'static, App>, text: &str) -> egui::Color32 {
+    for cs in &h.output().shapes {
+        if let egui::epaint::Shape::Text(ts) = &cs.shape
+            && ts.galley.text() == text
+        {
+            let c = ts.galley.job.sections[0].format.color;
+            return if c == egui::Color32::PLACEHOLDER {
+                ts.override_text_color.unwrap_or(ts.fallback_color)
+            } else {
+                c
+            };
+        }
+    }
+    panic!("no se pintó {text:?}");
+}
+
+#[test]
+fn los_controles_deshabilitados_de_la_ventana_se_pintan_atenuados() {
+    let h = harness(opts(StartScreen::Map(MapStart::default())));
+    let pal = crate::theme::Palette::of(false);
+    // Colorear: Tipo (habilitado) frente a Antigüedad y Riesgo (v0.2, deshabilitados).
+    let on = painted_text_color(&h, "Tipo");
+    for t in ["Antigüedad", "Riesgo"] {
+        let off = painted_text_color(&h, t);
+        assert_ne!(on, off, "{t}");
+        assert!(
+            crate::theme::contrast(off, pal.track) >= 2.0,
+            "{t} sigue legible"
+        );
+    }
+    // Los botones de la cesta (Primary, Ghost, Secondary) también.
+    assert_ne!(painted_text_color(&h, "Limpiar 0 B"), egui::Color32::WHITE);
+    assert_eq!(
+        painted_text_color(&h, "Vaciar cesta"),
+        crate::widgets::button_fg(&pal, crate::widgets::ButtonStyle::Ghost, false)
+    );
+}

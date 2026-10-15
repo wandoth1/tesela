@@ -10,7 +10,7 @@ use egui::{
 };
 
 /// Aspecto de un botón.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ButtonStyle {
     /// Relleno de acento: la acción principal de la pantalla.
     Primary,
@@ -18,6 +18,30 @@ pub enum ButtonStyle {
     Secondary,
     /// Sin borde ni fondo hasta pasar el ratón.
     Ghost,
+}
+
+/// Color del texto y del icono de un botón: el normal si está habilitado y uno atenuado (menos contraste, pero legible)
+/// si no.
+pub fn button_fg(pal: &Palette, style: ButtonStyle, enabled: bool) -> Color32 {
+    let normal = match style {
+        ButtonStyle::Primary if pal.dark => pal.ink,
+        ButtonStyle::Primary => Color32::WHITE,
+        ButtonStyle::Secondary => pal.text,
+        ButtonStyle::Ghost => pal.text_muted,
+    };
+    if enabled {
+        normal
+    } else if style == ButtonStyle::Primary {
+        // Sobre el fondo gris de un principal deshabilitado ([`button_disabled_fill`]).
+        theme::mix(pal.text_muted, pal.surface, 0.25)
+    } else {
+        theme::mix(pal.text_muted, pal.surface, 0.35)
+    }
+}
+
+/// Fondo de un botón principal deshabilitado.
+pub fn button_disabled_fill(pal: &Palette) -> Color32 {
+    pal.track
 }
 
 /// Botón con icono opcional y texto. Devuelve la respuesta; si está deshabilitado no reacciona al clic.
@@ -30,19 +54,17 @@ pub fn button(
     enabled: bool,
 ) -> Response {
     let pal = env.pal;
-    let (fg_normal, bg, stroke) = match style {
-        ButtonStyle::Primary => (Color32::WHITE, pal.accent, Stroke::NONE),
-        ButtonStyle::Secondary => (pal.text, pal.surface, Stroke::new(1.0, pal.border)),
-        ButtonStyle::Ghost => (pal.text_muted, Color32::TRANSPARENT, Stroke::NONE),
+    let (bg, stroke) = match style {
+        ButtonStyle::Primary => (pal.accent, Stroke::NONE),
+        ButtonStyle::Secondary => (pal.surface, Stroke::new(1.0, pal.border)),
+        ButtonStyle::Ghost => (Color32::TRANSPARENT, Stroke::NONE),
     };
-    let fg_normal = if style == ButtonStyle::Primary && pal.dark {
-        pal.ink
-    } else {
-        fg_normal
-    };
-    let galley =
-        ui.painter()
-            .layout_no_wrap(text.to_string(), theme::font_semibold(14.0), fg_normal);
+    // El color del texto se decide al pintar (habilitado o no): el galley va con `PLACEHOLDER` y `galley(.., fg)` lo rellena.
+    let galley = ui.painter().layout_no_wrap(
+        text.to_string(),
+        theme::font_semibold(14.0),
+        Color32::PLACEHOLDER,
+    );
     let icon_w = if icon.is_some() { 18.0 + 8.0 } else { 0.0 };
     let w = 12.0 * 2.0 + icon_w + galley.size().x;
     let h = if style == ButtonStyle::Primary {
@@ -73,17 +95,11 @@ pub fn button(
         let fill = if enabled || style == ButtonStyle::Ghost {
             fill
         } else if style == ButtonStyle::Primary {
-            theme::mix(pal.surface, pal.text_muted, 0.35)
+            button_disabled_fill(&pal)
         } else {
             pal.surface_alt
         };
-        let fg = if enabled {
-            fg_normal
-        } else if style == ButtonStyle::Primary {
-            pal.surface
-        } else {
-            theme::mix(pal.text_muted, pal.surface, 0.35)
-        };
+        let fg = button_fg(&pal, style, enabled);
         ui.painter().rect(
             rect,
             CornerRadius::same(8),
@@ -291,6 +307,112 @@ pub fn clipped_text(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use crate::app::{Action, Settings};
+    use crate::i18n::{Lang, Tr};
+    use crate::icons::IconCache;
+    use egui::epaint::Shape;
+
+    /// Color con que se PINTA de verdad el texto `text` en la salida de un pase: el de la sección del galley o, si es
+    /// `PLACEHOLDER`, el de reserva del `TextShape`.
+    fn painted_color(shapes: &[egui::epaint::ClippedShape], text: &str) -> Color32 {
+        for cs in shapes {
+            if let Shape::Text(ts) = &cs.shape
+                && ts.galley.text() == text
+            {
+                let c = ts.galley.job.sections[0].format.color;
+                return if c == Color32::PLACEHOLDER {
+                    ts.override_text_color.unwrap_or(ts.fallback_color)
+                } else {
+                    c
+                };
+            }
+        }
+        panic!("no se pintó el texto {text:?}");
+    }
+
+    #[test]
+    fn el_texto_de_un_boton_deshabilitado_se_pinta_atenuado() {
+        let ctx = egui::Context::default();
+        crate::fonts::install(&ctx);
+        let tr = Tr::new(Lang::Es);
+        for dark in [false, true] {
+            let pal = Palette::of(dark);
+            for style in [
+                ButtonStyle::Primary,
+                ButtonStyle::Secondary,
+                ButtonStyle::Ghost,
+            ] {
+                let mut colors = Vec::new();
+                for enabled in [true, false] {
+                    let label = format!("boton-{style:?}-{enabled}");
+                    let mut icons = IconCache::default();
+                    let mut actions: Vec<Action> = Vec::new();
+                    let mut painted = Color32::PLACEHOLDER;
+                    // Dos pases: el primero aplica las fuentes del sistema.
+                    for _ in 0..2 {
+                        let mut out = ctx.run_ui(Default::default(), |ui| {
+                            let mut env = Env {
+                                tr: &tr,
+                                pal,
+                                icons: &mut icons,
+                                demo: false,
+                                animate: false,
+                                drives: &[],
+                                drives_loading: false,
+                                settings: Settings::default(),
+                                actions: &mut actions,
+                            };
+                            button(ui, &mut env, style, None, &label, enabled);
+                        });
+                        if let Some(Shape::Text(_)) = out
+                            .shapes
+                            .iter()
+                            .map(|s| &s.shape)
+                            .find(|s| matches!(s, Shape::Text(_)))
+                        {
+                            painted = painted_color(&out.shapes, &label);
+                        }
+                        out.textures_delta.clear();
+                    }
+                    assert_eq!(
+                        painted,
+                        button_fg(&pal, style, enabled),
+                        "{style:?} enabled={enabled} dark={dark}"
+                    );
+                    colors.push(painted);
+                }
+                assert_ne!(
+                    colors[0], colors[1],
+                    "{style:?} dark={dark}: el deshabilitado debe verse distinto"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn el_texto_deshabilitado_sigue_legible_pero_con_menos_contraste() {
+        for dark in [false, true] {
+            let pal = Palette::of(dark);
+            for style in [
+                ButtonStyle::Primary,
+                ButtonStyle::Secondary,
+                ButtonStyle::Ghost,
+            ] {
+                let (on, off) = (button_fg(&pal, style, true), button_fg(&pal, style, false));
+                assert_ne!(on, off, "{style:?} dark={dark}");
+                let bg = match style {
+                    ButtonStyle::Primary => button_disabled_fill(&pal),
+                    _ => pal.surface,
+                };
+                assert!(
+                    theme::contrast(off, bg) >= 2.0,
+                    "demasiado apagado: {style:?} dark={dark}: {}",
+                    theme::contrast(off, bg)
+                );
+            }
+        }
+    }
 
     #[test]
     fn las_rayas_quedan_dentro_del_rectangulo() {

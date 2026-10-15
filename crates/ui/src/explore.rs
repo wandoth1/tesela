@@ -872,7 +872,9 @@ fn color_group(ui: &mut Ui, env: &mut Env) {
                     } else {
                         egui::FontId::proportional(13.0)
                     };
-                    let galley = ui.painter().layout_no_wrap(text.clone(), font, pal.text);
+                    let galley =
+                        ui.painter()
+                            .layout_no_wrap(text.clone(), font, egui::Color32::PLACEHOLDER);
                     let (rect, resp) = ui.allocate_exact_size(
                         vec2(galley.size().x + 24.0, 30.0),
                         if enabled {
