@@ -1,0 +1,7 @@
+# Cambios en estas rutas requieren la revisión de su propietario (activa "Require review from Code Owners").
+/.github/ @wandoth1
+/scripts/privacy-check.ps1 @wandoth1
+/scripts/install-hooks.ps1 @wandoth1
+/scripts/build-release.ps1 @wandoth1
+/scripts/tests/ @wandoth1
+/deny.toml @wandoth1

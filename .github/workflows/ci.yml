@@ -4,41 +4,105 @@ on:
   push:
     branches: [main]
   pull_request:
+  schedule:
+    # Cada lunes: cargo deny también con los avisos de seguridad nuevos, aunque no haya commits.
+    - cron: "17 5 * * 1"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: -D warnings
 
+# Las acciones van fijadas por SHA (el tag, en el comentario); Dependabot propone las actualizaciones.
 jobs:
-  # Comprueba que el repositorio no contiene datos de ninguna máquina (solo patrones genéricos).
+  # Comprueba que el repositorio no contiene datos de ninguna máquina (solo patrones genéricos) y prueba el propio check
+  # con PowerShell 7 y con Windows PowerShell 5.1.
   privacy:
+    if: github.event_name != 'schedule'
     runs-on: windows-latest
+    timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: privacy-check (todo el árbol)
         shell: pwsh
         run: ./scripts/privacy-check.ps1 -All -GenericOnly
+      - name: pruebas de privacy-check (pwsh)
+        shell: pwsh
+        run: ./scripts/tests/privacy-check.tests.ps1
+      - name: pruebas de privacy-check (Windows PowerShell 5.1)
+        shell: powershell
+        run: ./scripts/tests/privacy-check.tests.ps1 -Shell powershell
 
   build:
+    if: github.event_name != 'schedule'
     runs-on: windows-latest
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      # La versión de Rust sale de rust-toolchain.toml (se instala sola en la primera llamada a cargo).
-      - uses: Swatinem/rust-cache@v2
-      - uses: taiki-e/install-action@v2
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          tool: cargo-deny
+          persist-credentials: false
+      # La versión de Rust sale de rust-toolchain.toml (se instala sola en la primera llamada a cargo).
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Formato
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+        env:
+          RUSTFLAGS: -D warnings
       - name: Tests
         run: cargo test --workspace
-      - name: Licencias y avisos de seguridad
-        run: cargo deny check
+        env:
+          RUSTFLAGS: -D warnings
+      # Release sin rutas de la máquina en los binarios (y comprobación de que no las llevan).
       - name: Release
-        run: cargo build --release --workspace
+        shell: pwsh
+        run: ./scripts/build-release.ps1
       # No se ejecuta ningún escaneo de C: en el CI: los tests solo usan árboles sintéticos en %TEMP%.
+
+  # Licencias y avisos de seguridad. También se ejecuta cada semana (schedule).
+  deny:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+        with:
+          tool: cargo-deny
+      - name: cargo deny
+        run: cargo deny check
+
+  # La versión mínima de Rust (la que fija egui) tiene que seguir compilando.
+  msrv:
+    if: github.event_name != 'schedule'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Instalar Rust 1.95.0
+        run: rustup toolchain install 1.95.0 --profile minimal
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: cargo +1.95.0 check
+        run: cargo +1.95.0 check --workspace --all-targets
+
+  # Comprobación cruzada para ARM64 (se publicará en la v1.0): solo compila, no enlaza ni ejecuta.
+  aarch64:
+    if: github.event_name != 'schedule'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Instalar el target ARM64
+        run: rustup target add aarch64-pc-windows-msvc
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: cargo check (aarch64-pc-windows-msvc)
+        run: cargo check --workspace --all-targets --target aarch64-pc-windows-msvc
