@@ -21,6 +21,29 @@ spike/
 └─ results/       (local, no versionado) JSON/CSV/PNG de tus mediciones
 ```
 
+## Lista negra local (`spike/.denylist`)
+
+`scripts/collect-results.sh` copia los resultados de `out/` a `results/` redactando datos personales con
+`scripts/redact.py`. La protección **principal** es la **lista blanca** de `redact.py` (solo pasa lo que reconoce). Como
+comprobación adicional, el script busca en lo ya redactado una **lista negra local**: `spike/.denylist`.
+
+- **Es un archivo por máquina y NO se versiona** (está en `.gitignore`): contiene justo los nombres privados que no
+  deben publicarse, así que subirlo al repositorio los filtraría.
+- Si no existe, el script avisa (`AVISO: no existe spike/.denylist`) y solo comprueba el nombre de usuario de Windows y los
+  SID.
+- **Cómo recrearlo** en otra máquina o tras clonar: crea `spike/.denylist` con **una expresión regular (`grep -E`) por
+  línea**, sin comentarios (cada línea no vacía es un patrón; las vacías se ignoran). Pon nombres de carpetas personales,
+  de programas instalados que no quieras revelar, el nombre del equipo, etc. Forma del archivo, con valores genéricos:
+
+  ```text
+  nombre-de-una-carpeta-privada
+  nombre-de-un-programa-instalado
+  nombre-del-equipo
+  ```
+
+- Antes de publicar `results/`, ejecuta `collect-results.sh` con la lista negra creada: aborta si queda alguna coincidencia
+  y no modifica `results/`.
+
 ## Compilar
 
 Desde `spike/`:
