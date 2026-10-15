@@ -66,6 +66,8 @@ pub struct Explore {
     pub(crate) info: ScanInfo,
     /// Versión de los datos para la caché del layout (cambia con el árbol; en el inc. 3, con el overlay).
     pub(crate) version: u64,
+    /// Escrituras que traen los nombres del árbol (para cargar las fuentes de reserva que hagan falta).
+    pub(crate) scripts: crate::fonts::Scripts,
     pub(crate) root: Root,
     /// Raíces anteriores al abrir agrupaciones "Otros" anidadas (Retroceso vuelve por ellas).
     pub(crate) group_stack: Vec<Root>,
@@ -112,10 +114,12 @@ fn next_version() -> u64 {
 
 impl Explore {
     fn new(tree: Tree, info: ScanInfo, animate: bool) -> Explore {
+        let scripts = crate::fonts::scripts_of_wtf8(tree.names_bytes());
         Explore {
             tree: Arc::new(tree),
             info,
             version: next_version(),
+            scripts,
             root: Root::node(0),
             group_stack: Vec::new(),
             selection: None,

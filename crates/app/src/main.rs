@@ -34,6 +34,14 @@ fn main() -> eframe::Result {
         std::process::exit(2);
     }
 
+    // Sin fuentes de sistema no se puede dibujar texto (no se embebe ninguna): se avisa y se sale, en vez de un pánico.
+    if !tesela_ui::fonts::available() {
+        console::print(
+            "tesela: no se encontró ninguna fuente de Windows (Segoe UI, Tahoma o Arial) en la carpeta de fuentes del sistema",
+        );
+        std::process::exit(3);
+    }
+
     let config_path = config::config_path();
     let config = config_path.as_deref().map(Config::load).unwrap_or_default();
     // Los argumentos de esta sesión mandan sobre lo guardado, pero no se guardan.

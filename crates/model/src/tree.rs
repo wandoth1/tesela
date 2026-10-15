@@ -226,6 +226,11 @@ impl Tree {
         &self.names[n.name_off as usize..n.name_off as usize + n.name_len as usize]
     }
 
+    /// El arena de nombres completo en WTF-8 (para recorrerlo de una vez, p. ej. detectar escrituras).
+    pub fn names_bytes(&self) -> &[u8] {
+        &self.names
+    }
+
     /// Nombre como texto (los sustitutos desparejados se muestran como U+FFFD).
     pub fn name_lossy(&self, id: NodeId) -> Cow<'_, str> {
         String::from_utf8_lossy(self.name_bytes(id))

@@ -27,8 +27,9 @@ crossbeam-channel = "0.5.17"
 crossbeam-deque = "0.8.8"
 dunce = "1.0.5"
 embed-manifest = "1.5.1"
-eframe = { version = "0.36.2", default-features = false, features = ["accesskit", "default_fonts", "wgpu_no_default_features"] }
-egui = "0.36.2"
+eframe = { version = "0.36.2", default-features = false, features = ["accesskit", "wgpu_no_default_features"] }
+# Sin `default_fonts`: no se redistribuye ninguna fuente dentro del .exe (se usan las del sistema, PLAN.md §2.10).
+egui = { version = "0.36.2", default-features = false }
 egui_kittest = "0.36.2"
 fluent-bundle = "0.16.0"
 png = "0.18.1"

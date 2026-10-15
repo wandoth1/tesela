@@ -113,7 +113,7 @@ discos reales ni resultados de escaneos (los ejemplos, capturas y fixtures son s
 ### Licencias de terceros
 
 - **Iconos:** un subconjunto de 30 de [Fluent UI System Icons](https://github.com/microsoft/fluentui-system-icons) (© Microsoft, MIT), tal como salen de su repositorio oficial, con su `LICENSE` en `crates/ui/assets/icons/`.
-- **Fuentes:** la interfaz usa Segoe UI (Variable) del propio Windows, que se carga en tiempo de ejecución y **no se redistribuye**. Si faltara, `egui` aporta unas de reserva (Ubuntu-Light, Hack y símbolos de Noto y Emoji Icon Font) bajo sus licencias (OFL-1.1 y Ubuntu Font Licence 1.0), que `deny.toml` admite expresamente.
+- **Fuentes:** la interfaz usa Segoe UI (Variable) del propio Windows, que se carga en tiempo de ejecución y **no se redistribuye**. El `.exe` **no lleva ninguna fuente** (egui se compila sin `default_fonts`, así que tampoco hay fuentes OFL ni Ubuntu). Los nombres en chino, japonés, coreano, tailandés, índico, árabe, hebreo o con símbolos cargan, solo si aparecen, la fuente de reserva del sistema que corresponda (Microsoft YaHei o MS Gothic, Malgun Gothic, Tahoma, Nirmala UI, Segoe UI y Segoe UI Symbol). Si Windows no tuviera ninguna fuente utilizable, la aplicación lo dice y se cierra. Los emoji en color no se pueden dibujar (egui no los admite).
 
 ## Licencia
 

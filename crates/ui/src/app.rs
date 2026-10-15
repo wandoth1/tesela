@@ -170,12 +170,14 @@ pub struct TeselaUi {
     last_request: Option<ScanRequest>,
     /// Las fuentes del sistema se activan al empezar el SIGUIENTE pase de egui: el primer pase se descarta.
     fonts_pending: bool,
+    /// Escrituras cuyas fuentes de reserva ya están cargadas.
+    font_scripts: crate::fonts::Scripts,
 }
 
 impl TeselaUi {
     /// Crea la interfaz: instala fuentes del sistema y estilos en `ctx`.
     pub fn new(ctx: &egui::Context, opts: Options) -> TeselaUi {
-        crate::fonts::install(ctx);
+        crate::fonts::install(ctx, crate::fonts::Scripts::NONE);
         theme::install(ctx, opts.settings.theme);
         let mut ui = TeselaUi {
             settings: opts.settings,
@@ -191,6 +193,7 @@ impl TeselaUi {
             notice: None,
             last_request: None,
             fonts_pending: true,
+            font_scripts: crate::fonts::Scripts::NONE,
         };
         if opts.demo.is_some() {
             ui.drives = demo::drives();
@@ -468,5 +471,25 @@ impl TeselaUi {
             }
         }
         self.apply(&ctx, actions);
+        self.ensure_fonts(&ctx);
+    }
+
+    /// Carga las fuentes de reserva de las escrituras que hay en pantalla (nombres del árbol, etiquetas de unidades y
+    /// buscador) si aún no están. Valen desde el siguiente frame.
+    fn ensure_fonts(&mut self, ctx: &egui::Context) {
+        let mut needed = self
+            .drives
+            .iter()
+            .fold(crate::fonts::Scripts::NONE, |a, d| {
+                a | crate::fonts::scripts_of_str(&d.label)
+            });
+        if let Screen::Explore(e) = &self.screen {
+            needed = needed | e.scripts | crate::fonts::scripts_of_str(&e.search);
+        }
+        if !self.font_scripts.contains(needed) {
+            self.font_scripts = self.font_scripts | needed;
+            crate::fonts::install(ctx, self.font_scripts);
+            ctx.request_repaint();
+        }
     }
 }

@@ -334,7 +334,7 @@ mod tests {
     #[test]
     fn el_texto_de_un_boton_deshabilitado_se_pinta_atenuado() {
         let ctx = egui::Context::default();
-        crate::fonts::install(&ctx);
+        crate::fonts::install_now(&ctx, crate::fonts::Scripts::NONE);
         let tr = Tr::new(Lang::Es);
         for dark in [false, true] {
             let pal = Palette::of(dark);

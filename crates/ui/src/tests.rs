@@ -875,3 +875,117 @@ fn los_controles_deshabilitados_de_la_ventana_se_pintan_atenuados() {
         crate::widgets::button_fg(&pal, crate::widgets::ButtonStyle::Ghost, false)
     );
 }
+
+#[test]
+fn los_nombres_en_otros_alfabetos_acaban_en_una_fuente_que_tiene_el_glifo() {
+    use crate::fonts::{self, Scripts};
+    use std::io::Write;
+    // Árbol sintético SOLO bajo %TEMP%\tesela-test-<uuid>, con nombres de cada escritura.
+    let base = std::env::temp_dir().join(format!("tesela-test-{}", uuid::Uuid::new_v4()));
+    let root = base.join("raiz");
+    std::fs::create_dir_all(&root).unwrap();
+    let names: [(&str, Scripts); 10] = [
+        ("Documentos ñ é ü.txt", Scripts::NONE),
+        ("Ελληνικά Кириллица.txt", Scripts::NONE),
+        ("العربية.txt", Scripts::RTL),
+        ("עברית.txt", Scripts::RTL),
+        ("日本語の名前.txt", Scripts::HAN | Scripts::KANA),
+        ("中文名称.txt", Scripts::HAN),
+        ("한국어.txt", Scripts::HANGUL),
+        ("สวัสดี.txt", Scripts::THAI),
+        ("नमस्ते.txt", Scripts::INDIC),
+        ("→ flecha ★.txt", Scripts::SYMBOLS),
+    ];
+    for (n, _) in &names {
+        std::fs::File::create(root.join(n))
+            .unwrap()
+            .write_all(&[1u8; 5000])
+            .unwrap();
+    }
+    std::fs::File::create(root.join("😀 emoji.txt"))
+        .unwrap()
+        .write_all(&[1u8; 5000])
+        .unwrap();
+    let root = dunce::canonicalize(&root).unwrap();
+    let res = tesela_scanner::scan(tesela_scanner::ScanOptions::new(&root)).unwrap();
+    let req = crate::app::ScanRequest {
+        root,
+        label: "alfabetos".into(),
+        drive: None,
+    };
+    let ex = crate::explore::Explore::from_scan(req, res, false, std::time::Duration::ZERO);
+    // El árbol anuncia las escrituras que trae.
+    for s in [
+        Scripts::RTL,
+        Scripts::HAN,
+        Scripts::KANA,
+        Scripts::HANGUL,
+        Scripts::THAI,
+        Scripts::INDIC,
+        Scripts::SYMBOLS,
+        Scripts::EMOJI,
+    ] {
+        assert!(ex.scripts.contains(s), "{s:?}");
+    }
+    let mut o = opts(StartScreen::Home);
+    o.demo = None;
+    let mut h = harness(o);
+    h.state_mut().ui_mut().screen = crate::app::Screen::Explore(Box::new(ex));
+    h.run_steps(8); // ensure_fonts pide las reservas y valen desde el frame siguiente
+    let dir = crate::platform::fonts_dir().unwrap();
+    let have = |s: Scripts| {
+        fonts::fallback_groups(s)
+            .iter()
+            .all(|(_, c)| c.iter().any(|f| dir.join(f).exists()))
+    };
+    let mut checked = 0;
+    let mut all: Vec<(String, Scripts)> = names.iter().map(|(n, s)| (n.to_string(), *s)).collect();
+    for (n, s) in &all {
+        if !s.is_empty() && !have(*s) {
+            eprintln!("sin fuente de reserva en este equipo para {n}: se omite");
+            continue;
+        }
+        for fam in [
+            egui::FontId::proportional(14.0),
+            crate::theme::font_semibold(14.0),
+            egui::FontId::monospace(12.0),
+        ] {
+            let ok = h.ctx.fonts_mut(|f| f.has_glyphs(&fam, n));
+            let missing: String = n
+                .chars()
+                .filter(|c| !h.ctx.fonts_mut(|f| f.has_glyph(&fam, *c)))
+                .collect();
+            assert!(
+                ok,
+                "algún glifo de {n:?} no está en ninguna fuente de {:?}: faltan {missing:?}",
+                fam.family
+            );
+        }
+        checked += 1;
+    }
+    assert!(
+        checked >= 4,
+        "al menos latino, griego, árabe y hebreo se comprobaron"
+    );
+    // Y la ventana pinta la lista con esos nombres sin pánico.
+    h.get_by_label("Lista").click();
+    h.run_steps(4);
+    assert!(h.query_by_label_contains("日本語の名前.txt, ").is_some());
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
+#[test]
+fn escribir_en_el_buscador_en_otra_escritura_carga_su_fuente() {
+    let mut h = harness(opts(StartScreen::Map(MapStart::default())));
+    h.get_by_label("Buscar").focus();
+    h.run_steps(2);
+    h.get_by_label("Buscar").type_text("한국어");
+    h.run_steps(6);
+    let dir = crate::platform::fonts_dir().unwrap();
+    if dir.join("malgun.ttf").exists() {
+        let ok = h
+            .ctx
+            .fonts_mut(|f| f.has_glyphs(&egui::FontId::proportional(14.0), "한국어"));
+        assert!(ok, "el hangul del buscador debe tener glifo");
+    }
+}

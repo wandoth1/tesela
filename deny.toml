@@ -19,10 +19,6 @@ allow = [
     "BSL-1.0",        # clipboard-win, error-code (portapapeles)
     "ISC",            # libloading (wgpu-hal)
     "Zlib",           # foldhash (hashbrown, wgpu); los demas Zlib del arbol tienen alternativa MIT o Apache-2.0
-    # Fuentes de reserva que egui embebe con `default_fonts` (epaint_default_fonts, "(MIT OR Apache-2.0) AND OFL-1.1 AND
-    # Ubuntu-font-1.0"). Son los unicos datos que se redistribuyen en el exe; Tesela prefiere las fuentes del sistema.
-    "OFL-1.1",
-    "Ubuntu-font-1.0",
 ]
 confidence-threshold = 0.8
 
