@@ -318,6 +318,24 @@ struct Row {
     done: bool,
 }
 
+/// Junta las rutas prioritarias de la misma clase en una sola fila (suma de bytes; terminada si todas lo están), en el
+/// orden de la primera aparición de cada clase.
+fn group_by_kind(
+    items: impl IntoIterator<Item = (Option<KnownKind>, u64, bool)>,
+) -> Vec<(Option<KnownKind>, u64, bool)> {
+    let mut out: Vec<(Option<KnownKind>, u64, bool)> = Vec::new();
+    for (k, bytes, done) in items {
+        match out.iter_mut().find(|r| r.0 == k) {
+            Some(r) => {
+                r.1 = r.1.saturating_add(bytes);
+                r.2 &= done;
+            }
+            None => out.push((k, bytes, done)),
+        }
+    }
+    out
+}
+
 fn kind_key(k: Option<KnownKind>) -> &'static str {
     match k {
         Some(KnownKind::UserTemp) => "known-user-temp",
@@ -366,16 +384,20 @@ fn view_of(s: &ScanScreen, env: &Env) -> View {
             let p = &r.progress;
             let load = std::sync::atomic::Ordering::Relaxed;
             let bytes = p.alloc.load(load);
-            let rows = p
-                .priority_targets()
-                .iter()
-                .zip(&r.kinds)
-                .map(|(t, k)| Row {
-                    name: env.tr.t(kind_key(*k)),
-                    bytes: t.alloc.load(load),
-                    done: t.is_done(),
-                })
-                .collect();
+            // Un navegador tiene varias carpetas de caché (por perfil): una sola fila por clase.
+            let rows = group_by_kind(
+                p.priority_targets()
+                    .iter()
+                    .zip(&r.kinds)
+                    .map(|(t, k)| (*k, t.alloc.load(load), t.is_done())),
+            )
+            .into_iter()
+            .map(|(k, bytes, done)| Row {
+                name: env.tr.t(kind_key(k)),
+                bytes,
+                done,
+            })
+            .collect();
             let mut bars: Vec<(String, u64, bool)> = p
                 .top_levels()
                 .iter()
@@ -799,5 +821,32 @@ pub(crate) mod test_hooks {
             .filter(|p| cancelled.iter().any(|c| Arc::ptr_eq(c, p)))
             .count();
         (started.len(), n)
+    }
+}
+
+#[cfg(test)]
+mod group_tests {
+    use super::*;
+
+    #[test]
+    fn las_carpetas_de_cache_de_un_navegador_son_una_sola_fila() {
+        let rows = group_by_kind([
+            (Some(KnownKind::UserTemp), 10, true),
+            (Some(KnownKind::ChromeCache), 5, true),
+            (Some(KnownKind::ChromeCache), 7, false),
+            (Some(KnownKind::FirefoxCache), 1, true),
+            (Some(KnownKind::ChromeCache), 3, true),
+            (None, 2, true),
+        ]);
+        assert_eq!(
+            rows,
+            vec![
+                (Some(KnownKind::UserTemp), 10, true),
+                (Some(KnownKind::ChromeCache), 15, false),
+                (Some(KnownKind::FirefoxCache), 1, true),
+                (None, 2, true),
+            ]
+        );
+        assert!(group_by_kind([]).is_empty());
     }
 }

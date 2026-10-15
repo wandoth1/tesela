@@ -24,7 +24,10 @@ mod progress;
 mod sys;
 mod walker;
 
-pub use known::{KnownKind, current_user_sid, downloads_dir, known_paths, known_paths_labeled};
+pub use known::{
+    BrowserFamily, BrowserPath, BrowserRoots, KnownKind, browser_cache_dirs, classify_browser_path,
+    current_user_sid, downloads_dir, known_paths, known_paths_labeled,
+};
 pub use progress::{PriorityTarget, Progress, TopLevel};
 
 use crossbeam_deque::{Stealer, Worker};
