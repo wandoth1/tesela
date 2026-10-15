@@ -13,6 +13,7 @@ use crate::explore::{Explore, ScanInfo};
 use crate::icons::Icon;
 use crate::theme::{self, Palette};
 use crate::widgets::{self, ButtonStyle};
+use crossbeam_channel::Receiver;
 use egui::{CornerRadius, Margin, RichText, Ui, vec2};
 use std::collections::HashMap;
 use std::path::Path;
@@ -49,6 +50,8 @@ struct Demo {
 }
 
 enum Kind {
+    /// Abriendo la raíz y resolviendo las rutas conocidas (E/S que puede tardar: va en un hilo, no en el de la interfaz).
+    Starting(Receiver<Result<Real, String>>),
     Real(Real),
     Demo(Demo),
 }
@@ -60,6 +63,8 @@ pub struct ScanScreen {
     /// Pedido el descarte (Cancelar): al terminar se vuelve al inicio sin mostrar el mapa.
     discard: bool,
     animate: bool,
+    /// "Parar y ver" pedido antes de que el escaneo haya arrancado.
+    stop_pending: bool,
     kind: Kind,
 }
 
@@ -69,42 +74,55 @@ fn canon_key(p: &Path) -> Option<String> {
     Some(dunce::simplified(&c).to_string_lossy().to_lowercase())
 }
 
-impl ScanScreen {
-    /// Escaneo real de `req.root`.
-    pub fn real(
-        _ctx: &egui::Context,
-        req: ScanRequest,
-        animate: bool,
-    ) -> Result<ScanScreen, String> {
-        let handle =
-            tesela_scanner::start(ScanOptions::new(&req.root)).map_err(|e| e.to_string())?;
-        // Las rutas prioritarias salen canónicas; se emparejan con las candidatas (también canónicas) para nombrarlas.
-        let drive_root = req.drive.as_ref().map(|d| d.root());
-        let labeled =
-            tesela_scanner::known_paths_labeled(drive_root.as_deref().or(Some(req.root.as_path())));
-        let mut by_path: HashMap<String, KnownKind> = HashMap::new();
-        for (kind, p) in labeled {
-            if let Some(k) = canon_key(&p) {
-                by_path.entry(k).or_insert(kind);
-            }
+/// Arranca el escaneo real y empareja las rutas prioritarias con su clase (hilo auxiliar).
+fn start_real(req: &ScanRequest) -> Result<Real, String> {
+    let handle = tesela_scanner::start(ScanOptions::new(&req.root)).map_err(|e| e.to_string())?;
+    // Las rutas prioritarias salen canónicas; se emparejan con las candidatas (también canónicas) para nombrarlas.
+    let drive_root = req.drive.as_ref().map(|d| d.root());
+    let labeled =
+        tesela_scanner::known_paths_labeled(drive_root.as_deref().or(Some(req.root.as_path())));
+    let mut by_path: HashMap<String, KnownKind> = HashMap::new();
+    for (kind, p) in labeled {
+        if let Some(k) = canon_key(&p) {
+            by_path.entry(k).or_insert(kind);
         }
-        let progress = handle.progress().clone();
-        let kinds = progress
-            .priority_targets()
-            .iter()
-            .map(|t| canon_key(&t.path).and_then(|k| by_path.get(&k).copied()))
-            .collect();
-        Ok(ScanScreen {
+    }
+    let progress = handle.progress().clone();
+    let kinds = progress
+        .priority_targets()
+        .iter()
+        .map(|t| canon_key(&t.path).and_then(|k| by_path.get(&k).copied()))
+        .collect();
+    Ok(Real {
+        handle: Some(handle),
+        progress,
+        kinds,
+    })
+}
+
+impl ScanScreen {
+    /// Escaneo real de `req.root`. Arrancarlo (abrir y listar la raíz, resolver las rutas prioritarias) es E/S que puede
+    /// tardar en un disco frío o de red: se hace en un hilo y la pantalla aparece al instante.
+    pub fn real(ctx: &egui::Context, req: ScanRequest, animate: bool) -> ScanScreen {
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let (c, r) = (ctx.clone(), req.clone());
+        std::thread::spawn(move || {
+            let res = start_real(&r);
+            if let Err(crossbeam_channel::SendError(Ok(real))) = tx.send(res)
+                && let Some(h) = &real.handle
+            {
+                h.cancel(); // nadie lo espera (se cerró la pantalla): que los hilos terminen
+            }
+            c.request_repaint();
+        });
+        ScanScreen {
             req,
             started: Instant::now(),
             discard: false,
             animate,
-            kind: Kind::Real(Real {
-                handle: Some(handle),
-                progress,
-                kinds,
-            }),
-        })
+            stop_pending: false,
+            kind: Kind::Starting(rx),
+        }
     }
 
     /// Escaneo simulado sobre el árbol sintético. `frozen` fija la fracción (capturas y pruebas).
@@ -122,6 +140,7 @@ impl ScanScreen {
             started: Instant::now(),
             discard: false,
             animate: true,
+            stop_pending: false,
             kind: Kind::Demo(Demo {
                 tree,
                 top,
@@ -156,7 +175,30 @@ impl ScanScreen {
     /// Avanza el escaneo: si terminó, devuelve el resultado.
     pub fn poll(&mut self, ctx: &egui::Context) -> Option<ScanOutcome> {
         let started = self.started;
+        if let Kind::Starting(rx) = &self.kind {
+            match rx.try_recv() {
+                Ok(Ok(real)) => {
+                    if (self.discard || self.stop_pending)
+                        && let Some(h) = &real.handle
+                    {
+                        h.cancel();
+                    }
+                    self.kind = Kind::Real(real);
+                }
+                Ok(Err(msg)) => return Some(ScanOutcome::Failed(msg)),
+                Err(crossbeam_channel::TryRecvError::Empty) => {
+                    ctx.request_repaint_after(Duration::from_millis(50));
+                    return None;
+                }
+                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                    return Some(ScanOutcome::Failed(
+                        "el hilo de arranque terminó sin resultado".into(),
+                    ));
+                }
+            }
+        }
         match &mut self.kind {
+            Kind::Starting(_) => None,
             Kind::Real(r) => {
                 if r.handle.as_ref().is_some_and(ScanHandle::is_finished) {
                     let handle = r.handle.take()?;
@@ -202,6 +244,7 @@ impl ScanScreen {
 
     fn stop(&mut self) {
         match &mut self.kind {
+            Kind::Starting(_) => self.stop_pending = true,
             Kind::Real(r) => {
                 if let Some(h) = &r.handle {
                     h.cancel();
@@ -209,6 +252,14 @@ impl ScanScreen {
             }
             Kind::Demo(d) => d.stop = true,
         }
+    }
+}
+
+impl Drop for ScanScreen {
+    /// Cerrar la pantalla (volver al inicio, lanzar otro escaneo) cancela el escaneo en marcha: los hilos no se quedan
+    /// trabajando para nadie.
+    fn drop(&mut self) {
+        self.cancel();
     }
 }
 
@@ -253,6 +304,16 @@ fn view_of(s: &ScanScreen, env: &Env) -> View {
         .map(|d| d.total.saturating_sub(d.free))
         .filter(|t| *t > 0);
     match &s.kind {
+        Kind::Starting(_) => View {
+            files: 0,
+            bytes: 0,
+            total,
+            errors: 0,
+            rows: Vec::new(),
+            bars: Vec::new(),
+            finished: false,
+            fraction: total.map(|_| 0.0),
+        },
         Kind::Real(r) => {
             let p = &r.progress;
             let load = std::sync::atomic::Ordering::Relaxed;

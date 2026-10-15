@@ -365,7 +365,7 @@ impl TeselaUi {
         match outcome {
             Some(ScanOutcome::Done(ex)) => self.screen = Screen::Explore(ex),
             Some(ScanOutcome::Failed(msg)) => {
-                self.notice = Some(msg);
+                self.notice = Some(self.tr.ta("error-scan-start", crate::args!["error" => msg]));
                 self.screen = Screen::Home;
             }
             Some(ScanOutcome::Cancelled) => self.screen = Screen::Home,
@@ -376,18 +376,12 @@ impl TeselaUi {
     fn start_scan(&mut self, ctx: &egui::Context, req: ScanRequest) {
         self.notice = None;
         self.last_request = Some(req.clone());
-        let result = if let Some(d) = self.demo {
-            Ok(ScanScreen::demo(req, None, d.stopped))
+        let screen = if let Some(d) = self.demo {
+            ScanScreen::demo(req, None, d.stopped)
         } else {
             ScanScreen::real(ctx, req, self.animate)
         };
-        match result {
-            Ok(s) => self.screen = Screen::Scan(Box::new(s)),
-            Err(msg) => {
-                self.notice = Some(self.tr.ta("error-scan-start", crate::args!["error" => msg]));
-                self.screen = Screen::Home;
-            }
-        }
+        self.screen = Screen::Scan(Box::new(screen));
     }
 
     fn apply(&mut self, ctx: &egui::Context, actions: Vec<Action>) {

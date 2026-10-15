@@ -305,7 +305,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
                         env.tr.t("menu-unavailable-system")
                     });
                 } else if r.clicked() {
-                    platform::show_properties(&tree.path(id));
+                    platform::show_properties_async(tree.path(id));
                 }
             });
 

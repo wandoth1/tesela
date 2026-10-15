@@ -11,10 +11,13 @@ use windows_sys::Win32::Foundation::{FALSE, TRUE};
 use windows_sys::Win32::Storage::FileSystem::{
     GetDiskFreeSpaceExW, GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW,
 };
-use windows_sys::Win32::System::Com::CoTaskMemFree;
+use windows_sys::Win32::System::Com::{
+    COINIT_APARTMENTTHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize,
+};
+use windows_sys::Win32::System::Diagnostics::Debug::{SEM_FAILCRITICALERRORS, SetThreadErrorMode};
 use windows_sys::Win32::UI::Shell::{
-    FOLDERID_Fonts, SEE_MASK_FLAG_NO_UI, SEE_MASK_INVOKEIDLIST, SHELLEXECUTEINFOW,
-    SHGetKnownFolderPath, ShellExecuteExW,
+    FOLDERID_Fonts, SEE_MASK_FLAG_NO_UI, SEE_MASK_INVOKEIDLIST, SEE_MASK_NOASYNC,
+    SHELLEXECUTEINFOW, SHGetKnownFolderPath, ShellExecuteExW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     SPI_GETCLIENTAREAANIMATION, SW_SHOW, SystemParametersInfoW,
@@ -119,9 +122,8 @@ pub fn client_area_animation_enabled() -> bool {
     ok == FALSE || enabled != FALSE
 }
 
-/// Unidades de disco del equipo con su espacio. Consulta cada letra presente; las que no responden (sin medio, red
-/// desconectada) se omiten. Puede tardar con una unidad de red caída: llamar desde un hilo.
-pub fn drives() -> Vec<DriveInfo> {
+/// Letras y tipos de las unidades presentes (solo consultas locales, sin tocar el medio: no se bloquea).
+fn enumerate_drives() -> Vec<(char, DriveKind)> {
     // SAFETY: no recibe punteros; devuelve una máscara de bits con una letra por bit.
     let mask = unsafe { GetLogicalDrives() };
     let mut out = Vec::new();
@@ -138,13 +140,25 @@ pub fn drives() -> Vec<DriveInfo> {
             DRIVE_REMOTE => DriveKind::Network,
             _ => continue, // CD-ROM, disco RAM, desconocidas
         };
-        let (mut free_caller, mut total, mut free) = (0u64, 0u64, 0u64);
-        // SAFETY: `root` termina en NUL y los tres punteros son escribibles.
-        let ok =
-            unsafe { GetDiskFreeSpaceExW(root.as_ptr(), &mut free_caller, &mut total, &mut free) };
-        if ok == FALSE || total == 0 {
-            continue;
-        }
+        out.push((letter, kind));
+    }
+    out
+}
+
+/// Espacio y etiqueta de una unidad. PUEDE BLOQUEARSE (unidad de red caída, medio que no responde): se llama desde un
+/// hilo con plazo ([`drives`]). Con `SEM_FAILCRITICALERRORS` en ESTE hilo, un medio ausente falla sin abrir el diálogo
+/// "Inserte un disco".
+fn query_drive(letter: char, kind: DriveKind) -> Option<DriveInfo> {
+    let mut old: u32 = 0;
+    // SAFETY: `old` es un `u32` escribible; el modo de error es por hilo y se restaura al terminar.
+    let changed = unsafe { SetThreadErrorMode(SEM_FAILCRITICALERRORS, &mut old) } != FALSE;
+    let root = wide(&format!("{letter}:\\"));
+    let (mut free_caller, mut total, mut free) = (0u64, 0u64, 0u64);
+    // SAFETY: `root` termina en NUL y los tres punteros son escribibles.
+    let ok = unsafe { GetDiskFreeSpaceExW(root.as_ptr(), &mut free_caller, &mut total, &mut free) };
+    let info = if ok == FALSE || total == 0 {
+        None
+    } else {
         let mut name = [0u16; 261];
         // SAFETY: `root` termina en NUL; `name` tiene la longitud indicada; el resto de salidas son opcionales (nulas).
         let got = unsafe {
@@ -165,27 +179,104 @@ pub fn drives() -> Vec<DriveInfo> {
         } else {
             String::new()
         };
-        out.push(DriveInfo {
+        Some(DriveInfo {
             letter,
             label,
             kind,
             total,
             free,
+        })
+    };
+    if changed {
+        // SAFETY: restaura el valor que devolvió la llamada anterior en este mismo hilo.
+        unsafe { SetThreadErrorMode(old, std::ptr::null_mut()) };
+    }
+    info
+}
+
+/// Ejecuta cada trabajo en su propio hilo y espera como mucho `deadline` EN TOTAL: los que no terminan a tiempo dan
+/// `None` (su hilo sigue por su cuenta, sin retener a nadie). Así una unidad de red caída no congela la aplicación.
+pub fn collect_with_deadline<T: Send + 'static>(
+    jobs: Vec<Box<dyn FnOnce() -> Option<T> + Send>>,
+    deadline: std::time::Duration,
+) -> Vec<Option<T>> {
+    let n = jobs.len();
+    let (tx, rx) = crossbeam_channel::unbounded::<(usize, Option<T>)>();
+    for (i, job) in jobs.into_iter().enumerate() {
+        let tx = tx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send((i, job()));
         });
     }
+    drop(tx);
+    let end = std::time::Instant::now() + deadline;
+    let mut out: Vec<Option<T>> = (0..n).map(|_| None).collect();
+    let mut got = 0;
+    while got < n {
+        let left = end.saturating_duration_since(std::time::Instant::now());
+        match rx.recv_timeout(left) {
+            Ok((i, v)) => {
+                out[i] = v;
+                got += 1;
+            }
+            Err(_) => break,
+        }
+    }
     out
+}
+
+/// Unidades de disco del equipo con su espacio. Cada unidad se consulta en su propio hilo con un plazo de 3 s: las que no
+/// responden (sin medio, red caída) se omiten sin retrasar a las demás. Llamar desde un hilo, no desde el de la interfaz.
+pub fn drives() -> Vec<DriveInfo> {
+    drives_with_deadline(std::time::Duration::from_secs(3))
+}
+
+/// Como [`drives`], con el plazo indicado.
+pub fn drives_with_deadline(deadline: std::time::Duration) -> Vec<DriveInfo> {
+    let jobs: Vec<Box<dyn FnOnce() -> Option<DriveInfo> + Send>> = enumerate_drives()
+        .into_iter()
+        .map(|(letter, kind)| {
+            Box::new(move || query_drive(letter, kind))
+                as Box<dyn FnOnce() -> Option<DriveInfo> + Send>
+        })
+        .collect();
+    collect_with_deadline(jobs, deadline)
+        .into_iter()
+        .flatten()
+        .collect()
 }
 
 /// Abre la hoja de Propiedades del Explorador para `path`. Devuelve `false` si Windows no pudo (ruta inexistente...).
 /// Sin interfaz de error (`SEE_MASK_FLAG_NO_UI`): si falla, no sale ningún cuadro.
 pub fn show_properties(path: &Path) -> bool {
+    show_properties_impl(path, false)
+}
+
+/// Abre las Propiedades en un hilo propio (la E/S del shell no debe bloquear la interfaz). El hilo inicializa COM y espera a
+/// que el shell termine (`SEE_MASK_NOASYNC`): si no, al acabar el hilo se cerraría la hoja. Devuelve el hilo (su resultado
+/// es si Windows pudo abrirla).
+pub fn show_properties_async(path: PathBuf) -> std::thread::JoinHandle<bool> {
+    std::thread::spawn(move || {
+        // SAFETY: `CoInitializeEx` no recibe punteros (nulo = reservado) y se empareja con `CoUninitialize` solo si tuvo éxito.
+        let hr = unsafe { CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32) };
+        let ok = show_properties_impl(&path, true);
+        if hr >= 0 {
+            // SAFETY: la llamada anterior inicializó COM en ESTE hilo.
+            unsafe { CoUninitialize() };
+        }
+        ok
+    })
+}
+
+fn show_properties_impl(path: &Path, wait: bool) -> bool {
     let file = wide_path(path);
     let verb = wide("properties");
     // SAFETY: `SHELLEXECUTEINFOW` es una estructura de enteros y punteros para la que todo cero es un valor válido
     // (punteros nulos); se rellenan a continuación los campos que usa esta llamada.
     let mut info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
     info.cbSize = size_of::<SHELLEXECUTEINFOW>() as u32;
-    info.fMask = SEE_MASK_INVOKEIDLIST | SEE_MASK_FLAG_NO_UI;
+    info.fMask =
+        SEE_MASK_INVOKEIDLIST | SEE_MASK_FLAG_NO_UI | if wait { SEE_MASK_NOASYNC } else { 0 };
     info.lpVerb = verb.as_ptr();
     info.lpFile = file.as_ptr();
     info.nShow = SW_SHOW;
@@ -244,6 +335,17 @@ mod tests {
     }
 
     #[test]
+    fn las_propiedades_en_un_hilo_propio_tambien_fallan_sin_abrir_nada() {
+        let p =
+            std::env::temp_dir().join(format!("tesela-test-{}-no-existe", uuid::Uuid::new_v4()));
+        assert!(
+            !show_properties_async(p)
+                .join()
+                .expect("el hilo no entra en pánico")
+        );
+    }
+
+    #[test]
     fn propiedades_de_una_ruta_inexistente_falla_sin_abrir_nada() {
         // Una ruta que no existe bajo %TEMP%: la llamada se ejecuta y Windows la rechaza sin mostrar ningún cuadro.
         let p = std::env::temp_dir().join(format!("tesela-test-{}-no-existe", std::process::id()));
@@ -257,6 +359,34 @@ mod tests {
         assert!(p.is_absolute(), "{p:?}");
         assert!(p.exists(), "{p:?}");
         assert_eq!(p.file_name().unwrap(), "explorer.exe");
+    }
+
+    #[test]
+    fn una_unidad_que_no_responde_no_retrasa_a_las_demas() {
+        let t0 = std::time::Instant::now();
+        let jobs: Vec<Box<dyn FnOnce() -> Option<u32> + Send>> = vec![
+            Box::new(|| Some(1)),
+            Box::new(|| {
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                Some(2)
+            }),
+            Box::new(|| None),
+            Box::new(|| Some(4)),
+        ];
+        let out = collect_with_deadline(jobs, std::time::Duration::from_millis(300));
+        assert_eq!(out, vec![Some(1), None, None, Some(4)]);
+        assert!(
+            t0.elapsed().as_millis() < 1500,
+            "esperó más del plazo: {:?}",
+            t0.elapsed()
+        );
+        // Con un plazo holgado se recoge todo.
+        let jobs: Vec<Box<dyn FnOnce() -> Option<u32> + Send>> =
+            vec![Box::new(|| Some(7)), Box::new(|| Some(8))];
+        assert_eq!(
+            collect_with_deadline(jobs, std::time::Duration::from_secs(5)),
+            vec![Some(7), Some(8)]
+        );
     }
 
     #[test]

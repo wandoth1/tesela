@@ -1018,7 +1018,7 @@ pub(crate) fn menu_items(ui: &mut Ui, env: &mut Env, ex: &mut Explore, sel: Sel)
         b.clone().on_disabled_hover_text(unavailable);
     }
     if b.clicked() {
-        platform::show_properties(&tree.path(node));
+        platform::show_properties_async(tree.path(node));
         ui.close();
     }
     ui.separator();

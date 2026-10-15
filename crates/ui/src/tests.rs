@@ -1056,3 +1056,61 @@ fn con_la_ventana_minima_la_leyenda_no_se_corta_sin_aviso() {
         assert!(h.query_all_by_label(t).count() >= 1, "{t}");
     }
 }
+
+#[test]
+fn un_escaneo_que_no_puede_empezar_vuelve_al_inicio_con_el_error() {
+    let mut o = opts(StartScreen::Home);
+    o.demo = None;
+    let mut h = harness(o);
+    let ctx = h.ctx.clone();
+    let nada = std::env::temp_dir().join(format!("tesela-test-{}-no-existe", uuid::Uuid::new_v4()));
+    h.state_mut().ui_mut().request_scan(&ctx, nada);
+    // El arranque va en un hilo: la pantalla de escaneo aparece al instante y luego se vuelve al inicio.
+    assert_eq!(h.state().ui().screen_name(), "scan");
+    let t0 = std::time::Instant::now();
+    while h.state().ui().screen_name() != "home" {
+        assert!(t0.elapsed().as_secs() < 20, "no volvió al inicio");
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        h.run_steps(1);
+    }
+    h.run_steps(2);
+    assert!(
+        h.query_by_label_contains("No se pudo empezar el análisis")
+            .is_some()
+    );
+}
+
+#[test]
+fn cancelar_o_cerrar_la_pantalla_antes_de_que_arranque_el_escaneo_no_muestra_el_mapa() {
+    use crate::app::ScanRequest;
+    use crate::scan::{ScanOutcome, ScanScreen};
+    let base = std::env::temp_dir().join(format!("tesela-test-{}", uuid::Uuid::new_v4()));
+    std::fs::create_dir_all(base.join("a")).unwrap();
+    std::fs::write(base.join("a").join("x.bin"), [1u8; 9000]).unwrap();
+    let root = dunce::canonicalize(&base).unwrap();
+    let ctx = egui::Context::default();
+    let req = ScanRequest {
+        root: root.clone(),
+        label: "t".into(),
+        drive: None,
+    };
+    let mut s = ScanScreen::real(&ctx, req.clone(), false);
+    s.cancel(); // antes de que el hilo de arranque termine
+    let t0 = std::time::Instant::now();
+    let out = loop {
+        if let Some(o) = s.poll(&ctx) {
+            break o;
+        }
+        assert!(t0.elapsed().as_secs() < 20);
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    };
+    assert!(
+        matches!(out, ScanOutcome::Cancelled),
+        "un escaneo cancelado se descarta"
+    );
+    // Cerrar la pantalla (Drop) sin esperar tampoco deja nada colgado ni entra en pánico.
+    let s2 = ScanScreen::real(&ctx, req, false);
+    drop(s2);
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    std::fs::remove_dir_all(&base).unwrap();
+}
