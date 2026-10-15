@@ -444,7 +444,7 @@ fn build_spec(rng: &mut Rng, variant: Variant) -> Spec {
             v
         },
     };
-    // 40 carpetas pequeñas (de 40 a 235 MiB): acaban agrupadas en "Otros".
+    // 40 carpetas pequeñas (de 80 a 275 MiB): acaban agrupadas en "Otros".
     let mut small: Vec<Spec> = (0..40)
         .map(|i| {
             dir(
@@ -453,7 +453,7 @@ fn build_spec(rng: &mut Rng, variant: Variant) -> Spec {
                     rng,
                     "v-",
                     8,
-                    (40 + 5 * (40 - i as u64)) * MIB,
+                    (80 + 5 * (40 - i as u64)) * MIB,
                     &[("txt", 2), ("jpg", 1), ("dat", 1)],
                     (30, 2000),
                 ),

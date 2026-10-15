@@ -368,7 +368,29 @@ fn draw_labels(
         );
         match c.level {
             0 => {
-                if !params.label_fits(&c.rect) {
+                let narrow_others = matches!(c.kind, CellKind::Others(_)) && c.rect.w < 130.0;
+                if narrow_others || !params.label_fits(&c.rect) {
+                    // "Otros" es una tira estrecha con frecuencia: su etiqueta se parte en líneas en vez de recortarse u omitirse.
+                    if let CellKind::Others(i) = c.kind
+                        && c.rect.w >= 36.0
+                        && c.rect.h >= 56.0
+                    {
+                        let o = e.layout.others()[i as usize];
+                        let text = tr.ta(
+                            "others-title",
+                            args!["n" => tr.int(o.count as u64), "size" => tr.size(o.bytes)],
+                        );
+                        let mut job = egui::text::LayoutJob::single_section(
+                            text,
+                            egui::TextFormat::simple(theme::font_semibold(12.0), st.text),
+                        );
+                        job.wrap.max_width = (rect.width() - 10.0).max(1.0);
+                        job.wrap.max_rows = 5;
+                        job.wrap.break_anywhere = false;
+                        job.wrap.overflow_character = Some('…');
+                        let galley = painter.layout_job(job);
+                        painter.galley(pos2(rect.left() + 6.0, rect.top() + 8.0), galley, st.text);
+                    }
                     continue;
                 }
                 let (name, bytes, lower) = match c.kind {

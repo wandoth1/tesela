@@ -208,10 +208,7 @@ impl Shell {
         };
         self.shot_frames += 1;
         ctx.request_repaint();
-        if !self.shot_requested
-            && self.shot_frames > 50
-            && self.ui.map_stats().is_none_or(|s| s.cells > 0)
-        {
+        if !self.shot_requested && self.shot_frames > 50 {
             self.shot_requested = true;
             ctx.send_viewport_cmd(eframe::egui::ViewportCommand::Screenshot(
                 eframe::egui::UserData::default(),

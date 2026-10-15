@@ -2703,10 +2703,13 @@ version = "0.1.0"
 dependencies = [
  "eframe",
  "embed-manifest",
+ "png",
  "serde",
  "tesela-ui",
  "toml",
+ "uuid",
  "wgpu",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2757,6 +2760,7 @@ name = "tesela-ui"
 version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
+ "dunce",
  "egui",
  "egui_kittest",
  "fluent-bundle",
