@@ -33,6 +33,47 @@ pub fn is_cloud_reparse(attrs: u32, reparse_tag: u32) -> bool {
     is_reparse(attrs) && (reparse_tag & !0xF000) == 0x9000_001A
 }
 
+/// Qué hace el escáner con un directorio que ve en el listado de su padre. El criterio usa la ETIQUETA de reparse y los
+/// atributos de recuperación; el builder lo refleja con los flags (ver `dir_flags`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DirAction {
+    /// Directorio normal: se recorre.
+    Walk,
+    /// Reparse point de la nube ya poblado: se recorre abriéndolo con su filtro de nube.
+    WalkCloud,
+    /// Junction, symlink o punto de montaje: no se sigue y mide 0.
+    SkipReparse,
+    /// Carpeta de la nube NO poblada (`RECALL_ON_OPEN` o `RECALL_ON_DATA_ACCESS`): listarla provocaría descargas por
+    /// red, así que no se recorre; se cuenta con su `AllocationSize` y queda `CLOUD | INCOMPLETE`.
+    SkipUnpopulatedCloud,
+}
+
+/// Decide qué hacer con un directorio.
+pub fn dir_action(attrs: u32, reparse_tag: u32) -> DirAction {
+    let cloud_tag = is_cloud_reparse(attrs, reparse_tag);
+    if is_reparse(attrs) && !cloud_tag {
+        DirAction::SkipReparse
+    } else if attrs & (ATTR_RECALL_ON_OPEN | ATTR_RECALL_ON_DATA_ACCESS) != 0 {
+        DirAction::SkipUnpopulatedCloud
+    } else if cloud_tag {
+        DirAction::WalkCloud
+    } else {
+        DirAction::Walk
+    }
+}
+
+/// Flags de un directorio según su acción. Un reparse point que NO es de la nube nunca lleva `CLOUD` (aunque tenga
+/// atributos de recuperación): así el builder distingue "no seguido" (`REPARSE` sin `CLOUD`) de "recorrible"
+/// (`REPARSE | CLOUD`, o sin `REPARSE`) usando solo los flags, con el mismo criterio que el escáner.
+pub fn dir_flags(attrs: u32, reparse_tag: u32) -> u16 {
+    let f = entry_flags(attrs, reparse_tag);
+    if dir_action(attrs, reparse_tag) == DirAction::SkipReparse {
+        f & !flags::CLOUD
+    } else {
+        f
+    }
+}
+
 /// Flags de una entrada del listado.
 pub fn entry_flags(attrs: u32, reparse_tag: u32) -> u16 {
     let mut f = 0;
@@ -111,6 +152,63 @@ mod tests {
         );
         // Un atributo de recuperación sin reparse es CLOUD pero no un reparse de la nube.
         assert!(!is_cloud_reparse(0x10 | 0x0040_0000, 0));
+    }
+
+    #[test]
+    fn que_se_hace_con_cada_directorio_segun_su_etiqueta_y_atributos() {
+        const DIR: u32 = 0x10;
+        const REPARSE: u32 = 0x400;
+        const RECALL_OPEN: u32 = 0x0004_0000;
+        const RECALL_DATA: u32 = 0x0040_0000;
+        assert_eq!(dir_action(DIR, 0), DirAction::Walk);
+        assert_eq!(
+            dir_action(DIR | REPARSE, 0xA000_0003),
+            DirAction::SkipReparse
+        ); // junction
+        assert_eq!(
+            dir_action(DIR | REPARSE, 0xA000_000C),
+            DirAction::SkipReparse
+        ); // symlink
+        // Carpeta de la nube poblada: se recorre con su filtro.
+        assert_eq!(dir_action(DIR | REPARSE, 0x9000_001A), DirAction::WalkCloud);
+        // No poblada (cualquiera de los dos atributos), con o sin reparse: NO se recorre.
+        assert_eq!(
+            dir_action(DIR | REPARSE | RECALL_OPEN, 0x9000_001A),
+            DirAction::SkipUnpopulatedCloud
+        );
+        assert_eq!(
+            dir_action(DIR | REPARSE | RECALL_DATA, 0x9000_001A),
+            DirAction::SkipUnpopulatedCloud
+        );
+        assert_eq!(
+            dir_action(DIR | RECALL_DATA, 0),
+            DirAction::SkipUnpopulatedCloud
+        );
+        // Un junction con atributos de recuperación sigue siendo un reparse sin seguir.
+        assert_eq!(
+            dir_action(DIR | REPARSE | RECALL_DATA, 0xA000_0003),
+            DirAction::SkipReparse
+        );
+    }
+
+    #[test]
+    fn los_flags_de_directorio_distinguen_no_seguido_de_recorrible() {
+        const DIR: u32 = 0x10;
+        const REPARSE: u32 = 0x400;
+        const RECALL_DATA: u32 = 0x0040_0000;
+        let f = |attrs, tag| dir_flags(attrs, tag);
+        assert_eq!(f(DIR, 0), flags::DIR);
+        assert_eq!(f(DIR | REPARSE, 0xA000_0003), flags::DIR | flags::REPARSE);
+        // Junction con atributo de recuperación: sin CLOUD (no es recorrible).
+        assert_eq!(
+            f(DIR | REPARSE | RECALL_DATA, 0xA000_0003),
+            flags::DIR | flags::REPARSE
+        );
+        assert_eq!(
+            f(DIR | REPARSE, 0x9000_001A),
+            flags::DIR | flags::REPARSE | flags::CLOUD
+        );
+        assert_eq!(f(DIR | RECALL_DATA, 0), flags::DIR | flags::CLOUD);
     }
 
     #[test]

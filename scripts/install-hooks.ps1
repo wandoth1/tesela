@@ -12,6 +12,8 @@
   Windows PowerShell 5.1). Si falta scripts/privacy-check.ps1 en el worktree, tambien se bloquea con un mensaje claro.
   Sobrescribe los hooks `pre-commit` y `commit-msg` anteriores.
 
+  Los hooks pasan -Local: un CI definido en el perfil del desarrollador no desactiva los valores locales.
+
   Lista negra local opcional: `<git-common-dir>/privacy-denylist` (un termino por linea; ver el README).
 #>
 [CmdletBinding()]
@@ -46,11 +48,11 @@ fi
     Write-Host "Hook instalado en $path"
 }
 
-New-Hook 'pre-commit' 'exec pwsh -NoProfile -ExecutionPolicy Bypass -File "$script"'
+New-Hook 'pre-commit' 'exec pwsh -NoProfile -ExecutionPolicy Bypass -File "$script" -Local'
 New-Hook 'commit-msg' @'
 case "$1" in
   /*|?:*) msg="$1" ;;
   *) msg="$PWD/$1" ;;
 esac
-exec pwsh -NoProfile -ExecutionPolicy Bypass -File "$script" -MessageFile "$msg"
+exec pwsh -NoProfile -ExecutionPolicy Bypass -File "$script" -Local -MessageFile "$msg"
 '@

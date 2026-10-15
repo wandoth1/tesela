@@ -79,10 +79,15 @@ function Stage-All { Invoke-Git -C $repo add -A -f }
 
 function Run-Check([string[]]$CheckArgs) {
     Push-Location $repo
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'   # en 5.1 el stderr de un nativo con 2>&1 seria un error terminante
     try {
         $out = & $Shell -NoProfile -File $scriptPath @CheckArgs 2>&1
         return @{ Code = $LASTEXITCODE; Out = ($out | Out-String) }
-    } finally { Pop-Location }
+    } finally {
+        $ErrorActionPreference = $prevEap
+        Pop-Location
+    }
 }
 
 function Expect([string]$Case, [bool]$ShouldFail, [string[]]$CheckArgs = @()) {
@@ -94,6 +99,11 @@ function Expect([string]$Case, [bool]$ShouldFail, [string[]]$CheckArgs = @()) {
         $script:failures.Add("$Case (esperado: $want, codigo $($r.Code)) $($r.Out)")
     }
 }
+
+# En GitHub Actions CI=true: el script pasaria a modo generico y los casos con valores locales fallarian. Las pruebas
+# fijan su propio entorno y lo restauran al terminar.
+$oldCI = $env:CI
+$env:CI = $null
 
 try {
     Invoke-Git -C $repo init -q
@@ -235,8 +245,14 @@ try {
 
     # --- Mensajes de commit ------------------------------------------------------------------------------------------------
     $msg = Join-Path $repo 'MSG.txt'
-    [System.IO.File]::WriteAllText($msg, "feat: algo limpio`n`n# Please enter the commit message`n# $sid`n", $utf8)
-    Expect 'mensaje limpio (los comentarios se ignoran)' $false @('-MessageFile', $msg)
+    [System.IO.File]::WriteAllText($msg, "feat: algo limpio`n`n# Please enter the commit message`n# On branch x`n", $utf8)
+    Expect 'mensaje limpio con lineas de comentario limpias' $false @('-MessageFile', $msg)
+    [System.IO.File]::WriteAllText($msg, "feat: limpio`n`n# $sid`n", $utf8)
+    Expect 'SID en una linea que empieza por # (git la conserva con -m y -F)' $true @('-MessageFile', $msg)
+    [System.IO.File]::WriteAllText($msg, "feat: limpio`n# $sid`n# ------------------------ >8`nlimpio`n", $utf8)
+    Expect 'comentario con SID ANTES de la linea de tijera' $true @('-MessageFile', $msg)
+    [System.IO.File]::WriteAllText($msg, "feat: limpio`n`n# ------------------------ >8`n# $sid`ndiff --git a/x b/x`n+$sid`n", $utf8)
+    Expect 'lo que sigue a la linea de tijera (diff de commit --verbose) se ignora' $false @('-MessageFile', $msg)
     [System.IO.File]::WriteAllText($msg, ('feat: probado en ' + $misc['gpu-word'] + "`n"), $utf8)
     Expect 'mensaje con hardware' $true @('-MessageFile', $msg)
     if ($env:USERNAME -and $env:USERNAME.Length -ge 3) {
@@ -255,7 +271,30 @@ try {
     Invoke-Git -C $repo commit -q -m malo
     Expect '-All encuentra lo ya commiteado' $true @('-All')
     Expect 'staging vacio no falla' $false
+    # --- CI definido y -Local, USERDOMAIN --------------------------------------------------------------------------------
+    if ($env:USERNAME -and $env:USERNAME.Length -ge 3) {
+        Reset-Repo
+        Put 'u.txt' ('hola ' + $env:USERNAME + " adios`n")
+        Stage-All
+        $env:CI = 'true'
+        try {
+            Expect 'con CI definido solo rigen los patrones genericos' $false
+            Expect 'con CI definido y -Local los valores locales siguen vigentes' $true @('-Local')
+        } finally {
+            $env:CI = $null
+        }
+        Expect '-Local con CI sin definir' $true @('-Local')
+        Expect '-Local y -GenericOnly son incompatibles' $true @('-Local', '-GenericOnly')
+    }
+    if ($env:USERDOMAIN -and $env:USERDOMAIN.Length -ge 3) {
+        Reset-Repo
+        Put 'u.txt' ('dominio ' + $env:USERDOMAIN + "`n")
+        Stage-All
+        Expect 'valor local USERDOMAIN (local)' $true
+        Expect 'valor local USERDOMAIN con -GenericOnly' $false @('-GenericOnly')
+    }
 } finally {
+    if ($null -eq $oldCI) { Remove-Item Env:CI -ErrorAction SilentlyContinue } else { $env:CI = $oldCI }
     Set-Location $PSScriptRoot
     Remove-Repo
 }

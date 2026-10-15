@@ -10,14 +10,14 @@
   Modos:
     * (por defecto)  archivos EN STAGING (`git diff --cached`), contenido del indice. Para el hook `pre-commit`.
     * -All           todos los archivos versionados y los no ignorados (CI y revisiones completas).
-    * -MessageFile   un mensaje de commit (hook `commit-msg`); se ignoran las lineas que empiezan por `#`.
+    * -MessageFile   un mensaje de commit (hook `commit-msg`); se revisan todas las lineas (tambien las que empiezan por `#`) hasta la linea de tijera `# ------------------------ >8`.
 
   Que se comprueba:
     1. Patrones GENERICOS (siempre): SID (cuentas locales y AzureAD), rutas de perfil reales (Windows, `/c/Users/<usuario>`,
        `/mnt/c/Users/<usuario>`), unidades D: a Z:, fabricantes y modelos de CPU/GPU/disco, antivirus, builds de Windows,
        versiones de driver.
     2. Valores LOCALES (solo en la maquina del desarrollador; nunca con -GenericOnly ni en CI): el nombre de usuario,
-       el nombre del equipo y la ruta del perfil, leidos EN TIEMPO DE EJECUCION de las variables de entorno, y una lista
+       el nombre del equipo, el dominio y la ruta del perfil, leidos EN TIEMPO DE EJECUCION de las variables de entorno, y una lista
        negra local NO versionada: `<git-common-dir>/privacy-denylist` (un termino por linea, sin distinguir
        mayusculas, coincidencia literal; las lineas vacias y las que empiezan por `#` se ignoran).
     3. Los NOMBRES de los archivos pasan por las mismas reglas.
@@ -35,6 +35,9 @@
 .PARAMETER GenericOnly
   No usa los valores locales ni la lista negra. Es el modo de CI; tambien se activa si existe la variable CI.
 
+.PARAMETER Local
+  Usa SIEMPRE los valores locales y la lista negra aunque exista la variable CI. Lo pasan los hooks.
+
 .PARAMETER MessageFile
   Revisa este archivo como mensaje de commit en vez de los archivos.
 
@@ -47,6 +50,7 @@
 param(
     [switch]$All,
     [switch]$GenericOnly,
+    [switch]$Local,
     [string]$MessageFile
 )
 
@@ -82,7 +86,13 @@ $repoRoot = ([System.Text.Encoding]::UTF8.GetString((Invoke-GitBytes 'rev-parse 
 $commonDir = ([System.Text.Encoding]::UTF8.GetString((Invoke-GitBytes 'rev-parse --git-common-dir' $repoRoot))).Trim()
 if (-not [System.IO.Path]::IsPathRooted($commonDir)) { $commonDir = Join-Path $repoRoot $commonDir }
 
-if ($env:CI) { $GenericOnly = $true }
+# En CI (variable CI) solo se usan los patrones genericos, salvo que se pida -Local de forma explicita: los hooks lo
+# pasan para que un CI definido en el perfil de un desarrollador no desactive en silencio los valores locales.
+if ($env:CI -and -not $Local) { $GenericOnly = $true }
+if ($Local -and $GenericOnly) {
+    Write-Host 'privacy-check: -Local y -GenericOnly son incompatibles' -ForegroundColor Red
+    exit 2
+}
 
 # --- Reglas ---------------------------------------------------------------------------------------------------------
 # Path = $true: regla ligada a rutas (no se aplica en spike/). Los corchetes evitan que el script se detecte a si mismo.
@@ -93,17 +103,17 @@ $generic = @(
     @{ Name = 'Ruta de perfil real estilo Unix o WSL'; Path = $true; Pattern = '(?i)(?<![A-Za-z0-9_.])/(mnt/)?[a-z]/Users/(?!<usuario>|Public\b|Default\b)[^/\s''"`]+' },
     @{ Name = 'Ruta absoluta de unidad D: a Z:'; Path = $true; Pattern = '(?i)(?<![A-Za-z0-9_])[D-Z]:[\\/]' },
     @{ Name = 'Ruta WSL de unidad D a Z'; Path = $true; Pattern = '(?i)(?<![A-Za-z0-9_])/mnt/[d-z](/|$)' },
-    @{ Name = 'Fabricante o modelo de GPU/CPU/disco'; Path = $false; Pattern = '(?i)\b(N[V]IDIA|Ge[F]orce|R[T]X\s?\d{3,4}|G[T]X\s?\d{3,4}|Rade[o]n|Ry[z]en|Threadrip[p]er|EP[Y]C|X[e]on|Inte[l]\s+Core|Inte[l]\(R\)\s*Core|Core\s+i[3579]-|Apple\s+M[1-9]|Sam[s]ung|WD_BL[A]CK|WD\s+Bl[a]ck|Western\s+Dig[i]tal|Sea[g]ate|Kings[t]on|Cruc[i]al|Cors[a]ir|SN8\d\d|H[y]nix|Mic[r]on|Tos[h]iba|SanD[i]sk)\b' },
-    @{ Name = 'Antivirus'; Path = $false; Pattern = '(?i)\b(Bitdef[e]nder|Kaspers[k]y|Nor[t]on|McA[f]ee|Av[a]st|AVG\s+Anti|ES[E]T|Malwareby[t]es|Soph[o]s|CrowdStr[i]ke|Sentinel[O]ne|Trend\s*Mi[c]ro|Symant[e]c|F-Se[c]ure|Webr[o]ot|Cylan[c]e|Carbon\s*Bl[a]ck)\b' },
-    @{ Name = 'Build de Windows'; Path = $false; Pattern = '(?i)\bbuild\s+2\d{4}\b' },
+    @{ Name = 'Fabricante o modelo de GPU/CPU/disco'; Path = $false; Pattern = '(?i)\b(N[V]IDIA|Ge[F]orce|R[T]X\s?\d{3,4}\w*|G[T]X\s?\d{3,4}\w*|Rade[o]n|Ry[z]en|Threadrip[p]er|EP[Y]C|X[e]on|Inte[l]\s+Core|Inte[l]\(R\)\s*Core|Core\s+i[3579][ -]|Apple\s+M[1-9]|Sam[s]ung|WD_BL[A]CK|WD\s+Bl[a]ck|Western\s+Dig[i]tal|Sea[g]ate|Kings[t]on|Cruc[i]al|Cors[a]ir|SN8\d\d\w*|H[y]nix|Mic[r]on|Tos[h]iba|SanD[i]sk)\b' },
+    @{ Name = 'Antivirus'; Path = $false; Pattern = '(?i)\b(Bitdef[e]nder|Kaspers[k]y|Nor[t]on|McA[f]ee|Av[a]st|AVG\s+Anti\w*|ES[E]T|Malwareby[t]es|Soph[o]s|CrowdStr[i]ke|Sentinel[O]ne|Trend\s*Mi[c]ro|Symant[e]c|F-Se[c]ure|Webr[o]ot|Cylan[c]e|Carbon\s*Bl[a]ck)\b' },
+    @{ Name = 'Build de Windows'; Path = $false; Pattern = '(?i)\bbuild\s+(19|2\d)\d{3}\b' },
     @{ Name = 'Version de Windows con build'; Path = $false; Pattern = '\b10\.0\.[12]\d{4}\b' },
-    @{ Name = 'Version de driver'; Path = $false; Pattern = '(?i)\bdriver\s+(version\s+)?v?\d{2,4}\.\d{2,4}\b' }
+    @{ Name = 'Version de driver'; Path = $false; Pattern = '(?i)\bdriver\s+(version\s+)?v?\d+(\.\d+)+' }
 )
 
 # --- Valores locales y lista negra ----------------------------------------------------------------------------------
-$local = @()
+$localRules = @()
 if (-not $GenericOnly) {
-    foreach ($pair in @(@('USERNAME', $env:USERNAME), @('COMPUTERNAME', $env:COMPUTERNAME), @('USERPROFILE', $env:USERPROFILE))) {
+    foreach ($pair in @(@('USERNAME', $env:USERNAME), @('COMPUTERNAME', $env:COMPUTERNAME), @('USERDOMAIN', $env:USERDOMAIN), @('USERPROFILE', $env:USERPROFILE))) {
         $val = $pair[1]
         if ($val -and $val.Trim().Length -ge 3) {
             $esc = [regex]::Escape($val.Trim())
@@ -113,7 +123,7 @@ if (-not $GenericOnly) {
             } else {
                 $pattern = "(?i)(?<![A-Za-z0-9_])$esc(?![A-Za-z0-9_])"
             }
-            $local += @{ Name = "Valor local de `$env:$($pair[0])"; Path = $false; Pattern = $pattern }
+            $localRules += @{ Name = "Valor local de `$env:$($pair[0])"; Path = $false; Pattern = $pattern }
         }
     }
     $deny = Join-Path $commonDir 'privacy-denylist'
@@ -122,12 +132,12 @@ if (-not $GenericOnly) {
         foreach ($line in ([System.Text.Encoding]::UTF8.GetString($raw) -split "`n")) {
             $t = $line.Trim()
             if ($t.Length -ge 2 -and -not $t.StartsWith('#')) {
-                $local += @{ Name = 'Termino de la lista negra local'; Path = $false; Pattern = '(?i)' + [regex]::Escape($t) }
+                $localRules += @{ Name = 'Termino de la lista negra local'; Path = $false; Pattern = '(?i)' + [regex]::Escape($t) }
             }
         }
     }
 }
-$rules = @($generic) + @($local)
+$rules = @($generic) + @($localRules)
 
 # --- Decodificacion de contenido ------------------------------------------------------------------------------------
 function ConvertTo-ScanText {
@@ -179,7 +189,14 @@ $problems = New-Object System.Collections.Generic.List[string]
 if ($MessageFile) {
     $reject = $null
     $text = ConvertTo-ScanText ([System.IO.File]::ReadAllBytes($MessageFile)) ([ref]$reject)
-    $text = (($text -split "`n") | Where-Object { -not $_.StartsWith('#') }) -join "`n"
+    # Se revisan TODAS las lineas, tambien las que empiezan por `#` (git las conserva con -m y -F). Solo se descarta
+    # lo que sigue a la linea de tijera que anade `git commit --verbose`.
+    $kept = New-Object System.Collections.Generic.List[string]
+    foreach ($line in ($text -split "`n")) {
+        if ($line.TrimEnd("`r").StartsWith('# ------------------------ >8')) { break }
+        $kept.Add($line)
+    }
+    $text = $kept -join "`n"
     foreach ($hit in (Test-Rules $text $rules)) { $problems.Add("mensaje de commit:$($hit[1]): $($hit[0])") }
     if ($problems.Count -gt 0) {
         Write-Host "privacy-check: el mensaje de commit contiene datos privados:" -ForegroundColor Red

@@ -45,6 +45,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Sin argumentos instala el toolchain de rust-toolchain.toml (no se fía de la autoinstalación de la primera cargo).
+      - name: Instalar el toolchain de rust-toolchain.toml
+        run: rustup toolchain install
       # La versión de Rust sale de rust-toolchain.toml (se instala sola en la primera llamada a cargo).
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Formato
@@ -71,6 +74,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Sin argumentos instala el toolchain de rust-toolchain.toml (no se fía de la autoinstalación de la primera cargo).
+      - name: Instalar el toolchain de rust-toolchain.toml
+        run: rustup toolchain install
       - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
           tool: cargo-deny
@@ -86,6 +92,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Sin argumentos instala el toolchain de rust-toolchain.toml (no se fía de la autoinstalación de la primera cargo).
+      - name: Instalar el toolchain de rust-toolchain.toml
+        run: rustup toolchain install
       - name: Instalar Rust 1.95.0
         run: rustup toolchain install 1.95.0 --profile minimal
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
@@ -101,6 +110,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Sin argumentos instala el toolchain de rust-toolchain.toml (no se fía de la autoinstalación de la primera cargo).
+      - name: Instalar el toolchain de rust-toolchain.toml
+        run: rustup toolchain install
       - name: Instalar el target ARM64
         run: rustup target add aarch64-pc-windows-msvc
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2

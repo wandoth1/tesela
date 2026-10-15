@@ -71,11 +71,14 @@ discos reales ni resultados de escaneos (los ejemplos, capturas y fixtures son s
 
 ### Notas de diseño del escáner
 
-- Los directorios de la nube (OneDrive y similares, reparse points con etiqueta de nube) **sí se recorren**; el resto de reparse
-  points de directorio no se siguen. No hay forma de crear placeholders reales en el CI: solo se prueban la clasificación y el
-  builder con atributos sintéticos.
-- NTFS refresca de forma diferida el `mtime` y el tamaño propio de un directorio en el índice de su padre (que es lo que lista el
-  escáner): justo tras escribir, pueden ir atrasados.
+- Carpetas de la nube (OneDrive y similares): las **ya pobladas** (reparse point con etiqueta de nube) se recorren; las **no
+  pobladas** (atributos `RECALL_ON_OPEN` o `RECALL_ON_DATA_ACCESS`) **no se recorren**, para no provocar descargas por red: se
+  cuentan con su `AllocationSize` y quedan marcadas `CLOUD | INCOMPLETE` (la CLI las muestra como `NUBE`). El resto de reparse
+  points de directorio (junctions, symlinks, montajes) no se siguen. No hay forma de crear placeholders reales en el CI: solo se
+  prueban la clasificación y el builder con atributos sintéticos.
+- El `mtime` de un directorio en el listado de su padre se refresca de forma diferida en NTFS: justo tras escribir puede ir
+  atrasado. Su tamaño propio es 0 en el listado del padre (el espacio real que ocupa el directorio va al bloque de datos del
+  sistema, es decir, al "espacio no explicado").
 
 ## Licencia
 

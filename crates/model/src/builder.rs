@@ -212,7 +212,9 @@ impl TreeBuilder {
                 continue;
             }
             let id = id as u32;
-            // Los reparse points de directorio no se recorren (no son INCOMPLETE), salvo los de la nube, que sí.
+            // Mismo criterio que el escáner (`classify::dir_flags`): un reparse point de directorio con CLOUD (etiqueta
+            // de la nube) es recorrible; con REPARSE sin CLOUD (junction, symlink, montaje) no se sigue y no es
+            // INCOMPLETE. Una carpeta de la nube sin poblar no se recorre, así que queda INCOMPLETE.
             let followed = r.flags & flags::REPARSE == 0 || r.flags & flags::CLOUD != 0;
             if r.flags & flags::DIR != 0 && followed && !enumerated.get(id) {
                 r.flags |= flags::INCOMPLETE;

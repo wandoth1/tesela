@@ -1222,3 +1222,68 @@ fn las_carpetas_de_la_nube_con_reparse_si_se_recorren() {
     assert_eq!(t.stats().dirs, 3);
     assert_eq!(t.stats().incomplete_dirs, 1);
 }
+
+#[test]
+fn una_carpeta_de_la_nube_sin_poblar_se_cuenta_y_queda_incompleta() {
+    // El escáner no la recorre (no llega su lote): se cuenta con su AllocationSize y queda CLOUD | INCOMPLETE.
+    let mut b = TreeBuilder::new();
+    let mut r = Batch::detached(0);
+    r.push(
+        0,
+        b"ROOT",
+        EntryData {
+            flags: flags::DIR,
+            ..EntryData::default()
+        },
+    );
+    b.add_batch(r).unwrap();
+    let mut l = Batch::listing(0, 1);
+    let dir_cloud = flags::DIR | flags::CLOUD;
+    l.push(
+        0,
+        b"nube-sin-poblar",
+        EntryData {
+            flags: dir_cloud,
+            alloc: 4096,
+            logical: 4096,
+            ..EntryData::default()
+        },
+    );
+    l.push(
+        0,
+        b"nube-sin-poblar-reparse",
+        EntryData {
+            flags: dir_cloud | flags::REPARSE,
+            alloc: 4096,
+            ..EntryData::default()
+        },
+    );
+    // Junction (REPARSE sin CLOUD): no se sigue y NO es incompleta.
+    l.push(
+        0,
+        b"junction",
+        EntryData {
+            flags: flags::DIR | flags::REPARSE,
+            ..EntryData::default()
+        },
+    );
+    b.add_batch(l).unwrap();
+    let t = b.finish(&FinishOptions::new(NOW));
+    let fl = |n: &[u8]| t.node(t.child_by_name(0, n).unwrap()).flags;
+    assert_eq!(
+        fl(b"nube-sin-poblar") & (flags::CLOUD | flags::INCOMPLETE),
+        flags::CLOUD | flags::INCOMPLETE
+    );
+    assert_eq!(
+        fl(b"nube-sin-poblar-reparse") & (flags::CLOUD | flags::INCOMPLETE),
+        flags::CLOUD | flags::INCOMPLETE
+    );
+    assert_eq!(fl(b"junction") & flags::INCOMPLETE, 0);
+    assert_eq!(t.node(0).alloc, 8192, "su AllocationSize cuenta");
+    assert_eq!(t.stats().incomplete_dirs, 2);
+    assert_eq!(
+        t.stats().reparse_dirs,
+        1,
+        "solo el junction es un reparse sin seguir"
+    );
+}

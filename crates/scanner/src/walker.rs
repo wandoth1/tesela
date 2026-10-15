@@ -12,7 +12,7 @@ use std::ffi::OsString;
 use std::os::windows::ffi::OsStringExt;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
-use tesela_model::{Batch, EntryData, flags};
+use tesela_model::{Batch, EntryData};
 
 /// Marca de "esta tarea no pertenece a ninguna ruta prioritaria".
 pub(crate) const NO_PRIO: u16 = u16::MAX;
@@ -308,11 +308,17 @@ pub(crate) fn process_dir(
     } = st;
     for e in entries.iter() {
         let name = &names[e.name_off as usize..e.name_off as usize + e.name_len as usize];
-        let fl = classify::entry_flags(e.attrs, e.reparse_tag);
-        let is_dir = fl & flags::DIR != 0;
-        // Las carpetas de la nube (OneDrive...) son reparse points pero SÍ se recorren: su filtro permite listarlas.
-        let cloud_dir = is_dir && classify::is_cloud_reparse(e.attrs, e.reparse_tag);
-        if is_dir && fl & flags::REPARSE != 0 && !cloud_dir {
+        let is_dir = classify::is_dir(e.attrs);
+        let action = classify::dir_action(e.attrs, e.reparse_tag);
+        let fl = if is_dir {
+            classify::dir_flags(e.attrs, e.reparse_tag)
+        } else {
+            classify::entry_flags(e.attrs, e.reparse_tag)
+        };
+        // Las carpetas de la nube (OneDrive...) ya pobladas son reparse points pero SÍ se recorren: su filtro permite
+        // listarlas. Las no pobladas no (listarlas provocaría descargas por red).
+        let cloud_dir = is_dir && action == classify::DirAction::WalkCloud;
+        if is_dir && action == classify::DirAction::SkipReparse {
             // Junction, symlink o punto de montaje de directorio: no se sigue y mide 0.
             batch.push_utf16(
                 task.id,
@@ -323,6 +329,23 @@ pub(crate) fn process_dir(
                     ..EntryData::default()
                 },
             );
+            continue;
+        }
+        if is_dir && action == classify::DirAction::SkipUnpopulatedCloud {
+            // Sin recorrer: se cuenta con su AllocationSize y el builder la marca INCOMPLETE (no llega su lote).
+            batch.push_utf16(
+                task.id,
+                name,
+                EntryData {
+                    flags: fl,
+                    alloc: e.alloc,
+                    logical: e.logical,
+                    mtime: e.mtime,
+                    file_id: 0,
+                },
+            );
+            stats.dirs += 1;
+            stats.alloc += e.alloc;
             continue;
         }
         if !is_dir {

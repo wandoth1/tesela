@@ -239,6 +239,11 @@ fn report(args: &Args, r: &ScanResult, mem: Option<(u64, u64, u64)>) {
             }
         }
     }
+    if s.ids_exhausted {
+        println!(
+            "ERROR: se agotaron los ids provisionales (demasiadas entradas): el árbol está incompleto"
+        );
+    }
     if let Some(e) = s.build_error {
         println!("ERROR al construir el árbol: {e}");
     }
@@ -266,6 +271,8 @@ fn report(args: &Args, r: &ScanResult, mem: Option<(u64, u64, u64)>) {
             };
             let kind = if n.flags & flags::SYSTEM_INFO != 0 {
                 "SIS"
+            } else if n.is_dir() && n.flags & flags::CLOUD != 0 {
+                "NUBE"
             } else if n.flags & flags::REPARSE != 0 && n.is_dir() {
                 "ENL"
             } else if n.is_dir() {
@@ -328,6 +335,7 @@ fn write_json(path: &PathBuf, args: &Args, r: &ScanResult) -> std::io::Result<()
         },
         "volume": s.volume.map(|v| json!({"total": v.total, "free": v.free})),
         "errors_by_code": s.errors_by_code,
+        "ids_exhausted": s.ids_exhausted,
         "top": top,
     });
     std::fs::write(
