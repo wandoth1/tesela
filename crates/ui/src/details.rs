@@ -237,7 +237,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
 
             // Acciones.
             ui.add_space(4.0);
-            let _ = widgets::button(
+            let r = widgets::button(
                 ui,
                 env,
                 ButtonStyle::Secondary,
@@ -245,6 +245,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
                 &env.tr.t("menu-add-basket"),
                 false,
             );
+            widgets::next_version_hint(r, env);
             let is_system = special == Some(Special::SystemBlock);
             let real = !env.demo && !is_system;
             ui.horizontal_wrapped(|ui| {
@@ -274,16 +275,18 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
                         ui.input(|i| i.time) + 3.0,
                     ));
                 }
-                if widgets::button(
+                let r = widgets::button(
                     ui,
                     env,
                     ButtonStyle::Secondary,
                     Some(Icon::Copy),
                     &env.tr.t("menu-copy-path"),
                     !is_system,
-                )
-                .clicked()
-                {
+                );
+                if is_system {
+                    r.clone().on_hover_text(env.tr.t("menu-unavailable-system"));
+                }
+                if r.clicked() {
                     ui.ctx().copy_text(ex.path_of(sel));
                     ex.toast = Some((env.tr.t("path-copied"), ui.input(|i| i.time) + 2.0));
                 }

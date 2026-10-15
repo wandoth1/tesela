@@ -899,7 +899,7 @@ fn basket_bar(ui: &mut Ui, env: &mut Env) {
             .color(pal.text_muted),
         );
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let _ = widgets::button(
+            let r = widgets::button(
                 ui,
                 env,
                 ButtonStyle::Primary,
@@ -907,7 +907,8 @@ fn basket_bar(ui: &mut Ui, env: &mut Env) {
                 &env.tr.ta("basket-clean", args!["size" => env.tr.size(0)]),
                 false,
             );
-            let _ = widgets::button(
+            widgets::next_version_hint(r, env);
+            let r = widgets::button(
                 ui,
                 env,
                 ButtonStyle::Ghost,
@@ -915,7 +916,8 @@ fn basket_bar(ui: &mut Ui, env: &mut Env) {
                 &env.tr.t("basket-empty"),
                 false,
             );
-            let _ = widgets::button(
+            widgets::next_version_hint(r, env);
+            let r = widgets::button(
                 ui,
                 env,
                 ButtonStyle::Secondary,
@@ -923,6 +925,7 @@ fn basket_bar(ui: &mut Ui, env: &mut Env) {
                 &env.tr.t("basket-view"),
                 false,
             );
+            widgets::next_version_hint(r, env);
         });
     });
 }

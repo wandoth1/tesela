@@ -108,9 +108,6 @@ pub fn button(
             );
         }
     }
-    if !enabled {
-        return resp.on_hover_text(env.tr.t("next-version"));
-    }
     resp
 }
 
@@ -162,8 +159,14 @@ pub fn icon_button(ui: &mut Ui, env: &mut Env, icon: Icon, label: &str, enabled:
     if enabled {
         resp.on_hover_text(label)
     } else {
-        resp.on_hover_text(env.tr.t("next-version"))
+        resp
     }
+}
+
+/// Pista "Disponible en la próxima versión" para lo que es del incremento 3 (cesta, limpieza). Quien deshabilita un
+/// botón decide qué pista le corresponde: no todos los deshabilitados son "de la próxima versión".
+pub fn next_version_hint(resp: Response, env: &Env) -> Response {
+    resp.on_hover_text(env.tr.t("next-version"))
 }
 
 /// Chip redondeado con icono opcional (riesgo, "Aproximado", tamaños de la cesta...).

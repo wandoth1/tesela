@@ -89,6 +89,7 @@ fn main() -> eframe::Result {
         start,
     };
     let scan = cli.scan.clone();
+    let wait_explore = scan.is_some();
     let bench = cli.bench_hover.map(shell::Bench::new);
     if let Some(secs) = cli.bench_hover {
         // Con `--scan` hay que esperar además al escaneo.
@@ -126,6 +127,7 @@ fn main() -> eframe::Result {
                 shot_requested: false,
                 normalize_scale: normalize,
                 norm_frames: 0,
+                wait_explore,
             }))
         }),
     )

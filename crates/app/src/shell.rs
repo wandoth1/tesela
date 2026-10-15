@@ -74,6 +74,9 @@ pub struct Shell {
     pub shot_requested: bool,
     pub normalize_scale: Option<(f32, f32)>,
     pub norm_frames: u32,
+    /// Con `--scan`: la captura espera a que el escaneo termine y aparezca el mapa.
+    #[cfg_attr(not(feature = "capture"), allow(dead_code))]
+    pub wait_explore: bool,
 }
 
 impl Shell {
@@ -206,8 +209,12 @@ impl Shell {
         let Some(path) = self.screenshot.clone() else {
             return;
         };
-        self.shot_frames += 1;
         ctx.request_repaint();
+        if self.wait_explore && self.ui.screen_name() != "explore" {
+            self.shot_frames = 0;
+            return;
+        }
+        self.shot_frames += 1;
         if !self.shot_requested && self.shot_frames > 50 {
             self.shot_requested = true;
             ctx.send_viewport_cmd(eframe::egui::ViewportCommand::Screenshot(

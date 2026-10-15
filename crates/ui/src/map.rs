@@ -708,7 +708,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
             let veil = pal.bg.gamma_multiply(0.72);
             for c in layout.cells().iter().filter(|c| c.level == 0) {
                 let matches = match c.kind {
-                    CellKind::Node(id) => hits.binary_search(&id).is_ok(),
+                    CellKind::Node(id) => hits.contains(&id),
                     CellKind::Others(_) => false,
                 };
                 if !matches {

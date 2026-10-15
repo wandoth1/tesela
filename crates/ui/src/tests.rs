@@ -767,3 +767,72 @@ fn el_breadcrumb_de_una_carpeta_escaneada_usa_su_nombre_y_no_la_ruta_entera() {
     h.get_by_label("mi-carpeta");
     std::fs::remove_dir_all(&base).unwrap();
 }
+
+#[test]
+fn el_tooltip_del_hover_describe_la_celda() {
+    let mut h = harness(opts(user_folder()));
+    let p = cell_center(&h, "Vídeos");
+    h.event(Event::PointerMoved(p));
+    h.run_steps(3);
+    // Nombre, tamaño, porcentaje del padre, composición y pista de uso.
+    assert!(h.query_all_by_label("Vídeos").count() >= 1);
+    assert!(
+        h.query_all_by_label_contains("de usuario").count() >= 1,
+        "porcentaje del padre"
+    );
+    assert!(
+        h.query_all_by_label_contains("Doble clic para entrar")
+            .count()
+            >= 1
+    );
+    assert!(
+        h.query_all_by_label_contains("vídeo").count() >= 1,
+        "frase de composición por tipo"
+    );
+    // Y sobre la agrupación "Otros", su explicación.
+    let layout = explore(&h).map.layout.clone().unwrap();
+    let idx = layout
+        .cells()
+        .iter()
+        .position(|c| matches!(c.kind, CellKind::Others(_)))
+        .unwrap();
+    let map = h.get_by_label_contains("Mapa de").rect();
+    let r = layout.cells()[idx].rect;
+    h.event(Event::PointerMoved(Pos2::new(
+        map.min.x + r.x + r.w / 2.0,
+        map.min.y + r.y + r.h / 2.0,
+    )));
+    h.run_steps(3);
+    assert!(
+        h.query_all_by_label_contains("Doble clic para abrir la agrupación")
+            .count()
+            >= 1
+    );
+}
+
+#[test]
+fn cada_boton_deshabilitado_da_su_propia_pista() {
+    let mut h = harness(opts(StartScreen::Map(MapStart::default())));
+    let hint = "Disponible en la próxima versión";
+    // En la raíz "Subir un nivel" está deshabilitado, pero no por ser "de la próxima versión".
+    h.get_by_label("Subir un nivel").hover();
+    h.run_steps(14);
+    assert_eq!(
+        h.query_all_by_label(hint).count(),
+        0,
+        "sin pista de próxima versión en Subir"
+    );
+    // La cesta SÍ es de la próxima versión (y la pista sale una sola vez).
+    h.get_by_label("Vaciar cesta").hover();
+    h.run_steps(14);
+    assert_eq!(h.query_all_by_label(hint).count(), 1);
+    // En la demostración, "Abrir en el Explorador" explica por qué no se puede, sin la pista de próxima versión.
+    h.get_by_label("Abrir en el Explorador").hover();
+    h.run_steps(14);
+    assert_eq!(
+        h.query_all_by_label("No disponible en el modo demostración")
+            .count(),
+        1
+    );
+    assert_eq!(h.query_all_by_label(hint).count(), 0);
+}

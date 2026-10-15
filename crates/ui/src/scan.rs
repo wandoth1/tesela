@@ -502,7 +502,7 @@ fn known_places(ui: &mut Ui, env: &mut Env, v: &View) {
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
             // Inactivo: la limpieza es del incremento 3.
-            let _ = widgets::button(
+            let r = widgets::button(
                 ui,
                 env,
                 ButtonStyle::Primary,
@@ -510,6 +510,7 @@ fn known_places(ui: &mut Ui, env: &mut Env, v: &View) {
                 &env.tr.t("scan-clean-safe"),
                 false,
             );
+            widgets::next_version_hint(r, env);
         });
     });
     ui.add_space(14.0);
