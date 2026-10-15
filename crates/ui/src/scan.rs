@@ -16,6 +16,7 @@ use crate::widgets::{self, ButtonStyle};
 use egui::{CornerRadius, Margin, RichText, Ui, vec2};
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tesela_model::{FileType, Tree};
@@ -54,6 +55,30 @@ struct Demo {
 #[derive(Default)]
 struct Startup {
     slot: Mutex<Slot>,
+    /// Bandera de cancelación del escaneo, creada ANTES de lanzar el hilo de arranque y pasada a `ScanOptions::cancel`:
+    /// cancelar (o soltar la pantalla, o "Parar y ver") la activa al instante y el arranque la consulta entre sus fases
+    /// (abrir y listar la raíz, resolver las rutas conocidas), en vez de terminar todo el trabajo para descartarlo.
+    cancel: Arc<AtomicBool>,
+}
+
+/// Hilos de arranque vivos ahora mismo. Cada pantalla cancelada o soltada libera el suyo en cuanto el arranque mira la
+/// bandera, así que no se acumulan escaneos activos (las pruebas comprueban que vuelve a 0).
+static ACTIVE_STARTUPS: AtomicUsize = AtomicUsize::new(0);
+
+/// Descuenta un hilo de arranque al terminar (también si entra en pánico).
+struct ActiveGuard;
+
+impl ActiveGuard {
+    fn new() -> ActiveGuard {
+        ACTIVE_STARTUPS.fetch_add(1, Ordering::SeqCst);
+        ActiveGuard
+    }
+}
+
+impl Drop for ActiveGuard {
+    fn drop(&mut self) {
+        ACTIVE_STARTUPS.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 #[derive(Default)]
@@ -95,8 +120,33 @@ fn canon_key(p: &Path) -> Option<String> {
 }
 
 /// Arranca el escaneo real y empareja las rutas prioritarias con su clase (hilo auxiliar).
-fn start_real(req: &ScanRequest) -> Result<Real, String> {
-    let handle = tesela_scanner::start(ScanOptions::new(&req.root)).map_err(|e| e.to_string())?;
+fn start_real(req: &ScanRequest, startup: &Startup) -> Result<Real, String> {
+    let cancel = &startup.cancel;
+    // Fase 0: si la pantalla ya se cerró o se canceló (descartar), no se empieza nada. Con "Parar y ver" (que activa la
+    // misma bandera pero no descarta) sí se arranca: el escaneo se construye con lo que se alcance a listar.
+    if startup
+        .slot
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .cancelled
+    {
+        return Err("cancelado".into());
+    }
+    let mut opts = ScanOptions::new(&req.root);
+    opts.cancel = Some(cancel.clone());
+    let handle = tesela_scanner::start(opts).map_err(|e| e.to_string())?;
+    // Fase 2: nombrar las rutas conocidas (E/S: lista carpetas de los navegadores). Si se canceló mientras arrancaba el
+    // escaneo, se omite: el resultado se va a descartar (o a mostrar tal cual con "Parar y ver").
+    if cancel.load(Ordering::SeqCst) {
+        let progress = handle.progress().clone();
+        #[cfg(test)]
+        test_hooks::started(&req.root, &progress);
+        return Ok(Real {
+            handle: Some(handle),
+            progress,
+            kinds: Vec::new(),
+        });
+    }
     // Las rutas prioritarias salen canónicas; se emparejan con las candidatas (también canónicas) para nombrarlas.
     let drive_root = req.drive.as_ref().map(|d| d.root());
     let labeled =
@@ -126,10 +176,13 @@ impl ScanScreen {
     /// Escaneo real de `req.root`. Arrancarlo (abrir y listar la raíz, resolver las rutas prioritarias) es E/S que puede
     /// tardar en un disco frío o de red: se hace en un hilo y la pantalla aparece al instante.
     pub fn real(ctx: &egui::Context, req: ScanRequest, animate: bool) -> ScanScreen {
+        // El token de cancelación existe antes que el hilo y viaja en `ScanOptions`.
         let startup = Arc::new(Startup::default());
         let (c, r, s) = (ctx.clone(), req.clone(), startup.clone());
+        let guard = ActiveGuard::new();
         std::thread::spawn(move || {
-            let res = start_real(&r);
+            let _guard = guard;
+            let res = start_real(&r, &s);
             {
                 let mut slot = s.slot.lock().unwrap_or_else(|e| e.into_inner());
                 if slot.cancelled {
@@ -181,6 +234,15 @@ impl ScanScreen {
         }
     }
 
+    /// La bandera de cancelación del arranque, si la pantalla sigue arrancando (para los tests).
+    #[cfg(test)]
+    fn startup_cancel(&self) -> Option<Arc<AtomicBool>> {
+        match &self.kind {
+            Kind::Starting(s) => Some(s.cancel.clone()),
+            _ => None,
+        }
+    }
+
     /// Nombre de lo que se escanea.
     pub fn label(&self) -> &str {
         &self.req.label
@@ -196,6 +258,8 @@ impl ScanScreen {
                 }
             }
             Kind::Starting(s) => {
+                // Primero la bandera: el arranque la ve entre fases sin esperar al candado.
+                s.cancel.store(true, Ordering::SeqCst);
                 let mut slot = s.slot.lock().unwrap_or_else(|e| e.into_inner());
                 slot.cancelled = true;
                 // Si el resultado ya llegó pero la pantalla no lo ha recogido, se cancela aquí.
@@ -292,7 +356,11 @@ impl ScanScreen {
 
     fn stop(&mut self) {
         match &mut self.kind {
-            Kind::Starting(_) => self.stop_pending = true,
+            Kind::Starting(s) => {
+                // "Parar y ver" antes de que arranque: la misma bandera hace que el escaneo se construya con lo recibido.
+                s.cancel.store(true, Ordering::SeqCst);
+                self.stop_pending = true;
+            }
             Kind::Real(r) => {
                 if let Some(h) = &r.handle {
                     cancel_handle(h);
@@ -817,6 +885,10 @@ pub(crate) mod test_hooks {
     pub fn cancelled(p: &Arc<Progress>) {
         CANCELLED.lock().unwrap().push(p.clone());
     }
+    /// Hilos de arranque vivos ahora mismo (en todo el proceso de pruebas).
+    pub fn active_startups() -> usize {
+        super::ACTIVE_STARTUPS.load(std::sync::atomic::Ordering::SeqCst)
+    }
     /// (escaneos arrancados con esa raíz, de ellos cancelados)
     pub fn counts(root: &Path) -> (usize, usize) {
         let started: Vec<_> = STARTED
@@ -838,6 +910,81 @@ pub(crate) mod test_hooks {
 #[cfg(test)]
 mod group_tests {
     use super::*;
+
+    /// Carpeta temporal propia (solo se borra lo creado aquí, bajo la carpeta temporal).
+    struct Temp(std::path::PathBuf);
+    impl Temp {
+        fn new() -> Temp {
+            let p = std::env::temp_dir().join(format!("tesela-test-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir_all(p.join("a")).unwrap();
+            std::fs::write(p.join("a").join("f.bin"), vec![1u8; 5000]).unwrap();
+            Temp(p)
+        }
+        fn req(&self) -> ScanRequest {
+            ScanRequest {
+                root: self.0.clone(),
+                label: "t".into(),
+                drive: None,
+            }
+        }
+    }
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// Espera a que no quede ningún hilo de arranque vivo.
+    fn wait_no_active_startups() {
+        let t0 = Instant::now();
+        while test_hooks::active_startups() != 0 {
+            assert!(t0.elapsed().as_secs() < 30, "hilos de arranque acumulados");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn el_token_de_cancelacion_nace_con_la_pantalla_y_lo_activan_cancelar_parar_y_soltar() {
+        let t = Temp::new();
+        let ctx = egui::Context::default();
+        // Cancelar activa la bandera al instante, sin esperar al hilo de arranque.
+        let mut s = ScanScreen::real(&ctx, t.req(), false);
+        let flag = s.startup_cancel().expect("arrancando");
+        s.cancel();
+        assert!(flag.load(Ordering::SeqCst), "cancelar activa el token");
+        // "Parar y ver" también (el escaneo se construye con lo recibido), sin descartar.
+        let mut s2 = ScanScreen::real(&ctx, t.req(), false);
+        let flag2 = s2.startup_cancel().unwrap();
+        s2.stop();
+        assert!(flag2.load(Ordering::SeqCst), "parar activa el token");
+        assert!(!s2.discard);
+        // Soltar la pantalla (Drop) también.
+        let s3 = ScanScreen::real(&ctx, t.req(), false);
+        let flag3 = s3.startup_cancel().unwrap();
+        drop(s3);
+        assert!(flag3.load(Ordering::SeqCst), "soltar activa el token");
+        // Los hilos de arranque terminan y no se acumulan.
+        drop(s);
+        drop(s2);
+        wait_no_active_startups();
+    }
+
+    #[test]
+    fn muchos_arranques_cancelados_no_acumulan_hilos_ni_escaneos_activos() {
+        let t = Temp::new();
+        let ctx = egui::Context::default();
+        for i in 0..60u64 {
+            let s = ScanScreen::real(&ctx, t.req(), false);
+            if i % 3 == 0 {
+                std::thread::sleep(Duration::from_micros(i * 100));
+            }
+            drop(s);
+        }
+        wait_no_active_startups();
+        let (started, cancelled) = test_hooks::counts(&t.0);
+        assert_eq!(started, cancelled, "ningún escaneo queda sin cancelar");
+        assert!(started <= 60);
+    }
 
     #[test]
     fn aproximado_con_el_respaldo_completo_o_parcial_y_exacto_solo_con_la_api_extendida() {

@@ -71,8 +71,9 @@ pub struct ScanOptions {
     pub volume_gap: bool,
     /// "Ahora" en segundos Unix para los tramos de antigüedad (por defecto, el reloj del sistema).
     pub now_unix: Option<u32>,
-    /// Bandera de cancelación externa (por ejemplo, la de un manejador de Ctrl+C). Si ya está activada al empezar, solo
-    /// se lista la raíz. [`ScanHandle::cancel`] activa la misma bandera.
+    /// Bandera de cancelación externa (por ejemplo, la de un manejador de Ctrl+C, o la que crea la interfaz ANTES de
+    /// lanzar el hilo de arranque). Se consulta entre las fases del arranque (resolver las rutas conocidas) y en los hilos
+    /// de escaneo. Si ya está activada al empezar, solo se lista la raíz. [`ScanHandle::cancel`] activa la misma bandera.
     pub cancel: Option<Arc<AtomicBool>>,
     /// Solo para tests y herramientas: sustituye el espacio del volumen y trata la ruta como un volumen completo,
     /// lo que permite probar de punta a punta el cálculo del "espacio no explicado" sobre un árbol sintético.
@@ -385,10 +386,14 @@ pub fn start(opts: ScanOptions) -> Result<ScanHandle, ScanError> {
     walker::account(&sh, &root_task, &root_stats);
     let mut children = std::mem::take(&mut st.children);
 
-    // Cola prioritaria (solo con FileId: no hay adopción posible con FindFirstFileExW).
+    // Cola prioritaria (solo con FileId: no hay adopción posible con FindFirstFileExW). Es la fase más cara del arranque
+    // (canonicaliza y consulta cada ruta conocida): si ya se pidió cancelar, se omite y el escaneo sigue con lo recibido.
     let find_mode = sh.find_mode.load(Ordering::Relaxed);
     let mut resolved = priority::Resolved::default();
-    if !find_mode && (opts.known_paths || opts.priority_paths.is_some()) {
+    if !find_mode
+        && !cancel.load(Ordering::SeqCst)
+        && (opts.known_paths || opts.priority_paths.is_some())
+    {
         let candidates = opts
             .priority_paths
             .clone()

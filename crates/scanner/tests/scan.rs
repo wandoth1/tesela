@@ -554,3 +554,37 @@ fn raiz_inexistente_o_que_no_es_un_directorio_son_errores() {
         Err(tesela_scanner::ScanError::NotADirectory(_))
     ));
 }
+
+#[test]
+fn cancelar_durante_el_arranque_omite_la_resolucion_de_las_rutas_prioritarias() {
+    let t = TempTree::new();
+    t.write("p/q/r/f.bin", 10_000);
+    t.write("otro/g.bin", 10_000);
+    settle(&t);
+    // Sin cancelar, las dos rutas se resuelven.
+    let mut a = opts(&t);
+    a.priority_paths = Some(vec![t.path("p/q/r"), t.path("otro")]);
+    assert_eq!(scan(a).unwrap().summary.priority.len(), 2);
+    // La bandera se crea ANTES del arranque (como hace la interfaz) y ya está activada al llamar a `start`: la fase de
+    // las rutas prioritarias se omite, y el resultado es un árbol válido de "Parar y ver" (solo la raíz listada).
+    let flag = Arc::new(AtomicBool::new(true));
+    let mut b = opts(&t);
+    b.priority_paths = Some(vec![t.path("p/q/r"), t.path("otro")]);
+    b.cancel = Some(flag.clone());
+    let h = tesela_scanner::start(b).unwrap();
+    assert!(
+        h.progress().priority_targets().is_empty(),
+        "no se resolvió ninguna ruta prioritaria"
+    );
+    let r = h.wait().unwrap();
+    r.tree.check_invariants().unwrap();
+    assert!(r.summary.cancelled);
+    assert!(r.summary.priority.is_empty());
+    assert!(flag.load(Ordering::SeqCst));
+    // Las rutas conocidas del entorno también se omiten.
+    let mut c = opts(&t);
+    c.cancel = Some(Arc::new(AtomicBool::new(true)));
+    let r = scan(c).unwrap();
+    r.tree.check_invariants().unwrap();
+    assert!(r.summary.priority.is_empty());
+}

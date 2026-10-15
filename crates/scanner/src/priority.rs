@@ -92,6 +92,10 @@ pub(crate) fn resolve(
     // 1. Candidatas canónicas que cuelgan de la raíz, como componentes relativos a ella.
     let mut accepted: Vec<(PathBuf, Vec<OsString>)> = Vec::new();
     for p in candidates {
+        // Cancelado durante el arranque: no se sigue canonizando rutas (E/S que puede tardar).
+        if sh.cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            break;
+        }
         let Ok(canon) = std::fs::canonicalize(&p) else {
             continue;
         };
@@ -116,6 +120,9 @@ pub(crate) fn resolve(
     let mut ids_of_target: Vec<(NodeRef, u16, PathBuf)> = Vec::new();
 
     'cand: for (canon, rel) in accepted {
+        if sh.cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            break;
+        }
         let k = key(&rel);
         // Igual o dentro de otra ya aceptada (comparación exacta: `Temp` y `temp` pueden ser carpetas distintas).
         if kept_keys.iter().any(|a| k.starts_with(a)) {

@@ -1153,11 +1153,13 @@ fn cancelar_o_cerrar_la_pantalla_detiene_el_escaneo_sin_dejarlo_huerfano() {
     };
     let ctx = egui::Context::default();
     // Espera a que TODOS los escaneos arrancados con esa raíz (`n` como mínimo) estén cancelados.
+    // Un arranque cancelado a tiempo ni siquiera llega a crear el escaneo (el token se consulta entre fases): `n` es el
+    // mínimo de escaneos arrancados que se exige (0 si pueden no haber llegado a arrancar).
     let all_cancelled = |root: &std::path::Path, n: usize| {
         let t0 = Instant::now();
         loop {
             let (started, cancelled) = test_hooks::counts(root);
-            if started >= n && cancelled == started {
+            if started >= n && cancelled == started && test_hooks::active_startups() == 0 {
                 return started;
             }
             assert!(
@@ -1184,12 +1186,12 @@ fn cancelar_o_cerrar_la_pantalla_detiene_el_escaneo_sin_dejarlo_huerfano() {
         matches!(out, ScanOutcome::Cancelled),
         "un escaneo cancelado se descarta"
     );
-    all_cancelled(&root, 1);
+    all_cancelled(&root, 0);
 
     // B. Soltar la pantalla sin más (Drop) mientras arranca.
     let root = mk("b");
     drop(ScanScreen::real(&ctx, req(&root), false));
-    all_cancelled(&root, 1);
+    all_cancelled(&root, 0);
 
     // C. LA CARRERA: el resultado del arranque ya está entregado, la pantalla no lo ha recogido y se suelta.
     let root = mk("c");
@@ -1224,7 +1226,7 @@ fn cancelar_o_cerrar_la_pantalla_detiene_el_escaneo_sin_dejarlo_huerfano() {
             s.cancel();
         }
     }
-    assert_eq!(all_cancelled(&root, 40), 40);
+    assert!(all_cancelled(&root, 0) <= 40);
     std::fs::remove_dir_all(&base).unwrap();
 }
 
