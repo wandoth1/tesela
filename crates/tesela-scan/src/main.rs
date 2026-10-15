@@ -2,13 +2,16 @@
 //! totales, los enlaces duros deduplicados, el espacio no explicado, el tiempo y los errores.
 //!
 //! ```text
-//! tesela-scan <ruta> [--threads N] [--top N] [--json archivo] [--no-priority] [--fallback]
+//! tesela-scan <ruta> [--threads N] [--top N] [--json archivo|-] [--overwrite] [--no-priority] [--fallback]
 //!                    [--stop-after SEGUNDOS] [--mem] [--verbose]
 //! ```
 //!
 //! * `--top N`: los N hijos más grandes de la ruta (por defecto 20; 0 = ninguno).
-//! * `--json archivo`: escribe el resumen y el top-N en JSON. ATENCIÓN: contiene nombres de carpetas reales; no lo
-//!   versiones (`*.scan.json` y `/scan-out/` están en `.gitignore`).
+//! * `--json archivo`: escribe el resumen y el top-N en JSON. NUNCA pisa un archivo que ya exista (falla antes de
+//!   escanear y, por si aparece mientras tanto, al escribir con `create_new`); `--overwrite` lo reemplaza
+//!   explícitamente. `--json -` lo escribe por la salida estándar y el informe legible pasa a la salida de errores.
+//!   ATENCIÓN: contiene nombres de carpetas reales; no lo versiones (`*.scan.json` y `/scan-out/` están en
+//!   `.gitignore`).
 //! * `--no-priority`: sin cola prioritaria. `--fallback`: fuerza `FindFirstFileExW`.
 //! * `--stop-after S`: "Parar y ver" a los S segundos (el árbol se construye con lo recibido).
 //! * `--mem`: imprime el private working set (antes, pico muestreado y en régimen con el árbol vivo).
@@ -17,18 +20,28 @@
 mod memory;
 
 use serde_json::json;
-use std::io::IsTerminal;
-use std::path::PathBuf;
+use std::fs::OpenOptions;
+use std::io::{IsTerminal, Write};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 use tesela_model::{NodeId, Tree, flags};
 use tesela_scanner::{ApiUsed, ScanOptions, ScanResult, start};
 
+/// Destino del JSON.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum JsonTarget {
+    /// `--json -`: la salida estándar.
+    Stdout,
+    File(PathBuf),
+}
+
 struct Args {
     root: PathBuf,
     threads: usize,
     top: usize,
-    json: Option<PathBuf>,
+    json: Option<JsonTarget>,
+    overwrite: bool,
     no_priority: bool,
     fallback: bool,
     stop_after: Option<Duration>,
@@ -45,6 +58,7 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
         threads: tesela_scanner::default_threads(),
         top: 20,
         json: None,
+        overwrite: false,
         no_priority: false,
         fallback: false,
         stop_after: None,
@@ -61,7 +75,17 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
         match arg.as_str() {
             "--threads" => a.threads = num("--threads", it.next())?.max(1) as usize,
             "--top" => a.top = num("--top", it.next())? as usize,
-            "--json" => a.json = Some(it.next().ok_or("--json necesita un archivo")?.into()),
+            "--json" => {
+                let v = it
+                    .next()
+                    .ok_or("--json necesita un archivo (o `-` para la salida estándar)")?;
+                a.json = Some(if v == "-" {
+                    JsonTarget::Stdout
+                } else {
+                    JsonTarget::File(v.into())
+                });
+            }
+            "--overwrite" => a.overwrite = true,
             "--no-priority" => a.no_priority = true,
             "--fallback" => a.fallback = true,
             "--stop-after" => {
@@ -82,6 +106,9 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
     }
     if !have_root {
         return Err("falta la ruta a escanear".into());
+    }
+    if a.overwrite && !matches!(a.json, Some(JsonTarget::File(_))) {
+        return Err("--overwrite solo tiene sentido con --json <archivo>".into());
     }
     Ok(a)
 }
@@ -106,6 +133,15 @@ fn mib(b: u64) -> String {
     format!("{:.1} MiB", b as f64 / (1024.0 * 1024.0))
 }
 
+/// `println!` hacia un escritor cualquiera (la salida estándar, o la de errores si el JSON ocupa la estándar).
+macro_rules! outln {
+    ($o:expr, $($a:tt)*) => {
+        {
+            let _ = writeln!($o, $($a)*);
+        }
+    };
+}
+
 fn flag_names(f: u16) -> Vec<&'static str> {
     [
         (flags::DIR, "dir"),
@@ -127,12 +163,13 @@ fn top_children(tree: &Tree, n: usize) -> Vec<NodeId> {
     tree.children(tree.root()).take(n).collect()
 }
 
-fn report(args: &Args, r: &ScanResult, mem: Option<(u64, u64, u64)>) {
+fn report(out: &mut dyn Write, args: &Args, r: &ScanResult, mem: Option<(u64, u64, u64)>) {
     let (tree, s) = (&r.tree, &r.summary);
     let st = tree.stats();
     let root = tree.node(tree.root());
-    println!("Ruta: {}", s.root.display());
-    println!(
+    outln!(out, "Ruta: {}", s.root.display());
+    outln!(
+        out,
         "Tiempo: enumeración {:.2} s + construcción del árbol {:.2} s = {:.2} s ({} hilos, API {}, sistema de archivos {})",
         s.elapsed_scan.as_secs_f64(),
         s.elapsed_build.as_secs_f64(),
@@ -151,24 +188,34 @@ fn report(args: &Args, r: &ScanResult, mem: Option<(u64, u64, u64)>) {
         },
     );
     if s.cancelled {
-        println!(
+        outln!(
+            out,
             "ESCANEO DETENIDO (parar y ver): los directorios marcados incompletos son un mínimo."
         );
     }
-    println!(
+    outln!(
+        out,
         "Archivos: {} · directorios: {} · reparse points de directorio (no seguidos): {}",
-        st.files, st.dirs, st.reparse_dirs
+        st.files,
+        st.dirs,
+        st.reparse_dirs
     );
-    println!(
+    outln!(
+        out,
         "Archivos con flag de reparse: {} · de la nube: {} · directorios incompletos: {} · con error: {}",
-        st.reparse_files, st.cloud_entries, st.incomplete_dirs, st.error_dirs
+        st.reparse_files,
+        st.cloud_entries,
+        st.incomplete_dirs,
+        st.error_dirs
     );
-    println!(
+    outln!(
+        out,
         "Escaneado en disco: {} · tamaño lógico: {}",
         gib(st.scanned_alloc),
         gib(root.logical)
     );
-    println!(
+    outln!(
+        out,
         "Hard links deduplicados: {} entradas en {} grupos · {} evitados en disco ({} lógicos)",
         st.hardlink_extra_entries,
         st.hardlink_groups,
@@ -178,7 +225,8 @@ fn report(args: &Args, r: &ScanResult, mem: Option<(u64, u64, u64)>) {
     match s.volume {
         Some(v) => {
             let used = v.total.saturating_sub(v.free);
-            println!(
+            outln!(
+                out,
                 "Volumen: {} usados de {} ({} libres)",
                 gib(used),
                 gib(v.total),
@@ -190,22 +238,25 @@ fn report(args: &Args, r: &ScanResult, mem: Option<(u64, u64, u64)>) {
                 } else {
                     0.0
                 };
-                println!(
+                outln!(
+                    out,
                     "Espacio no explicado (total − libre − escaneado, recortado a ≥ 0): {} ({pct:.2} % de lo usado)",
                     gib(st.unexplained_alloc)
                 );
             } else {
-                println!(
+                outln!(
+                    out,
                     "Espacio no explicado: no aplica (solo en un escaneo terminado de un volumen completo)"
                 );
             }
         }
-        None => println!("Volumen: no se pudo consultar el espacio"),
+        None => outln!(out, "Volumen: no se pudo consultar el espacio"),
     }
     if !s.priority.is_empty() {
         let done = s.priority.iter().filter(|p| p.done).count();
         let bytes: u64 = s.priority.iter().map(|p| p.alloc).sum();
-        println!(
+        outln!(
+            out,
             "Rutas prioritarias: {} ({} recorridas enteras, {} vistos)",
             s.priority.len(),
             done,
@@ -213,7 +264,8 @@ fn report(args: &Args, r: &ScanResult, mem: Option<(u64, u64, u64)>) {
         );
         if args.verbose {
             for p in &s.priority {
-                println!(
+                outln!(
+                    out,
                     "  {} · {} · {} archivos{}",
                     p.path.display(),
                     gib(p.alloc),
@@ -224,31 +276,34 @@ fn report(args: &Args, r: &ScanResult, mem: Option<(u64, u64, u64)>) {
         }
     }
     if s.errors() == 0 {
-        println!("Errores: 0");
+        outln!(out, "Errores: 0");
     } else {
-        println!("Errores: {} directorios sin poder listar", s.errors());
+        outln!(out, "Errores: {} directorios sin poder listar", s.errors());
         for (code, n) in &s.errors_by_code {
-            println!(
+            outln!(
+                out,
                 "  código {code}: {n} ({})",
                 std::io::Error::from_raw_os_error(*code as i32)
             );
         }
         if args.verbose {
             for (code, p) in &s.error_samples {
-                println!("  ejemplo (código {code}): {}", p.display());
+                outln!(out, "  ejemplo (código {code}): {}", p.display());
             }
         }
     }
     if s.ids_exhausted {
-        println!(
+        outln!(
+            out,
             "ERROR: se agotaron los ids provisionales (demasiadas entradas): el árbol está incompleto"
         );
     }
     if let Some(e) = s.build_error {
-        println!("ERROR al construir el árbol: {e}");
+        outln!(out, "ERROR al construir el árbol: {e}");
     }
     if let Some((before, peak, steady)) = mem {
-        println!(
+        outln!(
+            out,
             "Memoria (private working set): antes {} · pico muestreado durante escaneo y construcción {} · en régimen con el árbol {} ({} nodos, {} del árbol)",
             mib(before),
             mib(peak),
@@ -258,7 +313,8 @@ fn report(args: &Args, r: &ScanResult, mem: Option<(u64, u64, u64)>) {
         );
     }
     if args.top > 0 {
-        println!(
+        outln!(
+            out,
             "\nTop {} por tamaño en disco (hijos directos de la ruta):",
             args.top
         );
@@ -291,7 +347,8 @@ fn report(args: &Args, r: &ScanResult, mem: Option<(u64, u64, u64)>) {
             } else {
                 ""
             };
-            println!(
+            outln!(
+                out,
                 "  {:>11}{inc} {pct:>5.1} %  {kind}  {} archivos  {name}",
                 gib(n.alloc),
                 n.files_below
@@ -300,7 +357,8 @@ fn report(args: &Args, r: &ScanResult, mem: Option<(u64, u64, u64)>) {
     }
 }
 
-fn write_json(path: &PathBuf, args: &Args, r: &ScanResult) -> std::io::Result<()> {
+/// Documento JSON del escaneo.
+fn json_doc(args: &Args, r: &ScanResult) -> String {
     let (tree, s) = (&r.tree, &r.summary);
     let st = tree.stats();
     let root = tree.node(tree.root());
@@ -338,10 +396,52 @@ fn write_json(path: &PathBuf, args: &Args, r: &ScanResult) -> std::io::Result<()
         "ids_exhausted": s.ids_exhausted,
         "top": top,
     });
-    std::fs::write(
-        path,
-        serde_json::to_string_pretty(&doc).expect("JSON") + "\n",
+    serde_json::to_string_pretty(&doc).expect("JSON") + "\n"
+}
+
+/// Abre el archivo de salida SIN pisar nada (`create_new`), o reemplazándolo si `overwrite`.
+fn open_output(path: &Path, overwrite: bool) -> std::io::Result<std::fs::File> {
+    let mut o = OpenOptions::new();
+    o.write(true);
+    if overwrite {
+        o.create(true).truncate(true);
+    } else {
+        o.create_new(true);
+    }
+    o.open(path)
+}
+
+fn exists_error(path: &Path) -> String {
+    format!(
+        "{} ya existe: no se pisa. Usa otro nombre o --overwrite para reemplazarlo",
+        path.display()
     )
+}
+
+/// Escribe el JSON en `target`. Devuelve un mensaje de error legible.
+fn write_json(
+    target: &JsonTarget,
+    overwrite: bool,
+    doc: &str,
+    stdout: &mut dyn Write,
+) -> Result<(), String> {
+    match target {
+        JsonTarget::Stdout => stdout
+            .write_all(doc.as_bytes())
+            .and_then(|()| stdout.flush())
+            .map_err(|e| format!("no se pudo escribir el JSON en la salida estándar: {e}")),
+        JsonTarget::File(path) => {
+            let mut f = open_output(path, overwrite).map_err(|e| {
+                if e.kind() == std::io::ErrorKind::AlreadyExists {
+                    exists_error(path)
+                } else {
+                    format!("no se pudo escribir el JSON: {e}")
+                }
+            })?;
+            f.write_all(doc.as_bytes())
+                .map_err(|e| format!("no se pudo escribir el JSON: {e}"))
+        }
+    }
 }
 
 fn main() -> ExitCode {
@@ -355,6 +455,22 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
+    // Falla ANTES de escanear (puede tardar mucho) si el archivo ya existe y no se pidió reemplazarlo.
+    if let Some(JsonTarget::File(p)) = &args.json
+        && !args.overwrite
+        && p.exists()
+    {
+        eprintln!("error: {}", exists_error(p));
+        return ExitCode::from(1);
+    }
+    // Falla ANTES de escanear (puede tardar mucho) si el archivo ya existe y no se pidió reemplazarlo.
+    if let Some(JsonTarget::File(p)) = &args.json
+        && !args.overwrite
+        && p.exists()
+    {
+        eprintln!("error: {}", exists_error(p));
+        return ExitCode::from(1);
+    }
     let mut opts = ScanOptions::new(&args.root);
     opts.threads = args.threads;
     opts.known_paths = !args.no_priority;
@@ -406,16 +522,25 @@ fn main() -> ExitCode {
         let peak = s.finish();
         (before, peak, memory::private_working_set().unwrap_or(0))
     });
-    report(&args, &result, mem);
-    if let Some(path) = &args.json {
-        if let Err(e) = write_json(path, &args, &result) {
-            eprintln!("error: no se pudo escribir el JSON: {e}");
+    // Con `--json -` el JSON ocupa la salida estándar: el informe legible va a la de errores.
+    let to_stdout = args.json == Some(JsonTarget::Stdout);
+    if to_stdout {
+        report(&mut std::io::stderr(), &args, &result, mem);
+    } else {
+        report(&mut std::io::stdout(), &args, &result, mem);
+    }
+    if let Some(target) = &args.json {
+        let doc = json_doc(&args, &result);
+        if let Err(e) = write_json(target, args.overwrite, &doc, &mut std::io::stdout()) {
+            eprintln!("error: {e}");
             return ExitCode::from(1);
         }
-        println!(
-            "\nJSON escrito en {} (contiene nombres reales: no lo versiones)",
-            path.display()
-        );
+        if let JsonTarget::File(path) = target {
+            println!(
+                "\nJSON escrito en {} (contiene nombres reales: no lo versiones)",
+                path.display()
+            );
+        }
     }
     ExitCode::SUCCESS
 }

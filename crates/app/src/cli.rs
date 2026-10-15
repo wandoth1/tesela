@@ -30,7 +30,9 @@ Herramientas de desarrollo (no guardan nada):
   --bench-hover <segundos>     mueve un puntero sintetico sobre el mapa e imprime el coste de CPU por frame
                                (con --demo abre el mapa; sin --demo exige --scan)
   --idle-memory <segundos>     espera con la ventana en reposo e imprime el private working set del proceso
-  --screenshot <ruta.png>      guarda una captura de la ventana y sale (solo con --demo y la feature `capture`)
+  --screenshot <ruta.png>      guarda una captura de la ventana y sale (solo con --demo y la feature `capture`);
+                               NO pisa un archivo que ya exista
+  --overwrite                  con --screenshot: reemplaza el archivo si ya existe
 ";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -58,6 +60,8 @@ pub struct Cli {
     pub bench_hover: Option<f32>,
     pub idle_memory: Option<f32>,
     pub screenshot: Option<PathBuf>,
+    /// Con `--screenshot`: reemplazar el archivo si ya existe (por defecto no se pisa nada).
+    pub overwrite: bool,
     pub help: bool,
     pub version: bool,
 }
@@ -156,6 +160,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
                 cli.idle_memory = Some(s);
             }
             "--screenshot" => cli.screenshot = Some(PathBuf::from(need(&mut it, "--screenshot")?)),
+            "--overwrite" => cli.overwrite = true,
             other => return Err(format!("argumento desconocido: `{other}`")),
         }
     }
@@ -173,6 +178,9 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
     }
     if cli.screenshot.is_some() && !cli.demo {
         return Err("--screenshot solo se admite con --demo: una captura de un disco real mostraría datos del equipo".into());
+    }
+    if cli.overwrite && cli.screenshot.is_none() {
+        return Err("--overwrite solo tiene sentido con --screenshot".into());
     }
     if cli.scan.is_some() && cli.demo {
         return Err("--scan y --demo no se combinan".into());
@@ -248,6 +256,15 @@ mod tests {
             p("--demo --screenshot x.png").unwrap().screenshot,
             Some(PathBuf::from("x.png"))
         );
+        // `--overwrite` solo acompaña a `--screenshot`.
+        assert!(
+            p("--demo --overwrite")
+                .unwrap_err()
+                .contains("--screenshot")
+        );
+        let c = p("--demo --screenshot x.png --overwrite").unwrap();
+        assert!(c.overwrite);
+        assert!(!p("--demo --screenshot x.png").unwrap().overwrite);
     }
 
     #[test]

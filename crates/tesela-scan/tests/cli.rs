@@ -142,3 +142,99 @@ fn parar_y_ver_a_los_cero_segundos_da_un_arbol_valido() {
     // Con 0 s la cancelación llega casi siempre antes del final; en cualquier caso el resultado es coherente.
     assert!(out.contains("Archivos: "), "{out}");
 }
+
+/// Un archivo de salida preexistente que NO debe pisarse sin `--overwrite`.
+const PREVIO: &str = "contenido previo que no debe perderse";
+
+#[test]
+fn json_no_pisa_un_archivo_existente_y_no_escanea() {
+    let t = TempTree::new();
+    t.write("x/a.bin", 10_000);
+    let salida = t.0.join("salida.json");
+    fs::write(&salida, PREVIO).unwrap();
+    let (code, out, err) = run(&[
+        &t.0.join("x"),
+        Path::new("--top"),
+        Path::new("0"),
+        Path::new("--json"),
+        &salida,
+    ]);
+    assert_eq!(code, 1, "stdout: {out}");
+    assert!(
+        err.contains("ya existe") && err.contains("--overwrite"),
+        "{err}"
+    );
+    assert!(out.is_empty(), "no debe haber escaneado: {out}");
+    assert_eq!(fs::read_to_string(&salida).unwrap(), PREVIO);
+}
+
+#[test]
+fn json_con_overwrite_reemplaza_y_sin_el_crea_el_archivo_nuevo() {
+    let t = TempTree::new();
+    t.write("x/a.bin", 10_000);
+    let salida = t.0.join("salida.json");
+    // Archivo nuevo: se crea sin --overwrite.
+    let (code, _, err) = run(&[
+        &t.0.join("x"),
+        Path::new("--top"),
+        Path::new("0"),
+        Path::new("--json"),
+        &salida,
+    ]);
+    assert_eq!(code, 0, "{err}");
+    let doc: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&salida).unwrap()).unwrap();
+    assert_eq!(doc["totals"]["files"], 1);
+    // Con --overwrite se reemplaza.
+    fs::write(&salida, PREVIO).unwrap();
+    let (code, out, err) = run(&[
+        &t.0.join("x"),
+        Path::new("--top"),
+        Path::new("0"),
+        Path::new("--json"),
+        &salida,
+        Path::new("--overwrite"),
+    ]);
+    assert_eq!(code, 0, "{err}");
+    assert!(out.contains("JSON escrito en"), "{out}");
+    let doc: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&salida).unwrap()).unwrap();
+    assert_eq!(doc["totals"]["files"], 1);
+}
+
+#[test]
+fn json_menos_escribe_el_json_por_la_salida_estandar_y_el_informe_por_la_de_errores() {
+    let t = TempTree::new();
+    t.write("x/a.bin", 10_000);
+    t.write("x/b.bin", 20_000);
+    let (code, out, err) = run(&[
+        &t.0.join("x"),
+        Path::new("--top"),
+        Path::new("1"),
+        Path::new("--json"),
+        Path::new("-"),
+    ]);
+    assert_eq!(code, 0, "{err}");
+    // La salida estándar es SOLO el JSON.
+    let doc: serde_json::Value =
+        serde_json::from_str(&out).unwrap_or_else(|e| panic!("{e}: {out}"));
+    assert_eq!(doc["totals"]["files"], 2);
+    assert!(err.contains("Archivos: 2"), "el informe va a stderr: {err}");
+    // No se creó ningún archivo llamado `-`.
+    assert!(!t.0.join("x").join("-").exists());
+}
+
+#[test]
+fn overwrite_sin_json_de_archivo_es_un_error_de_uso() {
+    let t = TempTree::new();
+    let (code, _, err) = run(&[&t.0, Path::new("--overwrite")]);
+    assert_eq!(code, 2);
+    assert!(err.contains("--overwrite"), "{err}");
+    let (code, _, _) = run(&[
+        &t.0,
+        Path::new("--json"),
+        Path::new("-"),
+        Path::new("--overwrite"),
+    ]);
+    assert_eq!(code, 2);
+}

@@ -7,6 +7,7 @@ mod cli;
 mod config;
 mod console;
 mod memory;
+mod output;
 mod shell;
 
 use cli::Screen;
@@ -33,6 +34,21 @@ fn main() -> eframe::Result {
     if cli.screenshot.is_some() {
         console::print("tesela: --screenshot necesita compilar con la feature `capture`");
         std::process::exit(2);
+    }
+
+    // Una captura que no se puede guardar se descubre ANTES de abrir la ventana, no después de pintar.
+    if let Some(path) = &cli.screenshot
+        && !cli.overwrite
+        && path.exists()
+    {
+        console::print(&format!(
+            "tesela: {}",
+            output::describe_error(
+                path,
+                &std::io::Error::from(std::io::ErrorKind::AlreadyExists)
+            )
+        ));
+        std::process::exit(1);
     }
 
     // Sin fuentes de sistema no se puede dibujar texto (no se embebe ninguna): se avisa y se sale, en vez de un pánico.
@@ -127,6 +143,7 @@ fn main() -> eframe::Result {
         });
     }
     let screenshot = cli.screenshot.clone();
+    let screenshot_overwrite = cli.overwrite;
     let persist = !tool_mode;
     let persist_size = cli.size.is_none();
 
@@ -150,6 +167,7 @@ fn main() -> eframe::Result {
                 bench,
                 idle_mem,
                 screenshot,
+                screenshot_overwrite,
                 shot_frames: 0,
                 shot_requested: false,
                 normalize_scale: normalize,

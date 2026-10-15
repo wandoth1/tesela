@@ -83,6 +83,9 @@ pub struct Shell {
     pub idle_mem: Option<IdleMemory>,
     #[cfg_attr(not(feature = "capture"), allow(dead_code))]
     pub screenshot: Option<PathBuf>,
+    /// `--overwrite`: la captura puede reemplazar un archivo existente.
+    #[cfg_attr(not(feature = "capture"), allow(dead_code))]
+    pub screenshot_overwrite: bool,
     #[cfg_attr(not(feature = "capture"), allow(dead_code))]
     pub shot_frames: u32,
     #[cfg_attr(not(feature = "capture"), allow(dead_code))]
@@ -269,7 +272,19 @@ impl Shell {
             for p in &img.pixels {
                 rgba.extend_from_slice(&p.to_array());
             }
-            let file = std::fs::File::create(&path).expect("no se pudo crear la captura");
+            // Nunca se pisa un archivo existente salvo con `--overwrite` (se comprobó también al arrancar).
+            let file = match crate::output::open_output(&path, self.screenshot_overwrite) {
+                Ok(f) => f,
+                Err(e) => {
+                    crate::console::print(&format!(
+                        "tesela: {}",
+                        crate::output::describe_error(&path, &e)
+                    ));
+                    self.screenshot = None;
+                    ctx.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
+                    return;
+                }
+            };
             let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w as u32, h as u32);
             enc.set_color(png::ColorType::Rgba);
             enc.set_depth(png::BitDepth::Eight);
