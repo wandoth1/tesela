@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use windows_sys::Win32::Foundation::HANDLE;
 use windows_sys::Win32::Storage::FileSystem::{
-    FILE_STANDARD_INFO, FileStandardInfo, GetFileInformationByHandleEx,
+    FILE_STANDARD_INFO, FileStandardInfo, GetFileInformationByHandleEx, GetShortPathNameW,
 };
 
 /// `AllocationSize` de un archivo según `FileStandardInfo` sobre su propio handle (oráculo independiente del
@@ -41,6 +41,25 @@ pub fn allocation_size(path: &Path) -> u64 {
     info.AllocationSize.max(0) as u64
 }
 
+/// Forma corta 8.3 de una ruta EXISTENTE (`GetShortPathNameW`). Si el volumen no tiene nombres 8.3 activos devuelve
+/// la ruta sin cambios.
+pub fn short_path(path: &Path) -> PathBuf {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    // SAFETY: `wide` termina en NUL; con búfer nulo y longitud 0 la API devuelve el tamaño necesario.
+    let needed = unsafe { GetShortPathNameW(wide.as_ptr(), std::ptr::null_mut(), 0) };
+    if needed == 0 {
+        return path.to_path_buf();
+    }
+    let mut buf = vec![0u16; needed as usize];
+    // SAFETY: `wide` termina en NUL y `buf` es escribible con `needed` unidades UTF-16.
+    let n = unsafe { GetShortPathNameW(wide.as_ptr(), buf.as_mut_ptr(), needed) };
+    if n == 0 || n as usize >= buf.len() {
+        return path.to_path_buf();
+    }
+    std::ffi::OsString::from_wide(&buf[..n as usize]).into()
+}
+
 pub struct TempTree {
     root: PathBuf,
     junctions: Vec<PathBuf>,
@@ -58,8 +77,21 @@ impl TempTree {
         }
     }
 
+    /// Raíz tal como se creó (`temp_dir()`; en algunos runners, con componentes en forma corta 8.3). La guarda de
+    /// borrado trabaja con ESTA forma y no se relaja nunca.
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    /// Raíz en forma LARGA canónica (la que reconstruye el escáner: sin 8.3 y sin `\\?\` si no hace falta). Úsala
+    /// para comparar con rutas que salen del escáner.
+    pub fn long_root(&self) -> PathBuf {
+        dunce::canonicalize(&self.root).expect("canonicaliza la raíz")
+    }
+
+    /// `rel` bajo la raíz larga.
+    pub fn long_path(&self, rel: &str) -> PathBuf {
+        self.long_root().join(rel)
     }
 
     pub fn path(&self, rel: &str) -> PathBuf {

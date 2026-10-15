@@ -492,7 +492,7 @@ fn rutas_largas_unicode_y_nombres_con_sustitutos_desparejados() {
         .chain([0xD800u16])
         .chain("-fin.bin".encode_utf16())
         .collect();
-    let weird_path = t.root().join(OsString::from_wide(&weird));
+    let weird_path = t.long_root().join(OsString::from_wide(&weird));
     std::fs::write(&weird_path, vec![7u8; 6000]).expect("crea el archivo de nombre raro");
     let r = scan_tree(&t);
     assert_eq!(r.summary.errors(), 0);
