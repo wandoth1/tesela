@@ -147,6 +147,7 @@ impl eframe::App for Shell {
                 ctx.request_repaint();
             }
         }
+        self.ui.set_parent_window(frame);
         self.ui.show(ui);
 
         // Título según la pantalla.

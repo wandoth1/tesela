@@ -2757,6 +2757,7 @@ dependencies = [
  "egui",
  "egui_kittest",
  "fluent-bundle",
+ "raw-window-handle",
  "rfd",
  "serde",
  "sys-locale",

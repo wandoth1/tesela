@@ -165,6 +165,8 @@ pub struct TeselaUi {
     drives: Vec<DriveInfo>,
     drives_rx: Option<Receiver<Vec<DriveInfo>>>,
     folder_rx: Option<Receiver<Option<PathBuf>>>,
+    /// Ventana principal, padre (modal) del selector de carpeta.
+    parent: Option<crate::platform::ParentWindow>,
     pub(crate) screen: Screen,
     notice: Option<String>,
     last_request: Option<ScanRequest>,
@@ -189,6 +191,7 @@ impl TeselaUi {
             drives: Vec::new(),
             drives_rx: None,
             folder_rx: None,
+            parent: None,
             screen: Screen::Home,
             notice: None,
             last_request: None,
@@ -242,6 +245,13 @@ impl TeselaUi {
             root: drive.root(),
             label: format!("{} ({}:)", drive.label, drive.letter),
             drive: Some(drive),
+        }
+    }
+
+    /// Indica la ventana principal: el selector de carpeta se abre como diálogo modal suyo.
+    pub fn set_parent_window(&mut self, w: &impl raw_window_handle::HasWindowHandle) {
+        if self.parent.is_none() {
+            self.parent = crate::platform::ParentWindow::from_handle(w);
         }
     }
 
@@ -408,8 +418,13 @@ impl TeselaUi {
                     } else if self.folder_rx.is_none() {
                         let (tx, rx) = crossbeam_channel::bounded(1);
                         let c = ctx.clone();
+                        let parent = self.parent;
                         std::thread::spawn(move || {
-                            let _ = tx.send(rfd::FileDialog::new().pick_folder());
+                            let mut dialog = rfd::FileDialog::new();
+                            if let Some(p) = &parent {
+                                dialog = dialog.set_parent(p);
+                            }
+                            let _ = tx.send(dialog.pick_folder());
                             c.request_repaint();
                         });
                         self.folder_rx = Some(rx);

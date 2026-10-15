@@ -303,9 +303,66 @@ pub fn reveal_in_explorer(path: &Path) -> std::io::Result<()> {
     cmd.spawn().map(|_| ())
 }
 
+/// La ventana principal como padre de los diálogos del sistema (selector de carpeta): así el diálogo es modal de ELLA
+/// (se queda encima y no se pierde detrás) en lugar de flotar sin dueño. Guarda solo el `HWND`; el selector lo usa dentro
+/// de la llamada.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ParentWindow(std::num::NonZeroIsize);
+
+impl ParentWindow {
+    /// El padre que indica un manejador de ventana de `raw-window-handle` (`None` si no es de Win32).
+    pub fn from_handle(w: &impl raw_window_handle::HasWindowHandle) -> Option<ParentWindow> {
+        match w.window_handle().ok()?.as_raw() {
+            raw_window_handle::RawWindowHandle::Win32(h) => Some(ParentWindow(h.hwnd)),
+            _ => None,
+        }
+    }
+}
+
+impl raw_window_handle::HasWindowHandle for ParentWindow {
+    fn window_handle(
+        &self,
+    ) -> Result<raw_window_handle::WindowHandle<'_>, raw_window_handle::HandleError> {
+        let raw = raw_window_handle::RawWindowHandle::Win32(
+            raw_window_handle::Win32WindowHandle::new(self.0),
+        );
+        // SAFETY: el `HWND` es el de la ventana principal, que vive todo el proceso; el selector de carpeta lo consulta
+        // durante la propia llamada y se bloquea (diálogo modal) hasta cerrarse, antes de que la ventana pueda destruirse.
+        Ok(unsafe { raw_window_handle::WindowHandle::borrow_raw(raw) })
+    }
+}
+
+impl raw_window_handle::HasDisplayHandle for ParentWindow {
+    fn display_handle(
+        &self,
+    ) -> Result<raw_window_handle::DisplayHandle<'_>, raw_window_handle::HandleError> {
+        Ok(raw_window_handle::DisplayHandle::windows())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetDesktopWindow;
+
+    #[test]
+    fn la_ventana_padre_entrega_su_hwnd_al_selector_de_carpeta() {
+        // SAFETY: no recibe argumentos; devuelve el HWND del escritorio (válido durante toda la sesión).
+        let hwnd = unsafe { GetDesktopWindow() } as isize;
+        let nz = std::num::NonZeroIsize::new(hwnd).expect("el escritorio tiene HWND");
+        let p = ParentWindow(nz);
+        match p.window_handle().unwrap().as_raw() {
+            RawWindowHandle::Win32(h) => assert_eq!(h.hwnd, nz),
+            other => panic!("manejador inesperado: {other:?}"),
+        }
+        assert!(matches!(
+            p.display_handle().unwrap().as_raw(),
+            RawDisplayHandle::Windows(_)
+        ));
+        // Ida y vuelta: lo que sale de `from_handle` es el mismo padre.
+        assert_eq!(ParentWindow::from_handle(&p), Some(p));
+    }
 
     #[test]
     fn la_carpeta_de_fuentes_existe() {
