@@ -29,3 +29,8 @@ target*/
 /spike/**/*.csv
 /spike/**/*.png
 /spike/**/*.log
+
+# Producto: salidas locales (NUNCA se versionan resultados de escaneos reales)
+/out/
+/scan-out/
+*.scan.json

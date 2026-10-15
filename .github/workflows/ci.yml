@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTFLAGS: -D warnings
+
+jobs:
+  # Comprueba que el repositorio no contiene datos de ninguna máquina (solo patrones genéricos).
+  privacy:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: privacy-check (todo el árbol)
+        shell: pwsh
+        run: ./scripts/privacy-check.ps1 -All -GenericOnly
+
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      # La versión de Rust sale de rust-toolchain.toml (se instala sola en la primera llamada a cargo).
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deny
+      - name: Formato
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test --workspace
+      - name: Licencias y avisos de seguridad
+        run: cargo deny check
+      - name: Release
+        run: cargo build --release --workspace
+      # No se ejecuta ningún escaneo de C: en el CI: los tests solo usan árboles sintéticos en %TEMP%.

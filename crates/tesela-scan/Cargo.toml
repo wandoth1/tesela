@@ -1,0 +1,28 @@
+[package]
+name = "tesela-scan"
+description = "CLI de solo lectura que escanea una ruta con el escáner de Tesela e imprime los totales."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "tesela-scan"
+path = "src/main.rs"
+
+[dependencies]
+tesela-model.workspace = true
+tesela-scanner.workspace = true
+serde_json.workspace = true
+
+[dependencies.windows-sys]
+workspace = true
+features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_Threading"]
+
+[dev-dependencies]
+uuid.workspace = true
+
+[lints]
+workspace = true

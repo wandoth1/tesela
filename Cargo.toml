@@ -1,0 +1,49 @@
+# Workspace del producto. El spike de la fase 0 (`spike/`) es un workspace propio e independiente.
+[workspace]
+resolver = "3"
+members = [
+    "crates/model",
+    "crates/scanner",
+    "crates/layout",
+    "crates/cleaner",
+    "crates/ui",
+    "crates/tesela-scan",
+]
+exclude = ["spike"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+# MSRV: la fija egui (PLAN.md §1). Se comprueba con `cargo +1.95 check --workspace`.
+rust-version = "1.95"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/wandoth1/tesela"
+publish = false
+
+[workspace.dependencies]
+# Versiones verificadas con `cargo search` el 2026-10-15 (coinciden con PLAN.md §3.10).
+crossbeam-channel = "0.5.17"
+crossbeam-deque = "0.8.8"
+rustc-hash = "2.1.3"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+toml = "1.1.8"
+uuid = { version = "1.28.0", features = ["v4"] }
+windows-sys = "0.61.2"
+
+# Crates internos.
+tesela-model = { version = "0.1.0", path = "crates/model" }
+tesela-scanner = { version = "0.1.0", path = "crates/scanner" }
+
+[workspace.lints.rust]
+# Todo `unsafe` está confinado a módulos pequeños que lo permiten expresamente (`#![allow(unsafe_code)]`).
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+undocumented_unsafe_blocks = "deny"
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+panic = "unwind"

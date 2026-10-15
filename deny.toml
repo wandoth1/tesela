@@ -1,0 +1,36 @@
+# cargo-deny (formato 0.20). Se ejecuta con `cargo deny check` en el CI.
+# Nota: solo cubre el workspace de la raíz; `spike/` es independiente y no se comprueba.
+
+[graph]
+# El producto es solo Windows x64 (ARM64 llegará en la v1.0).
+targets = ["x86_64-pc-windows-msvc"]
+
+[advisories]
+ignore = []
+
+[licenses]
+# Licencias permitidas: compatibles con distribuir bajo MIT OR Apache-2.0.
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.8
+
+[bans]
+# Se toleran versiones duplicadas (p. ej. la familia `windows-*`/`windows-sys` que arrastran las dependencias).
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
