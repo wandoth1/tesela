@@ -62,6 +62,32 @@ pub fn dir_action(attrs: u32, reparse_tag: u32) -> DirAction {
     }
 }
 
+/// Qué hace el escáner con la RAÍZ del escaneo: la misma clasificación que con los descendientes (`dir_action`), con
+/// los atributos y la etiqueta de reparse de la propia raíz.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RootPlan {
+    /// Flags del nodo raíz (`DIR`, y `REPARSE`/`CLOUD` según corresponda).
+    pub flags: u16,
+    /// ¿Se lista la raíz? No si es un junction/symlink/montaje (no se sigue) ni una carpeta de la nube sin poblar
+    /// (listarla provocaría descargas por red).
+    pub walk: bool,
+    /// Abrir la raíz dejando actuar al filtro de la nube (carpeta de la nube ya poblada).
+    pub open_cloud: bool,
+    /// Mide 0 (reparse point no seguido). Una carpeta de la nube sin poblar conserva su `AllocationSize`.
+    pub zero_size: bool,
+}
+
+/// Decide qué hacer con la raíz a partir de sus atributos y su etiqueta de reparse.
+pub fn root_plan(attrs: u32, reparse_tag: u32) -> RootPlan {
+    let action = dir_action(attrs, reparse_tag);
+    RootPlan {
+        flags: dir_flags(attrs, reparse_tag) | flags::DIR,
+        walk: matches!(action, DirAction::Walk | DirAction::WalkCloud),
+        open_cloud: action == DirAction::WalkCloud,
+        zero_size: action == DirAction::SkipReparse,
+    }
+}
+
 /// Flags de un directorio según su acción. Un reparse point que NO es de la nube nunca lleva `CLOUD` (aunque tenga
 /// atributos de recuperación): así el builder distingue "no seguido" (`REPARSE` sin `CLOUD`) de "recorrible"
 /// (`REPARSE | CLOUD`, o sin `REPARSE`) usando solo los flags, con el mismo criterio que el escáner.
@@ -209,6 +235,59 @@ mod tests {
             flags::DIR | flags::REPARSE | flags::CLOUD
         );
         assert_eq!(f(DIR | RECALL_DATA, 0), flags::DIR | flags::CLOUD);
+    }
+
+    #[test]
+    fn la_raiz_se_clasifica_igual_que_los_descendientes() {
+        const DIR: u32 = 0x10;
+        const REPARSE: u32 = 0x400;
+        const RECALL_OPEN: u32 = 0x0004_0000;
+        const RECALL_DATA: u32 = 0x0040_0000;
+        // Raíz normal.
+        assert_eq!(
+            root_plan(DIR, 0),
+            RootPlan {
+                flags: flags::DIR,
+                walk: true,
+                open_cloud: false,
+                zero_size: false
+            }
+        );
+        // Carpeta de la nube ya poblada: se recorre abriéndola con su filtro.
+        assert_eq!(
+            root_plan(DIR | REPARSE, 0x9000_001A),
+            RootPlan {
+                flags: flags::DIR | flags::REPARSE | flags::CLOUD,
+                walk: true,
+                open_cloud: true,
+                zero_size: false
+            }
+        );
+        // Carpeta de la nube NO poblada (cualquiera de los dos atributos): no se lista y conserva su tamaño.
+        for recall in [RECALL_OPEN, RECALL_DATA] {
+            assert_eq!(
+                root_plan(DIR | REPARSE | recall, 0x9000_001A),
+                RootPlan {
+                    flags: flags::DIR | flags::REPARSE | flags::CLOUD,
+                    walk: false,
+                    open_cloud: false,
+                    zero_size: false
+                }
+            );
+        }
+        assert!(!root_plan(DIR | RECALL_DATA, 0).walk);
+        // Junction o symlink: no se sigue y mide 0 (aunque lleve atributos de recuperación).
+        for tag in [0xA000_0003, 0xA000_000C] {
+            assert_eq!(
+                root_plan(DIR | REPARSE | RECALL_DATA, tag),
+                RootPlan {
+                    flags: flags::DIR | flags::REPARSE,
+                    walk: false,
+                    open_cloud: false,
+                    zero_size: true
+                }
+            );
+        }
     }
 
     #[test]

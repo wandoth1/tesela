@@ -13,13 +13,13 @@ use windows_sys::Win32::Foundation::{
     INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Storage::FileSystem::{
-    CreateFileW, FILE_ATTRIBUTE_REPARSE_POINT, FILE_BASIC_INFO, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_EXTD_DIR_INFO, FILE_ID_INFO, FILE_SHARE_DELETE,
-    FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO, FIND_FIRST_EX_LARGE_FETCH,
-    FileBasicInfo, FileIdExtdDirectoryInfo, FileIdInfo, FileStandardInfo, FindClose,
-    FindExInfoBasic, FindExSearchNameMatch, FindFirstFileExW, FindNextFileW, GetDiskFreeSpaceExW,
-    GetDiskFreeSpaceW, GetFileInformationByHandleEx, GetVolumeInformationByHandleW, OPEN_EXISTING,
-    WIN32_FIND_DATAW,
+    CreateFileW, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, FILE_BASIC_INFO,
+    FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_EXTD_DIR_INFO, FILE_ID_INFO,
+    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO,
+    FIND_FIRST_EX_LARGE_FETCH, FileAttributeTagInfo, FileBasicInfo, FileIdExtdDirectoryInfo,
+    FileIdInfo, FileStandardInfo, FindClose, FindExInfoBasic, FindExSearchNameMatch,
+    FindFirstFileExW, FindNextFileW, GetDiskFreeSpaceExW, GetDiskFreeSpaceW,
+    GetFileInformationByHandleEx, GetVolumeInformationByHandleW, OPEN_EXISTING, WIN32_FIND_DATAW,
 };
 
 pub use windows_sys::Win32::Storage::FileSystem::{FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES};
@@ -87,44 +87,79 @@ pub fn open_dir(path: &[u16], access: u32, follow_reparse: bool) -> Result<DirHa
 }
 
 /// Metadatos de un directorio abierto con `FILE_READ_ATTRIBUTES`.
+///
+/// Se separan los metadatos IMPRESCINDIBLES (atributos, mtime, tamaños: `FileBasicInfo` y `FileStandardInfo`, que
+/// soporta cualquier sistema de archivos) de los OPCIONALES (`file_id` y `reparse_tag`): que el sistema no soporte
+/// la consulta de identidad no impide escanear, se sigue con `FindFirstFileExW`.
 #[derive(Clone, Copy, Debug)]
 pub struct DirMeta {
-    /// Solo lo usan los tests: comprueba que `FileIdInfo` coincide con el `FileId` del listado del padre.
+    /// Identificador de archivo de 128 bits, OPCIONAL: `None` si el sistema de archivos no soporta `FileIdInfo`
+    /// (FAT, exFAT, algunos recursos de red...). Solo lo usan los tests (comprueba que coincide con el `FileId`
+    /// del listado del padre).
     #[allow(dead_code)]
-    pub file_id: u128,
+    pub file_id: Option<u128>,
     pub attrs: u32,
+    /// Etiqueta de reparse (`FileAttributeTagInfo`); 0 si no es un reparse point o la consulta no está soportada.
+    pub reparse_tag: u32,
     pub mtime_filetime: i64,
     pub alloc: u64,
     pub logical: u64,
 }
 
-/// Lee `FILE_BASIC_INFO`, `FILE_STANDARD_INFO` y `FILE_ID_INFO` del handle.
-pub fn dir_meta(h: &DirHandle) -> Result<DirMeta, u32> {
-    fn query<T>(h: &DirHandle, class: i32) -> Result<T, u32> {
-        // SAFETY: `T` es una de las estructuras POD de la API (enteros y arrays de bytes), para las que todo-ceros es
-        // un valor válido.
-        let mut v: T = unsafe { std::mem::zeroed() };
-        // SAFETY: `h.0` es un handle válido; el puntero apunta a `v` y se pasa su tamaño exacto.
-        let ok = unsafe {
-            GetFileInformationByHandleEx(
-                h.0,
-                class,
-                &mut v as *mut T as *mut c_void,
-                size_of::<T>() as u32,
-            )
-        };
-        if ok == 0 {
-            // SAFETY: `GetLastError` no tiene precondiciones.
-            return Err(unsafe { GetLastError() });
-        }
-        Ok(v)
+/// Consulta de una clase de información del handle con `GetFileInformationByHandleEx`.
+fn query_info<T>(h: &DirHandle, class: i32) -> Result<T, u32> {
+    // SAFETY: `T` es una de las estructuras POD de la API (enteros y arrays de bytes), para las que todo-ceros es
+    // un valor válido.
+    let mut v: T = unsafe { std::mem::zeroed() };
+    // SAFETY: `h.0` es un handle válido; el puntero apunta a `v` y se pasa su tamaño exacto.
+    let ok = unsafe {
+        GetFileInformationByHandleEx(
+            h.0,
+            class,
+            &mut v as *mut T as *mut c_void,
+            size_of::<T>() as u32,
+        )
+    };
+    if ok == 0 {
+        // SAFETY: `GetLastError` no tiene precondiciones.
+        return Err(unsafe { GetLastError() });
     }
-    let basic: FILE_BASIC_INFO = query(h, FileBasicInfo)?;
-    let standard: FILE_STANDARD_INFO = query(h, FileStandardInfo)?;
-    let id: FILE_ID_INFO = query(h, FileIdInfo)?;
+    Ok(v)
+}
+
+/// Lee los metadatos del directorio. `FILE_BASIC_INFO` y `FILE_STANDARD_INFO` son imprescindibles (un error se
+/// devuelve); `FILE_ID_INFO` y `FILE_ATTRIBUTE_TAG_INFO` son opcionales: si fallan (típicamente 50 o 87, "no
+/// soportado"), el identificador queda en `None` y la etiqueta en 0.
+pub fn dir_meta(h: &DirHandle) -> Result<DirMeta, u32> {
+    dir_meta_with(
+        h,
+        |h| {
+            query_info::<FILE_ID_INFO>(h, FileIdInfo)
+                .map(|id| u128::from_le_bytes(id.FileId.Identifier))
+        },
+        |h| query_info::<FILE_ATTRIBUTE_TAG_INFO>(h, FileAttributeTagInfo).map(|t| t.ReparseTag),
+    )
+}
+
+/// Igual que [`dir_meta`] con las dos consultas opcionales inyectables (los tests simulan que no están soportadas).
+fn dir_meta_with(
+    h: &DirHandle,
+    id_query: impl FnOnce(&DirHandle) -> Result<u128, u32>,
+    tag_query: impl FnOnce(&DirHandle) -> Result<u32, u32>,
+) -> Result<DirMeta, u32> {
+    let basic: FILE_BASIC_INFO = query_info(h, FileBasicInfo)?;
+    let standard: FILE_STANDARD_INFO = query_info(h, FileStandardInfo)?;
+    let attrs = basic.FileAttributes;
+    // Una etiqueta solo vale con el atributo de reparse point.
+    let reparse_tag = if attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        tag_query(h).unwrap_or(0)
+    } else {
+        0
+    };
     Ok(DirMeta {
-        file_id: u128::from_le_bytes(id.FileId.Identifier),
-        attrs: basic.FileAttributes,
+        file_id: id_query(h).ok(),
+        attrs,
+        reparse_tag,
         mtime_filetime: basic.LastWriteTime,
         alloc: standard.AllocationSize.max(0) as u64,
         logical: standard.EndOfFile.max(0) as u64,
@@ -472,7 +507,7 @@ mod tests {
         let path = manifest_dir();
         let h = open_dir(&path, FILE_READ_ATTRIBUTES, false).unwrap();
         let m = dir_meta(&h).unwrap();
-        assert_ne!(m.file_id, 0);
+        assert!(m.file_id.is_some_and(|id| id != 0));
         assert!(m.attrs & 0x10 != 0, "es un directorio");
         assert!(m.mtime_filetime > 0);
         // El FileId de `src` visto desde el padre es el mismo que da dir_meta al abrirlo.
@@ -481,7 +516,7 @@ mod tests {
         src.extend(r"\src".encode_utf16());
         let hs = open_dir(&src, FILE_READ_ATTRIBUTES, false).unwrap();
         let ms = dir_meta(&hs).unwrap();
-        assert_eq!(listed["src"].2, ms.file_id);
+        assert_eq!(Some(listed["src"].2), ms.file_id);
     }
 
     #[test]
@@ -521,5 +556,39 @@ mod tests {
         let listed = collect_extd(&wide(dir));
         assert!(listed.len() > 1);
         assert!(listed.keys().any(|k| k.len() > 20));
+    }
+
+    #[test]
+    fn sin_soporte_de_identidad_los_metadatos_imprescindibles_siguen_llegando() {
+        // Inyección de errores: la consulta de FileIdInfo (y la de la etiqueta de reparse) "no están soportadas"
+        // (50 = ERROR_NOT_SUPPORTED, 87 = ERROR_INVALID_PARAMETER). No es un error: el identificador queda en `None` y
+        // el resto de metadatos (atributos, mtime, tamaños) son los mismos que con la consulta real.
+        let path = manifest_dir();
+        let h = open_dir(&path, FILE_READ_ATTRIBUTES, false).unwrap();
+        let real = dir_meta(&h).unwrap();
+        assert!(real.file_id.is_some());
+        for code in [50u32, 87, 1] {
+            let m = dir_meta_with(&h, |_| Err(code), |_| Err(code)).expect("no es un error");
+            assert_eq!(m.file_id, None, "código {code}");
+            assert_eq!(m.reparse_tag, 0);
+            assert_eq!(
+                (m.attrs, m.mtime_filetime, m.alloc, m.logical),
+                (real.attrs, real.mtime_filetime, real.alloc, real.logical)
+            );
+        }
+        // Con identificador inyectado, se respeta; la etiqueta de un directorio normal es 0 y su consulta ni se hace.
+        let m = dir_meta_with(&h, |_| Ok(7), |_| panic!("no es un reparse point")).unwrap();
+        assert_eq!(m.file_id, Some(7));
+        assert_eq!(m.attrs & FILE_ATTRIBUTE_REPARSE_POINT, 0);
+    }
+
+    #[test]
+    fn la_etiqueta_de_reparse_de_la_consulta_real_es_cero_en_un_directorio_normal() {
+        let path = manifest_dir();
+        let h = open_dir(&path, FILE_READ_ATTRIBUTES, false).unwrap();
+        // Recorre la consulta real de la etiqueta (la API de verdad) aunque no sea un reparse point.
+        let t: FILE_ATTRIBUTE_TAG_INFO = query_info(&h, FileAttributeTagInfo).unwrap();
+        assert_eq!(t.ReparseTag, 0);
+        assert_eq!(dir_meta(&h).unwrap().reparse_tag, 0);
     }
 }

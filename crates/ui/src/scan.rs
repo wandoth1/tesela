@@ -766,6 +766,17 @@ fn live_map(ui: &mut Ui, env: &mut Env, v: &View) {
     .on_hover_text(env.tr.t("next-version"));
 }
 
+/// ¿Son estimados los tamaños de este escaneo? Sí si se usó el respaldo `FindFirstFileExW` en todo el escaneo
+/// (`FindFallback`) o en algún directorio (`Mixed`): ahí `alloc` es un redondeo del EOF al clúster, no hay `FileId` para
+/// deduplicar enlaces duros y los directorios miden 0. Solo `Extended` es exacto.
+pub(crate) fn is_approximate(api: tesela_scanner::ApiUsed) -> bool {
+    use tesela_scanner::ApiUsed;
+    match api {
+        ApiUsed::Extended => false,
+        ApiUsed::FindFallback | ApiUsed::Mixed => true,
+    }
+}
+
 /// Información del escaneo que se conserva en la pantalla de exploración.
 pub(crate) fn info_from_summary(
     req: &ScanRequest,
@@ -779,7 +790,7 @@ pub(crate) fn info_from_summary(
         full_volume: summary.full_volume,
         volume: summary.volume.map(|v| (v.total, v.free)),
         cancelled: summary.cancelled,
-        approximate: summary.api == tesela_scanner::ApiUsed::FindFallback,
+        approximate: is_approximate(summary.api),
         dir_errors: summary.errors(),
         files,
         elapsed,
@@ -827,6 +838,14 @@ pub(crate) mod test_hooks {
 #[cfg(test)]
 mod group_tests {
     use super::*;
+
+    #[test]
+    fn aproximado_con_el_respaldo_completo_o_parcial_y_exacto_solo_con_la_api_extendida() {
+        use tesela_scanner::ApiUsed;
+        assert!(!is_approximate(ApiUsed::Extended));
+        assert!(is_approximate(ApiUsed::FindFallback));
+        assert!(is_approximate(ApiUsed::Mixed));
+    }
 
     #[test]
     fn las_carpetas_de_cache_de_un_navegador_son_una_sola_fila() {

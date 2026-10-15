@@ -39,7 +39,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tesela_model::{Batch, BuildError, EntryData, FinishOptions, Tree, TreeBuilder, flags};
+use tesela_model::{Batch, BuildError, EntryData, FinishOptions, Tree, TreeBuilder};
 use walker::{NO_PRIO, Shared, Task, WorkerOut, WorkerState};
 
 /// Tope de hilos por defecto: en las mediciones de la fase 0 la mejora se satura entre 8 y 16 hilos
@@ -301,14 +301,16 @@ pub fn start(opts: ScanOptions) -> Result<ScanHandle, ScanError> {
     // Nodo raíz (id 0) y listado de la raíz, en este hilo.
     let root_id = sh.reserve_ids(1);
     debug_assert_eq!(root_id, 0);
+    // La raíz pasa por la MISMA clasificación que los descendientes (carpeta de la nube, reparse point...).
+    let plan = classify::root_plan(root_meta.attrs, root_meta.reparse_tag);
     let mut root_batch = Batch::detached(root_id);
     root_batch.push_utf16(
         0,
         &sys::wide(&display_root),
         EntryData {
-            flags: classify::entry_flags(root_meta.attrs, 0) | flags::DIR,
-            alloc: root_meta.alloc,
-            logical: root_meta.logical,
+            flags: plan.flags,
+            alloc: if plan.zero_size { 0 } else { root_meta.alloc },
+            logical: if plan.zero_size { 0 } else { root_meta.logical },
             mtime: classify::filetime_to_unix(root_meta.mtime_filetime),
             file_id: 0,
         },
@@ -320,11 +322,17 @@ pub fn start(opts: ScanOptions) -> Result<ScanHandle, ScanError> {
         tag: 0,
         prio: NO_PRIO,
         claim: false,
-        cloud: false,
+        cloud: plan.open_cloud,
     };
     let mut st = WorkerState::new();
-    let root_stats = walker::process_dir(&sh, &tx, &root_task, true, &mut st)
-        .map_err(|c| ScanError::Root(io_err(c)))?;
+    // Una raíz que no se debe listar (nube sin poblar, junction) se queda sin lote de listado: el builder la marca
+    // `INCOMPLETE`, igual que a un descendiente así.
+    let root_stats = if plan.walk {
+        walker::process_dir(&sh, &tx, &root_task, true, &mut st)
+            .map_err(|c| ScanError::Root(io_err(c)))?
+    } else {
+        walker::DirStats::default()
+    };
     let mut top = vec![TopLevel::new(OsString::new())];
     top.extend(st.top_names.drain(..).map(TopLevel::new));
     if st.top_overflow {
