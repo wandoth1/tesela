@@ -30,6 +30,10 @@ jobs:
       - name: privacy-check (todo el árbol)
         shell: pwsh
         run: ./scripts/privacy-check.ps1 -All -GenericOnly
+      # La validación de los imports de los .exe (build-release.ps1) usa scripts/check-pe.py; se prueba con PE sintéticos.
+      - name: pruebas de check-pe.py
+        shell: pwsh
+        run: python -I -m unittest discover -s scripts/tests -p "test_*.py"
       - name: pruebas de privacy-check (pwsh)
         shell: pwsh
         run: ./scripts/tests/privacy-check.tests.ps1
@@ -91,17 +95,20 @@ jobs:
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
         env:
-          RUSTFLAGS: -D warnings
+          RUSTFLAGS: -D warnings -C target-feature=+crt-static
       # La feature `capture` (capturas del README) no entra en el build normal: se vigila aparte para que no se pudra.
       - name: Clippy (feature capture)
         run: cargo clippy -p tesela-app --all-targets --features capture -- -D warnings
         env:
-          RUSTFLAGS: -D warnings
+          RUSTFLAGS: -D warnings -C target-feature=+crt-static
       - name: Tests
         run: cargo test --workspace
         env:
-          RUSTFLAGS: -D warnings
-      # Release sin rutas de la máquina en los binarios (y comprobación de que no las llevan).
+          RUSTFLAGS: -D warnings -C target-feature=+crt-static
+      # Release sin rutas de la máquina en los binarios (y comprobación de que no las llevan), con el runtime de C
+      # enlazado de forma estática (.cargo/config.toml): el script exige tesela.exe y tesela-scan.exe y falla si algún
+      # .exe importa VCRUNTIME*, MSVCP* o api-ms-win-crt-*.
+      # (`RUSTFLAGS` de este job se repite arriba porque el entorno tiene prioridad sobre .cargo/config.toml.)
       - name: Release
         shell: pwsh
         run: ./scripts/build-release.ps1

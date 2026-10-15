@@ -34,3 +34,7 @@ target*/
 /out/
 /scan-out/
 *.scan.json
+
+# Python (pruebas de scripts/)
+__pycache__/
+*.pyc

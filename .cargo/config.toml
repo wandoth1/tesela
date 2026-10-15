@@ -1,0 +1,6 @@
+# Runtime de C enlazado de forma ESTATICA en Windows: sin esto el .exe importa VCRUNTIME140.dll y las api-ms-win-crt-*,
+# que no vienen en un Windows limpio (el instalador es por usuario y sin administrador, no puede instalarlas).
+# `scripts/build-release.ps1` repite este flag en CARGO_ENCODED_RUSTFLAGS (que tiene prioridad sobre este archivo y no se
+# combina con él) y comprueba la tabla de imports de cada .exe.
+[target.'cfg(windows)']
+rustflags = ["-C", "target-feature=+crt-static"]
