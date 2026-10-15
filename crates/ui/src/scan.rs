@@ -9,6 +9,7 @@
 use crate::app::{Action, Env, ScanRequest};
 use crate::args;
 use crate::demo::{self, DEMO_KNOWN_ROWS};
+use crate::error::StartError;
 use crate::explore::{Explore, ScanInfo};
 use crate::icons::Icon;
 use crate::theme::{self, Palette};
@@ -25,7 +26,8 @@ use tesela_scanner::{KnownKind, Progress, ScanHandle, ScanOptions};
 /// Cómo acabó (o sigue) un escaneo.
 pub enum ScanOutcome {
     Done(Box<Explore>),
-    Failed(String),
+    /// No pudo empezar o acabar: error TIPADO (la interfaz lo traduce).
+    Failed(StartError),
     Cancelled,
 }
 
@@ -84,7 +86,7 @@ impl Drop for ActiveGuard {
 #[derive(Default)]
 struct Slot {
     cancelled: bool,
-    result: Option<Result<Real, String>>,
+    result: Option<Result<Real, StartError>>,
 }
 
 /// Cancela un escaneo (único sitio que lo hace, para que las pruebas puedan comprobarlo).
@@ -122,7 +124,7 @@ fn canon_key(p: &Path) -> Option<String> {
 }
 
 /// Arranca el escaneo real y empareja las rutas prioritarias con su clase (hilo auxiliar).
-fn start_real(req: &ScanRequest, startup: &Startup) -> Result<Real, String> {
+fn start_real(req: &ScanRequest, startup: &Startup) -> Result<Real, StartError> {
     let cancel = &startup.cancel;
     // Fase 0: si la pantalla ya se cerró o se canceló (descartar), no se empieza nada. Con "Parar y ver" (que activa la
     // misma bandera pero no descarta) sí se arranca: el escaneo se construye con lo que se alcance a listar.
@@ -132,11 +134,11 @@ fn start_real(req: &ScanRequest, startup: &Startup) -> Result<Real, String> {
         .unwrap_or_else(|e| e.into_inner())
         .cancelled
     {
-        return Err("cancelado".into());
+        return Err(StartError::Cancelled);
     }
     let mut opts = ScanOptions::new(&req.root);
     opts.cancel = Some(cancel.clone());
-    let handle = tesela_scanner::start(opts).map_err(|e| e.to_string())?;
+    let handle = tesela_scanner::start(opts).map_err(StartError::Scan)?;
     // Fase 2: nombrar las rutas conocidas (E/S: lista carpetas de los navegadores). Si se canceló mientras arrancaba el
     // escaneo, se omite: el resultado se va a descartar (o a mostrar tal cual con "Parar y ver").
     if cancel.load(Ordering::SeqCst) {
@@ -307,15 +309,14 @@ impl ScanScreen {
                     self.kind = Kind::Real(real);
                 }
                 Some(Err(_)) | None if self.discard => return Some(ScanOutcome::Cancelled),
-                Some(Err(msg)) => return Some(ScanOutcome::Failed(msg)),
+                Some(Err(StartError::Cancelled)) => return Some(ScanOutcome::Cancelled),
+                Some(Err(e)) => return Some(ScanOutcome::Failed(e)),
                 None if thread_alive => {
                     ctx.request_repaint_after(Duration::from_millis(50));
                     return None;
                 }
                 None => {
-                    return Some(ScanOutcome::Failed(
-                        "el hilo de arranque terminó sin resultado".into(),
-                    ));
+                    return Some(ScanOutcome::Failed(StartError::StartupLost));
                 }
             }
         }
@@ -332,7 +333,7 @@ impl ScanScreen {
                             self.animate,
                             started.elapsed(),
                         ))),
-                        Err(e) => ScanOutcome::Failed(e.to_string()),
+                        Err(e) => ScanOutcome::Failed(StartError::Scan(e)),
                     });
                 }
                 ctx.request_repaint_after(Duration::from_millis(50));

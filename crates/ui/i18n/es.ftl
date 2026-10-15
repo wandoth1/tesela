@@ -49,6 +49,13 @@ drive-network-disk = Unidad de red
 drive-removable-note = Extraíble · sin Papelera
 drive-network-note = Red · sin Papelera
 error-scan-start = No se pudo empezar el análisis: { $error }
+error-scan-root-missing = la ruta no existe o no está disponible
+error-scan-root-denied = no tienes permiso para abrir esa ruta
+error-scan-root = no se puede abrir la ruta ({ $detail })
+error-scan-not-dir = la ruta no es una carpeta ni una unidad
+error-scan-panicked = un hilo del análisis falló de forma inesperada
+error-scan-startup-lost = el arranque del análisis se interrumpió
+error-scan-cancelled = el análisis se canceló
 error-open-explorer = No se pudo abrir el Explorador: { $error }
 
 # Escaneo

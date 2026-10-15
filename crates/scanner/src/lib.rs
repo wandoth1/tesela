@@ -98,7 +98,8 @@ impl ScanOptions {
     }
 }
 
-/// Errores de un escaneo.
+/// Errores de un escaneo. TIPADOS: no llevan frases para el usuario (quien los muestra los traduce); `Display` es un
+/// texto técnico neutro para registros y herramientas, y el detalle del sistema va en el `io::Error`.
 #[derive(Debug)]
 pub enum ScanError {
     /// La raíz no existe o no se puede abrir.
@@ -112,14 +113,21 @@ pub enum ScanError {
 impl std::fmt::Display for ScanError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ScanError::Root(e) => write!(f, "no se puede abrir la ruta a escanear: {e}"),
-            ScanError::NotADirectory(_) => write!(f, "la ruta a escanear no es un directorio"),
-            ScanError::Panicked => write!(f, "un hilo del escáner entró en pánico"),
+            ScanError::Root(e) => write!(f, "cannot open the scan root: {e}"),
+            ScanError::NotADirectory(_) => write!(f, "the scan root is not a directory"),
+            ScanError::Panicked => write!(f, "a scanner thread panicked"),
         }
     }
 }
 
-impl std::error::Error for ScanError {}
+impl std::error::Error for ScanError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            ScanError::Root(e) => Some(e),
+            _ => None,
+        }
+    }
+}
 
 /// API de enumeración usada.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

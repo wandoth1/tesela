@@ -48,6 +48,13 @@ drive-network-disk = Network drive
 drive-removable-note = Removable · no Recycle Bin
 drive-network-note = Network · no Recycle Bin
 error-scan-start = The scan could not start: { $error }
+error-scan-root-missing = the path does not exist or is not available
+error-scan-root-denied = you do not have permission to open that path
+error-scan-root = the path cannot be opened ({ $detail })
+error-scan-not-dir = the path is not a folder or a drive
+error-scan-panicked = a scan thread failed unexpectedly
+error-scan-startup-lost = the start of the scan was interrupted
+error-scan-cancelled = the scan was cancelled
 error-open-explorer = Explorer could not be opened: { $error }
 
 # Scan

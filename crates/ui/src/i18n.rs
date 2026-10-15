@@ -312,6 +312,14 @@ mod catalog_tests {
                 .next()
                 .unwrap(),
         ));
+        // `error.rs` sin sus pruebas (que citan los textos en los dos idiomas).
+        v.push((
+            "error.rs",
+            include_str!("error.rs")
+                .split("#[cfg(test)]")
+                .next()
+                .unwrap(),
+        ));
         v.push((
             "i18n.rs",
             include_str!("i18n.rs")
@@ -368,7 +376,7 @@ mod catalog_tests {
             for id in &es {
                 assert!(tr.has(id), "{lang:?}: {id}");
                 let all = crate::args![
-                    "name" => "x", "files" => "x", "size" => "x", "total" => "x", "time" => "x", "pct" => "x", "free" => "x", "avail" => "x",
+                    "name" => "x", "files" => "x", "size" => "x", "total" => "x", "time" => "x", "pct" => "x", "free" => "x", "avail" => "x", "detail" => "x",
                     "used" => "x", "ago" => "x", "explained" => "x", "done" => 1u64, "n" => 2u64, "count" => "2",
                     "parent" => "x", "error" => "x", "type" => "x", "label" => "x", "v" => "x"
                 ];

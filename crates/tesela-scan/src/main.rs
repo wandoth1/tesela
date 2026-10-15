@@ -418,6 +418,16 @@ fn open_output(path: &Path, overwrite: bool) -> std::io::Result<std::fs::File> {
     o.open(path)
 }
 
+/// Frase en español para un error del escáner (la biblioteca devuelve errores tipados, sin texto para el usuario).
+fn explain(e: &tesela_scanner::ScanError) -> String {
+    use tesela_scanner::ScanError;
+    match e {
+        ScanError::Root(io) => format!("no se puede abrir la ruta a escanear: {io}"),
+        ScanError::NotADirectory(_) => "la ruta a escanear no es un directorio".into(),
+        ScanError::Panicked => "un hilo del escáner entró en pánico".into(),
+    }
+}
+
 fn exists_error(path: &Path) -> String {
     format!(
         "{} ya existe: no se pisa. Usa otro nombre o --overwrite para reemplazarlo",
@@ -488,7 +498,7 @@ fn main() -> ExitCode {
     let handle = match start(opts) {
         Ok(h) => h,
         Err(e) => {
-            eprintln!("error: {e}");
+            eprintln!("error: {}", explain(&e));
             return ExitCode::from(1);
         }
     };
@@ -521,7 +531,7 @@ fn main() -> ExitCode {
     let result = match handle.wait() {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("error: {e}");
+            eprintln!("error: {}", explain(&e));
             return ExitCode::from(1);
         }
     };

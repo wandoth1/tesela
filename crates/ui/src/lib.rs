@@ -10,6 +10,7 @@ pub mod app;
 pub mod demo;
 pub mod describe;
 mod details;
+pub mod error;
 pub mod explore;
 pub mod fonts;
 mod home;

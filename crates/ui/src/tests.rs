@@ -1112,26 +1112,44 @@ fn con_la_ventana_minima_la_barra_de_estado_no_se_pisa_y_los_detalles_se_desplaz
 }
 
 #[test]
-fn un_escaneo_que_no_puede_empezar_vuelve_al_inicio_con_el_error() {
-    let mut o = opts(StartScreen::Home);
-    o.demo = None;
-    let mut h = harness(o);
-    let ctx = h.ctx.clone();
-    let nada = std::env::temp_dir().join(format!("tesela-test-{}-no-existe", uuid::Uuid::new_v4()));
-    h.state_mut().ui_mut().request_scan(&ctx, nada);
-    // El arranque va en un hilo: la pantalla de escaneo aparece al instante y luego se vuelve al inicio.
-    assert_eq!(h.state().ui().screen_name(), "scan");
-    let t0 = std::time::Instant::now();
-    while h.state().ui().screen_name() != "home" {
-        assert!(t0.elapsed().as_secs() < 20, "no volvió al inicio");
-        std::thread::sleep(std::time::Duration::from_millis(10));
-        h.run_steps(1);
+fn un_escaneo_que_no_puede_empezar_vuelve_al_inicio_con_el_error_traducido_en_los_dos_idiomas() {
+    for (lang, start, reason) in [
+        (
+            LangPref::Es,
+            "No se pudo empezar el análisis",
+            "la ruta no existe o no está disponible",
+        ),
+        (
+            LangPref::En,
+            "The scan could not start",
+            "the path does not exist or is not available",
+        ),
+    ] {
+        let mut o = opts(StartScreen::Home);
+        o.demo = None;
+        o.settings.language = lang;
+        let mut h = harness(o);
+        let ctx = h.ctx.clone();
+        let nada =
+            std::env::temp_dir().join(format!("tesela-test-{}-no-existe", uuid::Uuid::new_v4()));
+        h.state_mut().ui_mut().request_scan(&ctx, nada);
+        // El arranque va en un hilo: la pantalla de escaneo aparece al instante y luego se vuelve al inicio.
+        assert_eq!(h.state().ui().screen_name(), "scan");
+        let t0 = std::time::Instant::now();
+        while h.state().ui().screen_name() != "home" {
+            assert!(t0.elapsed().as_secs() < 20, "no volvió al inicio");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+            h.run_steps(1);
+        }
+        h.run_steps(2);
+        // El error llega TIPADO y se traduce con Fluent: ni una palabra del otro idioma ni del texto técnico del escáner.
+        let full = format!("{start}: {reason}");
+        assert!(
+            h.query_by_label_contains(&full).is_some(),
+            "{lang:?}: falta `{full}`"
+        );
+        assert!(h.query_by_label_contains("scan root").is_none());
     }
-    h.run_steps(2);
-    assert!(
-        h.query_by_label_contains("No se pudo empezar el análisis")
-            .is_some()
-    );
 }
 
 #[test]

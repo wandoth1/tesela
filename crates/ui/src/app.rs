@@ -5,6 +5,7 @@
 //! [`Action`]s que se aplican al terminar el frame.
 
 use crate::demo;
+use crate::error::Notice;
 use crate::explore::Explore;
 use crate::i18n::{Lang, Tr};
 use crate::icons::IconCache;
@@ -173,7 +174,7 @@ pub struct TeselaUi {
     /// Ventana principal, padre (modal) del selector de carpeta.
     parent: Option<crate::platform::ParentWindow>,
     pub(crate) screen: Screen,
-    notice: Option<String>,
+    notice: Option<Notice>,
     last_request: Option<ScanRequest>,
     /// Las fuentes del sistema se activan al empezar el SIGUIENTE pase de egui: el primer pase se descarta.
     fonts_pending: bool,
@@ -395,8 +396,9 @@ impl TeselaUi {
         };
         match outcome {
             Some(ScanOutcome::Done(ex)) => self.screen = Screen::Explore(ex),
-            Some(ScanOutcome::Failed(msg)) => {
-                self.notice = Some(self.tr.ta("error-scan-start", crate::args!["error" => msg]));
+            Some(ScanOutcome::Failed(e)) => {
+                // El aviso se guarda TIPADO: se traduce al pintarlo (y cambia con el idioma).
+                self.notice = Some(Notice::ScanStart(e));
                 self.screen = Screen::Home;
             }
             Some(ScanOutcome::Cancelled) => self.screen = Screen::Home,
@@ -492,11 +494,12 @@ impl TeselaUi {
                 modal_open: self.about.open,
                 actions: &mut actions,
             };
+            let notice_text = self.notice.as_ref().map(|n| n.text(&self.tr));
             match &mut self.screen {
                 Screen::Home => home::show(
                     ui,
                     &mut env,
-                    self.notice.as_deref(),
+                    notice_text.as_deref(),
                     self.folder_rx.is_some(),
                 ),
                 Screen::Scan(s) => scan::show(ui, &mut env, s),
