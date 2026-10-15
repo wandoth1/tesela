@@ -9,16 +9,12 @@ targets = ["x86_64-pc-windows-msvc"]
 ignore = []
 
 [licenses]
-# Licencias permitidas: compatibles con distribuir bajo MIT OR Apache-2.0.
+# Licencias permitidas: compatibles con distribuir bajo MIT OR Apache-2.0. Solo están las que hoy usa el árbol de
+# dependencias; cada licencia nueva (por ejemplo ISC, Zlib o BSD con egui) se añade a propósito cuando aparezca.
 allow = [
     "MIT",
     "Apache-2.0",
-    "Apache-2.0 WITH LLVM-exception",
-    "BSD-2-Clause",
-    "BSD-3-Clause",
-    "ISC",
     "Unicode-3.0",
-    "Zlib",
 ]
 confidence-threshold = 0.8
 
