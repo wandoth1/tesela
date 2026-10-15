@@ -64,6 +64,8 @@ pub struct Shell {
     pub persist: bool,
     pub persist_size: bool,
     pub last_size: Option<(f32, f32)>,
+    /// Los ajustes de esta sesión (los guardados más los argumentos de la línea de comandos).
+    pub session_settings: tesela_ui::Settings,
     pub last_title: String,
     pub bench: Option<Bench>,
     #[cfg_attr(not(feature = "capture"), allow(dead_code))]
@@ -84,9 +86,6 @@ impl Shell {
         if !self.persist {
             return;
         }
-        let s = self.ui.settings();
-        self.config.theme = Some(s.theme);
-        self.config.language = Some(s.language);
         if self.persist_size
             && let Some((w, h)) = self.last_size
         {
@@ -162,7 +161,10 @@ impl eframe::App for Shell {
         {
             self.last_size = Some(s);
         }
-        if self.ui.take_settings_change().is_some() {
+        if let Some(now) = self.ui.take_settings_change() {
+            // Solo se guarda lo que el usuario cambió en la interfaz: `--theme` y `--lang` son de esta sesión.
+            self.config.apply_changes(self.session_settings, now);
+            self.session_settings = now;
             self.save_config();
         }
 

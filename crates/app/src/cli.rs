@@ -28,7 +28,7 @@ Opciones generales:
 
 Herramientas de desarrollo (no guardan nada):
   --bench-hover <segundos>     mueve un puntero sintetico sobre el mapa e imprime el coste de CPU por frame
-  --screenshot <ruta.png>      guarda una captura de la ventana y sale (solo con la feature `capture`)
+  --screenshot <ruta.png>      guarda una captura de la ventana y sale (solo con --demo y la feature `capture`)
 ";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -158,6 +158,9 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
                 .into(),
         );
     }
+    if cli.screenshot.is_some() && !cli.demo {
+        return Err("--screenshot solo se admite con --demo: una captura de un disco real mostraría datos del equipo".into());
+    }
     if cli.scan.is_some() && cli.demo {
         return Err("--scan y --demo no se combinan".into());
     }
@@ -200,6 +203,17 @@ mod tests {
         assert!(p("--scan").unwrap_err().contains("necesita un valor"));
         assert!(p("--cosa").unwrap_err().contains("desconocido"));
         assert!(p("--bench-hover 0").is_err());
+        // Una captura de un disco real mostraría datos del equipo: solo con --demo.
+        assert!(p("--screenshot x.png").unwrap_err().contains("--demo"));
+        assert!(
+            p("--scan C --screenshot x.png")
+                .unwrap_err()
+                .contains("--demo")
+        );
+        assert_eq!(
+            p("--demo --screenshot x.png").unwrap().screenshot,
+            Some(PathBuf::from("x.png"))
+        );
     }
 
     #[test]

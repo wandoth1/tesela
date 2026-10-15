@@ -30,6 +30,17 @@ impl Config {
         }
     }
 
+    /// Registra SOLO los ajustes que cambiaron entre `before` y `after`: lo que el usuario no tocó (por ejemplo un
+    /// idioma impuesto con `--lang` para una sesión) no se escribe en el archivo.
+    pub fn apply_changes(&mut self, before: Settings, after: Settings) {
+        if after.theme != before.theme {
+            self.theme = Some(after.theme);
+        }
+        if after.language != before.language {
+            self.language = Some(after.language);
+        }
+    }
+
     /// Tamaño de ventana guardado, acotado a valores razonables.
     pub fn window_size(&self) -> (f32, f32) {
         match (self.window_width, self.window_height) {
@@ -101,6 +112,39 @@ mod tests {
             "no queda el temporal"
         );
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn solo_se_guarda_lo_que_el_usuario_cambia() {
+        // Sesión con `--lang en --theme dark` impuestos: el archivo no recibe nada hasta que se cambia algo en la interfaz.
+        let saved = Config {
+            theme: Some(ThemePref::Light),
+            language: Some(LangPref::Es),
+            ..Config::default()
+        };
+        let session = Settings {
+            theme: ThemePref::Dark,
+            language: LangPref::En,
+        };
+        let mut c = saved.clone();
+        c.apply_changes(session, session);
+        assert_eq!(c, saved, "sin cambios no se toca nada");
+        // El usuario cambia solo el tema en la interfaz: se guarda el tema, y el idioma impuesto NO.
+        let now = Settings {
+            theme: ThemePref::System,
+            ..session
+        };
+        c.apply_changes(session, now);
+        assert_eq!(c.theme, Some(ThemePref::System));
+        assert_eq!(
+            c.language,
+            Some(LangPref::Es),
+            "el --lang de la sesión no se guarda"
+        );
+        // Sin configuración previa y sin cambios: sigue vacía.
+        let mut empty = Config::default();
+        empty.apply_changes(session, session);
+        assert_eq!(empty, Config::default());
     }
 
     #[test]

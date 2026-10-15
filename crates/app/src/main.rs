@@ -120,6 +120,7 @@ fn main() -> eframe::Result {
                 persist,
                 persist_size,
                 last_size: None,
+                session_settings: settings,
                 last_title: String::new(),
                 bench,
                 screenshot,
