@@ -1,11 +1,15 @@
 [package]
 name = "tesela-layout"
+description = "Layout del treemap de Tesela: squarified, agrupación Otros, LOD, hit-test y caché. Puro, sin GPU."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish.workspace = true
+
+[dependencies]
+tesela-model.workspace = true
 
 [lints]
 workspace = true
