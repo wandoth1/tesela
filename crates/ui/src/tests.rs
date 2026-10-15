@@ -1114,3 +1114,123 @@ fn cancelar_o_cerrar_la_pantalla_antes_de_que_arranque_el_escaneo_no_muestra_el_
     std::thread::sleep(std::time::Duration::from_millis(300));
     std::fs::remove_dir_all(&base).unwrap();
 }
+
+/// ¿Hay en la salida del último frame un anillo de foco (trazo de 2 px de acento) alrededor del centro de `r`?
+fn focus_ring_around(h: &Harness<'static, App>, r: egui::Rect) -> bool {
+    focus_ring_around_with(h, r, 16.0)
+}
+
+fn focus_ring_around_with(h: &Harness<'static, App>, r: egui::Rect, slack: f32) -> bool {
+    let accent = crate::theme::Palette::of(false).accent;
+    h.output().shapes.iter().any(|cs| {
+        matches!(&cs.shape, egui::epaint::Shape::Rect(rs)
+            if rs.stroke.width == 2.0
+                && rs.stroke.color == accent
+                && rs.rect.contains(r.center())
+                && rs.rect.width() <= r.width() + slack
+                && rs.rect.height() <= r.height() + slack)
+    })
+}
+
+fn list_start() -> StartScreen {
+    StartScreen::Map(MapStart {
+        list: true,
+        open: vec!["Users".into(), crate::demo::USER.into()],
+        select: None,
+    })
+}
+
+#[test]
+fn la_lista_se_maneja_con_flechas_y_muestra_el_foco() {
+    let mut h = harness(opts(list_start()));
+    assert_eq!(explore(&h).view, View::List);
+    let kids: Vec<_> = explore(&h).shown_children().iter().collect();
+    assert!(kids.len() >= 4);
+    let name = |h: &Harness<'static, App>, id| explore(h).tree.name_lossy(id).into_owned();
+    // Foco en la primera fila: se pinta el anillo y la selección la sigue.
+    let first = name(&h, kids[0]);
+    h.get_by_label_contains(&format!("{first}, ")).focus();
+    h.run_steps(3);
+    let first_label = format!("{first}, ");
+    let row = h.get_by_label_contains(&first_label);
+    assert!(row.is_focused());
+    assert!(
+        focus_ring_around(&h, row.rect()),
+        "anillo de foco en la fila"
+    );
+    assert_eq!(explore(&h).selection, Some(Sel::Node(kids[0])));
+    // ↓ y ↑ mueven la selección Y el foco.
+    h.key_press(Key::ArrowDown);
+    h.run_steps(3);
+    assert_eq!(explore(&h).selection, Some(Sel::Node(kids[1])));
+    let second = name(&h, kids[1]);
+    let second_label = format!("{second}, ");
+    assert!(h.get_by_label_contains(&second_label).is_focused());
+    h.key_press(Key::ArrowDown);
+    h.run_steps(3);
+    assert_eq!(explore(&h).selection, Some(Sel::Node(kids[2])));
+    h.key_press(Key::ArrowUp);
+    h.run_steps(3);
+    assert_eq!(explore(&h).selection, Some(Sel::Node(kids[1])));
+    // Fin y Inicio.
+    h.key_press(Key::End);
+    h.run_steps(4);
+    assert_eq!(
+        explore(&h).selection,
+        Some(Sel::Node(*kids.last().unwrap()))
+    );
+    h.key_press(Key::Home);
+    h.run_steps(4);
+    assert_eq!(explore(&h).selection, Some(Sel::Node(kids[0])));
+    // Intro sobre la fila enfocada entra en la carpeta (o no hace nada si es un archivo).
+    let dir = kids
+        .iter()
+        .copied()
+        .find(|&k| explore(&h).tree.node(k).is_dir())
+        .expect("hay alguna carpeta");
+    let dname = name(&h, dir);
+    h.get_by_label_contains(&format!("{dname}, ")).focus();
+    h.run_steps(3);
+    h.key_press(Key::Enter);
+    h.run_steps(3);
+    assert_eq!(explore(&h).root.node, dir);
+}
+
+#[test]
+fn los_controles_alcanzables_con_tab_muestran_el_foco() {
+    let mut h = harness(opts(user_folder()));
+    // Cada control se enfoca por accesibilidad (equivale a llegar con Tab) y debe pintar su anillo.
+    let targets: Vec<(&str, String)> = vec![
+        ("unidad de la barra lateral", "Analizar ".into()),
+        ("elemento de la barra lateral", "Mapa".into()),
+        ("migas de pan", "Ir a ".into()),
+        ("subir un nivel", "Subir un nivel".into()),
+        ("reescanear", "Reescanear".into()),
+    ];
+    for (what, label) in targets {
+        let node = h
+            .query_all_by_label_contains(&label)
+            .find(|n| n.rect().width() > 1.0 && n.rect().height() > 1.0)
+            .unwrap_or_else(|| panic!("no hay {what} ({label})"));
+        node.focus();
+        h.run_steps(3);
+        let node = h
+            .query_all_by_label_contains(&label)
+            .find(|n| n.is_focused())
+            .unwrap_or_else(|| panic!("{what} no recibió el foco"));
+        assert!(
+            focus_ring_around(&h, node.rect()),
+            "{what}: sin anillo de foco"
+        );
+    }
+    // El buscador.
+    h.key_press_modifiers(Modifiers::COMMAND, Key::F);
+    h.run_steps(4);
+    let search = h.get_by_label("Buscar");
+    assert!(search.is_focused());
+    // El anillo rodea el campo entero (icono y márgenes incluidos), no solo el texto editable.
+    assert!(
+        focus_ring_around_with(&h, search.rect(), 80.0),
+        "buscador: sin anillo de foco"
+    );
+}

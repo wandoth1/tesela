@@ -100,17 +100,33 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
         }
     }
     let mut entered = false;
+    let mut focused: Option<usize> = None;
+    let want_focus = ex.list_focus.take();
     scroll.show_rows(ui, ROW_H, n, |ui, range| {
-        for i in range {
+        for i in range.clone() {
             if entered {
                 break;
             }
             let id = items.get(i);
             let node = *tree.node(id);
             let sel = Sel::Node(id);
+            let (rect, _) =
+                ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::hover());
+            let resp = ui.interact(rect, ui.id().with(("fila", id)), Sense::click());
+            if want_focus == Some(id) {
+                // La fila a la que acaba de llegar el teclado (flecha arriba/abajo): se enfoca y se deja a la vista.
+                resp.request_focus();
+                ui.scroll_to_rect(rect, None);
+            }
+            if resp.has_focus() {
+                focused = Some(i);
+            }
+            if resp.gained_focus() {
+                // Con Tab la selección sigue al foco: así Intro abre justo la fila enfocada.
+                ex.selection = Some(sel);
+                ui.scroll_to_rect(rect, None);
+            }
             let selected = ex.selection == Some(sel);
-            let (rect, resp) =
-                ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::click());
             let lower = describe::is_lower_bound(&tree, id);
             let name = describe::display_name(&tree, id, env.tr);
             let size_txt = if lower {
@@ -163,6 +179,9 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
                 } else if resp.hovered() {
                     ui.painter()
                         .rect_filled(rect, CornerRadius::same(6), pal.surface_alt);
+                }
+                if resp.has_focus() {
+                    widgets::focus_ring(ui.painter(), &pal, rect, 6);
                 }
                 let cy = rect.center().y;
                 let icon = node_icon(&tree, id);
@@ -250,5 +269,38 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
                 }
             });
         }
+        // Teclado: con una fila enfocada, ↑/↓ (y Re Pág, Av Pág, Inicio, Fin) mueven la selección y el foco.
+        if let Some(fi) = focused
+            && !entered
+            && let Some(to) = ui.ctx().input_mut(|i| key_target(i, fi, n))
+            && to != fi
+        {
+            ex.selection = Some(Sel::Node(items.get(to)));
+            ex.list_focus = Some(items.get(to));
+            if to < range.start || to >= range.end {
+                ex.scroll_to_selection = true;
+            }
+        }
     });
+}
+
+/// Fila a la que lleva la tecla de navegación pulsada (y la consume), o `None` si no se pulsó ninguna.
+fn key_target(i: &mut egui::InputState, from: usize, n: usize) -> Option<usize> {
+    use egui::{Key, Modifiers};
+    let last = n.saturating_sub(1);
+    if i.consume_key(Modifiers::NONE, Key::ArrowDown) {
+        Some((from + 1).min(last))
+    } else if i.consume_key(Modifiers::NONE, Key::ArrowUp) {
+        Some(from.saturating_sub(1))
+    } else if i.consume_key(Modifiers::NONE, Key::PageDown) {
+        Some((from + 10).min(last))
+    } else if i.consume_key(Modifiers::NONE, Key::PageUp) {
+        Some(from.saturating_sub(10))
+    } else if i.consume_key(Modifiers::NONE, Key::Home) {
+        Some(0)
+    } else if i.consume_key(Modifiers::NONE, Key::End) {
+        Some(last)
+    } else {
+        None
+    }
 }

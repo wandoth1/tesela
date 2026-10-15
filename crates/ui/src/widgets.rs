@@ -9,6 +9,17 @@ use egui::{
     Vec2, WidgetInfo, WidgetType, pos2, vec2,
 };
 
+/// Anillo de foco de teclado (2 px, color de acento, por dentro de `rect`): lo llevan todos los elementos que se
+/// alcanzan con Tab.
+pub fn focus_ring(painter: &egui::Painter, pal: &Palette, rect: Rect, radius: u8) {
+    painter.rect_stroke(
+        rect,
+        CornerRadius::same(radius),
+        Stroke::new(2.0, pal.accent),
+        StrokeKind::Inside,
+    );
+}
+
 /// Aspecto de un botón.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ButtonStyle {

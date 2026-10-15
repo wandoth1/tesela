@@ -78,6 +78,8 @@ pub struct Explore {
     pub(crate) search: String,
     pub(crate) map: MapState,
     pub(crate) scroll_to_selection: bool,
+    /// Fila de la lista a la que debe pasar el foco de teclado en el siguiente pase.
+    pub(crate) list_focus: Option<NodeId>,
     pub(crate) animate: bool,
     /// Elemento sobre el que se abrió el menú contextual.
     pub(crate) ctx_target: Option<Sel>,
@@ -132,6 +134,7 @@ impl Explore {
             search: String::new(),
             map: MapState::default(),
             scroll_to_selection: false,
+            list_focus: None,
             animate,
             ctx_target: None,
             toast: None,
@@ -453,7 +456,7 @@ impl Explore {
                 // Buscador.
                 ui.add_space(8.0);
                 let hint = env.tr.t("search-hint");
-                let resp = egui::Frame::new()
+                let framed = egui::Frame::new()
                     .fill(pal.bg)
                     .stroke(Stroke::new(1.0, pal.border))
                     .corner_radius(CornerRadius::same(8))
@@ -481,13 +484,16 @@ impl Explore {
                             r
                         })
                         .inner
-                    })
-                    .inner;
+                    });
+                let resp = framed.inner;
                 if self.focus_search {
                     resp.request_focus();
                     self.focus_search = false;
                 }
                 self.search_focused = resp.has_focus();
+                if self.search_focused {
+                    widgets::focus_ring(ui.painter(), &pal, framed.response.rect, 8);
+                }
             });
         });
     }
@@ -511,7 +517,11 @@ impl Explore {
         ui.spacing_mut().item_spacing.x = 6.0;
         if skip > 0 {
             let target = chain[skip - 1];
-            if ui.link("…").clicked() {
+            let more = ui.link("…");
+            if more.has_focus() {
+                widgets::focus_ring(ui.painter(), &pal, more.rect.expand2(vec2(3.0, 1.0)), 4);
+            }
+            if more.clicked() {
                 self.go_to(target);
             }
             env.icons.show(ui, Icon::ChevronRight, 12.0, pal.text_muted);
@@ -545,6 +555,9 @@ impl Explore {
                         env.tr.ta("go-to-folder", args!["name" => name.clone()]),
                     )
                 });
+                if r.has_focus() {
+                    widgets::focus_ring(ui.painter(), &pal, r.rect.expand2(vec2(3.0, 1.0)), 4);
+                }
                 if r.clicked() {
                     self.go_to(id);
                 }
@@ -604,8 +617,12 @@ impl Explore {
                     let color = if used >= 90 { pal.review } else { pal.accent };
                     widgets::progress_bar(ui, &pal, used as f32 / 100.0, color, 6.0, false, None);
                 })
-                .response
-                .interact(Sense::click());
+                .response;
+            let resp = ui.interact(
+                resp.rect,
+                ui.id().with(("unidad", d.letter)),
+                Sense::click(),
+            );
             resp.widget_info(|| {
                 egui::WidgetInfo::selected(
                     egui::WidgetType::Button,
@@ -614,6 +631,9 @@ impl Explore {
                     env.tr.ta("analyze-drive", args!["name" => title.clone()]),
                 )
             });
+            if resp.has_focus() {
+                widgets::focus_ring(ui.painter(), &pal, resp.rect, 8);
+            }
             if resp.clicked() && !selected {
                 env.actions.push(Action::StartScan(ScanRequest {
                     root: d.root(),
@@ -756,6 +776,9 @@ impl Explore {
                 r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, env.tr.t("rescan")));
                 if r.hovered() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                if r.has_focus() {
+                    widgets::focus_ring(ui.painter(), &pal, r.rect.expand2(vec2(3.0, 1.0)), 4);
                 }
                 if r.clicked() {
                     env.actions.push(Action::Rescan);
@@ -937,6 +960,9 @@ fn color_group(ui: &mut Ui, env: &mut Env) {
                     if selected {
                         ui.painter()
                             .rect_filled(rect, CornerRadius::same(6), pal.surface);
+                    }
+                    if resp.has_focus() {
+                        widgets::focus_ring(ui.painter(), &pal, rect, 6);
                     }
                     let col = if enabled {
                         pal.text
