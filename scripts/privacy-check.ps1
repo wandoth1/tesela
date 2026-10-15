@@ -219,18 +219,60 @@ $pathFree = @($rules | Where-Object { -not $_.Path })
 $imageExt = '(?i)\.(png|jpe?g|gif|bmp|webp|tiff?|heic)$'
 
 # --- Excepcion ESTRECHA para las capturas de --demo ------------------------------------------------------------------
-# Las imagenes se rechazan en todo el repositorio SALVO `docs/img/<nombre>.png` (minusculas, digitos y guiones) cuando:
-#   1. es un PNG de verdad y de como mucho 2 MiB, con SOLO los fragmentos IHDR, PLTE, tRNS, IDAT, IEND, sRGB, gAMA, cHRM y
-#      pHYs (nada de tEXt/iTXt/zTXt/eXIf/tIME/iCCP: ahi viajan software, fecha, camara o el perfil de color del monitor);
-#   2. `docs/img/README.md` tiene una linea con su nombre Y con `--demo` (la orden que la genera): solo se admiten
-#      capturas de la ventana en modo demostracion (arbol sintetico, unidades ficticias);
+# Las imagenes se rechazan en todo el repositorio, con la extension que tengan (se detectan por su FIRMA: un .png
+# renombrado a .dat o .txt tambien falla), SALVO `docs/img/<nombre>.png` (minusculas, digitos y guiones) cuando:
+#   1. es un PNG de verdad y de como mucho 2 MiB, con SOLO los fragmentos IHDR (13 bytes), IDAT, IEND y los de tamano
+#      fijo sRGB (1), gAMA (4), cHRM (32) y pHYs (9); PLTE (<= 768, multiplo de 3) y tRNS (<= 256) solo en PNG indexados
+#      (tipo de color 3). Nada de tEXt/iTXt/zTXt/eXIf/tIME/iCCP: ahi viajan software, fecha, camara o el perfil del
+#      monitor. Las longitudes cerradas impiden esconder texto en claro en los fragmentos permitidos;
+#   2. `docs/img/README.md` tiene una linea con EXACTAMENTE esta forma (anclada, nada de subcadenas):
+#          - <nombre>.png | sha256: <64 hex> | <orden con --demo>
+#      con el nombre del archivo y el SHA-256 de sus bytes: cambiar un solo byte de la imagen obliga a registrarla de
+#      nuevo, y un nombre parecido (`o.png` frente a `mapa-claro.png`) no vale;
 #   3. NO se escanea como texto: sus datos van comprimidos (IDAT), donde una cadena legible no se ve y, en cambio, una
-#      secuencia casual de bytes imprimibles da falsos positivos (ocurrio con una captura real). Lo que protege es la lista
-#      cerrada de fragmentos del punto 1: sin tEXt ni eXIf no hay donde llevar texto del equipo.
+#      secuencia casual de bytes imprimibles da falsos positivos (ocurrio con una captura real). Lo que protege es la
+#      lista cerrada de fragmentos y longitudes del punto 1.
 # Lo que el codigo no puede comprobar (que los pixeles sean solo de la app) lo revisa quien audita el cambio.
 $demoImgPattern = '^docs/img/[a-z0-9-]+\.png$'
 $demoImgMaxBytes = 2MB
-$pngAllowedChunks = @('IHDR', 'PLTE', 'tRNS', 'IDAT', 'IEND', 'sRGB', 'gAMA', 'cHRM', 'pHYs')
+$pngFixedChunks = @{ 'sRGB' = 1; 'gAMA' = 4; 'cHRM' = 32; 'pHYs' = 9 }
+
+function Get-ImageMagic {
+    # Devuelve el nombre del formato de imagen que indica la FIRMA de los bytes, o $null si no parece una imagen.
+    param([byte[]]$Bytes)
+    $n = $Bytes.Length
+    if ($n -ge 8 -and $Bytes[0] -eq 0x89 -and $Bytes[1] -eq 0x50 -and $Bytes[2] -eq 0x4E -and $Bytes[3] -eq 0x47) { return 'PNG' }
+    if ($n -ge 3 -and $Bytes[0] -eq 0xFF -and $Bytes[1] -eq 0xD8 -and $Bytes[2] -eq 0xFF) { return 'JPEG' }
+    if ($n -ge 6) {
+        $h6 = [System.Text.Encoding]::ASCII.GetString($Bytes, 0, 6)
+        if ($h6 -ceq 'GIF87a' -or $h6 -ceq 'GIF89a') { return 'GIF' }
+    }
+    if ($n -ge 12) {
+        $riff = [System.Text.Encoding]::ASCII.GetString($Bytes, 0, 4)
+        $webp = [System.Text.Encoding]::ASCII.GetString($Bytes, 8, 4)
+        if ($riff -ceq 'RIFF' -and $webp -ceq 'WEBP') { return 'WEBP' }
+        $ftyp = [System.Text.Encoding]::ASCII.GetString($Bytes, 4, 4)
+        if ($ftyp -ceq 'ftyp') {
+            $brand = [System.Text.Encoding]::ASCII.GetString($Bytes, 8, 4)
+            if (@('avif', 'avis', 'heic', 'heix', 'hevc', 'hevx', 'heim', 'heis', 'mif1', 'msf1') -ccontains $brand) { return 'AVIF/HEIF' }
+        }
+    }
+    if ($n -ge 8) {
+        $t = ([int]$Bytes[0] -shl 24) -bor ([int]$Bytes[1] -shl 16) -bor ([int]$Bytes[2] -shl 8) -bor [int]$Bytes[3]
+        if ($t -eq 0x49492A00 -or $t -eq 0x4D4D002A) { return 'TIFF' }
+    }
+    if ($n -ge 6 -and $Bytes[0] -eq 0 -and $Bytes[1] -eq 0 -and ($Bytes[2] -eq 1 -or $Bytes[2] -eq 2) -and $Bytes[3] -eq 0) {
+        $count = [int]$Bytes[4] + 256 * [int]$Bytes[5]
+        if ($count -ge 1 -and $count -le 256 -and $n -ge (6 + 16 * $count)) { return 'ICO' }
+    }
+    if ($n -ge 18 -and $Bytes[0] -eq 0x42 -and $Bytes[1] -eq 0x4D) {
+        # BMP: "BM" + tamano + reservado + desplazamiento + tamano de la cabecera DIB conocida (evita falsos positivos con
+        # un texto que empiece por "BM").
+        $dib = [int]$Bytes[14] + 256 * [int]$Bytes[15] + 65536 * [int]$Bytes[16] + 16777216 * [int]$Bytes[17]
+        if (@(12, 40, 52, 56, 64, 108, 124) -contains $dib) { return 'BMP' }
+    }
+    return $null
+}
 
 function Test-DemoPng {
     # Devuelve $null si los bytes son un PNG admitido; si no, el motivo.
@@ -242,6 +284,8 @@ function Test-DemoPng {
     $pos = 8
     $first = $true
     $sawEnd = $false
+    $sawIdat = $false
+    $colorType = -1
     while ($pos -lt $Bytes.Length) {
         if ($sawEnd) { return 'hay datos despues del fragmento IEND' }
         if ($pos + 12 -gt $Bytes.Length) { return 'PNG truncado' }
@@ -249,12 +293,31 @@ function Test-DemoPng {
         if ($len -lt 0 -or ($pos + 12 + [long]$len) -gt $Bytes.Length) { return 'PNG con un fragmento fuera de rango' }
         $type = [System.Text.Encoding]::ASCII.GetString($Bytes, $pos + 4, 4)
         if ($first -and $type -cne 'IHDR') { return 'el primer fragmento del PNG no es IHDR' }
+        if (-not $first -and $type -ceq 'IHDR') { return 'IHDR repetido' }
+        if ($type -ceq 'IHDR') {
+            if ($len -ne 13) { return "IHDR de $len bytes (deben ser 13)" }
+            $colorType = [int]$Bytes[$pos + 8 + 9]
+        } elseif ($type -ceq 'IDAT') {
+            $sawIdat = $true
+        } elseif ($type -ceq 'IEND') {
+            if ($len -ne 0) { return 'IEND con datos' }
+            $sawEnd = $true
+        } elseif ($pngFixedChunks.ContainsKey($type)) {
+            if ($len -ne $pngFixedChunks[$type]) { return "fragmento $type de $len bytes (deben ser $($pngFixedChunks[$type])): ahi cabria texto" }
+        } elseif ($type -ceq 'PLTE') {
+            if ($colorType -ne 3) { return 'PLTE en un PNG no indexado' }
+            if ($len -gt 768 -or ($len % 3) -ne 0) { return "PLTE de $len bytes (maximo 768 y multiplo de 3)" }
+        } elseif ($type -ceq 'tRNS') {
+            if ($colorType -ne 3) { return 'tRNS en un PNG no indexado' }
+            if ($len -gt 256) { return "tRNS de $len bytes (maximo 256)" }
+        } else {
+            return "fragmento PNG no permitido ($type): puede llevar metadatos del equipo"
+        }
         $first = $false
-        if ($pngAllowedChunks -cnotcontains $type) { return "fragmento PNG no permitido ($type): puede llevar metadatos del equipo" }
-        if ($type -ceq 'IEND') { $sawEnd = $true }
         $pos += 12 + $len
     }
     if (-not $sawEnd) { return 'PNG sin fragmento IEND' }
+    if (-not $sawIdat) { return 'PNG sin datos de imagen (IDAT)' }
     return $null
 }
 
@@ -272,6 +335,20 @@ function Get-ImgReadme {
     }
 }
 
+function Test-ImgRegistered {
+    # Hay en docs/img/README.md una linea anclada `- <leaf> | sha256: <hash> | ...--demo...` con el SHA-256 de $Bytes
+    param([string]$Leaf, [byte[]]$Bytes)
+    $readme = Get-ImgReadme
+    if (-not $readme) { return $false }
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { $hex = ([System.BitConverter]::ToString($sha.ComputeHash($Bytes))).Replace('-', '').ToLowerInvariant() } finally { $sha.Dispose() }
+    $pattern = '^[-*]\s+' + [regex]::Escape($Leaf) + '\s*\|\s*sha256:\s*' + $hex + '\s*\|.*--demo'
+    foreach ($line in ($readme -split "`n")) {
+        if ($line.TrimEnd("`r") -match $pattern) { return $true }
+    }
+    return $false
+}
+
 foreach ($name in $names) {
     $f = $name.Replace('\', '/')
     $inSpike = $f.StartsWith('spike/')
@@ -284,14 +361,6 @@ foreach ($name in $names) {
     # El nombre del archivo tambien se revisa.
     foreach ($hit in (Test-Rules $f $ruleSet)) { $problems.Add("${f}: NOMBRE del archivo: $($hit[0])") }
 
-    $isDemoImg = $false
-    if ($f -match $imageExt) {
-        if ($f -cnotmatch $demoImgPattern) {
-            $problems.Add("${f}: imagen versionada (no se permiten capturas; solo docs/img/<nombre>.png generadas con --demo)")
-            continue
-        }
-        $isDemoImg = $true
-    }
     $full = Join-Path $repoRoot $name
     if ($All) {
         if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { continue }
@@ -300,19 +369,25 @@ foreach ($name in $names) {
         # Contenido del INDICE, leido como bytes (sin recodificar).
         $bytes = Invoke-GitBytes "cat-file blob `":$f`"" $repoRoot
     }
+
+    # Imagenes: por extension Y por firma (un .png renombrado a .dat, .bin o .txt tambien es una captura).
+    $magic = Get-ImageMagic $bytes
+    $isDemoImg = $false
+    if ($f -match $imageExt -or $magic) {
+        if ($f -cmatch $demoImgPattern) {
+            $isDemoImg = $true
+        } else {
+            $kind = if ($magic) { $magic } else { 'por la extension' }
+            $problems.Add("${f}: imagen versionada ($kind); no se permiten capturas salvo docs/img/<nombre>.png generadas con --demo")
+            continue
+        }
+    }
     if ($isDemoImg) {
         $why = Test-DemoPng $bytes
         if ($why) { $problems.Add("${f}: $why"); continue }
-        $readme = Get-ImgReadme
         $leaf = $f.Substring($f.LastIndexOf('/') + 1)
-        $listed = $false
-        if ($readme) {
-            foreach ($line in ($readme -split "`n")) {
-                if ($line.Contains($leaf) -and $line.Contains('--demo')) { $listed = $true; break }
-            }
-        }
-        if (-not $listed) {
-            $problems.Add("${f}: falta una linea en docs/img/README.md con el nombre del archivo y la orden --demo que lo genera")
+        if (-not (Test-ImgRegistered $leaf $bytes)) {
+            $problems.Add("${f}: falta su linea anclada en docs/img/README.md (- <nombre>.png | sha256: <hash de sus bytes> | orden con --demo)")
             continue
         }
         continue

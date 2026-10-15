@@ -77,7 +77,7 @@ function Reset-Repo {
 
 function Stage-All { Invoke-Git -C $repo add -A -f }
 
-# Un PNG minimo (sin CRC validos: el check solo mira la estructura y los tipos de fragmento).
+# Un PNG minimo (sin CRC validos: el check solo mira la estructura, los tipos y las longitudes de los fragmentos).
 function New-Chunk([string]$Type, [byte[]]$Data) {
     $len = $Data.Length
     $b = New-Object System.Collections.Generic.List[byte]
@@ -88,14 +88,34 @@ function New-Chunk([string]$Type, [byte[]]$Data) {
     return , $b.ToArray()
 }
 
-function New-Png([string[]]$Extra = @(), [byte[]]$Idat = [byte[]](1, 2, 3, 4, 5, 6, 7, 8)) {
+# Fragmento `$Type` con `$N` bytes de datos (por defecto, los 4 de gAMA...).
+function Fill([string]$Type, [int]$N) { return @{ T = $Type; D = (New-Object byte[] $N) } }
+
+# `-Color` es el tipo de color del IHDR (6 = RGBA, 3 = indexado); `-Chunks` son fragmentos extra antes de IDAT.
+function New-Png([object[]]$Chunks = @(), [byte[]]$Idat = [byte[]](1, 2, 3, 4, 5, 6, 7, 8), [int]$Color = 6) {
     $b = New-Object System.Collections.Generic.List[byte]
     $b.AddRange([byte[]](0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A))
-    $b.AddRange((New-Chunk 'IHDR' ([byte[]](0, 0, 0, 4, 0, 0, 0, 4, 8, 6, 0, 0, 0))))
-    foreach ($t in $Extra) { $b.AddRange((New-Chunk $t ([byte[]](9, 9, 9, 9)))) }
+    $b.AddRange((New-Chunk 'IHDR' ([byte[]](0, 0, 0, 4, 0, 0, 0, 4, 8, $Color, 0, 0, 0))))
+    foreach ($c in $Chunks) { $b.AddRange((New-Chunk $c.T $c.D)) }
     $b.AddRange((New-Chunk 'IDAT' $Idat))
     $b.AddRange((New-Chunk 'IEND' ([byte[]]@())))
     return , $b.ToArray()
+}
+
+function Sha256Hex([byte[]]$Bytes) {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { return ([System.BitConverter]::ToString($sha.ComputeHash($Bytes))).Replace('-', '').ToLowerInvariant() } finally { $sha.Dispose() }
+}
+
+# Linea del README de docs/img con el SHA-256 de los bytes de la imagen.
+function ReadmeLine([string]$Leaf, [byte[]]$Bytes, [string]$Tail = 'tesela --demo --screen map') {
+    return ('- ' + $Leaf + ' | sha256: ' + (Sha256Hex $Bytes) + ' | ' + $Tail + "`n")
+}
+
+function HexBytes([string]$Hex) {
+    $bytes = New-Object byte[] ($Hex.Length / 2)
+    for ($i = 0; $i -lt $bytes.Length; $i++) { $bytes[$i] = [System.Convert]::ToByte($Hex.Substring(2 * $i, 2), 16) }
+    return , $bytes
 }
 
 function Run-Check([string[]]$CheckArgs) {
@@ -194,84 +214,171 @@ try {
 
     # --- Excepcion de docs/img/ (capturas de --demo) -------------------------------------------------------------------
     $img = 'docs/img/mapa-demo.png'
-    $readmeOk = "# Capturas`n`n- mapa-demo.png: tesela --demo --screen map`n"
+    $imgLeaf = 'mapa-demo.png'
+    $png = New-Png
+    $readmeOk = "# Capturas`n`n" + (ReadmeLine $imgLeaf $png)
     Reset-Repo
-    PutBytes $img (New-Png)
+    PutBytes $img $png
     Put 'docs/img/README.md' $readmeOk
     Stage-All
-    Expect 'docs/img: PNG valido con su linea de --demo en README.md' $false
-    Expect 'docs/img: PNG valido con su linea de --demo (-All)' $false @('-All')
+    Expect 'docs/img: PNG valido con su linea anclada (nombre + sha256 + --demo)' $false
+    Expect 'docs/img: PNG valido con su linea anclada (-All)' $false @('-All')
+    Expect 'docs/img: PNG valido con -GenericOnly' $false @('-GenericOnly')
     Reset-Repo
-    PutBytes $img (New-Png)
+    PutBytes $img $png
     Stage-All
     Expect 'docs/img: sin README.md' $true
-    Reset-Repo
-    PutBytes $img (New-Png)
-    Put 'docs/img/README.md' "- mapa-demo.png: captura de mi escritorio`n"
-    Stage-All
-    Expect 'docs/img: README.md sin --demo en la linea del archivo' $true
-    Reset-Repo
-    PutBytes $img (New-Png)
-    Put 'docs/img/README.md' "- otra.png: tesela --demo`n"
-    Stage-All
-    Expect 'docs/img: README.md que no menciona el archivo' $true
-    foreach ($t in 'tEXt', 'iTXt', 'zTXt', 'eXIf', 'tIME', 'iCCP', 'sBIT', 'zzZz') {
+    # La linea del README tiene que ser ANCLADA y con el hash exacto.
+    foreach ($case in @(
+            @('sin --demo', ('- ' + $imgLeaf + ' | sha256: ' + (Sha256Hex $png) + " | captura de mi escritorio`n")),
+            @('hash de otra imagen', ('- ' + $imgLeaf + ' | sha256: ' + (Sha256Hex ([byte[]](1, 2, 3))) + " | tesela --demo`n")),
+            @('sin hash', ('- ' + $imgLeaf + ": tesela --demo`n")),
+            @('hash truncado', ('- ' + $imgLeaf + ' | sha256: ' + (Sha256Hex $png).Substring(0, 60) + " | tesela --demo`n")),
+            @('otro archivo', ('- otra.png | sha256: ' + (Sha256Hex $png) + " | tesela --demo`n")),
+            @('nombre como sufijo (xmapa-demo.png)', ('- x' + $imgLeaf + ' | sha256: ' + (Sha256Hex $png) + " | tesela --demo`n")),
+            @('linea dentro de otra (no empieza por guion)', ('texto - ' + $imgLeaf + ' | sha256: ' + (Sha256Hex $png) + " | tesela --demo`n"))
+        )) {
         Reset-Repo
-        PutBytes $img (New-Png -Extra @($t))
-        Put 'docs/img/README.md' $readmeOk
+        PutBytes $img $png
+        Put 'docs/img/README.md' ("# Capturas`n`n" + $case[1])
+        Stage-All
+        Expect ('docs/img: README.md invalido: ' + $case[0]) $true
+    }
+    # Un nombre que es SUBCADENA del de otra imagen registrada no vale (`o.png` frente a `mapa-demo.png`).
+    Reset-Repo
+    PutBytes 'docs/img/o.png' $png
+    Put 'docs/img/README.md' $readmeOk
+    Stage-All
+    Expect 'docs/img: nombre que es subcadena de otro registrado (o.png)' $true
+    # Cambiar un solo byte de la imagen la invalida hasta registrarla de nuevo.
+    Reset-Repo
+    PutBytes $img (New-Png -Idat ([byte[]](1, 2, 3, 4, 5, 6, 7, 9)))
+    Put 'docs/img/README.md' $readmeOk
+    Stage-All
+    Expect 'docs/img: imagen distinta de la registrada (un byte)' $true
+
+    # --- Fragmentos PNG: lista cerrada y longitudes cerradas -----------------------------------------------------------------
+    foreach ($t in 'tEXt', 'iTXt', 'zTXt', 'eXIf', 'tIME', 'iCCP', 'sBIT', 'bKGD', 'hIST', 'sPLT', 'zzZz') {
+        $p = New-Png -Chunks @((Fill $t 4))
+        Reset-Repo
+        PutBytes $img $p
+        Put 'docs/img/README.md' ("# Capturas`n`n" + (ReadmeLine $imgLeaf $p))
         Stage-All
         Expect "docs/img: fragmento PNG no permitido $t" $true
     }
-    foreach ($t in 'sRGB', 'gAMA', 'cHRM', 'pHYs') {
+    foreach ($c in @(@('sRGB', 1), @('gAMA', 4), @('cHRM', 32), @('pHYs', 9))) {
+        $p = New-Png -Chunks @((Fill $c[0] $c[1]))
         Reset-Repo
-        PutBytes $img (New-Png -Extra @($t))
-        Put 'docs/img/README.md' $readmeOk
+        PutBytes $img $p
+        Put 'docs/img/README.md' ("# Capturas`n`n" + (ReadmeLine $imgLeaf $p))
         Stage-All
-        Expect "docs/img: fragmento PNG permitido $t" $false
+        Expect ("docs/img: fragmento PNG permitido " + $c[0] + ' con su longitud') $false
+        # Con UN byte mas (texto en claro escondido en un fragmento permitido) falla.
+        $p = New-Png -Chunks @((Fill $c[0] ($c[1] + 1)))
+        Reset-Repo
+        PutBytes $img $p
+        Put 'docs/img/README.md' ("# Capturas`n`n" + (ReadmeLine $imgLeaf $p))
+        Stage-All
+        Expect ("docs/img: " + $c[0] + ' con longitud de mas') $true
     }
+    $hidden = [System.Text.Encoding]::ASCII.GetBytes($profilePath + ' notas privadas ' + $profilePath)
+    $p = New-Png -Chunks @(@{ T = 'gAMA'; D = $hidden })
+    Reset-Repo
+    PutBytes $img $p
+    Put 'docs/img/README.md' ("# Capturas`n`n" + (ReadmeLine $imgLeaf $p))
+    Stage-All
+    Expect 'docs/img: texto en claro dentro de gAMA' $true
+    # PLTE y tRNS solo en PNG indexados y con longitudes maximas.
+    foreach ($case in @(
+            @('PLTE en RGBA', 6, (Fill 'PLTE' 12), $true),
+            @('tRNS en RGBA', 6, (Fill 'tRNS' 2), $true),
+            @('PLTE indexado 768', 3, (Fill 'PLTE' 768), $false),
+            @('PLTE indexado 771 (de mas)', 3, (Fill 'PLTE' 771), $true),
+            @('PLTE indexado no multiplo de 3', 3, (Fill 'PLTE' 100), $true),
+            @('tRNS indexado 256', 3, (Fill 'tRNS' 256), $false),
+            @('tRNS indexado 257 (de mas)', 3, (Fill 'tRNS' 257), $true)
+        )) {
+        $chunks = @($case[2])
+        if ($case[0] -like 'tRNS indexado*') { $chunks = @((Fill 'PLTE' 6), $case[2]) }
+        $p = New-Png -Chunks $chunks -Color $case[1]
+        Reset-Repo
+        PutBytes $img $p
+        Put 'docs/img/README.md' ("# Capturas`n`n" + (ReadmeLine $imgLeaf $p))
+        Stage-All
+        Expect ('docs/img: ' + $case[0]) $case[3]
+    }
+    $p = New-Png -Chunks @((Fill 'IHDR' 13))
+    Reset-Repo
+    PutBytes $img $p
+    Put 'docs/img/README.md' ("# Capturas`n`n" + (ReadmeLine $imgLeaf $p))
+    Stage-All
+    Expect 'docs/img: IHDR repetido' $true
+
+    # --- Rutas no permitidas --------------------------------------------------------------------------------------------------
     foreach ($badPath in 'docs/img/Mapa.png', 'docs/img/sub/mapa.png', 'docs/mapa.png', 'img/mapa.png', 'docs/img/mapa.jpg', 'docs/img/mapa_demo.png', 'docs/img/mapa.PNG') {
         Reset-Repo
-        PutBytes $badPath (New-Png)
-        Put 'docs/img/README.md' ("- mapa.png: --demo`n- mapa.jpg: --demo`n- mapa.PNG: --demo`n- Mapa.png: --demo`n- mapa-demo.png: --demo`n")
+        PutBytes $badPath $png
+        $leafBad = $badPath.Substring($badPath.LastIndexOf('/') + 1)
+        Put 'docs/img/README.md' ("# Capturas`n`n" + (ReadmeLine $leafBad $png))
         Stage-All
         Expect "docs/img: ruta no permitida $badPath" $true
     }
+
+    # --- Imagenes disfrazadas: se detectan por la FIRMA, con cualquier extension -------------------------------------------------
+    $magic = @{}
+    foreach ($pr in $raw.magic.PSObject.Properties) { $magic[$pr.Name] = HexBytes $pr.Value }
+    foreach ($k in ($magic.Keys | Sort-Object)) {
+        foreach ($ext in 'dat', 'bin', 'txt', 'md', 'json', 'rs') {
+            Reset-Repo
+            PutBytes "docs/notas.$ext" ($magic[$k] + [byte[]](0, 0, 0, 0))
+            Stage-All
+            Expect "imagen $k disfrazada de .$ext" $true
+        }
+        # Tambien dentro de docs/img/ con un nombre que no es .png.
+        Reset-Repo
+        PutBytes 'docs/img/captura.dat' $magic[$k]
+        Stage-All
+        Expect "imagen $k en docs/img/captura.dat" $true
+    }
+    foreach ($ext in 'dat', 'bin', 'txt') {
+        Reset-Repo
+        PutBytes "docs/notas.$ext" $png
+        Stage-All
+        Expect "PNG disfrazado de .$ext" $true
+        Expect "PNG disfrazado de .$ext (-All)" $true @('-All')
+    }
+    # Un JPEG con nombre .png en docs/img/ no es un PNG.
     Reset-Repo
-    PutBytes $img ((New-Png) + [byte[]](1, 2, 3))
-    Put 'docs/img/README.md' $readmeOk
+    PutBytes $img ($magic['jpeg'] + (New-Object byte[] 40))
+    Put 'docs/img/README.md' ("# Capturas`n`n" + (ReadmeLine $imgLeaf ($magic['jpeg'] + (New-Object byte[] 40))))
     Stage-All
-    Expect 'docs/img: datos despues de IEND' $true
+    Expect 'docs/img: un JPEG con extension .png' $true
+    # Los textos que solo EMPIEZAN como una firma no son imagenes.
+    foreach ($txt in 'BMW y GIF89 y RIFF notas', 'GIF', 'II*', 'RIFF WEBP', 'ftyp avif', 'PNG sin firma', 'BM') {
+        Reset-Repo
+        Put 'docs/notas.txt' ($txt + "`n")
+        Stage-All
+        Expect "texto que se parece a una firma: $txt" $false
+    }
     Reset-Repo
-    PutBytes $img ([byte[]](0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0))
-    Put 'docs/img/README.md' $readmeOk
-    Stage-All
-    Expect 'docs/img: PNG truncado' $true
-    Reset-Repo
-    PutBytes $img ([byte[]](1..60))
-    Put 'docs/img/README.md' $readmeOk
-    Stage-All
-    Expect 'docs/img: no es un PNG' $true
-    Reset-Repo
-    PutBytes $img (New-Png -Idat ([byte[]](0, 0) + [System.Text.Encoding]::ASCII.GetBytes($profilePath) + [byte[]](0, 0)))
-    Put 'docs/img/README.md' $readmeOk
-    Stage-All
-    Expect 'docs/img: el contenido comprimido (IDAT) no se escanea como texto (sin falsos positivos)' $false
-    Reset-Repo
-    PutBytes $img (New-Png -Extra @('tEXt') -Idat ([byte[]](0, 0) + [System.Text.Encoding]::ASCII.GetBytes($profilePath) + [byte[]](0, 0)))
-    Put 'docs/img/README.md' $readmeOk
-    Stage-All
-    Expect 'docs/img: el texto del equipo solo cabria en un fragmento tEXt, que se rechaza' $true
-    Reset-Repo
-    PutBytes $img (New-Png -Idat (New-Object byte[] (2MB + 10)))
-    Put 'docs/img/README.md' $readmeOk
-    Stage-All
-    Expect 'docs/img: mas de 2 MiB' $true
-    Reset-Repo
-    PutBytes $img (New-Png)
+    PutBytes 'docs/img/mapa-demo.png' $png
     Put 'docs/img/README.md' $readmeOk
     Stage-All
     Invoke-Git -C $repo commit -q -m imagen
     Expect 'docs/img: -All sobre lo ya commiteado' $false @('-All')
+    # Truncado, datos tras IEND, no PNG, demasiado grande y el contenido comprimido NO se escanea como texto.
+    foreach ($case in @(
+            @('datos despues de IEND', ($png + [byte[]](1, 2, 3)), $true),
+            @('PNG truncado', ([byte[]](0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0)), $true),
+            @('mas de 2 MiB', (New-Png -Idat (New-Object byte[] (2MB + 10))), $true),
+            @('contenido comprimido con una cadena de perfil (no se escanea: sin falsos positivos)', (New-Png -Idat ([byte[]](0, 0) + [System.Text.Encoding]::ASCII.GetBytes($profilePath) + [byte[]](0, 0))), $false)
+        )) {
+        Reset-Repo
+        PutBytes $img $case[1]
+        Put 'docs/img/README.md' ("# Capturas`n`n" + (ReadmeLine $imgLeaf $case[1]))
+        Stage-All
+        Expect ('docs/img: ' + $case[0]) $case[2]
+    }
 
     # --- Nombres de archivo ----------------------------------------------------------------------------------------------
     Reset-Repo
