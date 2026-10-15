@@ -239,6 +239,43 @@ pub fn section_label(ui: &mut Ui, pal: &Palette, text: &str) {
     ui.label(t);
 }
 
+/// Indicador de "ocupado". Con animaciones gira (`egui::Spinner`, que además pide repintar sin parar); con "reducir
+/// animaciones" (`animate == false`) es un arco ESTÁTICO y no pide ningún repintado.
+pub fn busy(ui: &mut Ui, animate: bool, size: f32, color: Color32) -> Response {
+    if animate {
+        return ui.add(egui::Spinner::new().size(size).color(color));
+    }
+    let (rect, resp) = ui.allocate_exact_size(vec2(size, size), Sense::hover());
+    if ui.is_rect_visible(rect) {
+        let c = rect.center();
+        let r = size * 0.5 - 2.0;
+        // Tres cuartos de circunferencia (un "cargando" congelado).
+        let points: Vec<Pos2> = (0..=24)
+            .map(|i| {
+                let a =
+                    -0.5 * std::f32::consts::PI + (i as f32 / 24.0) * 1.5 * std::f32::consts::PI;
+                c + vec2(a.cos(), a.sin()) * r
+            })
+            .collect();
+        ui.painter()
+            .add(egui::Shape::line(points, Stroke::new(2.0, color)));
+    }
+    resp
+}
+
+/// Tramo del progreso indeterminado ("sin total conocido") dentro de la barra `bar`. Con animaciones va y viene según
+/// `t` (segundos); sin ellas es un tramo FIJO en el centro (y quien llama no tiene que pedir repintado).
+pub fn indeterminate_segment(bar: Rect, t: f32, animate: bool) -> Rect {
+    let w = bar.width() * 0.25;
+    let k = if animate {
+        0.5 + 0.5 * (t * 2.0).sin()
+    } else {
+        0.5
+    };
+    let x = bar.left() + (bar.width() - w) * k;
+    Rect::from_min_size(Pos2::new(x, bar.top()), vec2(w, bar.height()))
+}
+
 /// Barra de progreso redondeada. Con `hatch`, el relleno lleva rayas diagonales tenues ("aún contando").
 pub fn progress_bar(
     ui: &mut Ui,

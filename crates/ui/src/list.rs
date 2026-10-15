@@ -14,6 +14,57 @@ use tesela_model::NodeId;
 
 const ROW_H: f32 = 32.0;
 
+/// Columnas de la lista según el ancho de la fila. El NOMBRE manda: las demás columnas se ocultan por orden (primero
+/// "archivos", luego la barra y el porcentaje) hasta que el nombre tenga sitio. Todas las posiciones son distancias al
+/// borde DERECHO de la fila.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Cols {
+    /// Ancho que le queda a la columna del nombre (desde `NAME_LEFT`).
+    pub name_w: f32,
+    /// Borde derecho de "Tamaño" (distancia al borde derecho de la fila).
+    pub size_right: f32,
+    /// Inicio de la barra y el porcentaje (distancia al borde derecho), si se muestran.
+    pub bar_left: Option<f32>,
+    /// Borde derecho de "Archivos" (distancia al borde derecho), si se muestra.
+    pub files_right: Option<f32>,
+}
+
+/// Dónde empieza el nombre (tras el icono).
+pub(crate) const NAME_LEFT: f32 = 36.0;
+/// Ancho mínimo que se garantiza al nombre mientras se pueda quitar otra columna.
+pub(crate) const NAME_MIN_W: f32 = 150.0;
+
+/// Reparte el ancho `width` de la fila.
+pub(crate) fn columns(width: f32) -> Cols {
+    // (columna "archivos", barra) → anchura que ocupan las columnas de la derecha.
+    const FULL: f32 = 320.0;
+    const NO_FILES: f32 = 242.0;
+    const SIZE_ONLY: f32 = 120.0;
+    let name_w = |right: f32| (width - NAME_LEFT - right).max(0.0);
+    if name_w(FULL) >= NAME_MIN_W {
+        Cols {
+            name_w: name_w(FULL),
+            size_right: 110.0,
+            bar_left: Some(300.0),
+            files_right: Some(12.0),
+        }
+    } else if name_w(NO_FILES) >= NAME_MIN_W {
+        Cols {
+            name_w: name_w(NO_FILES),
+            size_right: 12.0,
+            bar_left: Some(222.0),
+            files_right: None,
+        }
+    } else {
+        Cols {
+            name_w: name_w(SIZE_ONLY),
+            size_right: 12.0,
+            bar_left: None,
+            files_right: None,
+        }
+    }
+}
+
 enum Items {
     Children(crate::explore::Shown),
     Hits(std::sync::Arc<Vec<NodeId>>),
@@ -47,6 +98,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
 
     // Cabecera de columnas.
     let (hr, _) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::hover());
+    let cols = columns(hr.width());
     let hdr = |text: String, x: f32, anchor: Align2| {
         ui.painter().text(
             pos2(x, hr.center().y),
@@ -58,24 +110,28 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
     };
     hdr(
         env.tr.t("list-col-name"),
-        hr.left() + 36.0,
+        hr.left() + NAME_LEFT,
         Align2::LEFT_CENTER,
     );
-    hdr(
-        env.tr.t("list-col-share"),
-        hr.right() - 300.0,
-        Align2::LEFT_CENTER,
-    );
+    if let Some(b) = cols.bar_left {
+        hdr(
+            env.tr.t("list-col-share"),
+            hr.right() - b,
+            Align2::LEFT_CENTER,
+        );
+    }
     hdr(
         env.tr.t("list-col-size"),
-        hr.right() - 110.0,
+        hr.right() - cols.size_right,
         Align2::RIGHT_CENTER,
     );
-    hdr(
-        env.tr.t("list-col-files"),
-        hr.right() - 12.0,
-        Align2::RIGHT_CENTER,
-    );
+    if let Some(f) = cols.files_right {
+        hdr(
+            env.tr.t("list-col-files"),
+            hr.right() - f,
+            Align2::RIGHT_CENTER,
+        );
+    }
     ui.painter()
         .hline(hr.x_range(), hr.bottom(), Stroke::new(1.0, pal.border));
 
@@ -199,7 +255,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
                 );
                 widgets::clipped_text(
                     ui.painter(),
-                    pos2(rect.left() + 36.0, cy),
+                    pos2(rect.left() + NAME_LEFT, cy),
                     Align2::LEFT_CENTER,
                     &name,
                     if selected {
@@ -208,45 +264,47 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
                         FontId::proportional(14.0)
                     },
                     pal.text,
-                    rect.width() - 36.0 - 320.0,
+                    cols.name_w,
                 );
-                // Barra de cuota y porcentaje.
-                let bar =
-                    Rect::from_min_size(pos2(rect.right() - 300.0, cy - 4.0), vec2(90.0, 8.0));
-                ui.painter()
-                    .rect_filled(bar, CornerRadius::same(4), pal.track);
-                let fw = (bar.width() * (share / 100.0) as f32).max(if node.alloc > 0 {
-                    2.0
-                } else {
-                    0.0
-                });
-                let color = if describe::special(&tree, id).is_some() {
-                    pal.info_only()
-                } else {
-                    pal.accent
-                };
-                ui.painter().rect_filled(
-                    Rect::from_min_size(bar.min, vec2(fw.min(bar.width()), 8.0)),
-                    CornerRadius::same(4),
-                    color,
-                );
+                // Barra de cuota y porcentaje (se ocultan si el nombre no tiene sitio).
+                if let Some(b) = cols.bar_left {
+                    let bar =
+                        Rect::from_min_size(pos2(rect.right() - b, cy - 4.0), vec2(90.0, 8.0));
+                    ui.painter()
+                        .rect_filled(bar, CornerRadius::same(4), pal.track);
+                    let fw = (bar.width() * (share / 100.0) as f32).max(if node.alloc > 0 {
+                        2.0
+                    } else {
+                        0.0
+                    });
+                    let color = if describe::special(&tree, id).is_some() {
+                        pal.info_only()
+                    } else {
+                        pal.accent
+                    };
+                    ui.painter().rect_filled(
+                        Rect::from_min_size(bar.min, vec2(fw.min(bar.width()), 8.0)),
+                        CornerRadius::same(4),
+                        color,
+                    );
+                    ui.painter().text(
+                        pos2(bar.right() + 8.0, cy),
+                        Align2::LEFT_CENTER,
+                        env.tr.pct_fine(share),
+                        FontId::proportional(12.0),
+                        pal.text_muted,
+                    );
+                }
                 ui.painter().text(
-                    pos2(bar.right() + 8.0, cy),
-                    Align2::LEFT_CENTER,
-                    env.tr.pct_fine(share),
-                    FontId::proportional(12.0),
-                    pal.text_muted,
-                );
-                ui.painter().text(
-                    pos2(rect.right() - 110.0, cy),
+                    pos2(rect.right() - cols.size_right, cy),
                     Align2::RIGHT_CENTER,
                     &size_txt,
                     theme::font_semibold(13.0),
                     pal.text,
                 );
-                if let Some(f) = files {
+                if let (Some(f), Some(fr)) = (files, cols.files_right) {
                     ui.painter().text(
-                        pos2(rect.right() - 12.0, cy),
+                        pos2(rect.right() - fr, cy),
                         Align2::RIGHT_CENTER,
                         env.tr.int(f),
                         FontId::proportional(13.0),

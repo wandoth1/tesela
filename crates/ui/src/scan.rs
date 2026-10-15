@@ -110,6 +110,8 @@ pub struct ScanScreen {
     animate: bool,
     /// "Parar y ver" pedido antes de que el escaneo haya arrancado.
     stop_pending: bool,
+    /// (tarjeta de sitios conocidos, tarjeta del mapa): su contenido no cabe y se desplaza (la barra está a la vista).
+    overflow: (bool, bool),
     kind: Kind,
 }
 
@@ -204,6 +206,7 @@ impl ScanScreen {
             discard: false,
             animate,
             stop_pending: false,
+            overflow: (false, false),
             kind: Kind::Starting(startup),
         }
     }
@@ -224,6 +227,7 @@ impl ScanScreen {
             discard: false,
             animate: true,
             stop_pending: false,
+            overflow: (false, false),
             kind: Kind::Demo(Demo {
                 tree,
                 top,
@@ -232,6 +236,12 @@ impl ScanScreen {
                 stop: false,
             }),
         }
+    }
+
+    /// (tarjeta de sitios conocidos, tarjeta del mapa): ¿se desplaza su contenido porque no cabe? (para los tests)
+    #[cfg(test)]
+    pub(crate) fn overflow(&self) -> (bool, bool) {
+        self.overflow
     }
 
     /// La bandera de cancelación del arranque, si la pantalla sigue arrancando (para los tests).
@@ -549,34 +559,13 @@ pub fn show(ui: &mut Ui, env: &mut Env, s: &mut ScanScreen) {
                 .inner_margin(Margin::symmetric(40, 28)),
         )
         .show(ui, |ui| {
-            // Título, cifras y botones.
+            // Título y botones en una fila; las cifras, debajo (en una ventana estrecha no caben las tres cosas).
             ui.horizontal(|ui| {
                 ui.label(
                     RichText::new(env.tr.t("scan-title"))
                         .font(theme::font_semibold(26.0))
                         .color(pal.text),
                 );
-                ui.add_space(8.0);
-                let counts = match v.total {
-                    Some(t) => env.tr.ta(
-                        "scan-counts-of",
-                        args![
-                            "files" => env.tr.int(v.files),
-                            "size" => env.tr.size(v.bytes),
-                            "total" => env.tr.size(t),
-                            "time" => format!("{}:{:02}", elapsed / 60, elapsed % 60)
-                        ],
-                    ),
-                    None => env.tr.ta(
-                        "scan-counts",
-                        args![
-                            "files" => env.tr.int(v.files),
-                            "size" => env.tr.size(v.bytes),
-                            "time" => format!("{}:{:02}", elapsed / 60, elapsed % 60)
-                        ],
-                    ),
-                };
-                ui.label(RichText::new(counts).color(pal.text_muted));
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if widgets::button(ui, env, ButtonStyle::Ghost, None, &env.tr.t("cancel"), true)
                         .clicked()
@@ -597,6 +586,28 @@ pub fn show(ui: &mut Ui, env: &mut Env, s: &mut ScanScreen) {
                     }
                 });
             });
+            {
+                let counts = match v.total {
+                    Some(t) => env.tr.ta(
+                        "scan-counts-of",
+                        args![
+                            "files" => env.tr.int(v.files),
+                            "size" => env.tr.size(v.bytes),
+                            "total" => env.tr.size(t),
+                            "time" => format!("{}:{:02}", elapsed / 60, elapsed % 60)
+                        ],
+                    ),
+                    None => env.tr.ta(
+                        "scan-counts",
+                        args![
+                            "files" => env.tr.int(v.files),
+                            "size" => env.tr.size(v.bytes),
+                            "time" => format!("{}:{:02}", elapsed / 60, elapsed % 60)
+                        ],
+                    ),
+                };
+                ui.label(RichText::new(counts).color(pal.text_muted));
+            }
             ui.add_space(6.0);
             // Barra de progreso general.
             let frac = v.fraction;
@@ -622,15 +633,15 @@ pub fn show(ui: &mut Ui, env: &mut Env, s: &mut ScanScreen) {
                         .rect_filled(r, CornerRadius::same(4), pal.accent);
                 }
                 None => {
-                    // Sin total conocido (una carpeta): un tramo que va y viene.
+                    // Sin total conocido (una carpeta): un tramo que va y viene; con "reducir animaciones", un tramo
+                    // fijo y sin repintado (el progreso REAL de los contadores se repinta por su cuenta cada 50 ms).
                     let t = ui.input(|i| i.time) as f32;
-                    let w = bar_rect.width() * 0.25;
-                    let x =
-                        bar_rect.left() + (bar_rect.width() - w) * (0.5 + 0.5 * (t * 2.0).sin());
-                    let r = egui::Rect::from_min_size(egui::pos2(x, bar_rect.top()), vec2(w, 8.0));
+                    let r = widgets::indeterminate_segment(bar_rect, t, env.animate);
                     ui.painter()
                         .rect_filled(r, CornerRadius::same(4), pal.accent);
-                    ui.ctx().request_repaint_after(Duration::from_millis(33));
+                    if env.animate {
+                        ui.ctx().request_repaint_after(Duration::from_millis(33));
+                    }
                 }
             }
             ui.add_space(4.0);
@@ -654,18 +665,31 @@ pub fn show(ui: &mut Ui, env: &mut Env, s: &mut ScanScreen) {
                 avail.max,
             );
 
+            // Cada tarjeta se desplaza si su contenido no cabe (ventana mínima): nada se corta sin barra a la vista.
+            let (mut left_over, mut right_over) = (false, false);
             ui.scope_builder(egui::UiBuilder::new().max_rect(left_rect), |ui| {
                 card_frame(&pal).show(ui, |ui| {
                     ui.set_min_size(vec2(left_rect.width() - 58.0, left_rect.height() - 50.0));
-                    known_places(ui, env, &v);
+                    let out = egui::ScrollArea::vertical()
+                        .id_salt("scan-known-scroll")
+                        .auto_shrink([false, false])
+                        .max_height(left_rect.height() - 50.0)
+                        .show(ui, |ui| known_places(ui, env, &v));
+                    left_over = out.content_size.y > out.inner_rect.height() + 0.5;
                 });
             });
             ui.scope_builder(egui::UiBuilder::new().max_rect(right_rect), |ui| {
                 card_frame(&pal).show(ui, |ui| {
                     ui.set_min_size(vec2(right_rect.width() - 58.0, right_rect.height() - 50.0));
-                    live_map(ui, env, &v);
+                    let out = egui::ScrollArea::vertical()
+                        .id_salt("scan-map-scroll")
+                        .auto_shrink([false, false])
+                        .max_height(right_rect.height() - 50.0)
+                        .show(ui, |ui| live_map(ui, env, &v));
+                    right_over = out.content_size.y > out.inner_rect.height() + 0.5;
                 });
             });
+            s.overflow = (left_over, right_over);
         });
     if stop {
         s.stop();
@@ -675,43 +699,76 @@ pub fn show(ui: &mut Ui, env: &mut Env, s: &mut ScanScreen) {
     }
 }
 
+/// Ancho del botón "Limpiar lo seguro" que se reserva a su derecha cuando la tarjeta es ancha.
+const CLEAN_BUTTON_W: f32 = 190.0;
+
 fn known_places(ui: &mut Ui, env: &mut Env, v: &View) {
     let pal = env.pal;
-    ui.horizontal(|ui| {
+    // El texto (que se ajusta al ancho) y el botón NUNCA se pisan: con sitio, el botón va a la derecha en su propia
+    // columna reservada; si no (tarjeta estrecha, ventana mínima), el botón va debajo del texto.
+    let side_by_side = ui.available_width() >= 560.0;
+    let text_w = if side_by_side {
+        ui.available_width() - CLEAN_BUTTON_W - 16.0
+    } else {
+        ui.available_width()
+    };
+    let text = |ui: &mut Ui, env: &Env| {
+        ui.label(
+            RichText::new(env.tr.t("scan-known-title"))
+                .size(13.0)
+                .color(pal.text_muted),
+        );
+        let sum: u64 = v.rows.iter().map(|r| r.bytes).sum();
+        ui.label(
+            RichText::new(
+                env.tr
+                    .ta("scan-known-sum", args!["size" => env.tr.size(sum)]),
+            )
+            .font(theme::font_semibold(30.0))
+            .color(pal.text),
+        );
+        ui.label(
+            RichText::new(env.tr.t("scan-known-note"))
+                .size(13.0)
+                .color(pal.text_muted),
+        );
+    };
+    let button = |ui: &mut Ui, env: &mut Env| {
+        // Inactivo: la limpieza es del incremento 3.
+        let r = widgets::button(
+            ui,
+            env,
+            ButtonStyle::Primary,
+            Some(Icon::ShieldCheckmark),
+            &env.tr.t("scan-clean-safe"),
+            false,
+        );
+        widgets::next_version_hint(r, env);
+    };
+    if side_by_side {
+        ui.horizontal_top(|ui| {
+            ui.allocate_ui_with_layout(
+                vec2(text_w, 0.0),
+                egui::Layout::top_down(egui::Align::Min),
+                |ui| {
+                    ui.set_width(text_w);
+                    text(ui, env);
+                },
+            );
+            ui.allocate_ui_with_layout(
+                vec2(CLEAN_BUTTON_W, 0.0),
+                egui::Layout::top_down(egui::Align::Max),
+                |ui| button(ui, env),
+            );
+        });
+    } else {
         ui.vertical(|ui| {
-            ui.label(
-                RichText::new(env.tr.t("scan-known-title"))
-                    .size(13.0)
-                    .color(pal.text_muted),
-            );
-            let sum: u64 = v.rows.iter().map(|r| r.bytes).sum();
-            ui.label(
-                RichText::new(
-                    env.tr
-                        .ta("scan-known-sum", args!["size" => env.tr.size(sum)]),
-                )
-                .font(theme::font_semibold(30.0))
-                .color(pal.text),
-            );
-            ui.label(
-                RichText::new(env.tr.t("scan-known-note"))
-                    .size(13.0)
-                    .color(pal.text_muted),
-            );
+            ui.set_width(text_w);
+            text(ui, env);
+            ui.add_space(8.0);
+            button(ui, env);
         });
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
-            // Inactivo: la limpieza es del incremento 3.
-            let r = widgets::button(
-                ui,
-                env,
-                ButtonStyle::Primary,
-                Some(Icon::ShieldCheckmark),
-                &env.tr.t("scan-clean-safe"),
-                false,
-            );
-            widgets::next_version_hint(r, env);
-        });
-    });
+    }
     ui.add_space(14.0);
     let done = v.rows.iter().filter(|r| r.done).count();
     if v.rows.is_empty() {
@@ -720,7 +777,7 @@ fn known_places(ui: &mut Ui, env: &mut Env, v: &View) {
     }
     ui.horizontal(|ui| {
         if done < v.rows.len() {
-            ui.add(egui::Spinner::new().size(16.0));
+            widgets::busy(ui, env.animate, 16.0, pal.accent);
             ui.label(
                 RichText::new(env.tr.ta(
                     "scan-checking",
@@ -750,7 +807,7 @@ fn known_places(ui: &mut Ui, env: &mut Env, v: &View) {
             if r.done {
                 env.icons.show(ui, Icon::Checkmark, 18.0, pal.safe);
             } else {
-                ui.add(egui::Spinner::new().size(16.0));
+                widgets::busy(ui, env.animate, 16.0, pal.accent);
             }
             ui.label(RichText::new(&r.name).size(15.0).color(pal.text));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {

@@ -1649,3 +1649,245 @@ fn con_cuota_de_disco_la_tarjeta_distingue_lo_libre_del_volumen_de_lo_disponible
         assert!(h.query_all_by_label_contains(free_label).count() >= 3);
     }
 }
+
+// --- Tamaño mínimo (960 × 600): lista y pantalla de escaneo (m8) y "reducir animaciones" (m9) -------------------------
+
+/// ¿Se pintó el texto exacto `text` en el último frame?
+fn painted(h: &Harness<'static, App>, text: &str) -> bool {
+    h.output()
+        .shapes
+        .iter()
+        .any(|cs| matches!(&cs.shape, egui::epaint::Shape::Text(ts) if ts.galley.text() == text))
+}
+
+#[test]
+fn las_columnas_de_la_lista_dan_prioridad_al_nombre_y_ocultan_las_demas_por_orden() {
+    use crate::list::{Cols, NAME_MIN_W, columns};
+    // Ancho de sobra: todas las columnas.
+    let c = columns(1000.0);
+    assert!(c.bar_left.is_some() && c.files_right.is_some());
+    assert!(c.name_w >= NAME_MIN_W);
+    // Al estrecharse se quita primero "archivos", luego la barra; el nombre nunca se queda sin su mínimo mientras se
+    // pueda quitar algo, y nunca crece al estrechar.
+    let mut prev: Option<Cols> = None;
+    for w in (300..=1000).rev().step_by(4) {
+        let c = columns(w as f32);
+        if c.files_right.is_some() {
+            assert!(c.bar_left.is_some(), "w {w}: archivos sin barra");
+        }
+        if c.bar_left.is_some() {
+            assert!(c.name_w >= NAME_MIN_W, "w {w}: {c:?}");
+        }
+        assert!(
+            c.name_w
+                >= (w as f32 - 36.0 - 320.0)
+                    .min(NAME_MIN_W)
+                    .min(w as f32 - 36.0 - 120.0)
+        );
+        if let Some(p) = prev {
+            // Las columnas visibles solo se pierden al estrechar, nunca se recuperan.
+            assert!(p.files_right.is_some() || c.files_right.is_none(), "w {w}");
+            assert!(p.bar_left.is_some() || c.bar_left.is_none(), "w {w}");
+        }
+        prev = Some(c);
+    }
+    // Con solo el tamaño, el nombre se lleva todo lo demás.
+    let c = columns(330.0);
+    assert!(c.bar_left.is_none() && c.files_right.is_none());
+    assert!(c.name_w >= 150.0, "{c:?}");
+}
+
+#[test]
+fn con_la_ventana_minima_la_lista_deja_sitio_al_nombre() {
+    let h = harness_sized(opts(list_start()), vec2(960.0, 600.0));
+    assert_eq!(explore(&h).view, View::List);
+    let kids: Vec<_> = explore(&h).shown_children().iter().collect();
+    let name = explore(&h).tree.name_lossy(kids[0]).into_owned();
+    let label = format!("{name}, ");
+    let row = h.get_by_label_contains(&label);
+    let cols = crate::list::columns(row.rect().width());
+    assert!(
+        cols.name_w >= crate::list::NAME_MIN_W,
+        "a {} px de fila el nombre solo tiene {} px",
+        row.rect().width(),
+        cols.name_w
+    );
+    // El nombre completo se pinta (no queda en una elipsis); las columnas que no caben se ocultan, también en la cabecera.
+    assert!(painted(&h, &name), "el nombre `{name}` no se pinta entero");
+    assert!(painted(&h, "Nombre") && painted(&h, "En disco"));
+    // (La palabra "Archivos" también sale en el panel de detalles: solo cuenta la de la cabecera de la lista.)
+    let header = |h: &Harness<'static, App>, text: &str| {
+        let r = row.rect();
+        h.output().shapes.iter().any(|cs| {
+            matches!(&cs.shape, egui::epaint::Shape::Text(ts)
+                if ts.galley.text() == text
+                    && ts.pos.x >= r.left() - 1.0
+                    && ts.pos.x <= r.right() + 1.0
+                    && ts.pos.y < r.top())
+        })
+    };
+    assert!(header(&h, "Nombre") && header(&h, "En disco"));
+    assert!(
+        !header(&h, "Archivos"),
+        "la columna Archivos debería ocultarse a 960 px"
+    );
+    assert!(
+        !header(&h, "Porcentaje"),
+        "la columna Porcentaje debería ocultarse a 960 px"
+    );
+    // A 1280 × 800 siguen todas.
+    let h = harness(opts(list_start()));
+    assert!(painted(&h, "Archivos") && painted(&h, "Porcentaje"));
+    let wide = harness(opts(list_start()));
+    let label = format!("{name}, ");
+    assert!(
+        crate::list::columns(wide.get_by_label_contains(&label).rect().width())
+            .files_right
+            .is_some()
+    );
+}
+
+/// Rectángulos de todos los nodos con etiqueta que contienen `texts` (el primero visible de cada uno).
+fn rects_of(h: &Harness<'static, App>, texts: &[&str]) -> Vec<(String, egui::Rect)> {
+    texts
+        .iter()
+        .map(|t| {
+            let n = h
+                .query_all_by_label_contains(t)
+                .find(|n| n.rect().width() > 1.0 && n.rect().height() > 1.0)
+                .unwrap_or_else(|| panic!("no hay `{t}`"));
+            (t.to_string(), n.rect())
+        })
+        .collect()
+}
+
+#[test]
+fn con_la_ventana_minima_la_pantalla_de_escaneo_no_pisa_textos_ni_corta_el_mapa() {
+    for (lang, items) in [
+        (
+            LangPref::Es,
+            vec![
+                "Mientras analizamos tu disco",
+                "archivos",
+                "Parar y ver lo que hay",
+                "Cancelar",
+                "Limpiar lo seguro",
+                "Sitios donde suele haber archivos temporales",
+                "en sitios conocidos",
+                "De momento solo se muestra",
+                "El mapa se va llenando",
+            ],
+        ),
+        (
+            LangPref::En,
+            vec![
+                "While we scan your disk",
+                "files",
+                "Stop and view what we have",
+                "Cancel",
+                "Clean the safe stuff",
+                "Places where temporary files usually pile up",
+                "in known places",
+                "For now this only shows",
+                "The map is filling in",
+            ],
+        ),
+    ] {
+        let mut o = opts(StartScreen::Scan(0.5));
+        o.settings.language = lang;
+        let mut h = harness_sized(o, vec2(960.0, 600.0));
+        h.run_steps(3);
+        let rects = rects_of(&h, &items);
+        for (i, (a, ra)) in rects.iter().enumerate() {
+            // Dentro de la ventana.
+            assert!(
+                ra.left() >= -0.5
+                    && ra.right() <= 960.0 + 0.5
+                    && ra.top() >= -0.5
+                    && ra.bottom() <= 600.0 + 0.5,
+                "{lang:?}: `{a}` fuera de la ventana: {ra:?}"
+            );
+            // Y sin tocar a ninguno de los demás (en particular, "Limpiar lo seguro" no tapa el texto de la tarjeta).
+            for (b, rb) in &rects[i + 1..] {
+                assert!(
+                    !ra.intersects(*rb),
+                    "{lang:?}: `{a}` y `{b}` se solapan: {ra:?} {rb:?}"
+                );
+            }
+        }
+        // Las dos tarjetas: o su contenido se ve entero dentro de la ventana, o la tarjeta se desplaza (su barra está a
+        // la vista y `overflow` lo dice); nunca se recorta en silencio.
+        let (left_over, right_over) = h.state().ui().scan_overflow().expect("pantalla de escaneo");
+        let last_row = h
+            .query_all_by_label_contains(if lang == LangPref::Es {
+                "Papelera"
+            } else {
+                "Recycle"
+            })
+            .next()
+            .expect("última fila de sitios conocidos")
+            .rect();
+        assert!(
+            left_over || last_row.bottom() <= 600.0 - 28.0,
+            "{lang:?}: la tarjeta de sitios conocidos se corta sin desplazarse ({last_row:?})"
+        );
+        let bars: Vec<egui::Rect> = ["Users", "Windows", "ProgramData", "Program Files"]
+            .iter()
+            .filter_map(|t| h.query_all_by_label(t).next().map(|n| n.rect()))
+            .collect();
+        assert!(!bars.is_empty());
+        let last_bar = bars.iter().map(|r| r.bottom()).fold(0.0, f32::max);
+        assert!(
+            right_over || last_bar <= 600.0 - 28.0,
+            "{lang:?}: el mapa de progreso se corta sin desplazarse ({last_bar})"
+        );
+    }
+}
+
+#[test]
+fn sin_animaciones_el_progreso_indeterminado_y_los_spinners_son_estaticos() {
+    use crate::widgets::indeterminate_segment;
+    let bar = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), vec2(400.0, 8.0));
+    // Con animaciones el tramo se mueve con el tiempo; sin ellas es el mismo siempre.
+    let a = indeterminate_segment(bar, 0.0, true);
+    let b = indeterminate_segment(bar, 0.4, true);
+    assert_ne!(a.left(), b.left(), "con animaciones se mueve");
+    let still: Vec<egui::Rect> = [0.0, 0.4, 1.7, 9.0]
+        .iter()
+        .map(|&t| indeterminate_segment(bar, t, false))
+        .collect();
+    assert!(
+        still.windows(2).all(|w| w[0] == w[1]),
+        "sin animaciones es fijo"
+    );
+    assert!(bar.contains_rect(still[0]));
+
+    // La pantalla de escaneo simulada y congelada: con `animate = false` no pide repintar (los spinners de las filas
+    // pendientes son arcos fijos); con `animate = true` sí, y rápido (el Spinner de egui).
+    let repaint_delay = |h: &Harness<'static, App>| {
+        h.output()
+            .viewport_output
+            .values()
+            .map(|v| v.repaint_delay)
+            .min()
+            .expect("viewport")
+    };
+    let mut o = opts(StartScreen::Scan(0.4));
+    o.animate = false;
+    let mut h = harness(o);
+    h.run_steps(4);
+    let quiet = repaint_delay(&h);
+    assert!(
+        quiet >= std::time::Duration::from_millis(500),
+        "con 'reducir animaciones' no debe repintar cada 33 ms: {quiet:?}"
+    );
+    let mut o = opts(StartScreen::Scan(0.4));
+    o.animate = true;
+    let mut h = harness(o);
+    h.run_steps(4);
+    let busy = repaint_delay(&h);
+    assert!(
+        busy < std::time::Duration::from_millis(100),
+        "con animaciones el spinner repinta: {busy:?}"
+    );
+}

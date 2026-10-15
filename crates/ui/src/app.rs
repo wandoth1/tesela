@@ -301,6 +301,15 @@ impl TeselaUi {
         }
     }
 
+    /// Si la pantalla de escaneo desplaza sus dos tarjetas (para los tests).
+    #[cfg(test)]
+    pub(crate) fn scan_overflow(&self) -> Option<(bool, bool)> {
+        match &self.screen {
+            Screen::Scan(s) => Some(s.overflow()),
+            _ => None,
+        }
+    }
+
     /// Sustituye las unidades que enseña el inicio (para los tests).
     #[cfg(test)]
     pub(crate) fn set_drives(&mut self, drives: Vec<DriveInfo>) {

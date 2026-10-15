@@ -313,7 +313,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, notice: Option<&str>, dialog_open: bool)
                 }
                 if env.drives_loading {
                     ui.horizontal(|ui| {
-                        ui.add(egui::Spinner::new());
+                        widgets::busy(ui, env.animate, 16.0, pal.accent);
                         ui.label(
                             RichText::new(env.tr.t("home-loading-drives")).color(pal.text_muted),
                         );
