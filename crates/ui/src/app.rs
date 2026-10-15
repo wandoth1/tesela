@@ -65,6 +65,8 @@ impl Default for Settings {
 pub struct DemoOptions {
     /// "Parar y ver" produce un árbol con carpetas incompletas, y `StartScreen::Map` arranca con él.
     pub stopped: bool,
+    /// El árbol del peor caso (~20 000 celdas) para medir el coste por frame; solo con `StartScreen::Map`.
+    pub stress: bool,
 }
 
 /// Pantalla con la que arranca (solo se usa en el modo demostración, para capturas y pruebas).
@@ -215,7 +217,9 @@ impl TeselaUi {
             (Some(d), StartScreen::Map(m)) => {
                 let req = ui.demo_request();
                 ui.last_request = Some(req.clone());
-                let variant = if d.stopped {
+                let variant = if d.stress {
+                    demo::Variant::Stress
+                } else if d.stopped {
                     demo::Variant::Stopped
                 } else {
                     demo::Variant::Complete

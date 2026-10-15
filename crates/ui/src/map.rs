@@ -252,9 +252,10 @@ fn build_mesh(
         if r.width() < 1.0 || r.height() < 1.0 {
             continue;
         }
-        let radius = (r.width().min(r.height()) * 0.25).min(4.0);
-        let corner = if radius >= 1.5 {
-            CornerRadius::same(radius.round() as u8)
+        // Esquinas de 4 px; en las celdas de menos de 16 px (la inmensa mayoría en un mapa denso) rectángulos planos, que
+        // tienen la tercera parte de vértices y no se nota a ese tamaño.
+        let corner = if r.width().min(r.height()) >= 16.0 {
+            CornerRadius::same(4)
         } else {
             CornerRadius::ZERO
         };
@@ -1038,4 +1039,169 @@ pub(crate) fn level0_nodes(layout: &Layout) -> Vec<NodeId> {
             _ => None,
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::demo::{self, Variant};
+    use tesela_layout::Layout;
+
+    fn layout_of(tree: &Tree, root: Root, size: (u32, u32)) -> Layout {
+        Layout::compute(
+            tree,
+            LayoutKey {
+                root,
+                size,
+                depth: Depth::Two,
+                version: 1,
+                params: Params::default(),
+            },
+        )
+    }
+
+    fn style_of(l: &Layout, st: &[CellStyle], id: NodeId) -> CellStyle {
+        st[l.cell_of_node(id).expect("celda de nivel 0")]
+    }
+
+    #[test]
+    fn los_colores_siguen_el_plan_tipo_dominante_mixto_y_grises_con_significado() {
+        let t = demo::tree(Variant::Complete);
+        let pal = Palette::of(false);
+        // Raíz: Users (mixto), el bloque del sistema, pagefile.
+        let l = layout_of(&t, Root::node(0), (1000, 700));
+        let st = styles_for(&l, &t, &pal);
+        let users = t.child_by_name(0, b"Users").unwrap();
+        assert_eq!(
+            style_of(&l, &st, users).fill,
+            pal.mixed(),
+            "carpeta sin tipo dominante = Mixto"
+        );
+        let pf = t.child_by_name(0, b"pagefile.sys").unwrap();
+        let s = style_of(&l, &st, pf);
+        assert_eq!(s.fill, pal.info_only());
+        assert_eq!(s.special, Some(Special::InfoOnly(InfoKind::Pagefile)));
+        let sys = t.children(0).last().unwrap();
+        let s = style_of(&l, &st, sys);
+        assert_eq!(s.fill, pal.system_block());
+        assert_eq!(s.special, Some(Special::SystemBlock));
+        // Dentro de la carpeta de usuario: vídeo (azul), imágenes (naranja), OneDrive (nube) y "Otros" (gris).
+        let me = t.child_by_name(users, demo::USER.as_bytes()).unwrap();
+        let l = layout_of(&t, Root::node(me), (1000, 700));
+        let st = styles_for(&l, &t, &pal);
+        let vid = t.child_by_name(me, "Vídeos".as_bytes()).unwrap();
+        assert_eq!(style_of(&l, &st, vid).fill, pal.type_color(FileType::Video));
+        let img = t.child_by_name(me, "Imágenes".as_bytes()).unwrap();
+        assert_eq!(style_of(&l, &st, img).fill, pal.type_color(FileType::Image));
+        let od = t.child_by_name(me, b"OneDrive").unwrap();
+        assert!(
+            style_of(&l, &st, od).cloud,
+            "OneDrive lleva el icono de la nube"
+        );
+        let others = l
+            .cells()
+            .iter()
+            .position(|c| matches!(c.kind, CellKind::Others(_)))
+            .unwrap();
+        assert_eq!(st[others].fill, pal.others());
+        // Las celdas insinuadas son un aclarado del color de su padre.
+        let child = l
+            .cells()
+            .iter()
+            .position(|c| c.level == 1 && c.parent as usize == l.cell_of_node(vid).unwrap())
+            .unwrap();
+        assert!(
+            theme::luminance(st[child].fill) > theme::luminance(pal.type_color(FileType::Video))
+        );
+    }
+
+    #[test]
+    fn lo_incompleto_se_marca_y_el_mesh_lleva_sus_rayas() {
+        let pal = Palette::of(false);
+        let stopped = demo::tree(Variant::Stopped);
+        let l = layout_of(&stopped, Root::node(0), (1000, 700));
+        let st = styles_for(&l, &stopped, &pal);
+        let win = stopped.child_by_name(0, b"Windows").unwrap();
+        assert!(
+            style_of(&l, &st, win).lower_bound,
+            "Windows tiene algo incompleto por debajo"
+        );
+        let users = stopped.child_by_name(0, b"Users").unwrap();
+        assert!(!style_of(&l, &st, users).lower_bound);
+        // Las rayas diagonales hacen que el mesh tenga más vértices que el mismo árbol sin ellas: se compara con
+        // el mesh de un árbol completo de las mismas celdas de nivel 0 (el de la demostración completa no las lleva).
+        let with = build_mesh(&l, &stopped, &st, &pal, 1.0, pos2(0.0, 0.0));
+        let mut no_hatch = st.clone();
+        for s in &mut no_hatch {
+            s.lower_bound = false;
+        }
+        let without = build_mesh(&l, &stopped, &no_hatch, &pal, 1.0, pos2(0.0, 0.0));
+        assert!(
+            with.vertices.len() > without.vertices.len(),
+            "{} frente a {}",
+            with.vertices.len(),
+            without.vertices.len()
+        );
+    }
+
+    #[test]
+    fn la_franja_de_los_tres_tipos_solo_va_en_mixto_de_48_px_o_mas() {
+        let pal = Palette::of(false);
+        let t = demo::tree(Variant::Complete);
+        let l = layout_of(&t, Root::node(0), (1000, 700));
+        let st = styles_for(&l, &t, &pal);
+        let a = build_mesh(&l, &t, &st, &pal, 1.0, pos2(0.0, 0.0));
+        // Mismo layout en un viewport pequeño: las celdas de menos de 48 px no llevan franja.
+        let small = layout_of(&t, Root::node(0), (180, 120));
+        let sst = styles_for(&small, &t, &pal);
+        let b = build_mesh(&small, &t, &sst, &pal, 1.0, pos2(0.0, 0.0));
+        assert!(a.vertices.len() > b.vertices.len());
+        // Con una franja, el mesh tiene vértices del color de alguno de los tres tipos principales de Users.
+        let users = t.child_by_name(0, b"Users").unwrap();
+        let top = describe::top_types(t.hist(users), 3);
+        assert_eq!(top.len(), 3);
+        assert!(t.hist(users).dominant_type().is_none());
+        let want = pal.type_color(top[0].0);
+        assert!(a.vertices.iter().any(|v| v.color.to_array()[3] > 0
+            && v.color.r() == want.r()
+            && v.color.g() == want.g()
+            && v.color.b() == want.b()));
+    }
+
+    #[test]
+    fn el_mesh_cabe_en_el_presupuesto_incluso_con_15k_celdas() {
+        // El peor caso: ~15 000 celdas. Cada celda grande lleva esquinas redondeadas; las diminutas, rectángulos planos.
+        let pal = Palette::of(false);
+        let t = demo::tree(Variant::Stress);
+        let l = layout_of(&t, Root::node(0), (2400, 1500));
+        assert_eq!(l.cells().len(), 15_000, "el tope de celdas se respeta");
+        let st = styles_for(&l, &t, &pal);
+        let mesh = build_mesh(&l, &t, &st, &pal, 1.0, pos2(0.0, 0.0));
+        let per_cell = mesh.vertices.len() as f32 / l.cells().len() as f32;
+        assert!(per_cell < 14.0, "{per_cell} vértices por celda");
+        assert!(
+            mesh.indices
+                .iter()
+                .all(|&i| (i as usize) < mesh.vertices.len())
+        );
+    }
+
+    #[test]
+    fn el_zoom_transforma_el_mesh_sin_cambiar_su_topologia() {
+        let pal = Palette::of(true);
+        let t = demo::tree(Variant::Complete);
+        let l = layout_of(&t, Root::node(0), (600, 400));
+        let st = styles_for(&l, &t, &pal);
+        let m = build_mesh(&l, &t, &st, &pal, 1.0, pos2(0.0, 0.0));
+        let from = Rect::from_min_size(pos2(0.0, 0.0), vec2(600.0, 400.0));
+        let to = Rect::from_min_size(pos2(100.0, 50.0), vec2(300.0, 200.0));
+        let z = transformed(&m, from, to, 0.5);
+        assert_eq!(z.indices, m.indices);
+        assert_eq!(z.vertices.len(), m.vertices.len());
+        for (a, b) in m.vertices.iter().zip(&z.vertices) {
+            assert!((b.pos.x - (100.0 + a.pos.x * 0.5)).abs() < 1e-3);
+            assert!((b.pos.y - (50.0 + a.pos.y * 0.5)).abs() < 1e-3);
+            assert!(b.color.a() <= a.color.a());
+        }
+    }
 }

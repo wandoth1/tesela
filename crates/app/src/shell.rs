@@ -98,7 +98,7 @@ impl Shell {
     }
 
     fn finish_bench(&mut self, ctx: &eframe::egui::Context) {
-        if let Some(b) = &self.bench {
+        if let Some(b) = self.bench.take() {
             let (n, p50, p95, p99, max) = Bench::summary(&b.samples_ms);
             let stats = self.ui.map_stats();
             crate::console::print(&format!(

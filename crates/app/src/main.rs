@@ -48,12 +48,17 @@ fn main() -> eframe::Result {
     let (w, h) = cli.size.unwrap_or_else(|| config.window_size());
     let normalize = cli.screenshot.is_some().then_some((w, h));
 
+    let mut viewport = eframe::egui::ViewportBuilder::default()
+        .with_inner_size([w, h])
+        .with_min_inner_size([MIN_SIZE.0, MIN_SIZE.1])
+        .with_title("Tesela")
+        .with_app_id("Tesela");
+    if tool_mode {
+        // Mediciones y capturas: siempre encima, para que otra ventana no la oculte y eframe deje de pintar.
+        viewport = viewport.with_always_on_top();
+    }
     let mut native = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_inner_size([w, h])
-            .with_min_inner_size([MIN_SIZE.0, MIN_SIZE.1])
-            .with_title("Tesela")
-            .with_app_id("Tesela"),
+        viewport,
         renderer: eframe::Renderer::Wgpu,
         ..Default::default()
     };
@@ -64,8 +69,10 @@ fn main() -> eframe::Result {
 
     let demo = cli.demo.then_some(DemoOptions {
         stopped: cli.stopped,
+        stress: cli.stress,
     });
     let start = match (cli.demo, cli.screen) {
+        (true, Screen::Home) if cli.stress => StartScreen::Map(MapStart::default()),
         (true, Screen::Scan) => StartScreen::Scan(cli.progress.unwrap_or(0.45)),
         (true, Screen::Map | Screen::List) => StartScreen::Map(MapStart {
             list: cli.screen == Screen::List,
@@ -83,6 +90,16 @@ fn main() -> eframe::Result {
     };
     let scan = cli.scan.clone();
     let bench = cli.bench_hover.map(shell::Bench::new);
+    if let Some(secs) = cli.bench_hover {
+        // Con `--scan` hay que esperar además al escaneo.
+        let extra = if cli.scan.is_some() { 600.0 } else { 0.0 };
+        // Si la ventana deja de pintar (minimizada u oculta) la medición no avanzaría nunca: se aborta con un aviso.
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs_f32(secs + 40.0 + extra));
+            console::print("tesela: --bench-hover sin resultados: la ventana dejó de pintar");
+            std::process::exit(3);
+        });
+    }
     let screenshot = cli.screenshot.clone();
     let persist = !tool_mode;
     let persist_size = cli.size.is_none();

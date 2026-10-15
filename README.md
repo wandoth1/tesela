@@ -3,7 +3,7 @@
 **Mira qué ocupa tu disco y libera espacio sin miedo.**
 Analizador visual de espacio en disco para Windows, escrito en Rust: rápido, ligero y claro.
 
-> 🚧 **Estado: Fase 0 (spike de medición) completada; MVP pendiente.** Conclusiones en [docs/fase-0-conclusiones.md](docs/fase-0-conclusiones.md); el plan completo está en [docs/PLAN.md](docs/PLAN.md).
+> 🚧 **Estado: MVP v0.1 en construcción.** Hechos el modelo, el escáner y la **interfaz de solo lectura** (mapa, lista, detalles, escaneo con progreso real, es/en, claro/oscuro). **Todavía no borra nada:** la cesta y la limpieza llegan en el siguiente incremento. Conclusiones de la fase 0 en [docs/fase-0-conclusiones.md](docs/fase-0-conclusiones.md); el plan completo está en [docs/PLAN.md](docs/PLAN.md).
 
 ## Qué será
 
@@ -13,6 +13,28 @@ Analizador visual de espacio en disco para Windows, escrito en Rust: rápido, li
 - **Nada se borra a ciegas.** Todo pasa por una cesta de revisión. Lo regenerable (temporales, cachés) se borra; tus archivos van a la Papelera. Las carpetas del sistema están protegidas.
 - **Honesto con los números.** Solo cuenta como liberado lo que realmente se ha liberado, y enseña qué parte del disco no ha podido medir.
 - **Ligero.** Binario único, sin Electron ni WebView, sin telemetría ni cuentas. Funciona sin permisos de administrador y tiene un modo rápido opcional que lee directamente la tabla de archivos (MFT) de NTFS.
+
+## Uso
+
+Windows 10 22H2 y Windows 11. En esta versión la aplicación es de **solo lectura**: no borra, mueve ni escribe nada de tus archivos (solo guarda sus ajustes en `%APPDATA%\Tesela\config.toml`).
+
+```powershell
+tesela                      # pantalla de inicio: elige una unidad o "Analizar una carpeta…"
+tesela --scan C:\           # analiza esa unidad (o carpeta) nada más arrancar
+tesela --demo               # modo demostración: árbol SINTÉTICO y unidades ficticias; no lee tu disco
+tesela --help
+```
+
+El modo `--demo` es el único con el que se hacen capturas y pruebas: todo lo que enseña (carpetas, tamaños, unidades) está inventado y es siempre el mismo. Admite `--screen home|scan|map|list`, `--open Users/usuario`, `--select Descargas`, `--stopped` (un análisis detenido, con carpetas incompletas), `--theme light|dark`, `--lang es|en` y `--size 1280x800`.
+
+![Mapa de una carpeta de usuario en el modo demostración, tema claro](docs/img/mapa-claro.png)
+![Mapa de una unidad en el modo demostración, tema oscuro](docs/img/mapa-oscuro.png)
+
+- **Mapa:** un bloque por carpeta o archivo, proporcional a lo que ocupa **en disco**, coloreado por tipo (paleta apta para daltonismo). Se insinúa el nivel siguiente dentro de cada bloque. Los bloques demasiado pequeños se agrupan en **"Otros (N elementos, X)"**, que se abre con doble clic. Las carpetas que el análisis no llegó a recorrer entera llevan rayas diagonales y un "≥".
+- **Grises con significado:** el bloque "Windows y otros datos del sistema" (lo que ocupa el disco pero tu usuario no puede ver), `pagefile.sys` y `hiberfil.sys` ("solo informar") y "Mixto" (carpetas sin un tipo dominante).
+- **Lista:** las mismas carpetas con cifras exactas; es la vista accesible (lector de pantalla) y comparte la selección con el mapa.
+- **Teclado:** doble clic o `Intro` entra en una carpeta; `Retroceso` sube; las flechas mueven la selección; `Ctrl+F` busca; `F5` reescanea. Clic derecho: abrir en el Explorador, copiar la ruta y Propiedades.
+- **Ajustes (⚙):** tema (sistema, claro u oscuro) e idioma (sistema, español o English).
 
 ## Hoja de ruta
 
@@ -35,8 +57,9 @@ Rust · [egui/eframe](https://github.com/emilk/egui) · [windows-rs](https://git
 ## Desarrollo
 
 Workspace de Cargo en la raíz (`crates/`); `spike/` es el código de medición de la fase 0, con su propio workspace.
-Estado del MVP v0.1: hecho el modelo (`tesela-model`) y el escáner de solo lectura (`tesela-scanner`) con su CLI
-`tesela-scan`; la interfaz, la cesta y la limpieza llegan en los siguientes incrementos.
+Estado del MVP v0.1: hechos el modelo (`tesela-model`), el escáner de solo lectura (`tesela-scanner`) con su CLI
+`tesela-scan`, el layout del treemap (`tesela-layout`), la interfaz (`tesela-ui`) y el ejecutable (`tesela-app`, binario
+`tesela`); la cesta y la limpieza (`tesela-cleaner`) llegan en el siguiente incremento.
 
 ```powershell
 cargo fmt --check
@@ -44,8 +67,15 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace            # los tests solo usan árboles sintéticos en %TEMP%\tesela-test-<uuid>
 cargo deny check
 cargo run --release -p tesela-scan -- <ruta> --top 20   # solo lectura; opciones en la cabecera de crates/tesela-scan/src/main.rs
+cargo run -p tesela-app -- --demo                        # la interfaz con datos sintéticos
+cargo test -p tesela-layout --release -- --ignored relayout   # benchmark del layout (20k rectángulos)
 pwsh -File scripts/build-release.ps1                     # release SIN rutas de la máquina en los binarios (y lo comprueba)
 ```
+
+Capturas del README (solo del modo `--demo`; ver [docs/img/README.md](docs/img/README.md)):
+`cargo run -p tesela-app --features capture -- --demo --size 1280x800 --screenshot salida.png`. La feature `capture` no forma
+parte del ejecutable que se publica. `--bench-hover <segundos>` mueve un puntero sintético sobre el mapa e imprime el coste de
+CPU por frame; los resultados de cualquier medición se quedan fuera del repositorio.
 
 ### Privacidad
 
@@ -57,7 +87,7 @@ discos reales ni resultados de escaneos (los ejemplos, capturas y fixtures son s
   sin `scripts/privacy-check.ps1` en el worktree, el commit se bloquea con un mensaje claro.
 - `scripts/privacy-check.ps1 -All` revisa todo el árbol (el CI lo ejecuta con `-GenericOnly`). Busca SID, rutas de perfil
   reales, unidades D:–Z:, hardware, antivirus y builds de Windows; en local añade el usuario, el equipo y el perfil leídos
-  del entorno en tiempo de ejecución. Se decodifica UTF-8 y UTF-16, se revisan cadenas de binarios y se rechazan las imágenes.
+  del entorno en tiempo de ejecución. Se decodifica UTF-8 y UTF-16, se revisan cadenas de binarios y se rechazan las imágenes, con UNA excepción estrecha: `docs/img/<nombre>.png` si es un PNG sin metadatos (solo fragmentos IHDR, PLTE, tRNS, IDAT, IEND, sRGB, gAMA, cHRM y pHYs), de menos de 2 MiB, y `docs/img/README.md` tiene una línea con su nombre y la orden `--demo` que lo genera.
   `docs/spike-results.md` no puede existir y `spike/` pasa las reglas no ligadas a rutas.
 - **Lista negra local (opcional, no versionada):** crea `<git-common-dir>/privacy-denylist` (en un clon normal,
   `.git/privacy-denylist`; en un worktree, el `.git` del repositorio principal; `git rev-parse --git-common-dir` lo dice) con
@@ -79,6 +109,11 @@ discos reales ni resultados de escaneos (los ejemplos, capturas y fixtures son s
 - El `mtime` de un directorio en el listado de su padre se refresca de forma diferida en NTFS: justo tras escribir puede ir
   atrasado. Su tamaño propio es 0 en el listado del padre (el espacio real que ocupa el directorio va al bloque de datos del
   sistema, es decir, al "espacio no explicado").
+
+### Licencias de terceros
+
+- **Iconos:** un subconjunto de 30 de [Fluent UI System Icons](https://github.com/microsoft/fluentui-system-icons) (© Microsoft, MIT), tal como salen de su repositorio oficial, con su `LICENSE` en `crates/ui/assets/icons/`.
+- **Fuentes:** la interfaz usa Segoe UI (Variable) del propio Windows, que se carga en tiempo de ejecución y **no se redistribuye**. Si faltara, `egui` aporta unas de reserva (Ubuntu-Light, Hack y símbolos de Noto y Emoji Icon Font) bajo sus licencias (OFL-1.1 y Ubuntu Font Licence 1.0), que `deny.toml` admite expresamente.
 
 ## Licencia
 

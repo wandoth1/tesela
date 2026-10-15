@@ -8,8 +8,22 @@
 use crate::platform;
 use egui::epaint::text::VariationCoords;
 use egui::{Context, FontData, FontDefinitions, FontFamily, FontTweak};
-use std::path::Path;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+/// Bytes de una fuente del sistema, compartidos por todos los pesos y por todas las llamadas: se leen y se "fijan" una sola
+/// vez por archivo (`Box::leak`, de duración igual a la del proceso, que es lo que dura una fuente cargada). Sin esto cada
+/// peso de `SegUIVar.ttf` (1,8 MB) tendría su propia copia en memoria.
+fn shared_bytes(path: &Path) -> Option<&'static [u8]> {
+    static CACHE: Mutex<Vec<(PathBuf, &'static [u8])>> = Mutex::new(Vec::new());
+    let mut cache = CACHE.lock().ok()?;
+    if let Some((_, b)) = cache.iter().find(|(p, _)| p == path) {
+        return Some(b);
+    }
+    let bytes: &'static [u8] = Box::leak(std::fs::read(path).ok()?.into_boxed_slice());
+    cache.push((path.to_path_buf(), bytes));
+    Some(bytes)
+}
 
 /// Qué fuentes acabaron cargadas (para los tests y para el informe).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -25,7 +39,7 @@ pub enum Loaded {
 /// Construye las definiciones de fuentes a partir de la carpeta `dir` de fuentes del sistema (la inyecta el test).
 pub fn definitions(dir: Option<&Path>) -> (FontDefinitions, Loaded) {
     let mut fd = FontDefinitions::default();
-    let read = |name: &str| dir.and_then(|d| std::fs::read(d.join(name)).ok());
+    let read = |name: &str| dir.and_then(|d| shared_bytes(&d.join(name)));
     let mut loaded = Loaded::EguiDefault;
     let mut semibold_set = false;
 
@@ -37,18 +51,18 @@ pub fn definitions(dir: Option<&Path>) -> (FontDefinitions, Loaded) {
             };
             fd.font_data.insert(
                 key.into(),
-                Arc::new(FontData::from_owned(bytes.clone()).tweak(tweak)),
+                Arc::new(FontData::from_static(bytes).tweak(tweak)),
             );
         }
         loaded = Loaded::SegoeVariable;
     } else if let (Some(regular), Some(bold)) = (read("segoeui.ttf"), read("segoeuib.ttf")) {
         fd.font_data.insert(
             "Tesela-regular".into(),
-            Arc::new(FontData::from_owned(regular)),
+            Arc::new(FontData::from_static(regular)),
         );
         fd.font_data.insert(
             "Tesela-semibold".into(),
-            Arc::new(FontData::from_owned(bold)),
+            Arc::new(FontData::from_static(bold)),
         );
         loaded = Loaded::SegoeStatic;
     }
@@ -74,7 +88,7 @@ pub fn definitions(dir: Option<&Path>) -> (FontDefinitions, Loaded) {
     }
     if let Some(bytes) = read("consola.ttf") {
         fd.font_data
-            .insert("Tesela-mono".into(), Arc::new(FontData::from_owned(bytes)));
+            .insert("Tesela-mono".into(), Arc::new(FontData::from_static(bytes)));
         fd.families
             .entry(FontFamily::Monospace)
             .or_default()

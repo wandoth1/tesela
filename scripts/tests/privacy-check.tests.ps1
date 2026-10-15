@@ -77,6 +77,27 @@ function Reset-Repo {
 
 function Stage-All { Invoke-Git -C $repo add -A -f }
 
+# Un PNG minimo (sin CRC validos: el check solo mira la estructura y los tipos de fragmento).
+function New-Chunk([string]$Type, [byte[]]$Data) {
+    $len = $Data.Length
+    $b = New-Object System.Collections.Generic.List[byte]
+    $b.AddRange([byte[]]((($len -shr 24) -band 255), (($len -shr 16) -band 255), (($len -shr 8) -band 255), ($len -band 255)))
+    $b.AddRange([System.Text.Encoding]::ASCII.GetBytes($Type))
+    $b.AddRange($Data)
+    $b.AddRange([byte[]](0, 0, 0, 0))
+    return , $b.ToArray()
+}
+
+function New-Png([string[]]$Extra = @(), [byte[]]$Idat = [byte[]](1, 2, 3, 4, 5, 6, 7, 8)) {
+    $b = New-Object System.Collections.Generic.List[byte]
+    $b.AddRange([byte[]](0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A))
+    $b.AddRange((New-Chunk 'IHDR' ([byte[]](0, 0, 0, 4, 0, 0, 0, 4, 8, 6, 0, 0, 0))))
+    foreach ($t in $Extra) { $b.AddRange((New-Chunk $t ([byte[]](9, 9, 9, 9)))) }
+    $b.AddRange((New-Chunk 'IDAT' $Idat))
+    $b.AddRange((New-Chunk 'IEND' ([byte[]]@())))
+    return , $b.ToArray()
+}
+
 function Run-Check([string[]]$CheckArgs) {
     Push-Location $repo
     $prevEap = $ErrorActionPreference
@@ -170,6 +191,82 @@ try {
     PutBytes 'captura.png' ([byte[]](0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0))
     Stage-All
     Expect 'imagen (captura)' $true
+
+    # --- Excepcion de docs/img/ (capturas de --demo) -------------------------------------------------------------------
+    $img = 'docs/img/mapa-demo.png'
+    $readmeOk = "# Capturas`n`n- mapa-demo.png: tesela --demo --screen map`n"
+    Reset-Repo
+    PutBytes $img (New-Png)
+    Put 'docs/img/README.md' $readmeOk
+    Stage-All
+    Expect 'docs/img: PNG valido con su linea de --demo en README.md' $false
+    Expect 'docs/img: PNG valido con su linea de --demo (-All)' $false @('-All')
+    Reset-Repo
+    PutBytes $img (New-Png)
+    Stage-All
+    Expect 'docs/img: sin README.md' $true
+    Reset-Repo
+    PutBytes $img (New-Png)
+    Put 'docs/img/README.md' "- mapa-demo.png: captura de mi escritorio`n"
+    Stage-All
+    Expect 'docs/img: README.md sin --demo en la linea del archivo' $true
+    Reset-Repo
+    PutBytes $img (New-Png)
+    Put 'docs/img/README.md' "- otra.png: tesela --demo`n"
+    Stage-All
+    Expect 'docs/img: README.md que no menciona el archivo' $true
+    foreach ($t in 'tEXt', 'iTXt', 'zTXt', 'eXIf', 'tIME', 'iCCP', 'sBIT', 'zzZz') {
+        Reset-Repo
+        PutBytes $img (New-Png -Extra @($t))
+        Put 'docs/img/README.md' $readmeOk
+        Stage-All
+        Expect "docs/img: fragmento PNG no permitido $t" $true
+    }
+    foreach ($t in 'sRGB', 'gAMA', 'cHRM', 'pHYs') {
+        Reset-Repo
+        PutBytes $img (New-Png -Extra @($t))
+        Put 'docs/img/README.md' $readmeOk
+        Stage-All
+        Expect "docs/img: fragmento PNG permitido $t" $false
+    }
+    foreach ($badPath in 'docs/img/Mapa.png', 'docs/img/sub/mapa.png', 'docs/mapa.png', 'img/mapa.png', 'docs/img/mapa.jpg', 'docs/img/mapa_demo.png', 'docs/img/mapa.PNG') {
+        Reset-Repo
+        PutBytes $badPath (New-Png)
+        Put 'docs/img/README.md' ("- mapa.png: --demo`n- mapa.jpg: --demo`n- mapa.PNG: --demo`n- Mapa.png: --demo`n- mapa-demo.png: --demo`n")
+        Stage-All
+        Expect "docs/img: ruta no permitida $badPath" $true
+    }
+    Reset-Repo
+    PutBytes $img ((New-Png) + [byte[]](1, 2, 3))
+    Put 'docs/img/README.md' $readmeOk
+    Stage-All
+    Expect 'docs/img: datos despues de IEND' $true
+    Reset-Repo
+    PutBytes $img ([byte[]](0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0))
+    Put 'docs/img/README.md' $readmeOk
+    Stage-All
+    Expect 'docs/img: PNG truncado' $true
+    Reset-Repo
+    PutBytes $img ([byte[]](1..60))
+    Put 'docs/img/README.md' $readmeOk
+    Stage-All
+    Expect 'docs/img: no es un PNG' $true
+    Reset-Repo
+    PutBytes $img (New-Png -Idat ([byte[]](0, 0) + [System.Text.Encoding]::ASCII.GetBytes($profilePath) + [byte[]](0, 0)))
+    Put 'docs/img/README.md' $readmeOk
+    Stage-All
+    Expect 'docs/img: cadena de perfil de usuario dentro del PNG' $true
+    Reset-Repo
+    PutBytes $img (New-Png -Idat (New-Object byte[] (2MB + 10)))
+    Put 'docs/img/README.md' $readmeOk
+    Stage-All
+    Expect 'docs/img: mas de 2 MiB' $true
+    Reset-Repo
+    PutBytes $img (New-Png)
+    Put 'docs/img/README.md' $readmeOk
+    Stage-All
+    Invoke-Git -C $repo commit -q -m imagen
+    Expect 'docs/img: -All sobre lo ya commiteado' $false @('-All')
 
     # --- Nombres de archivo ----------------------------------------------------------------------------------------------
     Reset-Repo

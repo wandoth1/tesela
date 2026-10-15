@@ -298,7 +298,10 @@ fn las_carpetas_incompletas_llevan_el_minimo_y_el_aviso() {
         open: vec![],
         select: Some("Windows".into()),
     }));
-    o.demo = Some(DemoOptions { stopped: true });
+    o.demo = Some(DemoOptions {
+        stopped: true,
+        ..DemoOptions::default()
+    });
     let h = harness(o);
     // En la lista, la fila de Windows lleva "≥" en su etiqueta accesible, y el estado dice que se detuvo.
     h.get_by_label_contains("Windows, ≥");
@@ -695,5 +698,72 @@ fn un_escaneo_real_de_una_carpeta_temporal_llega_al_mapa_y_a_la_lista() {
     h.key_press(Key::Enter);
     h.run_steps(3);
     h.get_by_label_contains("a.jpg, ");
+    std::fs::remove_dir_all(&base).unwrap();
+}
+
+#[test]
+fn el_escaneo_en_modo_de_respaldo_muestra_la_insignia_aproximado() {
+    use std::io::Write;
+    let base = std::env::temp_dir().join(format!("tesela-test-{}", uuid::Uuid::new_v4()));
+    let root = base.join("raiz");
+    std::fs::create_dir_all(root.join("sub")).unwrap();
+    for name in ["sub/a.bin", "b.bin"] {
+        std::fs::File::create(root.join(name))
+            .unwrap()
+            .write_all(&vec![1u8; 70_000])
+            .unwrap();
+    }
+    let root = dunce::canonicalize(&root).unwrap();
+    // `FindFirstFileExW` forzado: sin FileId, sin deduplicación y con el tamaño en disco estimado.
+    let mut so = tesela_scanner::ScanOptions::new(&root);
+    so.force_find = true;
+    let res = tesela_scanner::scan(so).unwrap();
+    assert_eq!(res.summary.api, tesela_scanner::ApiUsed::FindFallback);
+    let req = crate::app::ScanRequest {
+        root: root.clone(),
+        label: "prueba".into(),
+        drive: None,
+    };
+    let ex = crate::explore::Explore::from_scan(req, res, false, std::time::Duration::ZERO);
+    assert!(ex.info.approximate);
+    let mut o = opts(StartScreen::Home);
+    o.demo = None;
+    let mut h = harness(o);
+    h.state_mut().ui_mut().screen = crate::app::Screen::Explore(Box::new(ex));
+    h.run_steps(4);
+    assert!(
+        h.query_all_by_label("Aproximado").count() >= 1,
+        "insignia en la barra de estado y en los detalles"
+    );
+    // Un escaneo normal no la lleva.
+    std::fs::remove_dir_all(&base).unwrap();
+    let h2 = harness(opts(StartScreen::Map(MapStart::default())));
+    assert!(h2.query_all_by_label("Aproximado").count() == 0);
+}
+
+#[test]
+fn el_breadcrumb_de_una_carpeta_escaneada_usa_su_nombre_y_no_la_ruta_entera() {
+    use std::io::Write;
+    let base = std::env::temp_dir().join(format!("tesela-test-{}", uuid::Uuid::new_v4()));
+    let root = base.join("mi-carpeta");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::File::create(root.join("a.bin"))
+        .unwrap()
+        .write_all(&[1u8; 10_000])
+        .unwrap();
+    let root = dunce::canonicalize(&root).unwrap();
+    let res = tesela_scanner::scan(tesela_scanner::ScanOptions::new(&root)).unwrap();
+    let req = crate::app::ScanRequest {
+        root,
+        label: "mi-carpeta".into(),
+        drive: None,
+    };
+    let ex = crate::explore::Explore::from_scan(req, res, false, std::time::Duration::ZERO);
+    let mut o = opts(StartScreen::Home);
+    o.demo = None;
+    let mut h = harness(o);
+    h.state_mut().ui_mut().screen = crate::app::Screen::Explore(Box::new(ex));
+    h.run_steps(4);
+    h.get_by_label("mi-carpeta");
     std::fs::remove_dir_all(&base).unwrap();
 }

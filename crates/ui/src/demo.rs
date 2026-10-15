@@ -22,6 +22,9 @@ pub enum Variant {
     Complete,
     /// Análisis detenido con "Parar y ver": carpetas `INCOMPLETE` (rayas, "≥") y sin bloque del sistema.
     Stopped,
+    /// Una carpeta con ~20 000 celdas visibles (600 carpetas de 33 archivos): el peor caso del mapa, para medir el coste
+    /// por frame (`--stress`). No es un disco "realista".
+    Stress,
 }
 
 /// Unidades ficticias para la pantalla de inicio.
@@ -718,6 +721,30 @@ fn build_spec(rng: &mut Rng, variant: Variant) -> Spec {
     }
 }
 
+/// 600 carpetas de 33 archivos de tamaños parecidos (cada archivo da una celda insinuada de más de 3 × 3 px).
+fn stress_spec(rng: &mut Rng) -> Spec {
+    let kids = (0..600)
+        .map(|i| {
+            let files = (0..33)
+                .map(|j| {
+                    file(
+                        &format!("archivo-{j:02}.dat"),
+                        1_000_000 + rng.next() % 3_000_000,
+                        30 + (i % 900) as u32,
+                    )
+                })
+                .collect();
+            dir(&format!("carpeta-{i:03}"), files)
+        })
+        .collect();
+    Spec::Dir {
+        name: root_name(),
+        kids,
+        flags: flags::DIR,
+        stop: false,
+    }
+}
+
 fn emit(root: &Spec) -> Vec<Batch> {
     let mut rb = Batch::detached(0);
     rb.push(
@@ -783,7 +810,11 @@ fn emit(root: &Spec) -> Vec<Batch> {
 /// El árbol de demostración. Determinista: la misma variante da siempre el mismo árbol.
 pub fn tree(variant: Variant) -> Tree {
     let mut rng = Rng(0x7E5E_1A00_D3A0_0001);
-    let spec = build_spec(&mut rng, variant);
+    let spec = if variant == Variant::Stress {
+        stress_spec(&mut rng)
+    } else {
+        build_spec(&mut rng, variant)
+    };
     let mut b = TreeBuilder::new();
     for batch in emit(&spec) {
         b.add_batch(batch).expect("lote válido");
@@ -793,7 +824,7 @@ pub fn tree(variant: Variant) -> Tree {
             let d = &drives()[0];
             Some(d.total - d.free)
         }
-        Variant::Stopped => None,
+        Variant::Stopped | Variant::Stress => None,
     };
     b.finish(&FinishOptions {
         now_unix: DEMO_NOW,

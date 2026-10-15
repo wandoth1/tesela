@@ -56,6 +56,11 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
         env:
           RUSTFLAGS: -D warnings
+      # La feature `capture` (capturas del README) no entra en el build normal: se vigila aparte para que no se pudra.
+      - name: Clippy (feature capture)
+        run: cargo clippy -p tesela-app --all-targets --features capture -- -D warnings
+        env:
+          RUSTFLAGS: -D warnings
       - name: Tests
         run: cargo test --workspace
         env:
@@ -64,6 +69,21 @@ jobs:
       - name: Release
         shell: pwsh
         run: ./scripts/build-release.ps1
+      # El ejecutable arranca y responde sin crear la ventana (--version no abre la interfaz) y no se pasa del presupuesto
+      # de tamaño (PLAN.md §4: ≲ 16 MB). No se lanza la interfaz: el runner no tiene GPU (wgpu usaría WARP) y no aporta nada.
+      - name: Humo del ejecutable
+        shell: pwsh
+        run: |
+          $exe = Join-Path (cargo metadata --format-version 1 --no-deps | ConvertFrom-Json).target_directory 'release/tesela.exe'
+          $err = Join-Path $env:RUNNER_TEMP 'tesela-version.txt'
+          $p = Start-Process -FilePath $exe -ArgumentList '--version' -Wait -PassThru -RedirectStandardError $err
+          if ($p.ExitCode -ne 0) { throw "tesela --version terminó con $($p.ExitCode)" }
+          $out = Get-Content -LiteralPath $err -Raw
+          Write-Host $out
+          if ($out -notmatch '^tesela \d+\.\d+\.\d+') { throw 'tesela --version no imprime la versión' }
+          $mib = (Get-Item $exe).Length / 1MB
+          Write-Host ('tesela.exe: {0:N1} MiB' -f $mib)
+          if ($mib -gt 18) { throw 'tesela.exe supera el presupuesto de tamaño (18 MiB)' }
       # No se ejecuta ningún escaneo de C: en el CI: los tests solo usan árboles sintéticos en %TEMP%.
 
   # Licencias y avisos de seguridad. También se ejecuta cada semana (schedule).

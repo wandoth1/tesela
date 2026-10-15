@@ -460,12 +460,7 @@ impl Explore {
         }
         let shown = chain[skip..].to_vec();
         for (i, &id) in shown.iter().enumerate() {
-            let name = describe::display_name(&self.tree, id, env.tr);
-            let name = if id == 0 {
-                name.trim_end_matches('\\').to_string()
-            } else {
-                name
-            };
+            let name = describe::crumb_name(&self.tree, id, env.tr);
             let is_last = i + 1 == shown.len();
             if is_last && last_is_current {
                 ui.label(

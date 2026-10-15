@@ -86,6 +86,25 @@ pub fn display_name(tree: &Tree, id: NodeId, tr: &Tr) -> String {
     }
 }
 
+/// Nombre corto para el breadcrumb: la raíz de una unidad es `C:`; la raíz de una carpeta escaneada, su último componente
+/// (la ruta completa está en los detalles); el resto, su nombre.
+pub fn crumb_name(tree: &Tree, id: NodeId, tr: &Tr) -> String {
+    let name = display_name(tree, id, tr);
+    if id != 0 {
+        return name;
+    }
+    let trimmed = name.trim_end_matches(['\\', '/']);
+    if is_drive_root_name(trimmed) {
+        return trimmed.to_string();
+    }
+    trimmed
+        .rsplit(['\\', '/'])
+        .next()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(trimmed)
+        .to_string()
+}
+
 /// Nombre del tipo de archivo, traducido.
 pub fn type_name(tr: &Tr, t: FileType) -> String {
     tr.t(match t {
@@ -165,6 +184,15 @@ mod tests {
         assert_eq!(fold("Vídeos"), "videos");
         assert_eq!(fold("MÚSICA ñandú"), "musica nandu");
         assert!(fold("Imágenes").contains(&fold("IMAGEN")));
+    }
+
+    #[test]
+    fn nombre_corto_de_la_raiz_para_el_breadcrumb() {
+        let t = demo::tree(Variant::Complete);
+        let tr = Tr::new(Lang::Es);
+        assert_eq!(crumb_name(&t, 0, &tr), "C:");
+        let users = t.child_by_name(0, b"Users").unwrap();
+        assert_eq!(crumb_name(&t, users, &tr), "Users");
     }
 
     #[test]

@@ -13,6 +13,7 @@ Uso:
 
 Opciones de --demo:
   --stopped                    el arbol de la demostracion es el de un analisis detenido (carpetas incompletas)
+  --stress                     (desarrollo) un mapa de ~20 000 celdas para medir el peor caso
   --screen home|scan|map|list  pantalla inicial (por defecto home)
   --open <carpeta/carpeta>     entra por esas carpetas (con map o list)
   --select <nombre>            deja seleccionado ese elemento de la carpeta (con map o list)
@@ -43,6 +44,7 @@ pub enum Screen {
 pub struct Cli {
     pub demo: bool,
     pub stopped: bool,
+    pub stress: bool,
     pub screen: Screen,
     pub progress: Option<f32>,
     pub open: Vec<String>,
@@ -68,6 +70,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
         match a.as_str() {
             "--demo" => cli.demo = true,
             "--stopped" => cli.stopped = true,
+            "--stress" => cli.stress = true,
             "--help" | "-h" | "-?" => cli.help = true,
             "--version" | "-V" => cli.version = true,
             "--screen" => {
@@ -151,7 +154,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
         && !cli.demo
     {
         return Err(
-            "--stopped, --screen, --progress, --open y --select solo tienen sentido con --demo"
+            "--stopped, --stress, --screen, --progress, --open y --select solo tienen sentido con --demo"
                 .into(),
         );
     }

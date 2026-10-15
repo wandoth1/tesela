@@ -22,7 +22,7 @@
        mayusculas, coincidencia literal; las lineas vacias y las que empiezan por `#` se ignoran).
     3. Los NOMBRES de los archivos pasan por las mismas reglas.
     4. Cualquier texto se decodifica antes de revisarlo (UTF-8, UTF-8 con BOM, UTF-16 con o sin BOM). Los binarios se
-       revisan buscando cadenas ASCII y UTF-16 (los de mas de 8 MiB se rechazan); las imagenes (capturas) se rechazan.
+       revisan buscando cadenas ASCII y UTF-16 (los de mas de 8 MiB se rechazan); las imagenes se rechazan SALVO `docs/img/<nombre>.png` generadas con --demo (ver la excepcion mas abajo).
     5. `docs/spike-results.md` NO puede existir (se rehace por separado) y `spike/` se revisa con las reglas que no
        dependen de rutas (SID, hardware, antivirus, builds, valores locales y lista negra).
 
@@ -218,6 +218,58 @@ $names = @($names | Sort-Object -Unique)
 $pathFree = @($rules | Where-Object { -not $_.Path })
 $imageExt = '(?i)\.(png|jpe?g|gif|bmp|webp|tiff?|heic)$'
 
+# --- Excepcion ESTRECHA para las capturas de --demo ------------------------------------------------------------------
+# Las imagenes se rechazan en todo el repositorio SALVO `docs/img/<nombre>.png` (minusculas, digitos y guiones) cuando:
+#   1. es un PNG de verdad y de como mucho 2 MiB, con SOLO los fragmentos IHDR, PLTE, tRNS, IDAT, IEND, sRGB, gAMA, cHRM y
+#      pHYs (nada de tEXt/iTXt/zTXt/eXIf/tIME/iCCP: ahi viajan software, fecha, camara o el perfil de color del monitor);
+#   2. `docs/img/README.md` tiene una linea con su nombre Y con `--demo` (la orden que la genera): solo se admiten
+#      capturas de la ventana en modo demostracion (arbol sintetico, unidades ficticias);
+#   3. pasa ademas el escaneo de cadenas ASCII/UTF-16 como cualquier binario.
+# Lo que el codigo no puede comprobar (que los pixeles sean solo de la app) lo revisa quien audita el cambio.
+$demoImgPattern = '^docs/img/[a-z0-9-]+\.png$'
+$demoImgMaxBytes = 2MB
+$pngAllowedChunks = @('IHDR', 'PLTE', 'tRNS', 'IDAT', 'IEND', 'sRGB', 'gAMA', 'cHRM', 'pHYs')
+
+function Test-DemoPng {
+    # Devuelve $null si los bytes son un PNG admitido; si no, el motivo.
+    param([byte[]]$Bytes)
+    if ($Bytes.Length -gt $demoImgMaxBytes) { return 'imagen de mas de 2 MiB' }
+    if ($Bytes.Length -lt 33) { return 'no es un PNG valido (demasiado corto)' }
+    $sig = 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A
+    for ($i = 0; $i -lt 8; $i++) { if ($Bytes[$i] -ne $sig[$i]) { return 'no es un PNG (firma incorrecta)' } }
+    $pos = 8
+    $first = $true
+    $sawEnd = $false
+    while ($pos -lt $Bytes.Length) {
+        if ($sawEnd) { return 'hay datos despues del fragmento IEND' }
+        if ($pos + 12 -gt $Bytes.Length) { return 'PNG truncado' }
+        $len = ([int]$Bytes[$pos] -shl 24) -bor ([int]$Bytes[$pos + 1] -shl 16) -bor ([int]$Bytes[$pos + 2] -shl 8) -bor [int]$Bytes[$pos + 3]
+        if ($len -lt 0 -or ($pos + 12 + [long]$len) -gt $Bytes.Length) { return 'PNG con un fragmento fuera de rango' }
+        $type = [System.Text.Encoding]::ASCII.GetString($Bytes, $pos + 4, 4)
+        if ($first -and $type -cne 'IHDR') { return 'el primer fragmento del PNG no es IHDR' }
+        $first = $false
+        if ($pngAllowedChunks -cnotcontains $type) { return "fragmento PNG no permitido ($type): puede llevar metadatos del equipo" }
+        if ($type -ceq 'IEND') { $sawEnd = $true }
+        $pos += 12 + $len
+    }
+    if (-not $sawEnd) { return 'PNG sin fragmento IEND' }
+    return $null
+}
+
+function Get-ImgReadme {
+    # Texto de docs/img/README.md (disco con -All; indice en modo staging), o $null si no existe.
+    if ($All) {
+        $p = Join-Path $repoRoot 'docs/img/README.md'
+        if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { return $null }
+        return [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($p))
+    }
+    try {
+        return [System.Text.Encoding]::UTF8.GetString((Invoke-GitBytes 'cat-file blob ":docs/img/README.md"' $repoRoot))
+    } catch {
+        return $null
+    }
+}
+
 foreach ($name in $names) {
     $f = $name.Replace('\', '/')
     $inSpike = $f.StartsWith('spike/')
@@ -230,9 +282,13 @@ foreach ($name in $names) {
     # El nombre del archivo tambien se revisa.
     foreach ($hit in (Test-Rules $f $ruleSet)) { $problems.Add("${f}: NOMBRE del archivo: $($hit[0])") }
 
+    $isDemoImg = $false
     if ($f -match $imageExt) {
-        $problems.Add("${f}: imagen versionada (no se permiten capturas)")
-        continue
+        if ($f -cnotmatch $demoImgPattern) {
+            $problems.Add("${f}: imagen versionada (no se permiten capturas; solo docs/img/<nombre>.png generadas con --demo)")
+            continue
+        }
+        $isDemoImg = $true
     }
     $full = Join-Path $repoRoot $name
     if ($All) {
@@ -241,6 +297,22 @@ foreach ($name in $names) {
     } else {
         # Contenido del INDICE, leido como bytes (sin recodificar).
         $bytes = Invoke-GitBytes "cat-file blob `":$f`"" $repoRoot
+    }
+    if ($isDemoImg) {
+        $why = Test-DemoPng $bytes
+        if ($why) { $problems.Add("${f}: $why"); continue }
+        $readme = Get-ImgReadme
+        $leaf = $f.Substring($f.LastIndexOf('/') + 1)
+        $listed = $false
+        if ($readme) {
+            foreach ($line in ($readme -split "`n")) {
+                if ($line.Contains($leaf) -and $line.Contains('--demo')) { $listed = $true; break }
+            }
+        }
+        if (-not $listed) {
+            $problems.Add("${f}: falta una linea en docs/img/README.md con el nombre del archivo y la orden --demo que lo genera")
+            continue
+        }
     }
     $reject = $null
     $text = ConvertTo-ScanText $bytes ([ref]$reject)
