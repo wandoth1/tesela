@@ -6,7 +6,9 @@
 //!   tamaño, esos hijos son siempre un SUFIJO de la lista ordenada, y la celda se puede abrir: es otra raíz
 //!   ([`Root`] con `start` > 0) que reparte solo ese sufijo. Solo se agrupa si hay al menos 2 elementos y alguno pesa.
 //! * **LOD de dibujo**: en el nivel insinuado no se dibuja nada por debajo de ~3×3 px (`lod_px`) y el total de
-//!   rectángulos tiene un tope (`max_rects`, ~15 000 por frame).
+//!   rectángulos tiene un tope (`max_rects`, ~15 000 por frame). El presupuesto es ÚNICO para los dos niveles y se
+//!   aplica antes del primer reparto: si el nivel principal tuviera más celdas que `max_rects`, el exceso (un sufijo
+//!   de los hijos ordenados) se agrupa en "Otros" y el nivel insinuado se queda con lo que sobre.
 //!
 //! # Profundidad
 //! Nivel 0: los hijos del nodo, con etiqueta. Nivel 1 (solo con [`Depth::Two`]): los hijos de cada carpeta del
@@ -65,7 +67,8 @@ pub struct Params {
     pub min_group_px: f32,
     /// En el nivel insinuado no se dibuja una celda con algún lado menor de esto (3 px).
     pub lod_px: f32,
-    /// Tope de celdas del layout (15 000).
+    /// Tope de celdas del layout (15 000), niveles principal e insinuado JUNTOS. Se aplica antes de repartir el nivel
+    /// principal (agrupando el exceso en "Otros") y limita después el nivel insinuado.
     pub max_rects: usize,
     /// Alto de la banda de la etiqueta (nombre y tamaño) dentro de una celda que la lleva.
     pub header_px: f32,
@@ -217,20 +220,23 @@ impl Layout {
             let big = start + partition(n, |i| alloc_of(start + i) as f64 * scale >= min_area);
             // Hijos con tamaño: los de `alloc == 0` (al final) no tienen área y no se reparten.
             let sized = start + partition(n, |i| alloc_of(start + i) > 0);
-            // Entradas del nivel 0 antes de repartirlas: (valor, qué es).
-            let mut items: Vec<(f64, CellKind)> = Vec::new();
-            let add_group =
-                |others: &mut Vec<Others>, first: usize, last: usize, stats: &mut LayoutStats| {
-                    let bytes: u64 = (first..last).map(alloc_of).fold(0u64, u64::saturating_add);
-                    others.push(Others {
-                        parent: key.root.node,
-                        start: first as u32,
-                        count: (last - first) as u32,
-                        bytes,
-                    });
-                    stats.grouped += last - first;
-                    (bytes as f64, CellKind::Others(others.len() as u32 - 1))
-                };
+            // Entradas del nivel 0 antes de repartirlas: (valor, qué es, primer y último hijo que cubre).
+            let mut items: Vec<(f64, CellKind, usize, usize)> = Vec::new();
+            let add_group = |others: &mut Vec<Others>, first: usize, last: usize| {
+                let bytes: u64 = (first..last).map(alloc_of).fold(0u64, u64::saturating_add);
+                others.push(Others {
+                    parent: key.root.node,
+                    start: first as u32,
+                    count: (last - first) as u32,
+                    bytes,
+                });
+                (
+                    bytes as f64,
+                    CellKind::Others(others.len() as u32 - 1),
+                    first,
+                    last,
+                )
+            };
             // Páginas para el caso "ningún hijo llega al área mínima" (ver abajo): `fit` hijos caben en el área mínima.
             let fit = ((area / min_area).floor() as usize).max(2);
             let page = fit.max((sized - start).div_ceil(fit));
@@ -258,11 +264,11 @@ impl Layout {
                 let big_pages =
                     partition(pages.len(), |p| pages[p].2 as f64 * scale >= min_area).max(1);
                 for &(s, e, _) in &pages[..big_pages] {
-                    items.push(add_group(&mut others, s, e, &mut stats));
+                    items.push(add_group(&mut others, s, e));
                 }
                 if big_pages < pages.len() {
                     let (s, e) = (pages[big_pages].0, pages[pages.len() - 1].1);
-                    items.push(add_group(&mut others, s, e, &mut stats));
+                    items.push(add_group(&mut others, s, e));
                 }
             } else {
                 // El sufijo candidato a "Otros" son los que quedan por debajo del área mínima, con tamaño o sin él.
@@ -273,12 +279,33 @@ impl Layout {
                 // Sin grupo, se reparten todos los que tienen tamaño (aunque alguno mida menos de 24×24 px).
                 let prefix_end = if grouped { big } else { sized };
                 for i in start..prefix_end {
-                    items.push((alloc_of(i) as f64, CellKind::Node(kids.get(i))));
+                    items.push((alloc_of(i) as f64, CellKind::Node(kids.get(i)), i, i + 1));
                 }
                 if grouped {
-                    items.push(add_group(&mut others, big, end, &mut stats));
+                    items.push(add_group(&mut others, big, end));
                 }
             }
+            // PRESUPUESTO, antes del primer reparto: el nivel principal nunca pasa de `max_rects` celdas. Si hay más, el
+            // exceso (un sufijo: los hijos van ordenados de mayor a menor) se funde en UNA agrupación "Otros", que al
+            // abrirse reparte solo esos elementos (siempre son menos que la raíz que los contiene).
+            let cap = params.max_rects.max(2);
+            if items.len() > cap {
+                stats.truncated = true;
+                let tail = cap - 1;
+                let (first, last) = (items[tail].2, items[items.len() - 1].3);
+                // Las agrupaciones que quedaban en la cola desaparecen (sus hijos van a la nueva).
+                let keep_others = items[tail..]
+                    .iter()
+                    .find_map(|it| match it.1 {
+                        CellKind::Others(i) => Some(i as usize),
+                        CellKind::Node(_) => None,
+                    })
+                    .unwrap_or(others.len());
+                others.truncate(keep_others);
+                items.truncate(tail);
+                items.push(add_group(&mut others, first, last));
+            }
+            stats.grouped = others.iter().map(|o| o.count as usize).sum();
             let vals: Vec<f64> = items.iter().map(|it| it.0).collect();
             let mut rects = Vec::with_capacity(vals.len());
             squarify(&vals, total, viewport, &mut rects);

@@ -736,3 +736,90 @@ fn el_sufijo_normal_sigue_funcionando_y_el_cero_no_se_pagina() {
     );
     assert_eq!(l.others()[0].root().end as usize, 455);
 }
+
+#[test]
+fn el_presupuesto_limita_el_nivel_principal_y_el_exceso_va_a_otros() {
+    // 20 000 elementos iguales en 4000 × 4000: cada uno mide 800 px² (más que el área mínima de agrupación), así que
+    // antes se creaban 20 000 celdas con un presupuesto de 15 000.
+    let n = 20_000usize;
+    let t = flat(n, |_| 1_000_000);
+    let size = (4000, 4000);
+    let k = key(size, Depth::Two);
+    assert_eq!(k.params.max_rects, 15_000);
+    let l = Layout::compute(&t, k);
+    assert!(
+        l.cells().len() <= k.params.max_rects,
+        "{} celdas con un presupuesto de {}",
+        l.cells().len(),
+        k.params.max_rects
+    );
+    assert!(l.stats().truncated);
+    // Una sola agrupación con el exceso: las demás celdas son hijos reales.
+    assert_eq!(l.others().len(), 1);
+    let o = l.others()[0];
+    assert_eq!(o.count as usize, n - (k.params.max_rects - 1));
+    assert_eq!(l.stats().grouped, o.count as usize);
+    assert_eq!(level(&l, 0).len(), k.params.max_rects);
+    // La agrupación es un sufijo (los hijos van ordenados) y cubre exactamente lo que no se dibuja.
+    assert_eq!(o.start as usize, k.params.max_rects - 1);
+    let nodes = l
+        .cells()
+        .iter()
+        .filter(|c| matches!(c.kind, CellKind::Node(_)))
+        .count();
+    assert_eq!(nodes + o.count as usize, n);
+    // El layout sigue cubriendo el viewport sin solapes.
+    assert_no_overlap(&level(&l, 0));
+    // Abrir "Otros" reduce el conjunto y entre todo se ve cada hijo exactamente una vez.
+    let (seen, deep) = explore_groups(&t, Root::node(0), size, 0);
+    assert_eq!(seen, n);
+    assert!(deep <= 3, "profundidad {deep}");
+    // Con un presupuesto que no se alcanza, no hay agrupación ni aviso.
+    let mut k2 = k;
+    k2.params.max_rects = 30_000;
+    let l2 = Layout::compute(&t, k2);
+    assert!(l2.others().is_empty() && !l2.stats().truncated);
+    assert_eq!(l2.stats().level0, n);
+}
+
+#[test]
+fn el_presupuesto_es_unico_para_los_dos_niveles() {
+    // Carpetas con hijos: nivel principal + insinuado nunca pasan de `max_rects`, también con presupuestos pequeños.
+    let dirs: Vec<Spec> = (0..60)
+        .map(|i| {
+            Spec::Dir(
+                format!("d{i:03}"),
+                (0..80u64)
+                    .map(|j| Spec::File(format!("a{j}"), 1_000_000 + j))
+                    .collect(),
+            )
+        })
+        .collect();
+    let tree = build(&Spec::Dir("raiz".into(), dirs), None);
+    for max in [2usize, 5, 40, 60, 100, 1000, 4000] {
+        let mut k = key((1600, 1000), Depth::Two);
+        k.params.max_rects = max;
+        let l = Layout::compute(&tree, k);
+        assert!(
+            l.cells().len() <= max,
+            "max {max}: {} celdas",
+            l.cells().len()
+        );
+        assert_eq!(l.stats().level0 + l.stats().level1, l.cells().len());
+        assert!(level(&l, 0).len() <= max);
+        // El nivel principal cubre siempre todos los hijos (directamente o dentro de "Otros").
+        let covered: usize = l
+            .cells()
+            .iter()
+            .filter(|c| c.level == 0)
+            .map(|c| match c.kind {
+                CellKind::Node(_) => 1,
+                CellKind::Others(i) => l.others()[i as usize].count as usize,
+            })
+            .sum();
+        assert_eq!(covered, 60, "max {max}");
+        if max < 60 + 60 * 80 {
+            assert!(l.stats().truncated, "max {max}");
+        }
+    }
+}
