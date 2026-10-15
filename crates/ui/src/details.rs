@@ -40,7 +40,9 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
     let tree = ex.tree.clone();
     let sel = ex.selection.unwrap_or(Sel::Node(ex.root.node));
     let is_current = ex.selection.is_none();
-    egui::ScrollArea::vertical()
+    // Barra SÓLIDA y siempre visible cuando el contenido no cabe (ventana pequeña): nada queda cortado sin aviso.
+    ui.style_mut().spacing.scroll = egui::style::ScrollStyle::solid();
+    let out = egui::ScrollArea::vertical()
         .auto_shrink([false, false])
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.y = 10.0;
@@ -319,6 +321,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
                 }
             }
         });
+    ex.details_overflow = out.content_size.y > out.inner_rect.height() + 0.5;
 }
 
 fn row_biggest(ui: &mut Ui, env: &Env, tree: &tesela_model::Tree, c: NodeId) {

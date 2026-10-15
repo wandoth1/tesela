@@ -140,7 +140,7 @@ fn card(ui: &mut Ui, env: &mut Env, d: &DriveInfo) {
             ui.painter().text(
                 rect.center() - vec2(0.0, 8.0),
                 egui::Align2::CENTER_CENTER,
-                format!("{used} %"),
+                env.tr.pct(used as f64),
                 theme::font_semibold(26.0),
                 pal.text,
             );

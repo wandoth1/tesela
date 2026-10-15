@@ -13,11 +13,10 @@ use crate::explore::{Explore, ScanInfo};
 use crate::icons::Icon;
 use crate::theme::{self, Palette};
 use crate::widgets::{self, ButtonStyle};
-use crossbeam_channel::Receiver;
 use egui::{CornerRadius, Margin, RichText, Ui, vec2};
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tesela_model::{FileType, Tree};
 use tesela_scanner::{KnownKind, Progress, ScanHandle, ScanOptions};
@@ -49,9 +48,30 @@ struct Demo {
     stop: bool,
 }
 
+/// Punto de encuentro entre la pantalla y el hilo que arranca el escaneo. Todo pasa bajo un único candado, así que no hay
+/// carrera entre "llega el resultado" y "se cancela": o el hilo ve la cancelación antes de entregar (y cancela él mismo lo
+/// que acaba de crear), o quien cancela ve el resultado ya entregado (y lo cancela). Nunca queda un escaneo huérfano.
+#[derive(Default)]
+struct Startup {
+    slot: Mutex<Slot>,
+}
+
+#[derive(Default)]
+struct Slot {
+    cancelled: bool,
+    result: Option<Result<Real, String>>,
+}
+
+/// Cancela un escaneo (único sitio que lo hace, para que las pruebas puedan comprobarlo).
+fn cancel_handle(h: &ScanHandle) {
+    h.cancel();
+    #[cfg(test)]
+    test_hooks::cancelled(h.progress());
+}
+
 enum Kind {
     /// Abriendo la raíz y resolviendo las rutas conocidas (E/S que puede tardar: va en un hilo, no en el de la interfaz).
-    Starting(Receiver<Result<Real, String>>),
+    Starting(Arc<Startup>),
     Real(Real),
     Demo(Demo),
 }
@@ -93,6 +113,8 @@ fn start_real(req: &ScanRequest) -> Result<Real, String> {
         .iter()
         .map(|t| canon_key(&t.path).and_then(|k| by_path.get(&k).copied()))
         .collect();
+    #[cfg(test)]
+    test_hooks::started(&req.root, &progress);
     Ok(Real {
         handle: Some(handle),
         progress,
@@ -104,14 +126,22 @@ impl ScanScreen {
     /// Escaneo real de `req.root`. Arrancarlo (abrir y listar la raíz, resolver las rutas prioritarias) es E/S que puede
     /// tardar en un disco frío o de red: se hace en un hilo y la pantalla aparece al instante.
     pub fn real(ctx: &egui::Context, req: ScanRequest, animate: bool) -> ScanScreen {
-        let (tx, rx) = crossbeam_channel::bounded(1);
-        let (c, r) = (ctx.clone(), req.clone());
+        let startup = Arc::new(Startup::default());
+        let (c, r, s) = (ctx.clone(), req.clone(), startup.clone());
         std::thread::spawn(move || {
             let res = start_real(&r);
-            if let Err(crossbeam_channel::SendError(Ok(real))) = tx.send(res)
-                && let Some(h) = &real.handle
             {
-                h.cancel(); // nadie lo espera (se cerró la pantalla): que los hilos terminen
+                let mut slot = s.slot.lock().unwrap_or_else(|e| e.into_inner());
+                if slot.cancelled {
+                    // Se cerró o canceló la pantalla mientras arrancaba: nadie lo espera, que los hilos terminen.
+                    if let Ok(real) = &res
+                        && let Some(h) = &real.handle
+                    {
+                        cancel_handle(h);
+                    }
+                } else {
+                    slot.result = Some(res);
+                }
             }
             c.request_repaint();
         });
@@ -121,7 +151,7 @@ impl ScanScreen {
             discard: false,
             animate,
             stop_pending: false,
-            kind: Kind::Starting(rx),
+            kind: Kind::Starting(startup),
         }
     }
 
@@ -159,10 +189,23 @@ impl ScanScreen {
     /// Pide cancelar (los hilos terminan solos y el resultado se descarta).
     pub fn cancel(&mut self) {
         self.discard = true;
-        if let Kind::Real(r) = &self.kind
-            && let Some(h) = &r.handle
-        {
-            h.cancel();
+        match &self.kind {
+            Kind::Real(r) => {
+                if let Some(h) = &r.handle {
+                    cancel_handle(h);
+                }
+            }
+            Kind::Starting(s) => {
+                let mut slot = s.slot.lock().unwrap_or_else(|e| e.into_inner());
+                slot.cancelled = true;
+                // Si el resultado ya llegó pero la pantalla no lo ha recogido, se cancela aquí.
+                if let Some(Ok(real)) = &slot.result
+                    && let Some(h) = &real.handle
+                {
+                    cancel_handle(h);
+                }
+            }
+            Kind::Demo(_) => {}
         }
     }
 
@@ -175,22 +218,27 @@ impl ScanScreen {
     /// Avanza el escaneo: si terminó, devuelve el resultado.
     pub fn poll(&mut self, ctx: &egui::Context) -> Option<ScanOutcome> {
         let started = self.started;
-        if let Kind::Starting(rx) = &self.kind {
-            match rx.try_recv() {
-                Ok(Ok(real)) => {
+        if let Kind::Starting(s) = &self.kind {
+            let (result, thread_alive) = {
+                let mut slot = s.slot.lock().unwrap_or_else(|e| e.into_inner());
+                (slot.result.take(), Arc::strong_count(s) > 1)
+            };
+            match result {
+                Some(Ok(real)) => {
                     if (self.discard || self.stop_pending)
                         && let Some(h) = &real.handle
                     {
-                        h.cancel();
+                        cancel_handle(h);
                     }
                     self.kind = Kind::Real(real);
                 }
-                Ok(Err(msg)) => return Some(ScanOutcome::Failed(msg)),
-                Err(crossbeam_channel::TryRecvError::Empty) => {
+                Some(Err(_)) | None if self.discard => return Some(ScanOutcome::Cancelled),
+                Some(Err(msg)) => return Some(ScanOutcome::Failed(msg)),
+                None if thread_alive => {
                     ctx.request_repaint_after(Duration::from_millis(50));
                     return None;
                 }
-                Err(crossbeam_channel::TryRecvError::Disconnected) => {
+                None => {
                     return Some(ScanOutcome::Failed(
                         "el hilo de arranque terminó sin resultado".into(),
                     ));
@@ -247,7 +295,7 @@ impl ScanScreen {
             Kind::Starting(_) => self.stop_pending = true,
             Kind::Real(r) => {
                 if let Some(h) = &r.handle {
-                    h.cancel();
+                    cancel_handle(h);
                 }
             }
             Kind::Demo(d) => d.stop = true,
@@ -714,5 +762,42 @@ pub(crate) fn info_from_summary(
         files,
         elapsed,
         finished_at: Instant::now(),
+    }
+}
+
+/// Registro de escaneos arrancados y cancelados, para que las pruebas comprueben que ninguno queda huérfano.
+#[cfg(test)]
+pub(crate) mod test_hooks {
+    use std::path::{Path, PathBuf};
+    use std::sync::{Arc, Mutex};
+    use tesela_scanner::Progress;
+
+    static STARTED: Mutex<Vec<(PathBuf, Arc<Progress>)>> = Mutex::new(Vec::new());
+    static CANCELLED: Mutex<Vec<Arc<Progress>>> = Mutex::new(Vec::new());
+
+    pub fn started(root: &Path, p: &Arc<Progress>) {
+        STARTED
+            .lock()
+            .unwrap()
+            .push((root.to_path_buf(), p.clone()));
+    }
+    pub fn cancelled(p: &Arc<Progress>) {
+        CANCELLED.lock().unwrap().push(p.clone());
+    }
+    /// (escaneos arrancados con esa raíz, de ellos cancelados)
+    pub fn counts(root: &Path) -> (usize, usize) {
+        let started: Vec<_> = STARTED
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|(r, _)| r == root)
+            .map(|(_, p)| p.clone())
+            .collect();
+        let cancelled = CANCELLED.lock().unwrap();
+        let n = started
+            .iter()
+            .filter(|p| cancelled.iter().any(|c| Arc::ptr_eq(c, p)))
+            .count();
+        (started.len(), n)
     }
 }

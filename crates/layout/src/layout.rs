@@ -231,14 +231,20 @@ impl Layout {
                     stats.grouped += last - first;
                     (bytes as f64, CellKind::Others(others.len() as u32 - 1))
                 };
-            if big == start && sized > start {
+            // Páginas para el caso "ningún hijo llega al área mínima" (ver abajo): `fit` hijos caben en el área mínima.
+            let fit = ((area / min_area).floor() as usize).max(2);
+            let page = fit.max((sized - start).div_ceil(fit));
+            let none_fits = big == start && sized > start;
+            // Con un viewport DIMINUTO (menos de ~34×34 px) `page` alcanza a todo el conjunto: paginar daría una única
+            // "Otros" idéntica a la raíz y abrirla no avanzaría. Entonces no se agrupa nada y se reparten todos los hijos
+            // (aunque midan menos de 24×24): abrir "Otros" siempre reduce el conjunto, o no hay "Otros" que abrir.
+            let single_page = none_fits && page >= sized - start;
+            if none_fits && !single_page {
                 // NINGÚN hijo llega a 24×24 px (muchos hijos de tamaño parecido): agruparlos a todos daría una raíz
                 // idéntica y "Otros" no avanzaría nunca. Se PAGINA: páginas de `page` hijos consecutivos, cada una un
                 // "Otros" que, al abrirse, reparte solo sus elementos. Con `page >= area / min_area` el mayor de una
                 // página mide al menos el área mínima, así que abrir una página siempre muestra elementos, y como la
                 // página es más pequeña que el conjunto, abrir "Otros" siempre reduce el conjunto.
-                let fit = ((area / min_area).floor() as usize).max(2);
-                let page = fit.max((sized - start).div_ceil(fit));
                 let mut pages: Vec<(usize, usize, u64)> = Vec::new();
                 let mut s = start;
                 while s < sized {
@@ -263,7 +269,7 @@ impl Layout {
                 let group_count = end - big;
                 let group_bytes: u64 = (big..end).map(alloc_of).fold(0u64, u64::saturating_add);
                 // Un grupo de un solo elemento no tiene sentido, ni uno que no pesa nada.
-                let grouped = group_count >= 2 && group_bytes > 0;
+                let grouped = group_count >= 2 && group_bytes > 0 && !single_page;
                 // Sin grupo, se reparten todos los que tienen tamaño (aunque alguno mida menos de 24×24 px).
                 let prefix_end = if grouped { big } else { sized };
                 for i in start..prefix_end {

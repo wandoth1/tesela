@@ -73,6 +73,8 @@ pub struct Explore {
     pub(crate) group_stack: Vec<Root>,
     /// El contenido de la barra lateral no cabe y se desplaza (se muestra su barra).
     pub(crate) sidebar_overflow: bool,
+    /// El panel de detalles no cabe y se desplaza (con su barra visible).
+    pub(crate) details_overflow: bool,
     pub(crate) selection: Option<Sel>,
     pub(crate) view: View,
     pub(crate) search: String,
@@ -129,6 +131,7 @@ impl Explore {
             root: Root::node(0),
             group_stack: Vec::new(),
             sidebar_overflow: false,
+            details_overflow: false,
             selection: None,
             view: View::Map,
             search: String::new(),
@@ -608,7 +611,7 @@ impl Explore {
                         ui.label(RichText::new(&title).font(f).color(pal.text));
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             ui.label(
-                                RichText::new(format!("{used} %"))
+                                RichText::new(env.tr.pct(used as f64))
                                     .size(12.0)
                                     .color(pal.text_muted),
                             );
@@ -736,44 +739,26 @@ impl Explore {
                 args!["size" => env.tr.size(root.alloc), "files" => files, "ago" => ago],
             ),
         };
-        ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-            ui.label(RichText::new(main).size(12.0).color(pal.text_muted));
-            if info.approximate {
-                let tip = env.tr.t("approx-tip");
-                widgets::chip(ui, env, Some(Icon::Info), &env.tr.t("approx-badge"), pal.review, pal.accent_soft)
-                    .on_hover_text(tip);
-            }
-            if info.cancelled {
-                ui.label(RichText::new(env.tr.t("status-stopped")).size(12.0).color(pal.review));
-            }
-            // Si el hueco supera el 5 %, "El mapa explica X de Y. ¿Y el resto?".
-            if let (true, Some((total, free))) = (info.full_volume, info.volume) {
-                let used = total.saturating_sub(free);
-                let explained = t.stats().scanned_alloc;
-                if !info.cancelled && used > 0 && t.stats().unexplained_alloc * 100 > used * 5 {
-                    ui.label(
-                        RichText::new(env.tr.ta(
-                            "status-gap",
-                            args!["explained" => env.tr.size(explained), "used" => env.tr.size(used)],
-                        ))
-                        .size(12.0)
-                        .color(pal.text_muted),
-                    )
-                    .on_hover_text(env.tr.t("system-tip"));
-                }
-            }
-            if info.dir_errors > 0 {
-                ui.label(
-                    RichText::new(env.tr.ta("status-no-access", args!["n" => env.tr.int(info.dir_errors)]))
-                        .size(12.0)
-                        .color(pal.text_muted),
-                );
-            }
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+        // Dos zonas que NUNCA se pisan: a la derecha "Reescanear" y el aviso de la demostración (se reservan primero), y a la
+        // izquierda el resto, recortado al hueco que queda. Lo menos importante (el hueco sin explicar) va el último y se
+        // trunca con puntos suspensivos; el texto completo está en su pista.
+        let full = ui.available_rect_before_wrap();
+        let right = ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(full)
+                .layout(Layout::right_to_left(Align::Center)),
+            |ui| {
                 let r = ui.add(
-                    egui::Label::new(RichText::new(env.tr.t("rescan")).size(12.0).color(pal.accent)).sense(Sense::click()),
+                    egui::Label::new(
+                        RichText::new(env.tr.t("rescan"))
+                            .size(12.0)
+                            .color(pal.accent),
+                    )
+                    .sense(Sense::click()),
                 );
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, env.tr.t("rescan")));
+                r.widget_info(|| {
+                    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, env.tr.t("rescan"))
+                });
                 if r.hovered() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
                 }
@@ -784,10 +769,59 @@ impl Explore {
                     env.actions.push(Action::Rescan);
                 }
                 if env.demo {
-                    ui.label(RichText::new(env.tr.t("demo-banner")).size(12.0).color(pal.review));
+                    ui.label(
+                        RichText::new(env.tr.t("demo-banner"))
+                            .size(12.0)
+                            .color(pal.review),
+                    );
                 }
-            });
-        });
+            },
+        );
+        let left_rect = egui::Rect::from_min_max(
+            full.min,
+            egui::pos2(
+                (right.response.rect.left() - 16.0).max(full.min.x),
+                full.max.y,
+            ),
+        );
+        ui.scope_builder(
+            egui::UiBuilder::new()
+                .max_rect(left_rect)
+                .layout(Layout::left_to_right(Align::Center)),
+            |ui| {
+                ui.set_clip_rect(ui.clip_rect().intersect(left_rect));
+                ui.label(RichText::new(main).size(12.0).color(pal.text_muted));
+                if info.approximate {
+                    let tip = env.tr.t("approx-tip");
+                    widgets::chip(ui, env, Some(Icon::Info), &env.tr.t("approx-badge"), pal.review, pal.accent_soft)
+                        .on_hover_text(tip);
+                }
+                if info.cancelled {
+                    ui.label(RichText::new(env.tr.t("status-stopped")).size(12.0).color(pal.review));
+                }
+                if info.dir_errors > 0 {
+                    ui.label(
+                        RichText::new(env.tr.ta("status-no-access", args!["n" => env.tr.int(info.dir_errors)]))
+                            .size(12.0)
+                            .color(pal.text_muted),
+                    );
+                }
+                // Si el hueco supera el 5 %, "El mapa explica X de Y. ¿Y el resto?" (la última: si falta sitio, se trunca).
+                if let (true, Some((total, free))) = (info.full_volume, info.volume) {
+                    let used = total.saturating_sub(free);
+                    let explained = t.stats().scanned_alloc;
+                    if !info.cancelled && used > 0 && t.stats().unexplained_alloc * 100 > used * 5 {
+                        let text = env.tr.ta(
+                            "status-gap",
+                            args!["explained" => env.tr.size(explained), "used" => env.tr.size(used)],
+                        );
+                        ui.add(egui::Label::new(RichText::new(text).size(12.0).color(pal.text_muted)).truncate())
+                            .on_hover_text(env.tr.t("system-tip"));
+                    }
+                }
+            },
+        );
+        ui.advance_cursor_after_rect(full);
     }
 }
 

@@ -682,6 +682,42 @@ fn abrir_otros_siempre_cambia_la_raiz_y_muestra_elementos_con_cualquier_viewport
 }
 
 #[test]
+fn con_viewports_diminutos_abrir_otros_sigue_reduciendo_el_conjunto() {
+    // Por debajo de ~34 × 34 px la página mínima (2 hijos) alcanza a todo el conjunto: antes salía UN "Otros" con todo,
+    // idéntico a la raíz. Ahora, si una página no reduce el conjunto, no se agrupa y se reparten los hijos tal cual.
+    for size in [
+        (1u32, 1u32),
+        (10, 10),
+        (20, 20),
+        (33, 33),
+        (30, 25),
+        (34, 34),
+        (40, 20),
+    ] {
+        for n in [1usize, 2, 3, 4, 5, 8, 40, 200] {
+            for equal in [true, false] {
+                let mut r = Rng(n as u64 * 31 + size.0 as u64);
+                let t = flat(n, |i| {
+                    if equal {
+                        1_000_000
+                    } else {
+                        1_000_000 / (i as u64 + 1) + 1 + r.next() % 7
+                    }
+                });
+                let (nodes, deep) = explore_groups(&t, Root::node(0), size, 0);
+                assert_eq!(nodes, n, "n = {n}, viewport {size:?}, iguales {equal}");
+                assert!(deep < 8, "n = {n}, viewport {size:?}: profundidad {deep}");
+            }
+        }
+    }
+    // El caso exacto: dos hijos iguales en un viewport de 20 × 20 se muestran los dos, sin "Otros".
+    let t = flat(2, |_| 5_000_000);
+    let l = Layout::compute(&t, key((20, 20), Depth::One));
+    assert_eq!(l.others().len(), 0);
+    assert_eq!(l.cells().len(), 2);
+}
+
+#[test]
 fn el_sufijo_normal_sigue_funcionando_y_el_cero_no_se_pagina() {
     // Hijos de tamaños muy distintos: grandes + cola diminuta = un solo 'Otros' sufijo (comportamiento original).
     let mut kids: Vec<Spec> = (0..5)

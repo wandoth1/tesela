@@ -377,6 +377,34 @@ mod catalog_tests {
         }
     }
 
+    /// Ningún porcentaje se escribe a mano: el espacio antes de `%` cambia con el idioma (`19 %` en es, `19%` en en) y lo
+    /// decide Fluent (`Tr::pct` y `Tr::pct_fine`). Cualquier literal de cadena del código con un `%` falla.
+    #[test]
+    fn ningun_porcentaje_se_escribe_a_mano_en_el_codigo() {
+        let mut bad = Vec::new();
+        for (file, src) in all_sources() {
+            // Solo el código de producción (las pruebas de cada módulo pueden citar textos ya formateados).
+            let prod = src.split("#[cfg(test)]").next().unwrap_or(src);
+            let prod: String = prod
+                .lines()
+                .filter(|l| !l.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join(
+                    "
+",
+                );
+            for lit in literals(&prod) {
+                if lit.contains('%') {
+                    bad.push(format!("{file}: {lit:?}"));
+                }
+            }
+        }
+        assert!(
+            bad.is_empty(),
+            "usa `tr.pct(..)` o `tr.pct_fine(..)` en vez de escribir `%`: {bad:?}"
+        );
+    }
+
     #[test]
     fn el_codigo_solo_usa_identificadores_que_existen_y_todos_se_usan() {
         let known = ids(ES);

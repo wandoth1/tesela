@@ -884,13 +884,15 @@ fn los_nombres_en_otros_alfabetos_acaban_en_una_fuente_que_tiene_el_glifo() {
     let base = std::env::temp_dir().join(format!("tesela-test-{}", uuid::Uuid::new_v4()));
     let root = base.join("raiz");
     std::fs::create_dir_all(&root).unwrap();
-    let names: [(&str, Scripts); 10] = [
+    let names: [(&str, Scripts); 11] = [
         ("Documentos ñ é ü.txt", Scripts::NONE),
         ("Ελληνικά Кириллица.txt", Scripts::NONE),
         ("العربية.txt", Scripts::RTL),
         ("עברית.txt", Scripts::RTL),
         ("日本語の名前.txt", Scripts::HAN | Scripts::KANA),
         ("中文名称.txt", Scripts::HAN),
+        // 夹 es solo del chino simplificado: con japonés y chino a la vez, MS Gothic no la tiene y debe cubrirla YaHei.
+        ("夹 日本語.txt", Scripts::HAN | Scripts::KANA),
         ("한국어.txt", Scripts::HANGUL),
         ("สวัสดี.txt", Scripts::THAI),
         ("नमस्ते.txt", Scripts::INDIC),
@@ -1059,6 +1061,57 @@ fn con_la_ventana_minima_la_leyenda_no_se_corta_sin_aviso() {
 }
 
 #[test]
+fn con_la_ventana_minima_la_barra_de_estado_no_se_pisa_y_los_detalles_se_desplazan() {
+    // 960 x 600 con el aviso de la demostración (el más largo) y el hueco sin explicar de la unidad entera.
+    let mut h = harness_sized(
+        opts(StartScreen::Map(MapStart::default())),
+        vec2(960.0, 600.0),
+    );
+    h.run_steps(4);
+    let rects: Vec<(&str, egui::Rect)> = [
+        "Reescanear",
+        "Modo demostración",
+        "analizado hace",
+        "El mapa explica",
+    ]
+    .iter()
+    .map(|t| {
+        let n = h
+            .query_all_by_label_contains(t)
+            .find(|n| n.rect().height() > 1.0)
+            .unwrap_or_else(|| panic!("no hay `{t}` en la barra de estado"));
+        (*t, n.rect())
+    })
+    .collect();
+    for (i, (a, ra)) in rects.iter().enumerate() {
+        // Dentro de la ventana...
+        assert!(
+            ra.right() <= 960.0 + 0.5 && ra.left() >= -0.5,
+            "{a} fuera de la ventana: {ra:?}"
+        );
+        // ...y sin tocar a ninguno de los demás.
+        for (b, rb) in &rects[i + 1..] {
+            assert!(
+                !ra.intersects(*rb),
+                "`{a}` y `{b}` se solapan: {ra:?} {rb:?}"
+            );
+        }
+    }
+    // Los botones de los detalles: o se ven enteros dentro de la ventana, o el panel se desplaza con su barra a la vista.
+    let all_in = ["Copiar ruta", "Propiedades"].iter().all(|t| {
+        h.query_all_by_label_contains(t)
+            .any(|n| n.rect().bottom() <= 600.0 - 88.0 + 0.5)
+    });
+    assert!(
+        all_in || explore(&h).details_overflow,
+        "los detalles quedan cortados sin barra de desplazamiento"
+    );
+    for t in ["Copiar ruta", "Propiedades"] {
+        assert!(h.query_all_by_label_contains(t).count() >= 1, "{t}");
+    }
+}
+
+#[test]
 fn un_escaneo_que_no_puede_empezar_vuelve_al_inicio_con_el_error() {
     let mut o = opts(StartScreen::Home);
     o.demo = None;
@@ -1082,37 +1135,96 @@ fn un_escaneo_que_no_puede_empezar_vuelve_al_inicio_con_el_error() {
 }
 
 #[test]
-fn cancelar_o_cerrar_la_pantalla_antes_de_que_arranque_el_escaneo_no_muestra_el_mapa() {
+fn cancelar_o_cerrar_la_pantalla_detiene_el_escaneo_sin_dejarlo_huerfano() {
     use crate::app::ScanRequest;
-    use crate::scan::{ScanOutcome, ScanScreen};
+    use crate::scan::{ScanOutcome, ScanScreen, test_hooks};
+    use std::time::{Duration, Instant};
     let base = std::env::temp_dir().join(format!("tesela-test-{}", uuid::Uuid::new_v4()));
-    std::fs::create_dir_all(base.join("a")).unwrap();
-    std::fs::write(base.join("a").join("x.bin"), [1u8; 9000]).unwrap();
-    let root = dunce::canonicalize(&base).unwrap();
-    let ctx = egui::Context::default();
-    let req = ScanRequest {
-        root: root.clone(),
+    let mk = |name: &str| {
+        let d = base.join(name);
+        std::fs::create_dir_all(d.join("a")).unwrap();
+        std::fs::write(d.join("a").join("x.bin"), [1u8; 9000]).unwrap();
+        dunce::canonicalize(&d).unwrap()
+    };
+    let req = |root: &std::path::Path| ScanRequest {
+        root: root.to_path_buf(),
         label: "t".into(),
         drive: None,
     };
-    let mut s = ScanScreen::real(&ctx, req.clone(), false);
-    s.cancel(); // antes de que el hilo de arranque termine
-    let t0 = std::time::Instant::now();
+    let ctx = egui::Context::default();
+    // Espera a que TODOS los escaneos arrancados con esa raíz (`n` como mínimo) estén cancelados.
+    let all_cancelled = |root: &std::path::Path, n: usize| {
+        let t0 = Instant::now();
+        loop {
+            let (started, cancelled) = test_hooks::counts(root);
+            if started >= n && cancelled == started {
+                return started;
+            }
+            assert!(
+                t0.elapsed().as_secs() < 30,
+                "escaneos {started}, cancelados {cancelled}"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
+
+    // A. Cancelar antes de que el arranque termine: se descarta y el escaneo creado se cancela.
+    let root = mk("a");
+    let mut s = ScanScreen::real(&ctx, req(&root), false);
+    s.cancel();
+    let t0 = Instant::now();
     let out = loop {
         if let Some(o) = s.poll(&ctx) {
             break o;
         }
         assert!(t0.elapsed().as_secs() < 20);
-        std::thread::sleep(std::time::Duration::from_millis(10));
+        std::thread::sleep(Duration::from_millis(5));
     };
     assert!(
         matches!(out, ScanOutcome::Cancelled),
         "un escaneo cancelado se descarta"
     );
-    // Cerrar la pantalla (Drop) sin esperar tampoco deja nada colgado ni entra en pánico.
-    let s2 = ScanScreen::real(&ctx, req, false);
-    drop(s2);
-    std::thread::sleep(std::time::Duration::from_millis(300));
+    all_cancelled(&root, 1);
+
+    // B. Soltar la pantalla sin más (Drop) mientras arranca.
+    let root = mk("b");
+    drop(ScanScreen::real(&ctx, req(&root), false));
+    all_cancelled(&root, 1);
+
+    // C. LA CARRERA: el resultado del arranque ya está entregado, la pantalla no lo ha recogido y se suelta.
+    let root = mk("c");
+    let s = ScanScreen::real(&ctx, req(&root), false);
+    let t0 = Instant::now();
+    while test_hooks::counts(&root).0 == 0 {
+        assert!(t0.elapsed().as_secs() < 20, "el escaneo no arrancó");
+        std::thread::sleep(Duration::from_millis(2));
+    }
+    std::thread::sleep(Duration::from_millis(50)); // el hilo ya dejó el resultado
+    assert_eq!(
+        test_hooks::counts(&root),
+        (1, 0),
+        "arrancado y sin cancelar mientras la pantalla lo tiene"
+    );
+    drop(s);
+    assert_eq!(
+        test_hooks::counts(&root),
+        (1, 1),
+        "al soltar la pantalla se cancela lo ya entregado"
+    );
+
+    // D. Muchas veces, con esperas distintas: ninguno se queda sin cancelar.
+    let root = mk("d");
+    for i in 0..40u64 {
+        let s = ScanScreen::real(&ctx, req(&root), false);
+        std::thread::sleep(Duration::from_micros(i * 150));
+        if i % 2 == 0 {
+            drop(s);
+        } else {
+            let mut s = s;
+            s.cancel();
+        }
+    }
+    assert_eq!(all_cancelled(&root, 40), 40);
     std::fs::remove_dir_all(&base).unwrap();
 }
 
