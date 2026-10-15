@@ -147,6 +147,8 @@ pub struct Env<'a> {
     pub drives: &'a [DriveInfo],
     pub drives_loading: bool,
     pub settings: Settings,
+    /// Hay una ventana modal abierta ("Acerca de"): las teclas de navegación de la exploración no actúan.
+    pub modal_open: bool,
     pub actions: &'a mut Vec<Action>,
 }
 
@@ -472,6 +474,7 @@ impl TeselaUi {
                 drives: &self.drives,
                 drives_loading: self.drives_rx.is_some(),
                 settings: self.settings,
+                modal_open: self.about.open,
                 actions: &mut actions,
             };
             match &mut self.screen {

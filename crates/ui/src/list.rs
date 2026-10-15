@@ -120,6 +120,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
             }
             if resp.has_focus() {
                 focused = Some(i);
+                ex.nav_focus = Some(resp.id);
             }
             if resp.gained_focus() {
                 // Con Tab la selección sigue al foco: así Intro abre justo la fila enfocada.

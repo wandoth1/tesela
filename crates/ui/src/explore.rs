@@ -89,6 +89,10 @@ pub struct Explore {
     focus_search: bool,
     /// El buscador tiene el foco del teclado (las teclas de navegación no actúan mientras se escribe).
     search_focused: bool,
+    /// Último widget de navegación (el mapa o una fila de la lista) que tuvo el foco. Intro, Retroceso y las flechas
+    /// solo actúan si el foco está en él o en ningún widget: con otro control enfocado (un botón, un enlace...) las
+    /// teclas son suyas.
+    pub(crate) nav_focus: Option<egui::Id>,
     search_hits: Option<(String, Root, Arc<Vec<NodeId>>)>,
     /// Los mismos aciertos como conjunto (para la veladura del mapa: pertenencia en O(1)).
     search_set: Option<(String, Root, Arc<std::collections::HashSet<NodeId>>)>,
@@ -143,6 +147,7 @@ impl Explore {
             toast: None,
             focus_search: false,
             search_focused: false,
+            nav_focus: None,
             search_hits: None,
             search_set: None,
         }
@@ -428,10 +433,21 @@ impl Explore {
         if self.search_focused {
             return;
         }
-        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Backspace)) {
+        // Una ventana modal o un menú abierto se quedan con el teclado (Escape lo cierra, Intro activa su opción).
+        if env.modal_open || egui::Popup::is_any_open(ctx) {
+            return;
+        }
+        // Intro, Retroceso y las flechas son de la navegación SOLO si el foco está en el mapa, en una fila de la lista
+        // o en ningún widget. Con un botón enfocado, Intro y Espacio lo activan (no se consumen aquí).
+        let nav = match ctx.memory(|m| m.focused()) {
+            None => true,
+            Some(id) => self.nav_focus == Some(id),
+        };
+        if nav && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Backspace)) {
             self.up();
         }
-        if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter))
+        if nav
+            && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter))
             && let Some(sel) = self.selection
         {
             self.enter(sel);

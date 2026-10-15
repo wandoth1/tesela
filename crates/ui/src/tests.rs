@@ -1404,3 +1404,221 @@ fn acerca_de_sale_en_ingles_con_el_idioma_en_ingles() {
     h.get_by_label_contains("License: MIT or Apache-2.0");
     h.get_by_label("Third-party notices");
 }
+
+// --- Teclado real: Tab recorre el orden REAL y Intro/Espacio activan el control enfocado (M3, N1) ---
+
+/// El nodo con el foco de accesibilidad: (rol, etiqueta, rectángulo).
+fn focused(h: &Harness<'static, App>) -> Option<(egui::accesskit::Role, String, egui::Rect)> {
+    h.queryable_node()
+        .children_recursive()
+        .find(|n| n.is_focused())
+        .map(|n| {
+            (
+                n.accesskit_node().role(),
+                n.accesskit_node().label().unwrap_or_default(),
+                n.rect(),
+            )
+        })
+}
+
+fn focused_label(h: &Harness<'static, App>) -> String {
+    focused(h).map(|f| f.1).unwrap_or_default()
+}
+
+/// Pulsa Tab hasta que el foco esté en un control cuya etiqueta empiece por `prefix`.
+fn tab_to(h: &mut Harness<'static, App>, prefix: &str) {
+    for _ in 0..60 {
+        h.key_press(Key::Tab);
+        h.run_steps(2);
+        if focused_label(h).starts_with(prefix) {
+            return;
+        }
+    }
+    panic!("Tab no llegó a `{prefix}` (foco: `{}`)", focused_label(h));
+}
+
+/// Selecciona la primera carpeta de la carpeta actual y la devuelve.
+fn select_first_dir(h: &mut Harness<'static, App>) -> tesela_model::NodeId {
+    let dir = explore(h)
+        .shown_children()
+        .iter()
+        .find(|&k| explore(h).tree.node(k).is_dir())
+        .expect("hay una carpeta");
+    h.state_mut()
+        .ui_mut()
+        .explore_mut()
+        .unwrap()
+        .select(Some(Sel::Node(dir)));
+    h.run_steps(2);
+    dir
+}
+
+#[test]
+fn tab_recorre_el_orden_real_y_da_la_vuelta() {
+    let mut h = harness(opts(user_folder()));
+    let mut order: Vec<String> = Vec::new();
+    for _ in 0..60 {
+        h.key_press(Key::Tab);
+        h.run_steps(2);
+        let (role, label, rect) = focused(&h).expect("Tab siempre deja el foco en algún control");
+        if order.first() == Some(&label) {
+            break; // dio la vuelta
+        }
+        // Todo lo que recibe el foco es un control con nombre y a la vista; los botones pintan su anillo.
+        assert!(!label.is_empty(), "un control sin nombre recibió el foco");
+        assert!(rect.width() > 1.0 && rect.height() > 1.0, "{label}");
+        if role == egui::accesskit::Role::Button {
+            assert!(focus_ring_around(&h, rect), "{label}: sin anillo de foco");
+        }
+        order.push(label);
+    }
+    // El ciclo se cierra y pasa por todos los controles de la ventana principal.
+    assert!(order.len() >= 10, "{order:?}");
+    for needed in [
+        "Subir un nivel",
+        "Ir a Users",
+        "Ajustes",
+        "Tipo",
+        "Buscar",
+        "Analizar Sistema (C:)",
+        "Mapa",
+        "Lista",
+        "Reescanear (F5)",
+        "Mapa de ",
+    ] {
+        assert!(
+            order.iter().any(|l| l.starts_with(needed)),
+            "Tab no llega a `{needed}`: {order:?}"
+        );
+    }
+    let unique: std::collections::HashSet<_> = order.iter().collect();
+    assert_eq!(
+        unique.len(),
+        order.len(),
+        "algún control se repite: {order:?}"
+    );
+}
+
+#[test]
+fn con_tab_intro_y_espacio_activan_el_boton_enfocado_y_no_entran_en_la_carpeta_seleccionada() {
+    let mut h = harness(opts(user_folder()));
+    let here = explore(&h).root.node;
+    // Hay una carpeta seleccionada: si Intro se gastara como "entrar", el botón no se activaría y la raíz cambiaría.
+    select_first_dir(&mut h);
+    assert_eq!(explore(&h).view, View::Map);
+    // Tab hasta "Lista" y Intro: cambia la vista y NO entra.
+    tab_to(&mut h, "Lista");
+    h.key_press(Key::Enter);
+    h.run_steps(3);
+    assert_eq!(explore(&h).view, View::List);
+    assert_eq!(explore(&h).root.node, here, "Intro entró en la carpeta");
+    // Mayús+Tab desde "Lista" lleva a "Mapa" (en la vista de lista cada fila es una parada de Tab): Espacio lo activa.
+    h.key_press_modifiers(Modifiers::SHIFT, Key::Tab);
+    h.run_steps(2);
+    assert_eq!(focused_label(&h), "Mapa");
+    h.key_press(Key::Space);
+    h.run_steps(3);
+    assert_eq!(explore(&h).view, View::Map);
+    assert_eq!(explore(&h).root.node, here);
+    // Retroceso con un botón enfocado tampoco sube de nivel.
+    assert!(!focused_label(&h).is_empty());
+    h.key_press(Key::Backspace);
+    h.run_steps(3);
+    assert_eq!(
+        explore(&h).root.node,
+        here,
+        "Retroceso subió con un botón enfocado"
+    );
+    // Y Espacio sobre "Lista" con el foco en él también cambia la vista.
+    h.key_press(Key::Tab);
+    h.run_steps(2);
+    assert_eq!(focused_label(&h), "Lista");
+    h.key_press(Key::Space);
+    h.run_steps(3);
+    assert_eq!(explore(&h).view, View::List);
+}
+
+#[test]
+fn con_tab_intro_sobre_reescanear_reescanea_y_no_navega() {
+    let mut h = harness(opts(StartScreen::Home));
+    h.get_by_label("Analizar Sistema (C:)").click();
+    h.run_steps(3);
+    h.get_by_label("Parar y ver lo que hay").click();
+    h.run_steps(5);
+    assert_eq!(h.state().ui().screen_name(), "explore");
+    select_first_dir(&mut h);
+    tab_to(&mut h, "Reescanear");
+    h.key_press(Key::Enter);
+    h.run_steps(3);
+    assert_eq!(
+        h.state().ui().screen_name(),
+        "scan",
+        "Intro sobre Reescanear debe reescanear"
+    );
+}
+
+#[test]
+fn con_tab_intro_en_el_mapa_sigue_entrando_y_en_una_fila_de_la_lista_tambien() {
+    // Mapa: Tab hasta el mapa (foco del teclado en él) e Intro entra en la carpeta seleccionada.
+    let mut h = harness(opts(StartScreen::Map(MapStart::default())));
+    let users = explore(&h).tree.child_by_name(0, b"Users").unwrap();
+    h.state_mut()
+        .ui_mut()
+        .explore_mut()
+        .unwrap()
+        .select(Some(Sel::Node(users)));
+    h.run_steps(2);
+    tab_to(&mut h, "Mapa de ");
+    h.key_press(Key::Enter);
+    h.run_steps(3);
+    assert_eq!(explore(&h).root.node, users, "Intro en el mapa debe entrar");
+    // Tras un clic en el mapa, Intro y Retroceso siguen funcionando.
+    let mut h = harness(opts(StartScreen::Map(MapStart::default())));
+    let p = cell_center(&h, "Users");
+    click_at(&mut h, p);
+    h.key_press(Key::Enter);
+    h.run_steps(3);
+    assert_eq!(explore(&h).root.node, users);
+    h.key_press(Key::Backspace);
+    h.run_steps(3);
+    assert_eq!(explore(&h).root.node, 0);
+    // Lista: Tab hasta una fila de carpeta e Intro la abre.
+    let mut h = harness(opts(list_start()));
+    let kids: Vec<_> = explore(&h).shown_children().iter().collect();
+    let dir = kids
+        .iter()
+        .copied()
+        .find(|&k| explore(&h).tree.node(k).is_dir())
+        .expect("hay alguna carpeta");
+    let dname = explore(&h).tree.name_lossy(dir).into_owned();
+    tab_to(&mut h, &format!("{dname}, "));
+    h.key_press(Key::Enter);
+    h.run_steps(3);
+    assert_eq!(explore(&h).root.node, dir);
+}
+
+#[test]
+fn con_una_ventana_modal_abierta_el_teclado_no_navega_por_debajo() {
+    let mut h = harness(opts(user_folder()));
+    let here = explore(&h).root.node;
+    let dir = select_first_dir(&mut h);
+    h.get_by_label("Ajustes").click();
+    h.run_steps(3);
+    h.get_by_label("Acerca de Tesela").click();
+    h.run_steps(4);
+    h.get_by_label(&format!("Versión {}", crate::about::VERSION));
+    for key in [Key::Enter, Key::Backspace] {
+        h.key_press(key);
+        h.run_steps(3);
+        assert_eq!(
+            explore(&h).root.node,
+            here,
+            "{key:?} navegó bajo la ventana modal"
+        );
+    }
+    assert_eq!(explore(&h).selection, Some(Sel::Node(dir)));
+    // Escape la cierra.
+    h.key_press(Key::Escape);
+    h.run_steps(3);
+    assert!(h.query_by_label_contains("Versión ").is_none());
+}

@@ -677,6 +677,9 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
         ex.enter(sel);
         return;
     }
+    if resp.has_focus() {
+        ex.nav_focus = Some(resp.id);
+    }
     if resp.has_focus() && !animating {
         let dir = ctx.input_mut(|i| {
             if i.consume_key(Modifiers::NONE, Key::ArrowLeft) {

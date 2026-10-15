@@ -372,6 +372,7 @@ mod tests {
                                 drives: &[],
                                 drives_loading: false,
                                 settings: Settings::default(),
+                                modal_open: false,
                                 actions: &mut actions,
                             };
                             button(ui, &mut env, style, None, &label, enabled);
