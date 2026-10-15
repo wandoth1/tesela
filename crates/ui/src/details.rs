@@ -1,0 +1,342 @@
+//! Panel de detalles (PLAN.md §2.3): en disco frente a tamaño lógico, archivos, porcentaje del padre, desglose por
+//! tipo, frase de antigüedad, avisos de la clase del nodo (bloque del sistema, "solo informar", nube, incompleto) y
+//! acciones. Sin selección muestra la carpeta actual.
+
+use crate::app::Env;
+use crate::args;
+use crate::describe::{self, Special};
+use crate::explore::{Explore, Sel};
+use crate::icons::Icon;
+use crate::map::{info_key, stacked_bar};
+use crate::platform;
+use crate::theme::{self, Palette};
+use crate::widgets::{self, ButtonStyle};
+use egui::{RichText, Ui};
+use tesela_model::{NodeId, flags};
+
+fn stat(ui: &mut Ui, pal: &Palette, label: &str, value: String, big: bool) {
+    ui.vertical(|ui| {
+        ui.spacing_mut().item_spacing.y = 2.0;
+        ui.label(RichText::new(label).size(12.0).color(pal.text_muted));
+        let t = RichText::new(value).color(pal.text);
+        ui.label(if big {
+            t.font(theme::font_semibold(18.0))
+        } else {
+            t.size(15.0)
+        });
+    });
+}
+
+fn note(ui: &mut Ui, env: &mut Env, icon: Icon, text: String, color: egui::Color32) {
+    ui.horizontal_top(|ui| {
+        env.icons.show(ui, icon, 16.0, color);
+        ui.add(egui::Label::new(RichText::new(text).size(13.0).color(env.pal.text_muted)).wrap());
+    });
+}
+
+/// Pinta el panel.
+pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
+    let pal = env.pal;
+    let tree = ex.tree.clone();
+    let sel = ex.selection.unwrap_or(Sel::Node(ex.root.node));
+    let is_current = ex.selection.is_none();
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.spacing_mut().item_spacing.y = 10.0;
+            widgets::section_label(
+                ui,
+                &pal,
+                &env.tr.t(if is_current {
+                    "details-folder"
+                } else {
+                    "details-selection"
+                }),
+            );
+            let (id, group) = match sel {
+                Sel::Node(id) => (id, None),
+                Sel::Group(o) => (o.parent, Some(o)),
+            };
+            let node = *tree.node(id);
+            let special = if group.is_none() {
+                describe::special(&tree, id)
+            } else {
+                None
+            };
+            let lower = group.is_none() && describe::is_lower_bound(&tree, id);
+
+            // Título y ruta.
+            let title = match group {
+                Some(o) => env.tr.ta(
+                    "others-title",
+                    args!["n" => env.tr.int(o.count as u64), "size" => env.tr.size(o.bytes)],
+                ),
+                None => {
+                    let n = describe::display_name(&tree, id, env.tr);
+                    if id == 0 {
+                        n.trim_end_matches('\\').to_string()
+                    } else {
+                        n
+                    }
+                }
+            };
+            ui.label(
+                RichText::new(&title)
+                    .font(theme::font_semibold(20.0))
+                    .color(pal.text),
+            );
+            if special != Some(Special::SystemBlock) {
+                ui.label(
+                    RichText::new(ex.path_of(sel))
+                        .family(egui::FontFamily::Monospace)
+                        .size(12.0)
+                        .color(pal.text_muted),
+                );
+            }
+            if ex.info.approximate {
+                let tip = env.tr.t("approx-tip");
+                widgets::chip(
+                    ui,
+                    env,
+                    Some(Icon::Info),
+                    &env.tr.t("approx-badge"),
+                    pal.review,
+                    pal.accent_soft,
+                )
+                .on_hover_text(tip);
+            }
+
+            // Cifras.
+            let bytes = group.map_or(node.alloc, |o| o.bytes);
+            let alloc_txt = if lower {
+                env.tr.size_min(bytes)
+            } else {
+                env.tr.size(bytes)
+            };
+            let logical_txt = if group.is_some() || special.is_some() && node.logical == 0 {
+                "—".to_string()
+            } else if lower {
+                env.tr.size_min(node.logical)
+            } else {
+                env.tr.size(node.logical)
+            };
+            let files_txt = match (group, node.is_dir()) {
+                (None, true) => {
+                    let f = env.tr.int(node.files_below as u64);
+                    if lower { format!("≥ {f}") } else { f }
+                }
+                _ => "—".to_string(),
+            };
+            let (parent_alloc, parent_name) = match tree.parent(id) {
+                Some(p) if group.is_none() => {
+                    (tree.node(p).alloc, describe::display_name(&tree, p, env.tr))
+                }
+                Some(p) => (tree.node(p).alloc, describe::display_name(&tree, p, env.tr)),
+                None => (0, String::new()),
+            };
+            let share = if parent_alloc > 0 {
+                100.0 * bytes as f64 / parent_alloc as f64
+            } else {
+                100.0
+            };
+            let share_txt = if tree.parent(id).is_some() {
+                env.tr.pct_fine(share)
+            } else {
+                env.tr.pct(100.0)
+            };
+            let parent_label = if tree.parent(id).is_some() {
+                env.tr.ta("details-of", args!["name" => parent_name])
+            } else {
+                env.tr.t("details-of-disk")
+            };
+            ui.columns(2, |cols| {
+                stat(
+                    &mut cols[0],
+                    &pal,
+                    &env.tr.t("details-on-disk"),
+                    alloc_txt,
+                    true,
+                );
+                stat(
+                    &mut cols[1],
+                    &pal,
+                    &env.tr.t("details-size"),
+                    logical_txt,
+                    false,
+                );
+            });
+            ui.columns(2, |cols| {
+                stat(
+                    &mut cols[0],
+                    &pal,
+                    &env.tr.t("details-files"),
+                    files_txt,
+                    false,
+                );
+                stat(&mut cols[1], &pal, &parent_label, share_txt, false);
+            });
+
+            // Composición y antigüedad (solo carpetas con datos).
+            if group.is_none() && node.is_dir() && node.alloc > 0 && special.is_none() {
+                let h = tree.hist(id);
+                stacked_bar(ui, &pal, h);
+                let tp = describe::type_phrase(env.tr, h);
+                if !tp.is_empty() {
+                    ui.label(RichText::new(tp).size(13.0).color(pal.text_muted));
+                }
+                if let Some(ap) = describe::age_phrase(env.tr, h) {
+                    ui.label(RichText::new(ap).size(13.0).color(pal.text_muted));
+                }
+            }
+
+            // Avisos por clase.
+            match special {
+                Some(Special::SystemBlock) => {
+                    note(ui, env, Icon::Info, env.tr.t("system-tip"), pal.text_muted);
+                    ui.add(egui::Label::new(
+                        RichText::new(env.tr.t("system-admin-link"))
+                            .size(13.0)
+                            .color(pal.text_muted),
+                    ))
+                    .on_hover_text(env.tr.t("next-version"));
+                }
+                Some(Special::InfoOnly(k)) => {
+                    widgets::chip(
+                        ui,
+                        env,
+                        Some(Icon::Warning),
+                        &env.tr.t("risk-info-only"),
+                        pal.danger,
+                        pal.accent_soft,
+                    );
+                    note(ui, env, Icon::Warning, env.tr.t(info_key(k)), pal.danger);
+                }
+                None => {}
+            }
+            if lower {
+                note(
+                    ui,
+                    env,
+                    Icon::Warning,
+                    env.tr.t("incomplete-note"),
+                    pal.review,
+                );
+            }
+            if group.is_none() && node.flags & flags::CLOUD != 0 {
+                note(ui, env, Icon::Cloud, env.tr.t("cloud-note"), pal.accent);
+            }
+            if group.is_some() {
+                note(
+                    ui,
+                    env,
+                    Icon::Info,
+                    env.tr.t("tip-open-group"),
+                    pal.text_muted,
+                );
+            }
+
+            // Acciones.
+            ui.add_space(4.0);
+            let _ = widgets::button(
+                ui,
+                env,
+                ButtonStyle::Secondary,
+                Some(Icon::Cart),
+                &env.tr.t("menu-add-basket"),
+                false,
+            );
+            let is_system = special == Some(Special::SystemBlock);
+            let real = !env.demo && !is_system;
+            ui.horizontal_wrapped(|ui| {
+                let r = widgets::button(
+                    ui,
+                    env,
+                    ButtonStyle::Secondary,
+                    Some(Icon::Open),
+                    &env.tr.t("menu-open-explorer"),
+                    real,
+                );
+                let r = if !real {
+                    r.on_hover_text(if env.demo {
+                        env.tr.t("demo-unavailable")
+                    } else {
+                        env.tr.t("menu-unavailable-system")
+                    })
+                } else {
+                    r
+                };
+                if r.clicked()
+                    && let Err(e) = platform::reveal_in_explorer(&tree.path(id))
+                {
+                    ex.toast = Some((
+                        env.tr
+                            .ta("error-open-explorer", args!["error" => e.to_string()]),
+                        ui.input(|i| i.time) + 3.0,
+                    ));
+                }
+                if widgets::button(
+                    ui,
+                    env,
+                    ButtonStyle::Secondary,
+                    Some(Icon::Copy),
+                    &env.tr.t("menu-copy-path"),
+                    !is_system,
+                )
+                .clicked()
+                {
+                    ui.ctx().copy_text(ex.path_of(sel));
+                    ex.toast = Some((env.tr.t("path-copied"), ui.input(|i| i.time) + 2.0));
+                }
+                let r = widgets::button(
+                    ui,
+                    env,
+                    ButtonStyle::Secondary,
+                    None,
+                    &env.tr.t("menu-properties"),
+                    real,
+                );
+                if !real {
+                    r.on_hover_text(if env.demo {
+                        env.tr.t("demo-unavailable")
+                    } else {
+                        env.tr.t("menu-unavailable-system")
+                    });
+                } else if r.clicked() {
+                    platform::show_properties(&tree.path(id));
+                }
+            });
+
+            // Lo más grande aquí.
+            if group.is_none() && describe::can_enter(&tree, id) {
+                ui.add_space(6.0);
+                widgets::section_label(ui, &pal, &env.tr.t("details-biggest"));
+                let kids = tesela_layout::Children::of(&tree, id);
+                for c in kids.iter_from(0).take(5) {
+                    row_biggest(ui, env, &tree, c);
+                }
+            }
+        });
+}
+
+fn row_biggest(ui: &mut Ui, env: &Env, tree: &tesela_model::Tree, c: NodeId) {
+    let pal = env.pal;
+    let n = tree.node(c);
+    let size = if describe::is_lower_bound(tree, c) {
+        env.tr.size_min(n.alloc)
+    } else {
+        env.tr.size(n.alloc)
+    };
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::Label::new(
+                RichText::new(describe::display_name(tree, c, env.tr))
+                    .size(13.0)
+                    .color(pal.text),
+            )
+            .truncate(),
+        );
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.label(RichText::new(size).size(13.0).color(pal.text));
+        });
+    });
+}

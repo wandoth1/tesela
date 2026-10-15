@@ -285,3 +285,181 @@ mod tests {
         assert_eq!(es.pct_fine(27.0), "27 %");
     }
 }
+
+#[cfg(test)]
+mod catalog_tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    const SOURCES: [(&str, &str); 14] = [
+        ("app.rs", include_str!("app.rs")),
+        ("demo.rs", include_str!("demo.rs")),
+        ("describe.rs", include_str!("describe.rs")),
+        ("details.rs", include_str!("details.rs")),
+        ("explore.rs", include_str!("explore.rs")),
+        ("fonts.rs", include_str!("fonts.rs")),
+        ("home.rs", include_str!("home.rs")),
+        ("icons.rs", include_str!("icons.rs")),
+        ("list.rs", include_str!("list.rs")),
+        ("map.rs", include_str!("map.rs")),
+        ("platform.rs", include_str!("platform.rs")),
+        ("scan.rs", include_str!("scan.rs")),
+        ("theme.rs", include_str!("theme.rs")),
+        ("widgets.rs", include_str!("widgets.rs")),
+    ];
+
+    /// Identificadores de mensaje de un `.ftl`: las líneas que empiezan por `id =` (sin sangría).
+    fn ids(src: &str) -> BTreeSet<String> {
+        src.lines()
+            .filter(|l| !l.starts_with([' ', '#', '}', '\t']) && l.contains('='))
+            .map(|l| l.split('=').next().unwrap().trim().to_string())
+            .collect()
+    }
+
+    /// Literales de cadena de una fuente (sin escapes complicados: los textos de las claves no los llevan).
+    fn literals(src: &str) -> Vec<String> {
+        let mut out = vec![];
+        let b = src.as_bytes();
+        let mut i = 0;
+        while i < b.len() {
+            if b[i] == b'"' {
+                let start = i + 1;
+                let mut j = start;
+                while j < b.len() && b[j] != b'"' {
+                    if b[j] == b'\\' {
+                        j += 1;
+                    }
+                    j += 1;
+                }
+                out.push(src[start..j.min(b.len())].to_string());
+                i = j + 1;
+            } else {
+                i += 1;
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn los_dos_catalogos_tienen_exactamente_los_mismos_identificadores() {
+        let (es, en) = (ids(ES), ids(EN));
+        assert!(es.len() > 100);
+        let only_es: Vec<_> = es.difference(&en).collect();
+        let only_en: Vec<_> = en.difference(&es).collect();
+        assert!(only_es.is_empty(), "solo en es.ftl: {only_es:?}");
+        assert!(only_en.is_empty(), "solo en en.ftl: {only_en:?}");
+        // Los dos se cargan sin errores (identificadores repetidos, sintaxis).
+        for lang in Lang::ALL {
+            let tr = Tr::new(lang);
+            for id in &es {
+                assert!(tr.has(id), "{lang:?}: {id}");
+                let all = crate::args![
+                    "name" => "x", "files" => "x", "size" => "x", "total" => "x", "time" => "x", "pct" => "x", "free" => "x",
+                    "used" => "x", "ago" => "x", "explained" => "x", "done" => 1u64, "n" => 2u64, "count" => "2",
+                    "parent" => "x", "error" => "x", "type" => "x", "label" => "x"
+                ];
+                assert!(!tr.ta(id, all).is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn el_codigo_solo_usa_identificadores_que_existen_y_todos_se_usan() {
+        let known = ids(ES);
+        let mut used: BTreeSet<String> = BTreeSet::new();
+        for (file, src) in SOURCES {
+            if file == "icons.rs" {
+                continue;
+            }
+            // `.t("id")` y `.ta("id", ...)`.
+            for needle in [".t(\"", ".ta(\""] {
+                let mut rest = src;
+                while let Some(p) = rest.find(needle) {
+                    let after = &rest[p + needle.len()..];
+                    let id = &after[..after.find('"').unwrap()];
+                    assert!(
+                        known.contains(id),
+                        "{file}: identificador inexistente `{id}`"
+                    );
+                    used.insert(id.to_string());
+                    rest = after;
+                }
+            }
+            // Identificadores indirectos (tablas de claves): cualquier literal que sea un identificador del catálogo.
+            for lit in literals(src) {
+                if known.contains(&lit) {
+                    used.insert(lit);
+                }
+            }
+        }
+        let unused: Vec<_> = known.difference(&used).collect();
+        assert!(unused.is_empty(), "identificadores sin usar: {unused:?}");
+    }
+
+    #[test]
+    fn no_hay_cadenas_literales_de_interfaz_en_el_codigo() {
+        // Llamadas que reciben el texto que verá el usuario: su primer argumento no puede ser un literal con letras.
+        let calls = [
+            "RichText::new(\"",
+            "Label::new(\"",
+            "Button::new(\"",
+            ".label(\"",
+            ".heading(\"",
+            ".on_hover_text(\"",
+            ".on_disabled_hover_text(\"",
+            ".hint_text(\"",
+            ".link(\"",
+            ".selectable_label(",
+            ".checkbox(",
+            "section_label(ui, &pal, \"",
+        ];
+        for (file, src) in SOURCES {
+            if file == "icons.rs" || file == "platform.rs" {
+                continue;
+            }
+            // Fuera de los bloques de tests de cada archivo.
+            let body = src.split("#[cfg(test)]").next().unwrap();
+            for c in calls {
+                let mut rest = body;
+                while let Some(p) = rest.find(c) {
+                    let after = &rest[p + c.len()..];
+                    if c.ends_with('"') {
+                        let lit = &after[..after.find('"').unwrap()];
+                        assert!(
+                            !lit.chars().any(char::is_alphabetic),
+                            "{file}: texto de interfaz escrito en el código: {c}{lit}\""
+                        );
+                    } else {
+                        // `selectable_label(selected, tr.t(...))`: el segundo argumento debe salir del catálogo.
+                        let line = &after[..after.find('\n').unwrap_or(after.len())];
+                        assert!(!line.contains(", \""), "{file}: literal en {c}{line}");
+                    }
+                    rest = after;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn los_plurales_y_los_argumentos_funcionan_en_los_dos_idiomas() {
+        let es = Tr::new(Lang::Es);
+        let en = Tr::new(Lang::En);
+        let one = |tr: &Tr| tr.ta("files-count", crate::args!["n" => 1u64, "count" => "1"]);
+        let many = |tr: &Tr| tr.ta("files-count", crate::args!["n" => 142u64, "count" => "142"]);
+        assert_eq!(one(&es), "1 archivo");
+        assert_eq!(many(&es), "142 archivos");
+        assert_eq!(one(&en), "1 file");
+        assert_eq!(many(&en), "142 files");
+        assert_eq!(
+            es.ta(
+                "tip-pct-of",
+                crate::args!["pct" => "19 %", "parent" => "usuario"]
+            ),
+            "19 % de usuario"
+        );
+        // Sin marcas de aislamiento bidireccional (egui las dibujaría como cajitas).
+        let s = es.ta("analyze-drive", crate::args!["name" => "Sistema (C:)"]);
+        assert_eq!(s, "Analizar Sistema (C:)");
+        assert!(!s.contains('\u{2068}') && !s.contains('\u{2069}'));
+    }
+}

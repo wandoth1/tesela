@@ -444,8 +444,8 @@ fn build_spec(rng: &mut Rng, variant: Variant) -> Spec {
             v
         },
     };
-    // 23 carpetas pequeñas: acaban agrupadas en "Otros".
-    let mut small: Vec<Spec> = (0..23)
+    // 40 carpetas pequeñas (de 40 a 235 MiB): acaban agrupadas en "Otros".
+    let mut small: Vec<Spec> = (0..40)
         .map(|i| {
             dir(
                 &format!("Varios {:02}", i + 1),
@@ -453,7 +453,7 @@ fn build_spec(rng: &mut Rng, variant: Variant) -> Spec {
                     rng,
                     "v-",
                     8,
-                    (200 + 15 * (23 - i as u64)) * MIB,
+                    (40 + 5 * (40 - i as u64)) * MIB,
                     &[("txt", 2), ("jpg", 1), ("dat", 1)],
                     (30, 2000),
                 ),
@@ -653,7 +653,7 @@ fn build_spec(rng: &mut Rng, variant: Variant) -> Spec {
                     "asset-",
                     80,
                     34 * GIB,
-                    &[("pak", 4), ("dll", 1), ("exe", 1)],
+                    &[("dll", 4), ("exe", 2), ("pak", 1)],
                     (100, 700),
                 ),
             ),
@@ -664,7 +664,7 @@ fn build_spec(rng: &mut Rng, variant: Variant) -> Spec {
                     "coche-",
                     60,
                     24 * GIB,
-                    &[("pak", 4), ("dll", 1)],
+                    &[("dll", 4), ("exe", 2), ("pak", 1)],
                     (200, 900),
                 ),
             ),
@@ -864,8 +864,8 @@ mod tests {
             let n = t.node(c);
             n.flags & flags::CLOUD != 0 && n.alloc == 0 && n.logical > 0
         }));
-        // 23 carpetas pequeñas para que "Otros" aparezca de verdad.
-        assert!(t.children(me).count() >= 30);
+        // 40 carpetas pequeñas para que "Otros" aparezca de verdad.
+        assert!(t.children(me).count() >= 45);
         // Los tipos dominantes varían (vídeo en Vídeos, imágenes en Imágenes...).
         let v = t.child_by_name(me, "Vídeos".as_bytes()).unwrap();
         assert_eq!(

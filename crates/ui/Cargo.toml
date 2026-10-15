@@ -13,6 +13,7 @@ tesela-model.workspace = true
 tesela-layout.workspace = true
 tesela-scanner.workspace = true
 crossbeam-channel.workspace = true
+dunce.workspace = true
 egui.workspace = true
 fluent-bundle.workspace = true
 rfd.workspace = true
