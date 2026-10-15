@@ -95,7 +95,8 @@ impl Hist {
     }
 
     /// Tramo de antigüedad (0 = menos de 1 mes ... 4 = más de 3 años) del directorio: el MÁS ANTIGUO tal que al menos
-    /// el 80 % de los bytes (calculado sobre los `u64`) están en ese tramo o en uno más antiguo. Así "el 92 % de esto
+    /// el 80 % de los bytes (calculado sobre los `u64`) están en ese tramo o en uno más antiguo. Los archivos con
+    /// `mtime` 0 (desconocido, o anterior a 1970) no cuentan para la antigüedad (sí para el tipo). Así "el 92 % de esto
     /// no se modifica desde 2022" se corresponde con el tramo. Un directorio mitad reciente, mitad antiguo da el
     /// tramo reciente (nunca se afirma más antigüedad de la que hay). `None` si no tiene bytes.
     pub fn dominant_age(&self) -> Option<usize> {

@@ -14,3 +14,6 @@ pub const INCOMPLETE: u16 = 1 << 4;
 pub const SYSTEM_INFO: u16 = 1 << 5;
 /// No se pudo listar el directorio (permisos, error de E/S...).
 pub const ERROR: u16 = 1 << 6;
+/// Algún descendiente es `INCOMPLETE`: el tamaño de este directorio es un mínimo ("≥") aunque él mismo se haya
+/// listado entero. Lo calcula el builder al agregar, propagando `INCOMPLETE` e `INCOMPLETE_BELOW` hacia la raíz.
+pub const INCOMPLETE_BELOW: u16 = 1 << 7;

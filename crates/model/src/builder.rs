@@ -2,13 +2,16 @@
 //!
 //! # Orden del algoritmo (`finish`)
 //! 1. Flags derivados: un directorio del que no llegó ningún lote es `INCOMPLETE`; uno cuyo listado falló, `ERROR`.
-//! 2. **Deduplicación de enlaces duros** por `FileId`. Va ANTES de agregar porque pone `alloc` y `logical` a 0 en los
-//!    enlaces sobrantes, y eso cambia las sumas de los directorios.
-//! 3. Adyacencia provisional (ordenación por cuenta del padre) y recorrido BFS desde la raíz.
-//! 4. Agregación bottom-up recorriendo ese BFS al revés: `alloc`, `logical`, `files_below` y los acumuladores `u64`
-//!    de los histogramas. Los umbrales del 50 % y el 80 % se aplican sobre esos `u64`.
+//! 2. Adyacencia provisional (ordenación por cuenta del padre) y recorrido BFS desde la raíz. Lo que no cuelga de la
+//!    raíz (entradas cuyo padre no llegó) queda fuera del árbol y se cuenta como huérfano.
+//! 3. **Deduplicación de enlaces duros** por `FileId`, SOLO entre las entradas alcanzadas en el BFS (un huérfano no
+//!    puede quitarle el tamaño a un enlace que sí está en el árbol). Va ANTES de agregar porque pone `alloc` y
+//!    `logical` a 0 en los enlaces sobrantes, y eso cambia las sumas de los directorios.
+//! 4. Agregación bottom-up recorriendo ese BFS al revés: `alloc`, `logical`, `files_below`, los acumuladores `u64`
+//!    (saturantes) de los histogramas y `INCOMPLETE_BELOW`. Los umbrales del 50 % y el 80 % se aplican sobre los `u64`.
 //! 5. Ordenación de los hijos de cada directorio, UNA sola vez, por `(alloc desc, nombre asc)`; el nodo sintético
-//!    `SYSTEM_INFO` va el último.
+//!    `SYSTEM_INFO` va el último. Solo existe si no hay directorios `INCOMPLETE` (si faltan cosas por escanear, la
+//!    diferencia con el espacio usado no es "espacio no explicado").
 //! 6. Asignación de los ids finales en BFS y escritura de `Node`, `mtime` e `hist`.
 //!
 //! # Determinismo
@@ -21,7 +24,7 @@
 
 use crate::flags;
 use crate::record::{Batch, DirOutcome, NO_PARENT, Record};
-use crate::tree::{Hist, NONE, Node, Tree, TreeStats};
+use crate::tree::{Hist, Node, Tree, TreeStats};
 use crate::types::{AGE_BUCKETS, FileType, age_bucket};
 use rustc_hash::FxHashMap;
 use std::cmp::Ordering;
@@ -217,14 +220,6 @@ impl TreeBuilder {
             }
         }
 
-        // 2. Deduplicación de enlaces duros.
-        if opts.dedup_hard_links {
-            dedup_hard_links(&mut recs, &names, &mut link_lo, &link_hi, &mut stats);
-        }
-        drop(link_lo);
-        drop(link_hi);
-
-        // 3. Adyacencia provisional (CSR sin ordenar) y BFS desde la raíz.
         let mut first = vec![0u32; n + 1];
         let valid_parent = |recs: &[Record], p: &Record| -> Option<usize> {
             let par = p.parent as usize;
@@ -277,6 +272,19 @@ impl TreeBuilder {
         }
         stats.orphans = present - order.len() as u64;
 
+        // 3. Deduplicación de enlaces duros, SOLO entre entradas que cuelgan de la raíz: un huérfano (su padre no
+        // llegó) no está en el árbol y no puede quitarle el tamaño a un enlace que sí está.
+        if opts.dedup_hard_links {
+            let mut reached = BitSet(vec![0u64; n / 64 + 1]);
+            for &p in &order {
+                reached.set(p);
+            }
+            link_lo.retain(|&(_, id)| reached.get(id));
+            dedup_hard_links(&mut recs, &names, &mut link_lo, &link_hi, &mut stats);
+        }
+        drop(link_lo);
+        drop(link_hi);
+
         // 4. Agregación bottom-up.
         let mut acc = vec![Acc::default(); dir_count as usize];
         for idx in (1..order.len()).rev() {
@@ -288,9 +296,9 @@ impl TreeBuilder {
                 let child = acc[slot[p] as usize];
                 let dst = &mut acc[ps];
                 for (d, s) in dst.bytes.iter_mut().zip(child.bytes) {
-                    *d += s;
+                    *d = d.saturating_add(s);
                 }
-                dst.files += child.files;
+                dst.files = dst.files.saturating_add(child.files);
                 if r.flags & flags::REPARSE != 0 {
                     stats.reparse_dirs += 1;
                 } else {
@@ -302,14 +310,23 @@ impl TreeBuilder {
                 if r.flags & flags::ERROR != 0 {
                     stats.error_dirs += 1;
                 }
+                // Los ancestros de un directorio incompleto (o con algo incompleto debajo) lo saben: su tamaño es un
+                // mínimo ("≥"). El hijo ya tiene su propio INCOMPLETE_BELOW porque se procesa antes que el padre.
+                if r.flags & (flags::INCOMPLETE | flags::INCOMPLETE_BELOW) != 0 {
+                    recs[par].flags |= flags::INCOMPLETE_BELOW;
+                }
             } else if r.flags & flags::SYSTEM_INFO == 0 {
                 let dst = &mut acc[ps];
-                dst.files += 1;
+                dst.files = dst.files.saturating_add(1);
                 let ty = FileType::classify(
                     &names[r.name_off as usize..r.name_off as usize + r.name_len as usize],
                 );
-                dst.bytes[ty as usize] += r.alloc;
-                dst.bytes[FileType::COUNT + age_bucket(opts.now_unix, r.mtime)] += r.alloc;
+                dst.bytes[ty as usize] = dst.bytes[ty as usize].saturating_add(r.alloc);
+                // Un mtime de 0 es "desconocido" (o anterior a 1970): no cuenta como el tramo más antiguo.
+                if r.mtime != 0 {
+                    let a = FileType::COUNT + age_bucket(opts.now_unix, r.mtime);
+                    dst.bytes[a] = dst.bytes[a].saturating_add(r.alloc);
+                }
                 stats.files += 1;
                 if r.flags & flags::REPARSE != 0 {
                     stats.reparse_files += 1;
@@ -336,7 +353,8 @@ impl TreeBuilder {
 
         // Nodo sintético de espacio no explicado (solo hijo de la raíz).
         let synthetic = match opts.volume_used {
-            Some(used) if used > stats.scanned_alloc => {
+            // Con directorios incompletos la diferencia no es "espacio no explicado", es lo que falta por escanear.
+            Some(used) if used > stats.scanned_alloc && stats.incomplete_dirs == 0 => {
                 let alloc = used - stats.scanned_alloc;
                 stats.unexplained_alloc = alloc;
                 recs[0].alloc = recs[0].alloc.saturating_add(alloc);
@@ -459,21 +477,24 @@ impl Acc {
         }
         let mut h = Hist::EMPTY;
         h.type_pct = percentages(types);
-        h.age_pct = percentages(ages);
         // Tipo dominante: ESTRICTAMENTE más de la mitad de los bytes.
         for (i, &b) in types.iter().enumerate() {
             if (b as u128) * 2 > total {
                 h.dominant_type = i as u8;
             }
         }
-        // Antigüedad: el tramo más antiguo tal que >= 80 % de los bytes estén en él o en uno más antiguo.
-        h.dominant_age = NONE;
-        let mut cum = 0u128;
-        for k in (0..AGE_BUCKETS).rev() {
-            cum += ages[k] as u128;
-            if cum * 5 >= total * 4 {
-                h.dominant_age = k as u8;
-                break;
+        // Antigüedad, sobre los bytes de fecha conocida (mtime != 0): el tramo más antiguo tal que >= 80 % de esos
+        // bytes estén en él o en uno más antiguo.
+        let known: u128 = ages.iter().map(|&b| b as u128).sum();
+        if known > 0 {
+            h.age_pct = percentages(ages);
+            let mut cum = 0u128;
+            for k in (0..AGE_BUCKETS).rev() {
+                cum += ages[k] as u128;
+                if cum * 5 >= known * 4 {
+                    h.dominant_age = k as u8;
+                    break;
+                }
             }
         }
         h

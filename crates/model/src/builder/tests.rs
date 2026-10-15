@@ -994,3 +994,166 @@ fn los_flags_cloud_y_reparse_se_cuentan() {
     assert_eq!(tree.node(0).alloc, 5);
     assert_eq!(tree.node(0).logical, (1 << 20) + 5);
 }
+
+// --- Correcciones de la auditoría ------------------------------------------------------------------------------------
+
+#[test]
+fn un_huerfano_con_ruta_menor_no_le_quita_el_tamano_a_un_enlace_del_arbol() {
+    // `a.bin` cuelga de un directorio (id 50) que nunca llegó: no está en el árbol. Su ruta parcial ("a.bin") es
+    // menor que "z.bin", pero no puede ganar la deduplicación.
+    let mut b = TreeBuilder::new();
+    let mut root = Batch::detached(0);
+    root.push(
+        0,
+        b"ROOT",
+        EntryData {
+            flags: flags::DIR,
+            ..EntryData::default()
+        },
+    );
+    root.push(
+        0,
+        b"z.bin",
+        EntryData {
+            alloc: 4096,
+            logical: 4000,
+            file_id: 5,
+            ..EntryData::default()
+        },
+    );
+    b.add_batch(root).unwrap();
+    let mut orphan = Batch::listing(50, 100);
+    orphan.push(
+        50,
+        b"a.bin",
+        EntryData {
+            alloc: 4096,
+            logical: 4000,
+            file_id: 5,
+            ..EntryData::default()
+        },
+    );
+    b.add_batch(orphan).unwrap();
+    let t = b.finish(&FinishOptions::new(NOW));
+    assert_eq!(t.stats().orphans, 1);
+    let z = t.child_by_name(0, b"z.bin").unwrap();
+    assert_eq!((t.node(z).alloc, t.node(z).logical), (4096, 4000));
+    assert_eq!(t.node(z).flags & flags::HARDLINK, 0);
+    assert_eq!(t.stats().hardlink_extra_entries, 0);
+    assert_eq!(t.node(0).alloc, 4096);
+}
+
+#[test]
+fn los_ancestros_de_un_directorio_incompleto_lo_saben() {
+    let root = Item::dir(
+        "ROOT",
+        vec![
+            Item::dir(
+                "a",
+                vec![Item::dir(
+                    "b",
+                    vec![Item::dir("pendiente", vec![Item::file("f", 9)])],
+                )],
+            ),
+            Item::dir("otra", vec![Item::file("g", 5)]),
+        ],
+    );
+    let tree = build(emit(&root, 3, &[r"a\b\pendiente"]), None);
+    tree.check_invariants().unwrap();
+    let a = tree.child_by_name(0, b"a").unwrap();
+    let b = tree.child_by_name(a, b"b").unwrap();
+    let p = tree.child_by_name(b, b"pendiente").unwrap();
+    let otra = tree.child_by_name(0, b"otra").unwrap();
+    let fl = |id| tree.node(id).flags;
+    assert_eq!(fl(p) & flags::INCOMPLETE, flags::INCOMPLETE);
+    assert_eq!(
+        fl(p) & flags::INCOMPLETE_BELOW,
+        0,
+        "el propio directorio no se marca como 'debajo'"
+    );
+    for anc in [a, b, 0] {
+        assert_eq!(fl(anc) & flags::INCOMPLETE_BELOW, flags::INCOMPLETE_BELOW);
+        assert_eq!(
+            fl(anc) & flags::INCOMPLETE,
+            0,
+            "los ancestros se listaron enteros"
+        );
+    }
+    assert_eq!(fl(otra) & (flags::INCOMPLETE | flags::INCOMPLETE_BELOW), 0);
+}
+
+#[test]
+fn con_directorios_incompletos_no_se_calcula_el_espacio_no_explicado() {
+    let root = Item::dir(
+        "ROOT",
+        vec![
+            Item::dir("pendiente", vec![Item::file("f", 9)]),
+            Item::file("a", 4096),
+        ],
+    );
+    let tree = build(emit(&root, 1, &["pendiente"]), Some(1 << 30));
+    assert_eq!(tree.stats().incomplete_dirs, 1);
+    assert_eq!(
+        tree.stats().unexplained_alloc,
+        0,
+        "defensa en profundidad del builder"
+    );
+    assert!(
+        tree.nodes()
+            .iter()
+            .all(|n| n.flags & flags::SYSTEM_INFO == 0)
+    );
+}
+
+#[test]
+fn un_mtime_desconocido_no_cuenta_como_el_mas_antiguo() {
+    let unknown = |name: &str, alloc: u64| {
+        let mut f = Item::file(name, alloc);
+        f.mtime = 0;
+        f
+    };
+    // Solo fechas desconocidas: no hay tramo de antigüedad.
+    let h = hist_of(vec![unknown("a.txt", 100), unknown("b.txt", 100)]);
+    assert_eq!(h.dominant_age(), None);
+    assert_eq!(h.age_pct, [0; 5]);
+    assert_eq!(
+        h.type_pct[FileType::Document as usize],
+        100,
+        "el tipo sí cuenta"
+    );
+    // Con fechas conocidas, las desconocidas se excluyen del 80 %: 100 B recientes y 5000 B sin fecha -> reciente.
+    let h = hist_of(vec![
+        unknown("a.txt", 5000),
+        Item::file("b.txt", 100).with_mtime(1),
+    ]);
+    assert_eq!(h.dominant_age(), Some(0));
+    assert_eq!(h.age_pct.iter().map(|&x| x as u32).sum::<u32>(), 100);
+    let h = hist_of(vec![
+        unknown("a.txt", 5000),
+        Item::file("b.txt", 100).with_mtime(2000),
+    ]);
+    assert_eq!(h.dominant_age(), Some(4));
+}
+
+#[test]
+fn ts_y_mts_no_son_video() {
+    assert_eq!(FileType::classify(b"app.ts"), FileType::Other);
+    assert_eq!(FileType::classify(b"index.mts"), FileType::Other);
+    assert_eq!(FileType::classify(b"clip.m2ts"), FileType::Video);
+}
+
+#[test]
+fn los_acumuladores_saturan_en_vez_de_desbordar() {
+    let big = u64::MAX / 2 + 10;
+    let root = Item::dir(
+        "ROOT",
+        vec![
+            Item::file("a.mp4", big),
+            Item::file("b.mp4", big),
+            Item::dir("d", vec![Item::file("c.mp4", big)]),
+        ],
+    );
+    let tree = build_item(&root, 1); // en depuración un `+` desbordaría y entraría en pánico
+    assert_eq!(tree.node(0).alloc, u64::MAX);
+    assert_eq!(tree.hist(0).dominant_type(), Some(FileType::Video));
+}
