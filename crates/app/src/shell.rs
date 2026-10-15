@@ -57,6 +57,18 @@ impl Bench {
     }
 }
 
+/// `--idle-memory`: deja la ventana en reposo unos segundos y lee el private working set del proceso.
+pub struct IdleMemory {
+    secs: f32,
+    start: Option<Instant>,
+}
+
+impl IdleMemory {
+    pub fn new(secs: f32) -> IdleMemory {
+        IdleMemory { secs, start: None }
+    }
+}
+
 pub struct Shell {
     pub ui: TeselaUi,
     pub config: Config,
@@ -68,6 +80,7 @@ pub struct Shell {
     pub session_settings: tesela_ui::Settings,
     pub last_title: String,
     pub bench: Option<Bench>,
+    pub idle_mem: Option<IdleMemory>,
     #[cfg_attr(not(feature = "capture"), allow(dead_code))]
     pub screenshot: Option<PathBuf>,
     #[cfg_attr(not(feature = "capture"), allow(dead_code))]
@@ -193,6 +206,26 @@ impl eframe::App for Shell {
         }
         if done {
             self.finish_bench(&ctx);
+        }
+
+        // Memoria en reposo: cuenta desde que ya no se está escaneando; la ventana no pinta nada más (solo despierta cada
+        // medio segundo para mirar el reloj).
+        if let Some(m) = &mut self.idle_mem
+            && self.ui.screen_name() != "scan"
+        {
+            let t0 = *m.start.get_or_insert_with(Instant::now);
+            if t0.elapsed().as_secs_f32() >= m.secs {
+                let pws = crate::memory::private_working_set().unwrap_or(0);
+                crate::console::print(&format!(
+                    "idle-memory: private working set {:.1} MiB tras {:.0} s en reposo",
+                    pws as f64 / 1048576.0,
+                    m.secs
+                ));
+                self.idle_mem = None;
+                ctx.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
+            } else {
+                ctx.request_repaint_after(std::time::Duration::from_millis(500));
+            }
         }
 
         #[cfg(feature = "capture")]

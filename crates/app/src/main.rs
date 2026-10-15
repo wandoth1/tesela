@@ -6,6 +6,7 @@
 mod cli;
 mod config;
 mod console;
+mod memory;
 mod shell;
 
 use cli::Screen;
@@ -52,7 +53,8 @@ fn main() -> eframe::Result {
     if let Some(l) = cli.lang {
         settings.language = l;
     }
-    let tool_mode = cli.bench_hover.is_some() || cli.screenshot.is_some();
+    let tool_mode =
+        cli.bench_hover.is_some() || cli.screenshot.is_some() || cli.idle_memory.is_some();
     let (w, h) = cli.size.unwrap_or_else(|| config.window_size());
     let normalize = cli.screenshot.is_some().then_some((w, h));
 
@@ -109,6 +111,16 @@ fn main() -> eframe::Result {
             std::process::exit(3);
         });
     }
+    let idle_mem = cli.idle_memory.map(shell::IdleMemory::new);
+    if let Some(secs) = cli.idle_memory {
+        // Si la ventana no llega a pintar, no se queda esperando para siempre.
+        let extra = if cli.scan.is_some() { 600.0 } else { 0.0 };
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs_f32(secs + 40.0 + extra));
+            console::print("tesela: --idle-memory sin resultados: la ventana dejó de pintar");
+            std::process::exit(3);
+        });
+    }
     let screenshot = cli.screenshot.clone();
     let persist = !tool_mode;
     let persist_size = cli.size.is_none();
@@ -131,6 +143,7 @@ fn main() -> eframe::Result {
                 session_settings: settings,
                 last_title: String::new(),
                 bench,
+                idle_mem,
                 screenshot,
                 shot_frames: 0,
                 shot_requested: false,

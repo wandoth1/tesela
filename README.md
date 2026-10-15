@@ -75,7 +75,7 @@ pwsh -File scripts/build-release.ps1                     # release SIN rutas de 
 Capturas del README (solo del modo `--demo`; ver [docs/img/README.md](docs/img/README.md)):
 `cargo run -p tesela-app --features capture -- --demo --size 1280x800 --screenshot salida.png`. La feature `capture` no forma
 parte del ejecutable que se publica. `--bench-hover <segundos>` mueve un puntero sintético sobre el mapa e imprime el coste de
-CPU por frame; los resultados de cualquier medición se quedan fuera del repositorio.
+CPU por frame y `--idle-memory <segundos>` deja la ventana en reposo e imprime el private working set del proceso (sin PowerShell, CIM ni WMI); los resultados de cualquier medición se quedan fuera del repositorio.
 
 ### Privacidad
 

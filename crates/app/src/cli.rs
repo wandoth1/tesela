@@ -28,6 +28,7 @@ Opciones generales:
 
 Herramientas de desarrollo (no guardan nada):
   --bench-hover <segundos>     mueve un puntero sintetico sobre el mapa e imprime el coste de CPU por frame
+  --idle-memory <segundos>     espera con la ventana en reposo e imprime el private working set del proceso
   --screenshot <ruta.png>      guarda una captura de la ventana y sale (solo con --demo y la feature `capture`)
 ";
 
@@ -54,6 +55,7 @@ pub struct Cli {
     pub lang: Option<LangPref>,
     pub size: Option<(f32, f32)>,
     pub bench_hover: Option<f32>,
+    pub idle_memory: Option<f32>,
     pub screenshot: Option<PathBuf>,
     pub help: bool,
     pub version: bool,
@@ -142,6 +144,16 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
                 }
                 cli.bench_hover = Some(s);
             }
+            "--idle-memory" => {
+                let v = need(&mut it, "--idle-memory")?;
+                let s: f32 = v
+                    .parse()
+                    .map_err(|_| format!("--idle-memory: `{v}` no es un numero"))?;
+                if !(1.0..=600.0).contains(&s) {
+                    return Err("--idle-memory: entre 1 y 600 segundos".into());
+                }
+                cli.idle_memory = Some(s);
+            }
             "--screenshot" => cli.screenshot = Some(PathBuf::from(need(&mut it, "--screenshot")?)),
             other => return Err(format!("argumento desconocido: `{other}`")),
         }
@@ -203,6 +215,11 @@ mod tests {
         assert!(p("--scan").unwrap_err().contains("necesita un valor"));
         assert!(p("--cosa").unwrap_err().contains("desconocido"));
         assert!(p("--bench-hover 0").is_err());
+        assert!(p("--idle-memory 0").is_err());
+        assert_eq!(
+            p("--demo --idle-memory 12").unwrap().idle_memory,
+            Some(12.0)
+        );
         // Una captura de un disco real mostraría datos del equipo: solo con --demo.
         assert!(p("--screenshot x.png").unwrap_err().contains("--demo"));
         assert!(

@@ -26,7 +26,7 @@ png = { workspace = true, optional = true }
 
 [dependencies.windows-sys]
 workspace = true
-features = ["Win32_Foundation", "Win32_System_Console"]
+features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_ProcessStatus", "Win32_System_Threading"]
 
 [build-dependencies]
 embed-manifest.workspace = true
