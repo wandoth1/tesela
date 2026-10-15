@@ -10,12 +10,22 @@
   Modos:
     * (por defecto)  archivos EN STAGING (`git diff --cached`), contenido del indice. Para el hook `pre-commit`.
     * -All           todos los archivos versionados y los no ignorados (CI y revisiones completas).
-    * -MessageFile   un mensaje de commit (hook `commit-msg`); se revisan todas las lineas (tambien las que empiezan por `#`) hasta la linea de tijera `# ------------------------ >8`.
+    * -MessageFile   un mensaje de commit (hook `commit-msg`); se revisa el mensaje ENTERO, sin excepcion: tambien las
+                     lineas que empiezan por `#` y lo que sigue a la linea de tijera (`# ---- >8 ----`, el diff de
+                     `git commit --verbose`). Git solo recorta ahi con `--cleanup=scissors`; con `-m`, `-F`,
+                     `--cleanup=verbatim` o `--cleanup=whitespace` lo conserva. Si el diff de --verbose lleva datos
+                     privados, el commit se bloquea (es lo esperado).
+    * -To [-From]    un rango de commits (CI: lo que introduce un push o un pull request): el mensaje de cada commit y
+                     TODOS los blobs que introduce, tambien los que un commit posterior borra. `-From` es el SHA anterior
+                     (`github.event.before` o la base del PR); si falta, es todo ceros o no existe en el clon, se revisa
+                     TODA la historia hasta `-To`.
 
   Que se comprueba:
     1. Patrones GENERICOS (siempre): SID (cuentas locales y AzureAD), rutas de perfil reales (Windows, `/c/Users/<usuario>`,
-       `/mnt/c/Users/<usuario>`), unidades D: a Z:, fabricantes y modelos de CPU/GPU/disco, antivirus, builds de Windows,
-       versiones de driver.
+       `/mnt/c/Users/<usuario>`), unidades D: a Z:, rutas UNC (`\\<servidor>\<recurso>`, tambien escapadas y `\\?\UNC\...`),
+       fabricantes y modelos de CPU/GPU/disco, antivirus, builds de Windows, versiones de driver. Falsos positivos
+       razonables de la regla UNC: documentacion o ejemplos con una ruta de red; escribe un marcador `<servidor>` en vez
+       de un nombre (los marcadores con `<` no cuentan) o construye el dato en hexadecimal.
     2. Valores LOCALES (solo en la maquina del desarrollador; nunca con -GenericOnly ni en CI): el nombre de usuario,
        el nombre del equipo, el dominio y la ruta del perfil, leidos EN TIEMPO DE EJECUCION de las variables de entorno, y una lista
        negra local NO versionada: `<git-common-dir>/privacy-denylist` (un termino por linea, sin distinguir
@@ -23,6 +33,9 @@
     3. Los NOMBRES de los archivos pasan por las mismas reglas.
     4. Cualquier texto se decodifica antes de revisarlo (UTF-8, UTF-8 con BOM, UTF-16 con o sin BOM). Los binarios se
        revisan buscando cadenas ASCII y UTF-16 (los de mas de 8 MiB se rechazan); las imagenes se rechazan SALVO `docs/img/<nombre>.png` generadas con --demo (ver la excepcion mas abajo).
+       Los formatos OPACOS o comprimidos (ZIP y derivados docx/xlsx/jar/apk, gzip, 7z, rar, xz, bz2, zstd, lz4, lzip,
+       compress, cab, OLE/msi, pdf, sqlite) se rechazan por su FIRMA con cualquier extension: su contenido no se puede
+       revisar, y un SID dentro de un ZIP pasaria. No hay lista blanca (`$opaqueAllow`, vacia a proposito).
     5. `docs/spike-results.md` NO puede existir (se rehace por separado) y `spike/` se revisa con las reglas que no
        dependen de rutas (SID, hardware, antivirus, builds, valores locales y lista negra).
 
@@ -41,6 +54,13 @@
 .PARAMETER MessageFile
   Revisa este archivo como mensaje de commit en vez de los archivos.
 
+.PARAMETER To
+  SHA completo del ultimo commit de un rango a revisar (mensajes y blobs de lo que introduce).
+
+.PARAMETER From
+  SHA completo anterior al rango (se revisa `From..To`). Si falta, es todo ceros o no esta en el clon, se revisa toda
+  la historia hasta `To`.
+
 .EXAMPLE
   pwsh -File scripts/privacy-check.ps1                 # staging (hook pre-commit)
   pwsh -File scripts/privacy-check.ps1 -All            # todo el arbol
@@ -51,7 +71,9 @@ param(
     [switch]$All,
     [switch]$GenericOnly,
     [switch]$Local,
-    [string]$MessageFile
+    [string]$MessageFile,
+    [string]$From,
+    [string]$To
 )
 
 $ErrorActionPreference = 'Stop'
@@ -103,6 +125,9 @@ $generic = @(
     @{ Name = 'Ruta de perfil real estilo Unix o WSL'; Path = $true; Pattern = '(?i)(?<![A-Za-z0-9_.])/(mnt/)?[a-z]/Users/(?!<usuario>|Public\b|Default\b)[^/\s''"`]+' },
     @{ Name = 'Ruta absoluta de unidad D: a Z:'; Path = $true; Pattern = '(?i)(?<![A-Za-z0-9_])[D-Z]:[\\/]' },
     @{ Name = 'Ruta WSL de unidad D a Z'; Path = $true; Pattern = '(?i)(?<![A-Za-z0-9_])/mnt/[d-z](/|$)' },
+    @{ Name = 'Ruta UNC de red'; Path = $false; Pattern = '(?<![A-Za-z0-9_\\.:/])\\\\(?![?.<])[A-Za-z0-9_][A-Za-z0-9_.-]*\\[A-Za-z0-9_$]' },
+    @{ Name = 'Ruta UNC de red escapada'; Path = $false; Pattern = '(?<![A-Za-z0-9_\\.:/])\\\\\\\\(?![?.<])[A-Za-z0-9_][A-Za-z0-9_.-]*\\\\[A-Za-z0-9_$]' },
+    @{ Name = 'Ruta UNC verbatim'; Path = $false; Pattern = '(?i)\\\\\?\\UNC\\[A-Za-z0-9_]' },
     @{ Name = 'Fabricante o modelo de GPU/CPU/disco'; Path = $false; Pattern = '(?i)\b(N[V]IDIA|Ge[F]orce|R[T]X\s?\d{3,4}\w*|G[T]X\s?\d{3,4}\w*|Rade[o]n|Ry[z]en|Threadrip[p]er|EP[Y]C|X[e]on|Inte[l]\s+Core|Inte[l]\(R\)\s*Core|Core\s+i[3579][ -]|Apple\s+M[1-9]|Sam[s]ung|WD_BL[A]CK|WD\s+Bl[a]ck|Western\s+Dig[i]tal|Sea[g]ate|Kings[t]on|Cruc[i]al|Cors[a]ir|SN8\d\d\w*|H[y]nix|Mic[r]on|Tos[h]iba|SanD[i]sk)\b' },
     @{ Name = 'Antivirus'; Path = $false; Pattern = '(?i)\b(Bitdef[e]nder|Kaspers[k]y|Nor[t]on|McA[f]ee|Av[a]st|AVG\s+Anti\w*|ES[E]T|Malwareby[t]es|Soph[o]s|CrowdStr[i]ke|Sentinel[O]ne|Trend\s*Mi[c]ro|Symant[e]c|F-Se[c]ure|Webr[o]ot|Cylan[c]e|Carbon\s*Bl[a]ck)\b' },
     @{ Name = 'Build de Windows'; Path = $false; Pattern = '(?i)\bbuild\s+(19|2\d)\d{3}\b' },
@@ -189,14 +214,10 @@ $problems = New-Object System.Collections.Generic.List[string]
 if ($MessageFile) {
     $reject = $null
     $text = ConvertTo-ScanText ([System.IO.File]::ReadAllBytes($MessageFile)) ([ref]$reject)
-    # Se revisan TODAS las lineas, tambien las que empiezan por `#` (git las conserva con -m y -F). Solo se descarta
-    # lo que sigue a la linea de tijera que anade `git commit --verbose`.
-    $kept = New-Object System.Collections.Generic.List[string]
-    foreach ($line in ($text -split "`n")) {
-        if ($line.TrimEnd("`r").StartsWith('# ------------------------ >8')) { break }
-        $kept.Add($line)
-    }
-    $text = $kept -join "`n"
+    # Se revisa el mensaje ENTERO, sin excepcion: tambien las lineas que empiezan por `#` y lo que sigue a la linea de
+    # tijera (`# ---- >8 ----`). Git solo lo recorta con `--cleanup=scissors` (o con el editor y --verbose); con `-m`,
+    # `-F`, `--cleanup=verbatim` o `--cleanup=whitespace` lo conserva, y el hook ve el archivo ANTES de la limpieza.
+    # Si el diff de --verbose lleva datos privados, bloquear es lo correcto.
     foreach ($hit in (Test-Rules $text $rules)) { $problems.Add("mensaje de commit:$($hit[1]): $($hit[0])") }
     if ($problems.Count -gt 0) {
         Write-Host "privacy-check: el mensaje de commit contiene datos privados:" -ForegroundColor Red
@@ -206,14 +227,6 @@ if ($MessageFile) {
     Write-Host 'privacy-check: OK (mensaje de commit)'
     exit 0
 }
-
-# --- Archivos a revisar ---------------------------------------------------------------------------------------------
-if ($All) {
-    $names = Split-Nul (Invoke-GitBytes '-c core.quotePath=false ls-files --cached --others --exclude-standard -z' $repoRoot)
-} else {
-    $names = Split-Nul (Invoke-GitBytes '-c core.quotePath=false diff --cached --name-only -z --diff-filter=ACMR' $repoRoot)
-}
-$names = @($names | Sort-Object -Unique)
 
 $pathFree = @($rules | Where-Object { -not $_.Path })
 $imageExt = '(?i)\.(png|jpe?g|gif|bmp|webp|tiff?|heic)$'
@@ -321,8 +334,18 @@ function Test-DemoPng {
     return $null
 }
 
+# Origen de docs/img/README.md: `$null` = disco (-All) o indice (staging); un SHA = ese commit (modo -To).
+$script:ImgReadmeRef = $null
+
 function Get-ImgReadme {
-    # Texto de docs/img/README.md (disco con -All; indice en modo staging), o $null si no existe.
+    # Texto de docs/img/README.md (disco con -All; indice en modo staging; el commit en modo -To), o $null si no existe.
+    if ($script:ImgReadmeRef) {
+        try {
+            return [System.Text.Encoding]::UTF8.GetString((Invoke-GitBytes ('cat-file blob "' + $script:ImgReadmeRef + ':docs/img/README.md"') $repoRoot))
+        } catch {
+            return $null
+        }
+    }
     if ($All) {
         $p = Join-Path $repoRoot 'docs/img/README.md'
         if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { return $null }
@@ -349,18 +372,162 @@ function Test-ImgRegistered {
     return $false
 }
 
-foreach ($name in $names) {
-    $f = $name.Replace('\', '/')
-    $inSpike = $f.StartsWith('spike/')
+# --- Formatos OPACOS o comprimidos: se rechazan por la FIRMA, con cualquier extension ------------------------------
+# Su contenido no se puede revisar (un SID dentro de un ZIP o de un gzip pasaria) y un repositorio de codigo no los
+# necesita: las imagenes registradas de docs/img/ ya tienen su excepcion propia. Lista blanca: ninguna hoy. Si algun
+# dia hiciera falta, tendria que ser ESTRECHA: ruta exacta y SHA-256 de los bytes (como las capturas de docs/img/).
+$opaqueAllow = @()
+$opaqueFormats = @(
+    @{ Name = 'ZIP (y docx, xlsx, pptx, jar, apk, nupkg, whl...)'; Sig = @(0x50, 0x4B, 0x03, 0x04) },
+    @{ Name = 'ZIP vacio'; Sig = @(0x50, 0x4B, 0x05, 0x06) },
+    @{ Name = 'ZIP por tramos'; Sig = @(0x50, 0x4B, 0x07, 0x08) },
+    @{ Name = 'gzip'; Sig = @(0x1F, 0x8B) },
+    @{ Name = 'compress (.Z)'; Sig = @(0x1F, 0x9D) },
+    @{ Name = '7z'; Sig = @(0x37, 0x7A, 0xBC, 0xAF, 0x27, 0x1C) },
+    @{ Name = 'rar'; Sig = @(0x52, 0x61, 0x72, 0x21, 0x1A, 0x07) },
+    @{ Name = 'xz'; Sig = @(0xFD, 0x37, 0x7A, 0x58, 0x5A, 0x00) },
+    @{ Name = 'zstd'; Sig = @(0x28, 0xB5, 0x2F, 0xFD) },
+    @{ Name = 'lz4'; Sig = @(0x04, 0x22, 0x4D, 0x18) },
+    @{ Name = 'lzip'; Sig = @(0x4C, 0x5A, 0x49, 0x50, 0x01) },
+    @{ Name = 'cab'; Sig = @(0x4D, 0x53, 0x43, 0x46, 0x00, 0x00, 0x00, 0x00) },
+    @{ Name = 'OLE (msi, doc, xls, ppt)'; Sig = @(0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1) },
+    @{ Name = 'pdf'; Sig = @(0x25, 0x50, 0x44, 0x46, 0x2D) },
+    @{ Name = 'sqlite'; Sig = @(0x53, 0x51, 0x4C, 0x69, 0x74, 0x65, 0x20, 0x66, 0x6F, 0x72, 0x6D, 0x61, 0x74, 0x20, 0x33, 0x00) }
+)
+
+function Test-Signature {
+    param([byte[]]$Bytes, [int[]]$Sig)
+    if ($Bytes.Length -lt $Sig.Length) { return $false }
+    for ($i = 0; $i -lt $Sig.Length; $i++) { if ($Bytes[$i] -ne $Sig[$i]) { return $false } }
+    return $true
+}
+
+function Get-OpaqueFormat {
+    # Nombre del formato opaco que indica la FIRMA de los bytes, o $null.
+    param([byte[]]$Bytes)
+    foreach ($fmt in $opaqueFormats) {
+        if (Test-Signature $Bytes $fmt.Sig) { return $fmt.Name }
+    }
+    # bzip2: "BZh", nivel 1-9 y el numero pi del primer bloque (evita un texto que empiece por "BZh").
+    if ($Bytes.Length -ge 10 -and $Bytes[0] -eq 0x42 -and $Bytes[1] -eq 0x5A -and $Bytes[2] -eq 0x68 -and $Bytes[3] -ge 0x31 -and $Bytes[3] -le 0x39) {
+        if (Test-Signature ([byte[]]($Bytes[4..9])) @(0x31, 0x41, 0x59, 0x26, 0x53, 0x59)) { return 'bzip2' }
+    }
+    return $null
+}
+
+# --- Revision de UN archivo (nombre y contenido); sirve para staging, -All y el modo de rango -------------------------
+function Test-FileBytes {
+    param([string]$F, [byte[]]$Bytes, [string]$Where)
+    $inSpike = $F.StartsWith('spike/')
     $ruleSet = if ($inSpike) { $pathFree } else { $rules }
 
-    if ($f -eq 'docs/spike-results.md') {
-        $problems.Add("${f}: archivo prohibido (los resultados del spike se rehacen por separado)")
-        continue
+    if ($F -eq 'docs/spike-results.md') {
+        $problems.Add("${Where}${F}: archivo prohibido (los resultados del spike se rehacen por separado)")
+        return
     }
     # El nombre del archivo tambien se revisa.
-    foreach ($hit in (Test-Rules $f $ruleSet)) { $problems.Add("${f}: NOMBRE del archivo: $($hit[0])") }
+    foreach ($hit in (Test-Rules $F $ruleSet)) { $problems.Add("${Where}${F}: NOMBRE del archivo: $($hit[0])") }
 
+    # Imagenes: por extension Y por firma (un .png renombrado a .dat, .bin o .txt tambien es una captura).
+    $magic = Get-ImageMagic $Bytes
+    $isDemoImg = $false
+    if ($F -match $imageExt -or $magic) {
+        if ($F -cmatch $demoImgPattern) {
+            $isDemoImg = $true
+        } else {
+            $kind = if ($magic) { $magic } else { 'por la extension' }
+            $problems.Add("${Where}${F}: imagen versionada ($kind); no se permiten capturas salvo docs/img/<nombre>.png generadas con --demo")
+            return
+        }
+    }
+    if ($isDemoImg) {
+        $why = Test-DemoPng $Bytes
+        if ($why) { $problems.Add("${Where}${F}: $why"); return }
+        $leaf = $F.Substring($F.LastIndexOf('/') + 1)
+        if (-not (Test-ImgRegistered $leaf $Bytes)) {
+            $problems.Add("${Where}${F}: falta su linea anclada en docs/img/README.md (- <nombre>.png | sha256: <hash de sus bytes> | orden con --demo)")
+        }
+        return
+    }
+    # Formatos opacos o comprimidos: no se pueden revisar, se rechazan (sin lista blanca hoy).
+    $opaque = Get-OpaqueFormat $Bytes
+    if ($opaque -and ($opaqueAllow -notcontains $F)) {
+        $problems.Add("${Where}${F}: formato opaco o comprimido ($opaque): su contenido no se puede revisar; versiona el texto sin comprimir")
+        return
+    }
+    $reject = $null
+    $text = ConvertTo-ScanText $Bytes ([ref]$reject)
+    if ($reject) { $problems.Add("${Where}${F}: $reject"); return }
+    foreach ($hit in (Test-Rules $text $ruleSet)) { $problems.Add("${Where}${F}:$($hit[1]): $($hit[0])") }
+}
+
+# --- Modo de rango: mensajes y blobs de lo que introduce un push o un pull request ----------------------------------
+if ($To) {
+    if ($To -notmatch '^[0-9a-f]{40}$') {
+        Write-Host 'privacy-check: -To debe ser un SHA completo de 40 caracteres hexadecimales' -ForegroundColor Red
+        exit 2
+    }
+    if ($From -and $From -notmatch '^[0-9a-f]{40}$') {
+        Write-Host 'privacy-check: -From debe ser un SHA completo de 40 caracteres hexadecimales' -ForegroundColor Red
+        exit 2
+    }
+    $revSpec = $To
+    $whole = 'toda la historia'
+    if ($From -and $From -notmatch '^0{40}$') {
+        $exists = $true
+        try { [void](Invoke-GitBytes ('cat-file -e ' + $From + '^{commit}') $repoRoot) } catch { $exists = $false }
+        if ($exists) { $revSpec = "$From..$To"; $whole = "$From..$To" }
+    }
+    $commits = @((Split-Nul (Invoke-GitBytes "rev-list -z --reverse $revSpec" $repoRoot)) | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
+    $seen = @{}
+    $blobCount = 0
+    foreach ($c in $commits) {
+        $short = $c.Substring(0, 10)
+        $script:ImgReadmeRef = $c
+        # Mensaje completo (cabecera y cuerpo; sin excepcion de tijera ni de lineas con `#`).
+        $reject = $null
+        $msgText = ConvertTo-ScanText (Invoke-GitBytes "log -1 --format=%B $c" $repoRoot) ([ref]$reject)
+        foreach ($hit in (Test-Rules $msgText $rules)) { $problems.Add("commit ${short}: mensaje:$($hit[1]): $($hit[0])") }
+        # Archivos que introduce (altas, cambios, copias y renombrados; con -m tambien los de los merges).
+        $raw = Split-Nul (Invoke-GitBytes "diff-tree -r -m --root --no-commit-id --no-renames --diff-filter=ACMR --raw -z $c" $repoRoot)
+        for ($i = 0; $i -lt $raw.Count; $i++) {
+            if (-not $raw[$i].StartsWith(':')) { continue }
+            $fields = $raw[$i].Split(' ')
+            $i++
+            if ($i -ge $raw.Count) { break }
+            $f = $raw[$i].Replace('\', '/')
+            $mode = $fields[1]
+            $oid = $fields[3]
+            if ($mode -eq '160000' -or $oid -match '^0+$') { continue }
+            $key = "$oid|$f"
+            if ($seen.ContainsKey($key)) { continue }
+            $seen[$key] = $true
+            $blobCount++
+            $bytes = Invoke-GitBytes "cat-file blob $oid" $repoRoot
+            Test-FileBytes $f $bytes "commit ${short}: "
+        }
+    }
+    if ($problems.Count -gt 0) {
+        Write-Host "privacy-check: FALLO ($($problems.Count) coincidencias en $whole). Quita esos datos (tambien de la historia) antes de publicar:" -ForegroundColor Red
+        $problems | Select-Object -First 50 | ForEach-Object { Write-Host "  $_" }
+        if ($problems.Count -gt 50) { Write-Host "  ... y $($problems.Count - 50) mas" }
+        exit 1
+    }
+    $scope = if ($GenericOnly) { 'patrones genericos' } else { 'patrones genericos + valores locales' }
+    Write-Host "privacy-check: OK ($($commits.Count) commits y $blobCount blobs en $whole, $scope)"
+    exit 0
+}
+
+# --- Archivos a revisar ---------------------------------------------------------------------------------------------
+if ($All) {
+    $names = Split-Nul (Invoke-GitBytes '-c core.quotePath=false ls-files --cached --others --exclude-standard -z' $repoRoot)
+} else {
+    $names = Split-Nul (Invoke-GitBytes '-c core.quotePath=false diff --cached --name-only -z --diff-filter=ACMR' $repoRoot)
+}
+$names = @($names | Sort-Object -Unique)
+
+foreach ($name in $names) {
+    $f = $name.Replace('\', '/')
     $full = Join-Path $repoRoot $name
     if ($All) {
         if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { continue }
@@ -369,33 +536,7 @@ foreach ($name in $names) {
         # Contenido del INDICE, leido como bytes (sin recodificar).
         $bytes = Invoke-GitBytes "cat-file blob `":$f`"" $repoRoot
     }
-
-    # Imagenes: por extension Y por firma (un .png renombrado a .dat, .bin o .txt tambien es una captura).
-    $magic = Get-ImageMagic $bytes
-    $isDemoImg = $false
-    if ($f -match $imageExt -or $magic) {
-        if ($f -cmatch $demoImgPattern) {
-            $isDemoImg = $true
-        } else {
-            $kind = if ($magic) { $magic } else { 'por la extension' }
-            $problems.Add("${f}: imagen versionada ($kind); no se permiten capturas salvo docs/img/<nombre>.png generadas con --demo")
-            continue
-        }
-    }
-    if ($isDemoImg) {
-        $why = Test-DemoPng $bytes
-        if ($why) { $problems.Add("${f}: $why"); continue }
-        $leaf = $f.Substring($f.LastIndexOf('/') + 1)
-        if (-not (Test-ImgRegistered $leaf $bytes)) {
-            $problems.Add("${f}: falta su linea anclada en docs/img/README.md (- <nombre>.png | sha256: <hash de sus bytes> | orden con --demo)")
-            continue
-        }
-        continue
-    }
-    $reject = $null
-    $text = ConvertTo-ScanText $bytes ([ref]$reject)
-    if ($reject) { $problems.Add("${f}: $reject"); continue }
-    foreach ($hit in (Test-Rules $text $ruleSet)) { $problems.Add("${f}:$($hit[1]): $($hit[0])") }
+    Test-FileBytes $f $bytes ''
 }
 
 if ($problems.Count -gt 0) {

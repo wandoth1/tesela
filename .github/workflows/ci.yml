@@ -22,7 +22,7 @@ jobs:
   privacy:
     if: github.event_name != 'schedule'
     runs-on: windows-latest
-    timeout-minutes: 15
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -36,6 +36,42 @@ jobs:
       - name: pruebas de privacy-check (Windows PowerShell 5.1)
         shell: powershell
         run: ./scripts/tests/privacy-check.tests.ps1 -Shell powershell
+
+  # El job anterior solo mira el checkout (el árbol final). Este revisa lo que INTRODUCE el push o el pull request: el
+  # mensaje de cada commit y TODOS sus blobs, también los que un commit posterior borra (un dato privado que se quita en
+  # el commit siguiente sigue estando en la historia pública).
+  #  * push: github.event.before..github.sha. Con `before` a ceros (primer push), o ausente del clon (force-push), se
+  #    revisa toda la historia hasta github.sha.
+  #  * pull_request: base..head (fetch-depth 0 trae los dos extremos).
+  # Los SHA llegan por variables de entorno (nunca interpolados en el script) y el script exige 40 hex.
+  privacy-history:
+    if: github.event_name == 'push' || github.event_name == 'pull_request'
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: privacy-check (mensajes y blobs del rango)
+        shell: pwsh
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if ($env:EVENT_NAME -eq 'pull_request') {
+            $from = $env:PR_BASE
+            $to = $env:PR_HEAD
+          } else {
+            $from = $env:PUSH_BEFORE
+            $to = $env:PUSH_AFTER
+          }
+          Write-Host "rango: $from .. $to"
+          ./scripts/privacy-check.ps1 -GenericOnly -From $from -To $to
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   build:
     if: github.event_name != 'schedule'

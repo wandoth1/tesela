@@ -33,6 +33,9 @@ foreach ($p in $raw.bad.PSObject.Properties) { $bad[$p.Name] = Decode $p.Value }
 $good = @($raw.good | ForEach-Object { Decode $_ })
 $misc = @{}
 foreach ($p in $raw.misc.PSObject.Properties) { $misc[$p.Name] = Decode $p.Value }
+$opaqueHex = @{}
+foreach ($p in $raw.opaque.PSObject.Properties) { $opaqueHex[$p.Name] = $p.Value }
+$lookalike = @($raw.'opaque-lookalike' | ForEach-Object { Decode $_ })
 
 # --- Repositorio de pruebas (solo bajo %TEMP%, con guarda al borrar) -------------------------------------------------
 $temp = [System.IO.Path]::GetTempPath().TrimEnd('\')
@@ -461,7 +464,9 @@ try {
     [System.IO.File]::WriteAllText($msg, "feat: limpio`n# $sid`n# ------------------------ >8`nlimpio`n", $utf8)
     Expect 'comentario con SID ANTES de la linea de tijera' $true @('-MessageFile', $msg)
     [System.IO.File]::WriteAllText($msg, "feat: limpio`n`n# ------------------------ >8`n# $sid`ndiff --git a/x b/x`n+$sid`n", $utf8)
-    Expect 'lo que sigue a la linea de tijera (diff de commit --verbose) se ignora' $false @('-MessageFile', $msg)
+    Expect 'lo que sigue a la linea de tijera (diff de commit --verbose) SE REVISA tambien' $true @('-MessageFile', $msg)
+    [System.IO.File]::WriteAllText($msg, "feat: limpio`n`n# ------------------------ >8`n# Do not modify or remove the line above.`ndiff --git a/x b/x`n+limpio`n", $utf8)
+    Expect 'tijera con un diff limpio pasa' $false @('-MessageFile', $msg)
     [System.IO.File]::WriteAllText($msg, ('feat: probado en ' + $misc['gpu-word'] + "`n"), $utf8)
     Expect 'mensaje con hardware' $true @('-MessageFile', $msg)
     if ($env:USERNAME -and $env:USERNAME.Length -ge 3) {
@@ -472,6 +477,206 @@ try {
     [System.IO.File]::WriteAllText($msg, "fix: $sid`n", $utf8)
     Expect 'mensaje con SID' $true @('-MessageFile', $msg)
     Remove-Item $msg -Force
+
+    # --- Formatos opacos o comprimidos: se rechazan por la firma, con cualquier extension ------------------------------------
+    foreach ($k in ($opaqueHex.Keys | Sort-Object)) {
+        Reset-Repo
+        PutBytes 'datos/archivo.dat' ((HexBytes $opaqueHex[$k]) + (New-Object byte[] 64))
+        Stage-All
+        Expect "formato opaco $k (.dat)" $true
+    }
+    # Con otras extensiones, en -All y dentro de spike/ (basta un formato: la regla es por firma).
+    foreach ($ext in 'txt', 'json', 'rs', 'docx') {
+        Reset-Repo
+        PutBytes "datos/archivo.$ext" ((HexBytes $opaqueHex['zip']) + (New-Object byte[] 64))
+        Stage-All
+        Expect "formato opaco zip disfrazado de .$ext" $true
+    }
+    Expect 'formato opaco zip (-All)' $true @('-All')
+    Reset-Repo
+    PutBytes 'spike/archivo.dat' ((HexBytes $opaqueHex['gzip']) + (New-Object byte[] 64))
+    Stage-All
+    Expect 'formato opaco gzip dentro de spike/' $true
+    $j = 0
+    foreach ($t in $lookalike) {
+        $j++
+        Reset-Repo
+        Put 'docs/notas.txt' ($t + "`n")
+        Stage-All
+        Expect "texto que solo se parece a una firma opaca #$j" $false
+    }
+    # Un ZIP y un gzip REALES con texto comprimido que contiene un SID: el texto comprimido no se ve, la firma si.
+    Add-Type -AssemblyName System.IO.Compression
+    $secret = "cuenta $sid`n"
+    $ms = New-Object System.IO.MemoryStream
+    $zip = New-Object System.IO.Compression.ZipArchive($ms, [System.IO.Compression.ZipArchiveMode]::Create, $true)
+    $entry = $zip.CreateEntry('notas.txt')
+    $es = $entry.Open()
+    $sw = New-Object System.IO.StreamWriter($es, $utf8)
+    $sw.Write($secret * 20)
+    $sw.Dispose()
+    $zip.Dispose()
+    $zipBytes = $ms.ToArray()
+    Reset-Repo
+    PutBytes 'datos.bin' $zipBytes
+    Stage-All
+    Expect 'ZIP real con texto comprimido que contiene un SID (.bin)' $true
+    Reset-Repo
+    PutBytes 'informe.docx' $zipBytes
+    Stage-All
+    Expect 'ZIP real con texto comprimido que contiene un SID (.docx)' $true
+    Reset-Repo
+    PutBytes 'informe.docx' $zipBytes
+    Stage-All
+    Expect 'ZIP real con texto comprimido que contiene un SID (-All)' $true @('-All')
+    $gms = New-Object System.IO.MemoryStream
+    $gz = New-Object System.IO.Compression.GZipStream($gms, [System.IO.Compression.CompressionMode]::Compress, $true)
+    $gb = $utf8.GetBytes($secret * 20)
+    $gz.Write($gb, 0, $gb.Length)
+    $gz.Dispose()
+    Reset-Repo
+    PutBytes 'datos.txt' $gms.ToArray()
+    Stage-All
+    Expect 'gzip real con texto comprimido que contiene un SID' $true
+    # Un PNG registrado de docs/img/ sigue permitido (tiene su excepcion propia, antes que la regla de opacos).
+    Reset-Repo
+    PutBytes $img $png
+    Put 'docs/img/README.md' $readmeOk
+    Stage-All
+    Expect 'docs/img: el PNG registrado sigue permitido con la regla de formatos opacos' $false
+
+    # --- Commits reales con los hooks instalados: el mensaje se revisa ENTERO, con cualquier limpieza de git -------------------
+    Reset-Repo
+    Copy-Item -LiteralPath (Join-Path (Split-Path -Parent $srcScript) 'install-hooks.ps1') -Destination (Join-Path $repo 'scripts\install-hooks.ps1')
+    Push-Location $repo
+    try {
+        $hookOut = & pwsh -NoProfile -File scripts/install-hooks.ps1 2>&1
+        if ($LASTEXITCODE -ne 0) { throw "install-hooks fallo: $hookOut" }
+    } finally { Pop-Location }
+    function Try-Commit([string[]]$GitArgs) {
+        # Devuelve $true si el commit se hizo (el hook lo dejo pasar). Siempre con --allow-empty y sin editor.
+        $before = (& git -C $repo rev-parse HEAD)
+        $prev = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try { & git -C $repo commit -q --allow-empty @GitArgs 2>&1 | Out-Null } finally { $ErrorActionPreference = $prev }
+        $after = (& git -C $repo rev-parse HEAD)
+        return ($before -ne $after)
+    }
+    function Expect-Commit([string]$Case, [bool]$ShouldPass, [string[]]$GitArgs) {
+        $script:total++
+        $ok = Try-Commit $GitArgs
+        if ($ok -ne $ShouldPass) {
+            $want = if ($ShouldPass) { 'COMMIT' } else { 'BLOQUEO' }
+            $script:failures.Add("$Case (esperado: $want, resultado: $(if ($ok) { 'commit hecho' } else { 'bloqueado' }))")
+        }
+    }
+    $msgFile = Join-Path $repo 'MSGF.txt'
+    Expect-Commit 'commit real: -m limpio' $true @('-m', 'feat: limpio')
+    Expect-Commit 'commit real: -m con SID' $false @('-m', "feat: x $sid")
+    Expect-Commit 'commit real: -m con SID tras una linea con #' $false @('-m', "feat: x`n`n# $sid")
+    [System.IO.File]::WriteAllText($msgFile, "feat: limpio`n`n# nota`n", $utf8)
+    Expect-Commit 'commit real: -F limpio' $true @('-F', $msgFile)
+    [System.IO.File]::WriteAllText($msgFile, "feat: x`n`n# $sid`n", $utf8)
+    Expect-Commit 'commit real: -F con SID en linea #' $false @('-F', $msgFile)
+    foreach ($mode in 'verbatim', 'whitespace', 'scissors', 'strip', 'default') {
+        Expect-Commit "commit real: --cleanup=$mode con SID en linea #" $false @("--cleanup=$mode", '-m', "feat: x`n`n# $sid")
+        Expect-Commit "commit real: --cleanup=$mode con SID en el cuerpo" $false @("--cleanup=$mode", '-m', "feat: x`n`n$sid")
+        Expect-Commit "commit real: --cleanup=$mode limpio" $true @("--cleanup=$mode", '-m', "feat: limpio con $mode")
+    }
+    # Tras la linea de tijera: con --cleanup=scissors git LO RECORTARIA, pero el hook ve el archivo antes y bloquea.
+    $scissorsMsg = "feat: limpio`n`n# ------------------------ >8 ------------------------`n# Do not modify or remove the line above.`n+$sid`n"
+    Expect-Commit 'commit real: --cleanup=scissors con SID tras la tijera' $false @('--cleanup=scissors', '-m', $scissorsMsg)
+    Expect-Commit 'commit real: --cleanup=verbatim con SID tras la tijera' $false @('--cleanup=verbatim', '-m', $scissorsMsg)
+    Expect-Commit 'commit real: --cleanup=whitespace con SID tras la tijera' $false @('--cleanup=whitespace', '-m', $scissorsMsg)
+    [System.IO.File]::WriteAllText($msgFile, $scissorsMsg, $utf8)
+    Expect-Commit 'commit real: -F con SID tras la tijera' $false @('-F', $msgFile)
+    Remove-Item $msgFile -Force
+    Remove-Item -LiteralPath (Join-Path $repo '.git\hooks\commit-msg'), (Join-Path $repo '.git\hooks\pre-commit') -Force -ErrorAction SilentlyContinue
+
+    # --- Rango de commits (CI: lo que introduce un push o un PR) --------------------------------------------------------------
+    # Historia: base limpia; un commit que anade un SID con un mensaje limpio; otro que BORRA el archivo; uno con SID en el
+    # mensaje (commit --allow-empty); uno final limpio. El arbol final esta limpio: solo el rango lo detecta.
+    function Sha([string]$Rev) { return ((& git -C $repo rev-parse $Rev) | Out-String).Trim() }
+    function New-Commit([string]$Message) {
+        $prev = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try { & git -C $repo commit -q --allow-empty --no-verify -m $Message 2>&1 | Out-Null } finally { $ErrorActionPreference = $prev }
+    }
+    Reset-Repo
+    Put 'base.txt' "base limpia`n"
+    Stage-All
+    New-Commit 'chore: base limpia'
+    $base = Sha 'HEAD'
+    Put 'filtrado.txt' ("cuenta $sid`n")
+    Stage-All
+    New-Commit 'feat: archivo (limpio en apariencia)'
+    $leak = Sha 'HEAD'
+    Invoke-Git -C $repo rm -q -f filtrado.txt
+    New-Commit 'chore: se quita el archivo'
+    $removed = Sha 'HEAD'
+    New-Commit "docs: mensaje con $sid"
+    $msgLeak = Sha 'HEAD'
+    Put 'final.txt' "final limpio`n"
+    Stage-All
+    New-Commit 'feat: final limpio'
+    $tip = Sha 'HEAD'
+    Expect '-All sobre el arbol final limpio pasa (el SID solo esta en la historia)' $false @('-All')
+    Expect 'rango base..tip: detecta el blob introducido y luego borrado y el mensaje con SID' $true @('-From', $base, '-To', $tip)
+    Expect 'rango: el blob con SID de un commit intermedio (base..removed)' $true @('-From', $base, '-To', $removed)
+    Expect 'rango: un solo commit con el SID (base..leak)' $true @('-From', $base, '-To', $leak)
+    Expect 'rango: solo el mensaje con SID (removed..msgLeak)' $true @('-From', $removed, '-To', $msgLeak)
+    Expect 'rango posterior a lo malo (msgLeak..tip) pasa' $false @('-From', $msgLeak, '-To', $tip)
+    Expect 'rango vacio (tip..tip) pasa' $false @('-From', $tip, '-To', $tip)
+    $zeros = '0' * 40
+    Expect 'primer push (before = ceros): se revisa toda la historia' $true @('-From', $zeros, '-To', $tip)
+    Expect 'before ausente: se revisa toda la historia' $true @('-To', $tip)
+    $ghost = 'a' * 40
+    Expect 'before que no existe en el clon: se revisa toda la historia' $true @('-From', $ghost, '-To', $tip)
+    Expect 'historia hasta la base (limpia) pasa' $false @('-To', $base)
+    Expect 'rango: -To con un valor que no es un SHA (sin inyeccion)' $true @('-To', 'HEAD; calc')
+    Expect 'rango: -From con un valor que no es un SHA' $true @('-From', '--all', '-To', $tip)
+    # Rama con un merge: el blob malo llega por la segunda rama.
+    Invoke-Git -C $repo checkout -q -b lateral $base
+    Put 'lateral.txt' ("cuenta $sid`n")
+    Stage-All
+    New-Commit 'feat: lateral'
+    Invoke-Git -C $repo checkout -q -
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { & git -C $repo merge -q --no-ff --no-verify -m 'merge: lateral' lateral 2>&1 | Out-Null } finally { $ErrorActionPreference = $prev }
+    $merged = Sha 'HEAD'
+    Expect 'rango con un merge: el blob de la rama lateral se revisa' $true @('-From', $tip, '-To', $merged)
+    # Archivos de rango: formatos opacos y nombres.
+    Reset-Repo
+    Invoke-Git -C $repo checkout -q -f -B limpia $base
+    PutBytes 'datos/contenido.dat' ($zipBytes)
+    Stage-All
+    New-Commit 'feat: un zip'
+    $zipTip = Sha 'HEAD'
+    Expect 'rango: un ZIP introducido se rechaza' $true @('-From', $base, '-To', $zipTip)
+    Reset-Repo
+    Invoke-Git -C $repo checkout -q -f -B limpia2 $base
+    Put 'ok.txt' "limpio`n"
+    Stage-All
+    New-Commit 'feat: limpio'
+    $okTip = Sha 'HEAD'
+    Expect 'rango limpio pasa' $false @('-From', $base, '-To', $okTip)
+    # La excepcion de docs/img/ funciona en el rango (README del propio commit).
+    Reset-Repo
+    Invoke-Git -C $repo checkout -q -f -B imagenes $base
+    PutBytes $img $png
+    Put 'docs/img/README.md' $readmeOk
+    Stage-All
+    New-Commit 'docs: captura'
+    $imgTip = Sha 'HEAD'
+    Expect 'rango: PNG de docs/img registrado en su commit pasa' $false @('-From', $base, '-To', $imgTip)
+    Reset-Repo
+    Invoke-Git -C $repo checkout -q -f -B imagenes2 $base
+    PutBytes $img $png
+    Stage-All
+    New-Commit 'docs: captura sin registrar'
+    $img2Tip = Sha 'HEAD'
+    Expect 'rango: PNG de docs/img SIN registrar se rechaza' $true @('-From', $base, '-To', $img2Tip)
 
     # --- Modo -All sobre lo versionado ---------------------------------------------------------------------------------------
     Reset-Repo

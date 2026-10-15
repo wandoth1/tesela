@@ -86,9 +86,15 @@ discos reales ni resultados de escaneos (los ejemplos, capturas y fixtures son s
   (contenido del índice y nombres de archivo) y `commit-msg` revisa el mensaje. Exigen **PowerShell 7 (`pwsh`)**; sin él, o
   sin `scripts/privacy-check.ps1` en el worktree, el commit se bloquea con un mensaje claro.
 - `scripts/privacy-check.ps1 -All` revisa todo el árbol (el CI lo ejecuta con `-GenericOnly`). Busca SID, rutas de perfil
-  reales, unidades D:–Z:, hardware, antivirus y builds de Windows; en local añade el usuario, el equipo y el perfil leídos
-  del entorno en tiempo de ejecución. Se decodifica UTF-8 y UTF-16, se revisan cadenas de binarios y se rechazan las imágenes, con UNA excepción estrecha: `docs/img/<nombre>.png` si es un PNG sin metadatos (solo fragmentos IHDR, PLTE, tRNS, IDAT, IEND, sRGB, gAMA, cHRM y pHYs), de menos de 2 MiB, y `docs/img/README.md` tiene una línea con su nombre y la orden `--demo` que lo genera.
+  reales, unidades D:–Z:, rutas UNC de red (`\\<servidor>\<recurso>`: en la documentación usa un marcador entre `<>`), hardware,
+  antivirus y builds de Windows; en local añade el usuario, el equipo y el perfil leídos
+  del entorno en tiempo de ejecución. Se decodifica UTF-8 y UTF-16, se revisan cadenas de binarios, se rechazan **por su firma** los
+  formatos opacos o comprimidos (ZIP y derivados, gzip, 7z, rar, xz, bz2, zstd, cab, msi, pdf, sqlite: su contenido no se puede revisar) y se rechazan las imágenes, con UNA excepción estrecha: `docs/img/<nombre>.png` si es un PNG sin metadatos (solo fragmentos IHDR, PLTE, tRNS, IDAT, IEND, sRGB, gAMA, cHRM y pHYs), de menos de 2 MiB, y `docs/img/README.md` tiene una línea con su nombre y la orden `--demo` que lo genera.
   `docs/spike-results.md` no puede existir y `spike/` pasa las reglas no ligadas a rutas.
+- **Mensajes y rangos:** el mensaje de commit se revisa entero (también las líneas con `#` y lo que sigue a la línea de tijera
+  de `git commit --verbose`, aunque git lo recortaría: el hook ve el archivo antes). `privacy-check.ps1 -From <sha> -To <sha>`
+  revisa el mensaje de cada commit y TODOS los blobs que introduce el rango, también los que un commit posterior borra; el CI lo
+  ejecuta en cada push (`before..sha`; con `before` a ceros o ausente, toda la historia) y pull request (`base..head`).
 - **Lista negra local (opcional, no versionada):** crea `<git-common-dir>/privacy-denylist` (en un clon normal,
   `.git/privacy-denylist`; en un worktree, el `.git` del repositorio principal; `git rev-parse --git-common-dir` lo dice) con
   **un término por línea**. Coincidencia literal sin distinguir mayúsculas; se ignoran las líneas vacías y las que empiezan por
