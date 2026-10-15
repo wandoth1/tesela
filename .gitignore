@@ -1,0 +1,31 @@
+# Rust
+/target/
+**/*.rs.bk
+*.pdb
+
+# Editores / SO
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+Desktop.ini
+
+# Resultados locales del spike
+/spike-out/
+
+# Spike: artefactos de compilación y salidas
+/spike/target*/
+/spike/out/
+/spike/results.tmp/
+/spike/.denylist
+/spike/results/
+
+# Salidas de mediciones, estén donde estén (contienen datos del equipo: NUNCA se versionan)
+out/
+results/
+results.tmp/
+target*/
+/spike/**/*.json
+/spike/**/*.csv
+/spike/**/*.png
+/spike/**/*.log
