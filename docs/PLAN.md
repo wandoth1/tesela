@@ -314,7 +314,7 @@ Referencia de diseño: un SSD con un volumen de ~1 M de archivos. La memoria se 
 | Fase | Contenido | Hito medible |
 |---|---|---|
 | **0. Spike ✅** | Hecho: ver [fase-0-conclusiones.md](fase-0-conclusiones.md). Backend wgpu DX12 + `Mesh`; API `FileIdExtdDirectoryInfo`; POSIX descartado; Mica descartado; destino de las carpetas de desarrollo diferido a la v0.2 | Cerrado (ronda 4, §9) |
-| **1. MVP v0.1** | ✅ Inc. 1 (modelo + escáner + CLI `tesela-scan` + CI). Pendiente: inc. 2 interfaz, inc. 3 limpieza, inc. 4 MSI. Walker + cola prioritaria + TreeBuilder (con dedup de hard links), inicio, pantalla de escaneo con veredicto, treemap (`Mesh` cacheado) + lista + detalles, bloque del sistema, cesta por destino, borrado definitivo + Papelera, protección, Temp/cachés/Papelera/pagefile/hiberfil, resumen, historial de resúmenes, es/en, claro/oscuro. **Entregable: instalador MSI por usuario** + zip portable, generados en CI | 1 M de archivos en < 30 s en caliente; veredicto de rutas conocidas en < 5 s; private working set ≤ 75 MiB en reposo con el mapa dibujado y < 150 MiB en régimen con 1 M de archivos; p99 de CPU por frame < 8 ms con hover; **0 borrados fuera del conjunto permitido** en los tests; el MSI instala, actualiza y desinstala sin administrador |
+| **1. MVP v0.1** | ✅ Inc. 1 (modelo + escáner + CLI `tesela-scan` + CI). ✅ Inc. 2 (layout + interfaz de solo lectura + `--demo`). Pendiente: inc. 3 limpieza, inc. 4 MSI. Walker + cola prioritaria + TreeBuilder (con dedup de hard links), inicio, pantalla de escaneo con veredicto, treemap (`Mesh` cacheado) + lista + detalles, bloque del sistema, cesta por destino, borrado definitivo + Papelera, protección, Temp/cachés/Papelera/pagefile/hiberfil, resumen, historial de resúmenes, es/en, claro/oscuro. **Entregable: instalador MSI por usuario** + zip portable, generados en CI | 1 M de archivos en < 30 s en caliente; veredicto de rutas conocidas en < 5 s; private working set ≤ 75 MiB en reposo con el mapa dibujado y ~85 B por entrada en régimen (≈ 155 MiB con 1 M; aceptado por el usuario); p99 de CPU por frame < 8 ms con hover; **0 borrados fuera del conjunto permitido** en los tests; el MSI instala, actualiza y desinstala sin administrador |
 | **2. v0.2** | Carpetas de desarrollo (con la decisión de destino y "renombrar primero", §2.6), descargas e instaladores viejos, archivos grandes, colorear por antigüedad y riesgo, filtros, Deshacer + `Ctrl+Z`, historial visible, atajos, flechas en el treemap | Relayout de 20k rectángulos < 5 ms |
 | **3. v0.3** | MFT + "Reiniciar como administrador" (con la cesta persistida) + test diferencial | 1 M < 3 s; 10 M < 30 s; totales iguales al walker salvo metadatos NTFS y carpetas denegadas |
 | **4. v1.0** | Duplicados, WinSxS / puntos de restauración, helper elevado, USN incremental, Excluir + exclusiones persistentes, exportar CSV/HTML, menú contextual del Explorador (HKCU), winget, ARM64 publicado, fuzzing, auditoría con lector de pantalla | Reescaneo incremental < 2 s; exe ≲ 16 MB (wgpu DX12 ya ocupa ≈ 10,5 MB); paquetes firmados |
@@ -359,7 +359,7 @@ Pendientes (las tres primeras las hace el usuario):
 - [ ] Marcas registradas del nombre "Tesela" sin revisar.
 
 ## 7. Siguiente paso
-**Incremento 2 del MVP: `layout` + interfaz** (sin borrado), con el mismo flujo: construye un Sonnet (alto), audita otro Sonnet (muy alto) y revisión final con el asesor. Capturas y ejemplos, siempre con datos sintéticos.
+**Incremento 3 del MVP: `cleaner` + cesta + confirmación + resumen** (el primero que borra), con el mismo flujo y la auditoría más exigente: construye un Sonnet (alto), audita otro Sonnet (muy alto) y revisión final con el asesor. Capturas y ejemplos, siempre con datos sintéticos.
 
 ## 8. Fuera del alcance (explícito)
 Limpiador de registro, "optimizar" o desfragmentar, desinstalar programas, análisis de red o nube en v1, cuentas, telemetría o anuncios, sunburst o 3D, triturado o recuperación, editor o gestor de archivos completo, reglas automáticas sin intervención del usuario.
@@ -400,6 +400,16 @@ Limpiador de registro, "optimizar" o desfragmentar, desinstalar programas, anál
    - `$Recycle.Bin`, `Default` y `Public` denegadas.
    - El titular suma solo lo Seguro.
    - El MVP borra con `remove_file` y deja POSIX para la v0.2.
+
+**Ronda 6** (incremento 2 del MVP: construcción Sonnet, 2 auditorías Sonnet, verificación propia y asesor):
+- Memoria: el objetivo pasa a ~85 B por entrada en régimen (≈ 155 MiB con 1 M); **decisión del usuario**, no se recorta. En reposo con el mapa: ~68 MiB.
+- Fuentes: sin `default_fonts` de egui (no se redistribuyen fuentes OFL/UFL); reservas DEL SISTEMA por escritura (CJK, tailandés, índicas, árabe, hebreo, símbolos), con kana y han siempre juntos. Las pruebas de fuentes se saltan lo que el equipo no tiene (CI en Windows Server).
+- Avisos de terceros: `THIRD-PARTY-NOTICES.md` generado con `cargo about` (no se edita a mano), incrustado en el `.exe` y visible en Ajustes › Acerca de.
+- "Otros": paginado cuando ningún hijo cabe, de modo que abrirlo siempre avanza. Esquinas de 4 px solo en celdas ≥ 16 px. Relayout de 20k celdas ≈ 1 ms (hito de la v0.2 ya cumplido).
+- Capturas: `--screenshot` **exige `--demo`** (en código); `docs/img/` solo admite PNG registrados con su SHA-256 en `docs/img/README.md`, con fragmentos y longitudes acotados.
+- Hooks sin `-ExecutionPolicy Bypass` (heurística del antivirus).
+- egui 0.36.2 se mantiene (0.37 existe; subir es tarea de la v0.2). Mientras no haya riesgo (inc. 3), la cabecera del escaneo dice "X GB en sitios conocidos". Tabla de rutas conocidas con `KnownKind`.
+- Pendiente para la v0.2: profundidad de "Otros" anidados en colas muy pesadas (R4) y validar el zlib de `IDAT` y los data URI en `privacy-check` (R6). Las herramientas de medición (`--bench-hover`, `--idle-memory`) pueden fallar si la ventana queda tapada: es del entorno, no de la app.
 
 **Ronda 5** (incremento 1 del MVP: construcción Sonnet, 2 auditorías Sonnet, revisión con el asesor):
 - `Hist` de 14 B con `dominant_type` / `dominant_age`; regla del 80 % precisada; `mtime` 0 fuera de la antigüedad.
