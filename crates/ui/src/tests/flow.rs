@@ -257,7 +257,7 @@ fn lo_que_no_cabe_en_la_papelera_sale_en_el_grupo_ambar_con_su_casilla() {
     let mut h = harness(opts(StartScreen::Map(MapStart::default())));
     h.get_by_label("Lista").click();
     h.run_steps(3);
-    // `Juegos` (58 GB) supera el límite de la Papelera de la unidad ficticia (el 10 % de la unidad, con margen).
+    // `Juegos` (58 GB) supera el límite de la Papelera de la unidad ficticia (el 5 % conservador de la unidad, con margen).
     h.get_by_label_contains("Juegos, ").click_secondary();
     h.run_steps(3);
     h.query_all_by_label("Añadir a la cesta")

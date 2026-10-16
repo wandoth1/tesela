@@ -126,10 +126,10 @@ impl DemoBackend {
         format!("{}Users\\{USER}", self.root)
     }
 
-    /// ¿Cabe en la Papelera de la unidad ficticia? Mismo criterio que el `cleaner` real: el 10 % de la unidad, con un
-    /// margen del 90 %.
+    /// ¿Cabe en la Papelera de la unidad ficticia? Mismo criterio que el `cleaner` real cuando el registro no da límite:
+    /// el 5 % conservador de la unidad (`DEFAULT_BIN_PERCENT_ASSUMED`), con un margen del 90 %.
     fn fit(&self, bytes: u64) -> Fit {
-        let limit = demo::drives()[0].total / 10;
+        let limit = demo::drives()[0].total / 100 * 5;
         if (bytes as u128) * 100 > (limit as u128) * 90 {
             Fit::Unfit(UnfitReason::TooBig)
         } else {
