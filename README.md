@@ -30,6 +30,9 @@ instalador solo se puede construir desde el código: `pwsh -File scripts/build-m
 2. Haz doble clic. Se instala **solo para tu usuario** en `%LOCALAPPDATA%\Programs\Tesela`, sin pedir permisos de administrador,
    con un acceso **Tesela** en el menú Inicio y una entrada en *Configuración > Aplicaciones > Aplicaciones instaladas*. (En
    silencio: `msiexec /i tesela-<versión>-x64.msi /qn`.)
+   **Carpeta de instalación:** con `INSTALLFOLDER=` el MSI instala donde le digas, **sin comprobar quién puede escribir allí**; elige una
+   carpeta que solo tú (y los administradores) puedas escribir. Si otros usuarios pueden escribir en ella, podrían dejar una DLL junto
+   a `tesela.exe` que se cargaría al abrirlo (riesgo sospechado, no demostrado; el programa ya busca sus DLL solo en `System32`, pero conviene no depender de ello; detalle en [installer/README.md](installer/README.md)).
 3. **Actualizar:** instala encima el MSI de la versión nueva; sustituye a la anterior sin dejar duplicados. Instalar una versión
    **más antigua** que la instalada se bloquea con un mensaje (desinstala primero la nueva si de verdad quieres volver atrás).
 4. **Reparar:** *Aplicaciones instaladas* no ofrece "Modificar" (no hay nada que elegir); para reparar, ejecuta
@@ -38,7 +41,7 @@ instalador solo se puede construir desde el código: `pwsh -File scripts/build-m
 ### Zip portable
 
 `tesela-<versión>-x64-portable.zip` trae `tesela.exe`, `tesela-scan.exe`, las licencias y los avisos de terceros. Descomprímelo
-donde quieras y ejecuta `tesela.exe`; no instala nada ni toca el registro. Para quitarlo, borra la carpeta.
+en una carpeta **de tu perfil** (no en la raíz de una unidad ni en una carpeta que otros usuarios puedan escribir: Windows busca ciertas DLL primero junto al `.exe`) y ejecuta `tesela.exe`; no instala nada ni toca el registro. Para quitarlo, borra la carpeta.
 
 > El zip descargado lleva la marca de la web (*Mark of the Web*) y los archivos que descomprimes la heredan, así que SmartScreen puede avisar también al abrir el `tesela.exe` descomprimido (ver más abajo). Si has verificado la descarga, puedes quitar la marca antes de descomprimir con *Propiedades > Desbloquear* del zip, o con `Unblock-File .\tesela-<versión>-x64-portable.zip`.
 

@@ -147,6 +147,24 @@ impl TempTree {
         self.junctions.push(link);
     }
 
+    /// `mklink /J` hacia un destino que puede estar FUERA de este árbol (por ejemplo, en otro `TempTree`). El enlace se
+    /// quita al soltar el árbol sin tocar el destino (`remove_dir` sobre un junction borra solo el enlace).
+    pub fn junction_to(&mut self, link_rel: &str, target: &Path) {
+        let link = self.path(link_rel);
+        let out = Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(target)
+            .output()
+            .expect("lanza cmd");
+        assert!(
+            out.status.success(),
+            "mklink /J falló: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        self.junctions.push(link);
+    }
+
     /// Activa la distinción de mayúsculas en `rel` con `fsutil` (no necesita administrador; el directorio debe estar
     /// vacío). Devuelve `false` si el sistema no lo admite: el test debe saltarse.
     pub fn case_sensitive(&self, rel: &str) -> bool {

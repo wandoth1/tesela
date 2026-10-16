@@ -589,41 +589,182 @@ fn cancelar_durante_el_arranque_omite_la_resolucion_de_las_rutas_prioritarias() 
     assert!(r.summary.priority.is_empty());
 }
 
+/// El error de una raíz que es un enlace: `RootIsLink` (no `Root(NotFound)`: la raíz se abrió, y se abrió ELLA, no su
+/// destino).
+fn es_raiz_enlace<T>(r: &Result<T, tesela_scanner::ScanError>) -> bool {
+    matches!(r, Err(tesela_scanner::ScanError::RootIsLink(_)))
+}
+
 #[test]
-fn una_raiz_que_es_un_junction_se_resuelve_al_destino_antes_de_clasificarla() {
-    // `start` canonicaliza la raíz (resuelve junctions y symlinks) ANTES de abrirla, así que un junction NO llega a ser
-    // la raíz: se escanea su destino. La rama `SkipReparse` de `classify::root_plan` queda para raíces que sigan siendo
-    // reparse points tras canonicalizar (en la práctica, las carpetas de la nube); este test documenta el comportamiento real.
-    let t = TempTree::new();
+fn una_raiz_que_es_un_junction_se_rechaza_y_su_destino_no_se_recorre() {
+    let mut t = TempTree::new();
     t.write("destino/a.bin", 10_000);
     t.write("destino/sub/b.bin", 20_000);
-    let link = t.path("enlace");
-    let made = std::process::Command::new("cmd")
-        .args(["/C", "mklink", "/J"])
-        .arg(&link)
-        .arg(t.path("destino"))
-        .output();
-    if !made.is_ok_and(|o| o.status.success()) {
-        return; // sin permiso para crear junctions en este equipo
-    }
+    t.junction("enlace", "destino");
     let mut a = opts(&t);
-    a.root = link.clone();
+    a.root = t.path("enlace");
     a.priority_paths = Some(vec![]);
-    let via_link = scan(a).unwrap();
-    via_link.tree.check_invariants().unwrap();
-    let mut b = opts(&t);
-    b.root = t.path("destino");
-    b.priority_paths = Some(vec![]);
-    let direct = scan(b).unwrap();
-    assert_eq!(via_link.tree.stats().files, direct.tree.stats().files);
-    assert_eq!(via_link.tree.stats().files, 2);
-    assert_eq!(
-        via_link.tree.node(0).flags & flags::REPARSE,
-        0,
-        "la raíz ya es el destino"
+    let r = scan(a);
+    assert!(
+        es_raiz_enlace(&r),
+        "un junction como raíz se rechaza en vez de escanear su destino: {:?}",
+        r.map(|_| ())
     );
-    assert!(!via_link.summary.cancelled);
-    // El junction se quita sin tocar el destino.
-    std::fs::remove_dir(&link).unwrap();
-    assert!(t.path("destino/a.bin").exists());
+    // `start` falla antes de lanzar ningún hilo: tampoco hay escaneo a medias.
+    let mut b = opts(&t);
+    b.root = t.path("enlace");
+    assert!(es_raiz_enlace(&tesela_scanner::start(b).map(|_| ())));
+    // El destino, escaneado directamente, sigue funcionando.
+    let mut c = opts(&t);
+    c.root = t.path("destino");
+    c.priority_paths = Some(vec![]);
+    assert_eq!(scan(c).unwrap().tree.stats().files, 2);
+}
+
+#[test]
+fn un_junction_roto_como_raiz_se_juzga_a_si_mismo_no_a_su_destino() {
+    // Si la raíz se resolviera ANTES de clasificarla, un junction cuyo destino ya no existe daría `NotFound` (se abriría el
+    // destino). Se rechaza como enlace: la abierta es la raíz misma y su destino no se toca. Es la comprobación directa
+    // de que el destino no se abre (no se puede observar de otro modo qué abre el sistema).
+    let mut t = TempTree::new();
+    let dest = TempTree::new();
+    dest.write("destino/a.bin", 10_000);
+    t.junction_to("roto", &dest.path("destino"));
+    std::fs::remove_dir_all(dest.path("destino")).unwrap();
+    let mut a = opts(&t);
+    a.root = t.path("roto");
+    a.priority_paths = Some(vec![]);
+    let r = scan(a);
+    assert!(
+        es_raiz_enlace(&r),
+        "un junction roto se rechaza como enlace, no como inexistente: {:?}",
+        r.map(|_| ())
+    );
+    // Una ruta que no existe de verdad sigue siendo `NotFound`.
+    let r = scan(ScanOptions::new(t.path("no-existe")));
+    assert!(
+        matches!(&r, Err(tesela_scanner::ScanError::Root(e)) if e.kind() == std::io::ErrorKind::NotFound)
+    );
+}
+
+#[test]
+fn una_ruta_que_pasa_por_un_junction_intermedio_se_resuelve_a_la_real() {
+    // Solo el ÚLTIMO componente es "la raíz elegida": un enlace en medio de la ruta lo resuelve el sistema y se escanea la
+    // carpeta real (que no es un enlace), con la ruta real como raíz.
+    let mut t = TempTree::new();
+    t.write("real/sub/a.bin", 10_000);
+    t.junction("via", "real");
+    let mut a = opts(&t);
+    a.root = t.path("via/sub");
+    a.priority_paths = Some(vec![]);
+    let r = scan(a).expect("escaneo");
+    r.tree.check_invariants().unwrap();
+    assert_eq!(r.tree.stats().files, 1);
+    assert_eq!(r.tree.node(0).flags & flags::REPARSE, 0);
+    assert_eq!(r.summary.root, t.long_path("real/sub"));
+}
+
+#[test]
+fn una_ruta_prioritaria_que_es_un_junction_se_descarta() {
+    let mut t = TempTree::new();
+    t.write("real/Cache/f.bin", 10_000);
+    t.write("real/Otra/g.bin", 10_000);
+    t.junction("Cache", r"real\Cache"); // enlace en la raíz hacia un destino DENTRO de la raíz
+    let outside = TempTree::new();
+    outside.write("fuera/h.bin", 10_000);
+    t.junction_to("Fuera", &outside.path("fuera")); // y otro hacia FUERA de la raíz
+    settle(&t);
+    let mut o = opts(&t);
+    o.priority_paths = Some(vec![t.path("Cache"), t.path("Fuera"), t.path("real/Otra")]);
+    let r = scan(o).unwrap();
+    r.tree.check_invariants().unwrap();
+    // Solo la carpeta real es una ruta prioritaria: los dos enlaces se descartan SIN canonizarlos hacia su destino (antes,
+    // el primero se aceptaba como `real/Cache`).
+    let paths: Vec<_> = r
+        .summary
+        .priority
+        .iter()
+        .map(|p| dunce::simplified(&p.path).to_path_buf())
+        .collect();
+    assert_eq!(paths, vec![t.long_root().join("real").join("Otra")]);
+    assert_eq!(
+        r.tree.stats().files,
+        2,
+        "ni el destino de un enlace ni nada de fuera se cuenta"
+    );
+    assert_eq!(r.tree.stats().reparse_dirs, 2);
+}
+
+#[test]
+fn una_ruta_prioritaria_que_es_un_junction_roto_se_descarta_sin_errores() {
+    // Seguir el enlace daría `NotFound`; no seguirlo lo descarta por ser un enlace. En los dos casos la candidata no
+    // cuenta, pero el escaneo no puede dar ningún error ni caerse por ella.
+    let mut t = TempTree::new();
+    t.write("real/f.bin", 10_000);
+    let dest = TempTree::new();
+    dest.write("fuera/h.bin", 10_000);
+    t.junction_to("Roto", &dest.path("fuera"));
+    std::fs::remove_dir_all(dest.path("fuera")).unwrap();
+    settle(&t);
+    let mut o = opts(&t);
+    o.priority_paths = Some(vec![t.path("Roto"), t.path("real")]);
+    let r = scan(o).unwrap();
+    r.tree.check_invariants().unwrap();
+    assert!(
+        r.summary.errors_by_code.is_empty(),
+        "{:?}",
+        r.summary.errors_by_code
+    );
+    let paths: Vec<_> = r
+        .summary
+        .priority
+        .iter()
+        .map(|p| dunce::simplified(&p.path).to_path_buf())
+        .collect();
+    assert_eq!(paths, vec![t.long_root().join("real")]);
+    assert_eq!(r.tree.stats().reparse_dirs, 1);
+}
+
+#[test]
+fn una_raiz_junction_se_rechaza_escrita_de_cualquier_forma() {
+    // Barra final, mayúsculas, barras `/`, prefijo `\\?\`, `\.` final y el nombre corto 8.3 del propio enlace: el último
+    // componente es SIEMPRE el enlace y se rechaza, nunca se resuelve a su destino. (Solo carpetas propias de `%TEMP%`.)
+    let mut t = TempTree::new();
+    t.write("destino/a.bin", 10_000);
+    t.junction("enlace_con_un_nombre_largo", "destino");
+    let link = t.path("enlace_con_un_nombre_largo");
+    let s = link.to_string_lossy().into_owned();
+    let slashes = s.replace('\\', "/");
+    let mut variants: Vec<(&str, String)> = vec![
+        ("tal cual", s.clone()),
+        ("barra final", format!("{s}\\")),
+        ("mayúsculas", s.to_uppercase()),
+        ("barras /", slashes.clone()),
+        ("barras / y final", format!("{slashes}/")),
+        ("punto final", format!("{s}\\.")),
+        ("prefijo verbatim", format!(r"\\?\{s}")),
+        ("prefijo verbatim y barra final", format!(r"\\?\{s}\")),
+    ];
+    let short = common::short_path(&link);
+    if short != link {
+        variants.push(("nombre corto 8.3", short.to_string_lossy().into_owned()));
+        variants.push((
+            "nombre corto 8.3 con prefijo verbatim",
+            format!(r"\\?\{}", short.display()),
+        ));
+    } else {
+        eprintln!("este volumen no genera nombres 8.3: se omiten esas dos variantes");
+    }
+    for (name, root) in &variants {
+        let mut o = opts(&t);
+        o.root = std::path::PathBuf::from(root);
+        o.priority_paths = Some(vec![]);
+        let r = scan(o);
+        assert!(es_raiz_enlace(&r), "{name} ({root}): {:?}", r.map(|_| ()));
+    }
+    // Control: el destino, escrito con barra final, sí se escanea.
+    let mut o = opts(&t);
+    o.root = std::path::PathBuf::from(format!("{}\\", t.path("destino").display()));
+    o.priority_paths = Some(vec![]);
+    assert_eq!(scan(o).unwrap().tree.stats().files, 1);
 }

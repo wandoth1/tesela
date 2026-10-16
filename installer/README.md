@@ -39,7 +39,7 @@ completo.
 
 ### Carpeta personalizada
 
-`msiexec /i tesela-<versión>-x64.msi INSTALLFOLDER="C:\Mi carpeta\"` instala ahí. La carpeta se **recuerda** en
+`msiexec /i tesela-<versión>-x64.msi INSTALLFOLDER="%LOCALAPPDATA%\Mis programas\Tesela\"` instala ahí (en `cmd`; `%LOCALAPPDATA%` lo expande el intérprete). **Elige una carpeta que solo tú puedas escribir** (ver la sección siguiente). La carpeta se **recuerda** en
 `HKCU\Software\Tesela\InstallFolder` (un `RegistryValue` con `[INSTALLFOLDER]`) y se **recupera** con una `RegistrySearch`
 hacia `INSTALLFOLDER`, que corre también al actualizar, reparar y desinstalar: así `msiexec /x` (o Aplicaciones instaladas)
 quita los archivos de la carpeta personalizada sin necesidad de repetir el parámetro, y una actualización se queda donde
@@ -47,6 +47,43 @@ estaba. Consecuencia: **la carpeta de una instalación existente no se cambia pa
 desinstalar e instalar de nuevo. Sin esto, los archivos de una instalación personalizada quedaban huérfanos al desinstalar.
 
 **No edites `HKCU\Software\Tesela\InstallFolder`:** lo gestiona el instalador. Si se manipula a mano, el instalador no lo respeta como fuente de verdad ni lo quita al desinstalar de forma fiable (una instalación con el valor cambiado puede dejar archivos o la propia clave sin quitar). Para mover la instalación, desinstala y vuelve a instalar con `INSTALLFOLDER`.
+
+### Seguridad de la carpeta de instalación (`INSTALLFOLDER`)
+
+El MSI **acepta cualquier carpeta** en `INSTALLFOLDER`, también una que otros usuarios del equipo puedan escribir (la raíz de una
+unidad, una carpeta compartida, `C:\Users\Public`...). El instalador es por usuario y no se eleva, así que solo puede escribir donde esa cuenta ya
+puede escribir; el riesgo es de quien elige la carpeta: si **otro usuario puede escribir en ella**, podría dejar allí una DLL con el
+nombre de una que `tesela.exe` carga por nombre, y se cargaría con los permisos de quien ejecute Tesela. Lo que carga el programa
+por nombre (antes del endurecimiento de abajo; revisado en el código de `wgpu-hal` 30.0.1 y `libloading` 0.8.9, que usa para ello `LoadLibraryExW(nombre, NULL, 0)`: orden de
+búsqueda **predeterminado**, con la carpeta del `.exe` la primera y sin `LOAD_LIBRARY_SEARCH_SYSTEM32`): `d3d12.dll`, `dxgi.dll`,
+`dcomp.dll`, `d3dcompiler_47.dll` y **`dxcompiler.dll`**; ninguna está en la lista `KnownDLLs` de Windows. La que más importa es `dxcompiler.dll`: hasta la 0.1.2 `tesela.exe` no fijaba el compilador de sombreadores de DX12 y `wgpu` usa por defecto `Dx12Compiler::Auto`, que **intenta cargar `dxcompiler.dll` por nombre antes de caer a `d3dcompiler_47.dll`**; esa DLL **no existe en una instalación normal de Windows**, así que una copia dejada junto al `.exe` (o en una carpeta del `PATH`) no compite con ninguna de `System32` (DXC carga además `dxil.dll`). La variable de entorno `WGPU_DX12_COMPILER` también cambia esta elección. `dbghelp.dll` no la carga `wgpu`: la carga, si hace falta,
+la biblioteca estándar de Rust al generar un *backtrace* (esto último no se ha comprobado en el código fuente de Rust). **Es un riesgo sospechado, no demostrado en ejecución.**
+
+**Endurecimiento en el propio programa** (`tesela.exe` y `tesela-scan.exe`), que reduce el riesgo aunque la carpeta sea escribible por otros sin sustituir la recomendación de abajo:
+
+- `main` llama lo primero a `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)` (módulo `dll_hardening`): lo que se carga después por nombre (`d3d12.dll`, `dxgi.dll`, `dcomp.dll`, `d3dcompiler_47.dll`...) se busca solo en `System32`, nunca junto al `.exe`.
+- El compilador de sombreadores de DX12 queda fijado a FXC (`d3dcompiler_47.dll`, del sistema): ya no se sondea `dxcompiler.dll`, ni la variable `WGPU_DX12_COMPILER` lo cambia.
+- Las importaciones **estáticas** del `.exe` (`dxgi.dll`, `dwmapi.dll`, `uxtheme.dll`, `propsys.dll`, `uiautomationcore.dll`, `bcryptprimitives.dll`) las resuelve el cargador antes de `main`, así que `SetDefaultDllDirectories` no llega a ellas: se enlazan con `/DEPENDENTLOADFLAG:0x800` (`build.rs`), que las busca solo en `System32`. Comprobado con archivos vacíos con esos nombres junto a una copia del `.exe`: sin el endurecimiento el proceso ni arranca (basta un `dxgi.dll` falso); con él arranca, pinta y todos esos módulos salen de `System32`.
+- Límites: no protege de lo que ya cargó el cargador antes de `main` por otros medios ni de DLL que el propio Windows cargue con otros indicadores (p. ej. `LOAD_LIBRARY_SEARCH_DEFAULT_DIRS`, que incluye la carpeta de la aplicación y usa `windows-core` para activar clases WinRT que `combase` no resuelve), ni de un `.exe` sustituido. Las DLL de los controladores de la GPU se cargan con ruta absoluta y no se ven afectadas.
+
+**Decisión: no se añade ninguna regla al MSI; se documenta.** Se evaluó una `LaunchCondition` que rechazase un `INSTALLFOLDER` fuera del
+perfil, solo con tablas y acciones estándar (el validador prohíbe la tabla `CustomAction` y debe seguir haciéndolo), y no se puede hacer
+de forma robusta:
+
+- La sintaxis de condiciones tiene "empieza por" (`<<`, y `~<<` sin distinguir mayúsculas) y variables de entorno (`%USERPROFILE`), pero el
+  valor de una propiedad de la tabla `Property` no se formatea (según la documentación de Windows Installer y la práctica de WiX): no se puede construir `"<perfil>\"` con la barra final sin una acción
+  personalizada de tipo 51. Sin la barra, un perfil `C:\Users\<usuario>` también aceptaría `C:\Users\<usuario>2`, el perfil de otra persona.
+- `LocalAppDataFolder` y la ruta resuelta de `INSTALLFOLDER` no están garantizadas hasta `CostFinalize`, después de `LaunchConditions` (la documentación de Microsoft no fija el momento exacto); habría
+  que recolocar la acción estándar, y eso cambia la secuencia que `msi-validate.ps1` fija.
+- Aunque funcionase, una comparación de texto no ve `..` (`<perfil>\..` empieza por el perfil), ni un junction dentro del perfil que apunta fuera, ni
+  perfiles redirigidos o con nombre corto 8.3, y rechazaría instalaciones legítimas en una carpeta propia fuera del perfil (otra unidad).
+- Y **no se puede comprobar aquí**: validar la condición exige ejecutar `msiexec /i`, que no se hace en este repositorio (el MSI solo se
+  valida leyéndolo).
+
+Qué hacer: instala en la carpeta predeterminada (`%LOCALAPPDATA%\Programs\Tesela`, que es tuya) o en otra **a la que solo tu cuenta (y
+los administradores) pueda escribir**. Para comprobarlo: `icacls "<carpeta>"` no debe mostrar `Users`, `Everyone` ni `Authenticated Users` con
+permisos de escritura (`W`, `M`, `F`, `(OI)(CI)(W)`...). Lo mismo vale para el **zip portable**: descomprímelo en una carpeta de tu perfil, no en una
+carpeta compartida ni en la raíz de una unidad. Si quieres reforzarlo en una instalación de empresa, hazlo con permisos NTFS de la carpeta.
 
 ## Identificadores (NO cambiar)
 

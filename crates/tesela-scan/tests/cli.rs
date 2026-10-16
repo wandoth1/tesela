@@ -4,14 +4,28 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Árbol temporal con guarda RAII: solo se borra algo si es `%TEMP%\tesela-test-*` creado aquí.
-struct TempTree(PathBuf);
+/// Árbol temporal con guarda RAII: solo se borra algo si es `%TEMP%\tesela-test-*` creado aquí; sus junctions se quitan
+/// antes como enlaces.
+struct TempTree(PathBuf, Vec<PathBuf>);
 
 impl TempTree {
     fn new() -> TempTree {
         let p = std::env::temp_dir().join(format!("tesela-test-{}", uuid::Uuid::new_v4()));
         fs::create_dir(&p).unwrap();
-        TempTree(p)
+        TempTree(p, Vec::new())
+    }
+    /// `mklink /J` hacia una carpeta de ESTE mismo árbol (nunca una unidad ni un volumen).
+    fn junction(&mut self, link: &str, target: &str) -> PathBuf {
+        let (l, t) = (self.0.join(link), self.0.join(target));
+        let out = Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&l)
+            .arg(&t)
+            .output()
+            .expect("lanza cmd");
+        assert!(out.status.success(), "mklink /J falló");
+        self.1.push(l.clone());
+        l
     }
     fn write(&self, rel: &str, size: usize) {
         let p = self.0.join(rel);
@@ -28,6 +42,10 @@ impl Drop for TempTree {
                 .file_name()
                 .is_some_and(|n| n.to_string_lossy().starts_with("tesela-test-"));
         if ok {
+            for j in &self.1 {
+                // Los junctions se quitan ANTES, como enlaces: `remove_dir` sobre un junction borra solo el enlace.
+                let _ = fs::remove_dir(j);
+            }
             let _ = fs::remove_dir_all(&self.0);
         }
     }
@@ -255,4 +273,20 @@ fn version_se_imprime_por_la_salida_estandar_y_no_escanea() {
         );
         assert!(err.is_empty(), "{err}");
     }
+}
+
+#[test]
+fn una_raiz_que_es_un_junction_da_error_claro_y_salida_1() {
+    let mut t = TempTree::new();
+    t.write("destino/a.bin", 10_000);
+    let link = t.junction("enlace", "destino");
+    let (code, out, err) = run(&[&link]);
+    assert_eq!(code, 1, "{out}{err}");
+    assert!(err.starts_with("error:"), "{err}");
+    assert!(err.contains("es un enlace"), "{err}");
+    assert!(out.is_empty(), "no escanea nada: {out}");
+    // El destino, escaneado directamente, funciona.
+    let (code, out, _) = run(&[&t.0.join("destino")]);
+    assert_eq!(code, 0);
+    assert!(out.contains("Archivos: "), "{out}");
 }

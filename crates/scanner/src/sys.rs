@@ -6,14 +6,16 @@
 
 use std::ffi::c_void;
 use std::mem::{offset_of, size_of};
-use std::os::windows::ffi::OsStrExt;
-use std::path::Path;
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
+use std::os::windows::fs::OpenOptionsExt;
+use std::os::windows::io::IntoRawHandle;
+use std::path::{Path, PathBuf};
 use windows_sys::Wdk::Storage::FileSystem::{
     FileFsFullSizeInformation, FileFsFullSizeInformationEx, NtQueryVolumeInformationFile,
 };
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_INVALID_DATA, ERROR_NO_MORE_FILES, ERROR_NOT_SUPPORTED, GetLastError,
-    HANDLE, INVALID_HANDLE_VALUE,
+    CloseHandle, ERROR_INVALID_DATA, ERROR_INVALID_NAME, ERROR_NO_MORE_FILES, ERROR_NOT_SUPPORTED,
+    GetLastError, HANDLE, INVALID_HANDLE_VALUE,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, FILE_ATTRIBUTE_REPARSE_POINT, FILE_ATTRIBUTE_TAG_INFO, FILE_BASIC_INFO,
@@ -22,7 +24,8 @@ use windows_sys::Win32::Storage::FileSystem::{
     FIND_FIRST_EX_LARGE_FETCH, FileAttributeTagInfo, FileBasicInfo, FileIdExtdDirectoryInfo,
     FileIdInfo, FileStandardInfo, FindClose, FindExInfoBasic, FindExSearchNameMatch,
     FindFirstFileExW, FindNextFileW, GetDiskFreeSpaceExW, GetDiskFreeSpaceW,
-    GetFileInformationByHandleEx, GetVolumeInformationByHandleW, OPEN_EXISTING, WIN32_FIND_DATAW,
+    GetFileInformationByHandleEx, GetFinalPathNameByHandleW, GetVolumeInformationByHandleW,
+    OPEN_EXISTING, WIN32_FIND_DATAW,
 };
 use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 
@@ -168,6 +171,59 @@ fn dir_meta_with(
         alloc: standard.AllocationSize.max(0) as u64,
         logical: standard.EndOfFile.max(0) as u64,
     })
+}
+
+/// Abre la ruta que el usuario dio SIN seguir el reparse point del último componente (junction, symlink, punto de
+/// montaje): el handle es el del propio enlace, no el de su destino, y por eso su destino no se abre. Solo pide
+/// `access` (lo normal es `FILE_READ_ATTRIBUTES`). Lo hace la biblioteca estándar (`OpenOptions`), que además antepone
+/// `\\?\` a las rutas largas. Los componentes INTERMEDIOS que sean enlaces los resuelve el sistema como siempre (no
+/// se pueden evitar al abrir una ruta). Devuelve el código de error de Windows si falla.
+pub fn open_no_follow(path: &Path, access: u32) -> Result<DirHandle, u32> {
+    let file = std::fs::OpenOptions::new()
+        .access_mode(access)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+        .map_err(|e| e.raw_os_error().map_or(ERROR_INVALID_NAME, |c| c as u32))?;
+    Ok(DirHandle(file.into_raw_handle() as HANDLE))
+}
+
+/// Ruta final canónica del handle (`\\?\C:\...`, letras de las carpetas tal como están en el disco y nombres largos),
+/// calculada SOBRE EL HANDLE ya abierto: con un handle de [`open_no_follow`] sobre un enlace da la ruta del propio
+/// enlace, no la de su destino.
+pub fn final_path(h: &DirHandle) -> Result<PathBuf, u32> {
+    let mut buf = vec![0u16; 512];
+    loop {
+        // SAFETY: `h.0` es un handle válido; `buf` es escribible y se pasa su longitud exacta en unidades UTF-16. Flags 0
+        // = `FILE_NAME_NORMALIZED | VOLUME_NAME_DOS`.
+        let n = unsafe { GetFinalPathNameByHandleW(h.0, buf.as_mut_ptr(), buf.len() as u32, 0) };
+        if n == 0 {
+            // SAFETY: `GetLastError` no tiene precondiciones.
+            return Err(unsafe { GetLastError() });
+        }
+        let n = n as usize;
+        if n < buf.len() {
+            return Ok(PathBuf::from(std::ffi::OsString::from_wide(&buf[..n])));
+        }
+        // Búfer corto: `n` es el tamaño necesario, con el NUL final.
+        buf.resize(n + 1, 0);
+    }
+}
+
+/// Una ruta abierta sin seguir el reparse point final, con sus metadatos y su ruta canónica.
+pub struct Opened {
+    pub handle: DirHandle,
+    pub meta: DirMeta,
+    pub path: PathBuf,
+}
+
+/// [`open_no_follow`] con `FILE_READ_ATTRIBUTES` + [`dir_meta`] + [`final_path`]. El llamante mira `meta` (¿es un
+/// directorio?, ¿un reparse point?) ANTES de usar `path` para recorrer nada.
+pub fn open_resolved(path: &Path) -> Result<Opened, u32> {
+    let handle = open_no_follow(path, FILE_READ_ATTRIBUTES)?;
+    let meta = dir_meta(&handle)?;
+    let path = final_path(&handle)?;
+    Ok(Opened { handle, meta, path })
 }
 
 /// Datos de una entrada de directorio tal como los da el listado de su padre.
@@ -965,5 +1021,87 @@ mod tests {
     fn ex_space_real_da_valores_coherentes() {
         let (avail, total, free) = ex_space(&manifest_dir()).unwrap();
         assert!(total > 0 && avail <= free.max(total));
+    }
+
+    /// Carpeta temporal propia (`%TEMP%\tesela-test-<uuid>`) que se borra al soltarla; los junctions se quitan antes como
+    /// enlaces (`remove_dir` sobre un junction borra solo el enlace).
+    struct Tmp(PathBuf, Vec<PathBuf>);
+
+    impl Tmp {
+        fn new() -> Tmp {
+            let base = dunce::canonicalize(std::env::temp_dir()).unwrap();
+            let p = base.join(format!("tesela-test-{}", uuid::Uuid::new_v4()));
+            std::fs::create_dir(&p).unwrap();
+            Tmp(p, Vec::new())
+        }
+
+        fn junction(&mut self, link: &str, target: &Path) -> PathBuf {
+            let l = self.0.join(link);
+            let out = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&l)
+                .arg(target)
+                .output()
+                .unwrap();
+            assert!(out.status.success(), "mklink /J falló");
+            self.1.push(l.clone());
+            l
+        }
+    }
+
+    impl Drop for Tmp {
+        fn drop(&mut self) {
+            for j in &self.1 {
+                let _ = std::fs::remove_dir(j);
+            }
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn open_resolved_no_sigue_un_junction_ni_siquiera_roto() {
+        let mut t = Tmp::new();
+        let target = t.0.join("destino");
+        std::fs::create_dir(&target).unwrap();
+        let link = t.junction("enlace", &target);
+        // Con el destino vivo: se abre el ENLACE (atributo REPARSE) y la ruta final es la del enlace, no la del destino.
+        let o = open_resolved(&link).unwrap();
+        assert_ne!(o.meta.attrs & FILE_ATTRIBUTE_REPARSE_POINT, 0);
+        assert_ne!(o.meta.reparse_tag, 0);
+        assert_eq!(dunce::simplified(&o.path), link);
+        // Con el destino borrado seguir el enlace daría ERROR_FILE_NOT_FOUND / ERROR_PATH_NOT_FOUND; un enlace que no se
+        // sigue sigue abriéndose. Es la prueba directa de que el destino no se abre.
+        drop(o);
+        std::fs::remove_dir(&target).unwrap();
+        assert!(std::fs::canonicalize(&link).is_err(), "seguirlo fallaría");
+        let o = open_resolved(&link).unwrap();
+        assert_ne!(o.meta.attrs & FILE_ATTRIBUTE_REPARSE_POINT, 0);
+        assert_eq!(dunce::simplified(&o.path), link);
+    }
+
+    #[test]
+    fn open_resolved_de_la_raiz_de_una_unidad() {
+        // El caso real más común: la raíz de la unidad del propio proyecto.
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let drive = manifest.components().next().unwrap();
+        let root = PathBuf::from(format!("{}\\", drive.as_os_str().to_string_lossy()));
+        let o = open_resolved(&root).unwrap();
+        assert_ne!(o.meta.attrs & 0x10, 0, "es un directorio");
+        assert_eq!(o.meta.attrs & FILE_ATTRIBUTE_REPARSE_POINT, 0);
+        assert_eq!(dunce::simplified(&o.path), dunce::simplified(&root));
+    }
+
+    #[test]
+    fn open_resolved_de_una_carpeta_normal_da_su_ruta_canonica() {
+        let t = Tmp::new();
+        let sub = t.0.join("Sub Carpeta");
+        std::fs::create_dir(&sub).unwrap();
+        // Con otra capitalización y barras mixtas se obtiene la ruta tal como está en el disco.
+        let sloppy =
+            PathBuf::from(t.0.to_string_lossy().to_uppercase().replace('\\', "/") + "/sub carpeta");
+        let o = open_resolved(&sloppy).unwrap();
+        assert_eq!(o.meta.attrs & FILE_ATTRIBUTE_REPARSE_POINT, 0);
+        assert_eq!(dunce::simplified(&o.path), sub);
+        assert!(open_resolved(&t.0.join("no existe")).is_err());
     }
 }

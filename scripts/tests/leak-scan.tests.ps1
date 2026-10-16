@@ -179,6 +179,58 @@ foreach ($pair in @(@('UTF-8', (Pad ($utf8nb.GetBytes($zAcc)))), @('UTF-16', (Pa
     Check "ASCII pegado a una letra acentuada no cuenta ($($pair[0]))" ((ZLeaks $pair[1] 'USERNAME') -eq 0)
 }
 
+# --- Valores partidos por bytes NUL sueltos: se busca ADEMAS en los bytes sin NUL ----------------------------------------------
+function Nul([byte[]]$a, [byte[]]$b) { return [byte[]]($a + [byte[]](0) + $b) }
+$zAscii = [System.Text.Encoding]::ASCII
+# El usuario sintetico "Zorbaq" partido en cualquier punto, en ASCII, con el NUL en medio.
+foreach ($cut in 1, 3, 5) {
+    $bytes = Pad (Nul $zAscii.GetBytes('usuario=' + 'Zorbaq'.Substring(0, $cut)) $zAscii.GetBytes('Zorbaq'.Substring($cut) + ';'))
+    Check "NUL suelto dentro del usuario (corte $cut)" ((ZLeaks $bytes 'USERNAME') -ge 1)
+}
+# Varios NUL repartidos, y el equipo.
+$bytes = Pad ($zAscii.GetBytes('x ') + [byte[]](0) + $zAscii.GetBytes('ZOR') + [byte[]](0, 0) + $zAscii.GetBytes('BAQ-') + [byte[]](0) + $zAscii.GetBytes('PC y'))
+Check 'varios NUL dentro del nombre del equipo' ((ZLeaks $bytes 'COMPUTERNAME') -ge 1)
+# Una ruta (con `/` y con `\`) partida por un NUL.
+foreach ($form in @($repoSlash, $repoBack)) {
+    $half = [int]($form.Length / 2)
+    $bytes = Pad (Nul (Latin1 ('ruta: ' + $form.Substring(0, $half))) (Latin1 ($form.Substring($half) + '\src')))
+    $l = Find-LocalValueLeaks -Bytes $bytes -Needles $needles -Name 'a.exe'
+    Check "ruta partida por un NUL ('$form')" ($l.Count -eq 1 -and $l[0] -like "*'repositorio'*")
+}
+# Un valor con letras acentuadas en UTF-8 partido por un NUL: solo se ve con el UTF-8 de los bytes sin NUL (un NUL entre dos
+# valores ASCII no hace falta decodificarlo asi, pero uno entre los dos bytes de una letra acentuada, si).
+$uBytes = $utf8nb.GetBytes('usuario=' + $uUser + ';')
+$at = 9   # tras "usuario=" y el primer byte (0xC3) de la primera letra acentuada
+$cutBytes = [byte[]]($uBytes[0..$at]) + [byte[]](0) + [byte[]]($uBytes[($at + 1)..($uBytes.Length - 1)])
+Check 'valor con acentos en UTF-8 partido por un NUL' ((Leaks (Pad $cutBytes) 'USERNAME') -ge 1)
+# El mismo valor en Latin-1/ANSI (una letra acentuada es UN byte) partido por un NUL, en tres puntos: no es UTF-8 valido, asi que solo
+# lo ve el Latin-1 de los bytes sin NUL.
+foreach ($cut in 1, 2, 5) {
+    $latCut = Pad (Nul (Latin1 ('usuario=' + $uUser.Substring(0, $cut))) (Latin1 ($uUser.Substring($cut) + ';')))
+    Check "valor con acentos en Latin-1 partido por un NUL (corte $cut)" ((Leaks $latCut 'USERNAME') -ge 1)
+}
+$latCutPc = Pad (Nul (Latin1 ('host=' + $uPc.Substring(0, 9))) (Latin1 ($uPc.Substring(9) + ';')))
+Check 'equipo con acentos en Latin-1 partido por un NUL' ((Leaks $latCutPc 'COMPUTERNAME') -ge 1)
+# El UTF-16 sigue funcionando con sus NUL (el texto sin NUL es ADICIONAL): alineado, desalineado y con NUL extra dentro del valor.
+$u16z = [System.Text.Encoding]::Unicode.GetBytes('usuario=Zorbaq;')
+Check 'UTF-16 alineado sigue viendose' ((ZLeaks (Pad $u16z) 'USERNAME') -ge 1)
+Check 'UTF-16 desalineado sigue viendose' ((ZLeaks ([byte[]](7) + (Pad $u16z)) 'USERNAME') -ge 1)
+$u16cut = [System.Text.Encoding]::Unicode.GetBytes('usuario=Zor' + [string][char]0 + 'baq;')
+Check 'UTF-16 con un NUL dentro del valor' ((ZLeaks (Pad $u16cut) 'USERNAME') -ge 1)
+# Negativos: texto limpio con NUL, y el valor pegado a otra letra tras quitar los NUL (mismo criterio de limites de palabra).
+$bytes = Pad (Nul $zAscii.GetBytes('nada que ver ') $zAscii.GetBytes('con la maquina'))
+Check 'texto limpio con un NUL' ((ZLeaks $bytes 'USERNAME') -eq 0 -and (ZLeaks $bytes 'COMPUTERNAME') -eq 0)
+$bytes = Pad (Nul $zAscii.GetBytes('xZ') $zAscii.GetBytes('orbaqx'))
+Check 'valor pegado a letras tras quitar los NUL no cuenta' ((ZLeaks $bytes 'USERNAME') -eq 0)
+# Un binario grande de 6 MiB con muchos NUL se revisa en tiempo razonable (el texto sin NUL es un texto mas).
+$big = New-Object byte[] (6MB)
+for ($i = 0; $i -lt $big.Length; $i += 3) { $big[$i] = 0x41 }
+$sw = [System.Diagnostics.Stopwatch]::StartNew()
+$l = Find-LocalValueLeaks -Bytes $big -Needles $needles -Name 'grande.exe'
+$sw.Stop()
+Check "binario de 6 MiB con muchos NUL: sin falsos positivos ($($l.Count))" ($l.Count -eq 0)
+Check "binario de 6 MiB con muchos NUL: $([int]$sw.Elapsed.TotalSeconds) s (maximo 60)" ($sw.Elapsed.TotalSeconds -lt 60)
+
 if ($failures.Count -gt 0) {
     Write-Host "leak-scan.tests: $($failures.Count) de $total pruebas FALLAN" -ForegroundColor Red
     $failures | ForEach-Object { Write-Host "  - $_" }

@@ -28,6 +28,7 @@ impl StartError {
                 _ => tr.ta("error-scan-root", args!["detail" => e.to_string()]),
             },
             StartError::Scan(ScanError::NotADirectory(_)) => tr.t("error-scan-not-dir"),
+            StartError::Scan(ScanError::RootIsLink(_)) => tr.t("error-scan-root-link"),
             StartError::Scan(ScanError::Panicked) => tr.t("error-scan-panicked"),
             StartError::StartupLost => tr.t("error-scan-startup-lost"),
             StartError::Cancelled => tr.t("error-scan-cancelled"),
@@ -188,6 +189,11 @@ mod tests {
                 "the path is not a folder or a drive",
             ),
             (
+                StartError::Scan(ScanError::RootIsLink(PathBuf::from("x"))),
+                "la carpeta elegida es un enlace (junction o symlink); Tesela no sigue enlaces",
+                "the chosen folder is a link (junction or symlink); Tesela does not follow links",
+            ),
+            (
                 StartError::Scan(ScanError::Panicked),
                 "falló de forma inesperada",
                 "failed unexpectedly",
@@ -203,6 +209,7 @@ mod tests {
             for m in [&m_es, &m_en] {
                 assert!(!m.contains("scanner thread panicked"), "{m}");
                 assert!(!m.contains("cannot open the scan root"), "{m}");
+                assert!(!m.contains("links are not followed"), "{m}");
             }
         }
         // El detalle (el texto del sistema para ese código) es lo que va entre paréntesis.
