@@ -2541,6 +2541,57 @@ fn un_directorio_que_crecio_tras_la_aprobacion_no_se_envia() {
     assert_eq!(rep2.items[0].status, ItemStatus::Recycled);
 }
 
+/// H6.2: el directorio se mide JUSTO ANTES de la operación que lo incluye, no al preparar el trozo entero: aquí crece
+/// durante el envío de la operación anterior (un archivo grande que va solo) y, al llegar su turno, no se envía.
+#[test]
+fn el_directorio_se_mide_justo_antes_de_su_operacion_no_al_preparar_el_trozo() {
+    let sb = Sandbox::new();
+    // Capacidad 10 000: lo que pasa de 1 000 va SOLO en su operación (así hay dos operaciones, una por elemento).
+    let fake = FakeShell::new(&sb, Some(10_000), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    sb.write("Docs/a.bin", 6_000);
+    sb.write("Docs/crece/f0.bin", 6_000);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/a.bin"), c.protection());
+    b.add_path(sb.long("Docs/crece"), c.protection());
+    let mut plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 2);
+    // Estimaciones coherentes con la capacidad simulada (cada uno > 10 % de 10 000 y cabe).
+    for it in &mut plan.items {
+        it.estimate.bytes = 5_000;
+        it.estimate.logical = 5_000;
+        it.fit = c.fit(&it.path, 5_000);
+        assert_eq!(it.fit, Fit::Fits);
+    }
+    // El directorio crece cuando se va a entregar `a.bin` (después de preparar el trozo, antes de su propia operación).
+    // Con una medida hecha al preparar, el directorio se habría repartido con el tamaño viejo.
+    let grow = sb.path("Docs/crece/nuevo.bin");
+    let _hook = crate::engine::test_hooks::install_before_shell(sb.long("Docs"), move |p| {
+        if p.ends_with("a.bin") {
+            fs::write(&grow, vec![1u8; 1 << 20]).unwrap();
+        }
+    });
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    let st = |n: &str| {
+        rep.items
+            .iter()
+            .find(|i| i.path.ends_with(n))
+            .unwrap()
+            .status
+    };
+    assert_eq!(st("a.bin"), ItemStatus::Recycled);
+    assert_eq!(
+        st("crece"),
+        ItemStatus::Root(crate::engine::RootStatus::Changed)
+    );
+    assert!(sb.path("Docs/crece/nuevo.bin").exists());
+    assert_eq!(
+        fake.names(),
+        vec![vec!["a.bin"]],
+        "el directorio no llegó a la shell"
+    );
+}
+
 /// B2: un directorio que ENCOGIÓ se reparte con su tamaño nuevo (no con el aprobado). El aprobado (estimación falseada
 /// a 8 500 con 2 000 ya ocupados de una capacidad de 10 000: presupuesto 7 000) no cabría; el real, mucho menor, sí.
 #[test]
@@ -2729,6 +2780,7 @@ fn pending(identity: FileIdentity, path: &Path, held_path: &Path) -> Pending {
         links: 1,
         held: sys::open_path_for_rename(held_path).unwrap(),
         size: 0,
+        measured: true,
     }
 }
 

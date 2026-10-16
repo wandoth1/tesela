@@ -733,8 +733,14 @@ impl Cleaner {
             for &it in chunk {
                 let mut st = StatsSnapshot::default();
                 progress.entries.fetch_add(1, Ordering::Relaxed);
-                match self.prepare_recycle(it, &mut st, cancel) {
-                    Prepared::Ready(p) if opts.dry_run => {
+                match self.prepare_recycle(it, &mut st) {
+                    Prepared::Ready(mut p) if opts.dry_run => {
+                        // La simulación también mide lo que mediría el envío real.
+                        if let Err((status, o)) = self.fresh_size(it, &mut p, &mut st, cancel) {
+                            emit(it, None, 0, o);
+                            results.insert(it.id, (status, st));
+                            continue;
+                        }
                         emit(it, Some(p.identity), p.links, Outcome::WouldRecycle);
                         st.bytes = it.estimate.bytes;
                         results.insert(it.id, (ItemStatus::WouldRecycle, st));
@@ -773,6 +779,17 @@ impl Cleaner {
                         }
                         break;
                     }
+                    // El primero de la cola se mide ahora (justo antes de decidir su operación): si creció, no se envía.
+                    if let Some((it, p)) = slots[first].as_mut() {
+                        let mut st = StatsSnapshot::default();
+                        if let Err((status, o)) = self.fresh_size(it, p, &mut st, cancel) {
+                            emit(it, None, 0, o);
+                            results.insert(it.id, (status, st));
+                            slots[first] = None;
+                            queue.pop_front();
+                            continue;
+                        }
+                    }
                     let sizes: Vec<u64> = queue
                         .iter()
                         .map(|&i| slots[i].as_ref().map_or(0, |s| s.1.size))
@@ -799,8 +816,21 @@ impl Cleaner {
                         }
                         Take::Send(n) => n,
                     };
-                    let entries: Vec<(&PlanItem, Pending)> =
-                        queue.drain(..n).filter_map(|i| slots[i].take()).collect();
+                    let mut entries: Vec<(&PlanItem, Pending)> = Vec::new();
+                    // Los demás elementos de la operación se miden también ahora, justo antes de entregarla.
+                    for (it, mut p) in queue.drain(..n).filter_map(|i| slots[i].take()) {
+                        let mut st = StatsSnapshot::default();
+                        match self.fresh_size(it, &mut p, &mut st, cancel) {
+                            Ok(()) => entries.push((it, p)),
+                            Err((status, o)) => {
+                                emit(it, None, 0, o);
+                                results.insert(it.id, (status, st));
+                            }
+                        }
+                    }
+                    if entries.is_empty() {
+                        continue;
+                    }
                     let paths: Vec<PathBuf> = entries.iter().map(|(_, p)| p.path.clone()).collect();
                     // La identidad aprobada viaja con la ruta: el receptor la comprueba en `PreDeleteItem`.
                     let send: Vec<recycle::SendItem> = entries
@@ -982,12 +1012,7 @@ impl Cleaner {
     ///   `DELETE`: la guarda NO impide renombrar el propio elemento ni poner otro con su nombre; eso lo vigila
     ///   `PreDeleteItem`, que compara la identidad justo antes de que la shell actúe). Además permite comprobar al final
     ///   que el objeto aprobado es el que acabó en la Papelera.
-    fn prepare_recycle(
-        &self,
-        it: &PlanItem,
-        st: &mut StatsSnapshot,
-        cancel: &Arc<AtomicBool>,
-    ) -> Prepared {
+    fn prepare_recycle(&self, it: &PlanItem, st: &mut StatsSnapshot) -> Prepared {
         let UnitSpec::Entry {
             path,
             approved,
@@ -1060,44 +1085,16 @@ impl Cleaner {
             }
             g
         };
-        // Lo que ocupa de verdad ahora frente a lo medido al aprobar (B2).
+        // Lo que ocupa de verdad ahora frente a lo medido al aprobar. Un directorio NO se vuelve a medir aquí (un trozo son
+        // hasta 32 elementos y entre este punto y la operación que lo incluye pasa tiempo): se mide JUSTO ANTES de la
+        // operación, en `fresh_size` (H6.2). Mientras tanto vale lo aprobado.
         let estimate = it
             .estimate
             .bytes
             .max(it.estimate.logical)
             .max(it.estimate.shared_bytes);
         let size = if m.is_dir {
-            // Un directorio pudo CRECER desde la aprobación: se vuelve a medir con el mismo recorrido (relativo, sin entrar
-            // en reparse points). Si creció, no se envía (el reparto se basa en un tamaño que ya no es cierto); si
-            // encogió, manda el tamaño nuevo.
-            match self.remeasure(it, cancel) {
-                Remeasure::Now(fresh) => {
-                    let grew = fresh.bytes > it.estimate.bytes
-                        || fresh.logical > it.estimate.logical
-                        || fresh.shared_bytes > it.estimate.shared_bytes;
-                    if grew {
-                        st.changed += 1;
-                        return Prepared::Rejected(
-                            ItemStatus::Root(RootStatus::Changed),
-                            Outcome::Changed,
-                        );
-                    }
-                    fresh.bytes.max(fresh.logical).max(fresh.shared_bytes)
-                }
-                Remeasure::Cancelled => {
-                    return Prepared::Rejected(
-                        ItemStatus::Root(RootStatus::Cancelled),
-                        Outcome::NotRecycled,
-                    );
-                }
-                Remeasure::Failed => {
-                    st.changed += 1;
-                    return Prepared::Rejected(
-                        ItemStatus::Root(RootStatus::Changed),
-                        Outcome::Changed,
-                    );
-                }
-            }
+            estimate
         } else {
             // Un archivo: lo que ocupa de verdad ahora frente a lo medido al aprobar, el mayor manda.
             estimate.max(m.alloc).max(m.logical)
@@ -1108,7 +1105,46 @@ impl Cleaner {
             links: m.links,
             held,
             size,
+            measured: !m.is_dir,
         })
+    }
+
+    /// B2 + H6.2: un directorio pudo CRECER desde la aprobación. Se vuelve a medir con el mismo recorrido (relativo, sin
+    /// entrar en reparse points) JUSTO ANTES de la operación de la shell que lo incluye (no al preparar el trozo entero).
+    /// Si creció, no se envía (el reparto se basa en un tamaño que ya no es cierto): `Err` con el estado "cambió desde la
+    /// confirmación"; si encogió, manda el tamaño nuevo. Los archivos ya se midieron al preparar.
+    fn fresh_size(
+        &self,
+        it: &PlanItem,
+        p: &mut Pending,
+        st: &mut StatsSnapshot,
+        cancel: &Arc<AtomicBool>,
+    ) -> Result<(), (ItemStatus, Outcome)> {
+        if p.measured {
+            return Ok(());
+        }
+        match self.remeasure(it, cancel) {
+            Remeasure::Now(fresh) => {
+                let grew = fresh.bytes > it.estimate.bytes
+                    || fresh.logical > it.estimate.logical
+                    || fresh.shared_bytes > it.estimate.shared_bytes;
+                if grew {
+                    st.changed += 1;
+                    return Err((ItemStatus::Root(RootStatus::Changed), Outcome::Changed));
+                }
+                p.size = fresh.bytes.max(fresh.logical).max(fresh.shared_bytes);
+                p.measured = true;
+                Ok(())
+            }
+            Remeasure::Cancelled => Err((
+                ItemStatus::Root(RootStatus::Cancelled),
+                Outcome::NotRecycled,
+            )),
+            Remeasure::Failed => {
+                st.changed += 1;
+                Err((ItemStatus::Root(RootStatus::Changed), Outcome::Changed))
+            }
+        }
     }
 }
 
@@ -1152,6 +1188,8 @@ struct Pending {
     held: sys::Handle,
     /// Lo que se cuenta para repartir en operaciones (el mayor entre lo aprobado y lo que ocupa ahora).
     size: u64,
+    /// ¿Ya se midió lo que ocupa AHORA? (Un archivo, al preparar; un directorio, justo antes de su operación.)
+    measured: bool,
 }
 
 /// Espacio de la Papelera de un volumen.
