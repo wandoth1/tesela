@@ -771,3 +771,60 @@ fn el_hash_de_una_entrada_depende_de_todos_sus_campos() {
         assert_ne!(other, base);
     }
 }
+
+/// A-M3: MEDICIÓN (no es una prueba: `cargo test -p tesela-cleaner medicion_a_m3 -- --ignored --nocapture`). El borrado por
+/// handle de 100 000 archivos propios (vacíos, en una carpeta temporal `tesela-test-<uuid>`) con el registro local como receptor.
+#[test]
+#[ignore = "medición A-M3"]
+fn medicion_a_m3_borrado_de_100000_archivos_con_registro() {
+    let sb = Sandbox::new();
+    for d in 0..100 {
+        sb.mkdir(&format!("R/d{d:03}"));
+        for f in 0..1_000 {
+            fs::File::create(sb.path(&format!("R/d{d:03}/f{f:04}.tmp"))).unwrap();
+        }
+    }
+    for threads in [1usize, 4] {
+        if threads == 4 {
+            // Un segundo árbol (el primero ya se borró).
+            for d in 0..100 {
+                sb.mkdir(&format!("R/d{d:03}"));
+                for f in 0..1_000 {
+                    fs::File::create(sb.path(&format!("R/d{d:03}/f{f:04}.tmp"))).unwrap();
+                }
+            }
+        }
+        let log = Arc::new(crate::log::LogWriter::create(&sb.path("Tesela"), false).unwrap());
+        let env = Arc::new(Env {
+            protection: no_protection(),
+            mode: Mode::Delete,
+            min_age_ft: 0,
+            now_ft: now_filetime(),
+            cancel: Arc::new(AtomicBool::new(false)),
+            sink: Some(log.sink()),
+            progress: Arc::new(AtomicU64::new(0)),
+        });
+        let path = sb.long("R");
+        let unit = Unit::new(
+            0,
+            UnitSpec::Contents {
+                approved: identity_of(&path),
+                path,
+            },
+            env,
+        );
+        let t = std::time::Instant::now();
+        run(std::slice::from_ref(&unit), threads);
+        log.flush();
+        let dt = t.elapsed();
+        let s = unit.stats.snapshot();
+        eprintln!(
+            "MEDICION e2e ({threads} hilos): {} archivos y {} carpetas borrados en {:.3} s, registro de {} bytes",
+            s.files,
+            s.dirs,
+            dt.as_secs_f64(),
+            fs::metadata(log.path()).unwrap().len()
+        );
+        assert_eq!(s.files, 100_000);
+    }
+}

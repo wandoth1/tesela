@@ -26,10 +26,15 @@
 //!   ([`LogWriter::ok`]) y activa la bandera de cancelación del ejecutor: la limpieza se detiene en el siguiente punto
 //!   seguro (entre entradas, entre operaciones, entre trozos de la Papelera) y no se toca nada más.
 //! * **Intención antes, resultado después.** Antes de cada operación se escribe y se VUELCA una línea de intención
-//!   ([`LogWriter::write_intent`]: en cada lote entregado a la shell lista sus elementos); después, el resultado.
-//!   Los resultados por entrada del recorrido por handle se vuelcan cada [`FLUSH_EVERY`] líneas y al terminar cada operación.
+//!   ([`LogWriter::write_intent`]: el recorrido definitivo, las raíces; cada lote entregado a la shell, sus elementos); después,
+//!   el resultado de CADA entrada, volcado al sistema en cuanto se escribe y con su error comprobado (A-M3): no hay lote de
+//!   resultados pendientes en memoria. Tras un cierre forzoso el alcance se reconstruye con la intención de la operación (las
+//!   raíces, con su identidad en el plan) y los resultados que constan; lo único que puede faltar es el resultado de lo que
+//!   estaba EN VUELO en ese instante (una entrada por hilo de trabajo, como mucho; en las operaciones de la shell, el lote
+//!   entero, cuya lista consta en su intención). No hay intención por entrada: duplicaría las escrituras para saber QUÉ
+//!   entrada estaba en vuelo, no el alcance, que ya consta.
 //! * **Volcado y `sync_all`.** `flush` (los bytes llegan a la caché del sistema, que sobrevive a que el proceso muera o la
-//!   ventana se cierre a la fuerza: la amenaza que se modela) tras cada intención y cada elemento; `sync_all` (a disco) solo
+//!   ventana se cierre a la fuerza: la amenaza que se modela) tras cada intención y cada resultado; `sync_all` (a disco) solo
 //!   al crear el registro y al terminar, para no frenar cada elemento con un `fsync` (milisegundos por llamada, miles de
 //!   llamadas) cuando el riesgo de un corte de corriente a mitad no justifica ese coste.
 //! * `%LOCALAPPDATA%\Tesela\history.jsonl`: SOLO resúmenes (fecha, unidad, usado, liberado ahora, enviado a la
@@ -52,8 +57,6 @@ pub const KEEP_SIM_LOGS: usize = 10;
 pub const MAX_LINES: u64 = 250_000;
 /// Tope de bytes de un registro (rutas largas: 250 000 líneas podrían pasar de cien MiB).
 pub const MAX_BYTES: u64 = 64 * 1024 * 1024;
-/// Cada cuántas líneas se vuelca el registro a disco sin esperar a que termine un elemento.
-const FLUSH_EVERY: u64 = 256;
 
 /// Fecha y hora UTC a partir de segundos Unix (algoritmo de días civiles de H. Hinnant).
 pub fn utc_parts(secs: u64) -> (i64, u32, u32, u32, u32, u32) {
@@ -310,6 +313,19 @@ impl LogWriter {
         self.checked(r)
     }
 
+    /// Escribe una línea de RESULTADO y la vuelca al sistema en la misma sección crítica, comprobando el error de las dos cosas
+    /// (A-M3): al volver, la línea es legible desde otro handle y, si no se pudo, el registro consta como fallido y la
+    /// limpieza se cancela en el siguiente punto seguro.
+    fn raw_flushed(&self, line: &str) -> std::io::Result<()> {
+        let r = {
+            let mut g = self.out.lock().unwrap_or_else(|e| e.into_inner());
+            writeln!(g, "{line}").and_then(|()| g.flush())
+        };
+        self.bytes
+            .fetch_add(line.len() as u64 + 1, Ordering::Relaxed);
+        self.checked(r)
+    }
+
     /// Borra el archivo del registro: para una ejecución que se rechazó antes de tocar nada (ver el módulo). SOLO si no se
     /// escribió nada de una operación (intención, entrada, `bin-item`, resultado): con algo escrito NO se borra y devuelve
     /// un error (R2). No hace falta cerrar nada antes: Windows admite borrar un archivo abierto con compartición de borrado.
@@ -393,7 +409,7 @@ impl LogWriter {
             "bytes": size,
             "out": out,
         });
-        let _ = self.raw(&v.to_string());
+        let _ = self.raw_flushed(&v.to_string());
     }
 
     /// Como [`LogWriter::flush`], pero devuelve el error.
@@ -432,12 +448,9 @@ impl LogWriter {
     /// Escribe una entrada procesada.
     pub fn write_event(&self, ev: &Event) {
         self.operation_written.store(true, Ordering::SeqCst);
-        let Some(n) = self.over_cap() else {
+        let Some(_) = self.over_cap() else {
             return;
         };
-        if n % FLUSH_EVERY == FLUSH_EVERY - 1 {
-            self.flush();
-        }
         let line = Line {
             t: "entry",
             unit: ev.unit,
@@ -449,8 +462,9 @@ impl LogWriter {
             links: ev.links,
             out: outcome_name(ev.outcome),
         };
+        // A-M3: el resultado de CADA entrada se vuelca al sistema al escribirlo (antes se acumulaban hasta 256 en el búfer).
         if let Ok(s) = serde_json::to_string(&line) {
-            let _ = self.raw(&s);
+            let _ = self.raw_flushed(&s);
         }
     }
 
@@ -458,7 +472,7 @@ impl LogWriter {
     pub fn write_note(&self, kind: &str, text: &str) {
         self.operation_written.store(true, Ordering::SeqCst);
         let v = serde_json::json!({ "t": kind, "text": text });
-        let _ = self.raw(&v.to_string());
+        let _ = self.raw_flushed(&v.to_string());
     }
 
     /// El receptor de eventos para el recorrido.
@@ -748,6 +762,28 @@ mod tests {
         assert_eq!(count(&dir, true), KEEP_SIM_LOGS);
     }
 
+    /// A-M3: MEDICIÓN (no es una prueba: `cargo test -p tesela-cleaner medicion_a_m3 -- --ignored --nocapture`). Cuánto cuesta
+    /// anotar 100 000 resultados de entradas en el registro: solo el escritor, con rutas de longitud típica.
+    #[test]
+    #[ignore = "medición A-M3"]
+    fn medicion_a_m3_100000_resultados_en_el_escritor() {
+        let sb = Sandbox::new();
+        let dir = sb.mkdir("Tesela");
+        let log = LogWriter::create(&dir, false).unwrap();
+        let t = std::time::Instant::now();
+        for i in 0..100_000usize {
+            log.write_event(&event(i, 90));
+        }
+        log.flush();
+        let dt = t.elapsed();
+        eprintln!(
+            "MEDICION escritor: 100000 resultados en {:.3} s ({:.2} us por resultado), {} bytes",
+            dt.as_secs_f64(),
+            dt.as_secs_f64() * 1e6 / 100_000.0,
+            fs::metadata(log.path()).unwrap().len()
+        );
+    }
+
     fn real_logs(dir: &Path) -> Vec<String> {
         let mut v: Vec<String> = fs::read_dir(dir)
             .unwrap()
@@ -992,24 +1028,68 @@ mod tests {
         );
         let paths = vec![PathBuf::from("a.txt"), PathBuf::from("b c.txt")];
         log.write_intent("recycle-begin", &paths).unwrap();
-        log.flush();
+        // A-m1: SIN un `flush()` compensatorio de la prueba (antes lo había y el mutante que quitaba el volcado de
+        // `write_intent` sobrevivía): la intención ya está en el archivo al volver.
         let text = fs::read_to_string(log.path()).unwrap();
         let line = text.lines().find(|l| l.contains("recycle-begin")).unwrap();
         let v: serde_json::Value = serde_json::from_str(line).unwrap();
         assert_eq!(v["paths"], serde_json::json!(["a.txt", "b c.txt"]));
     }
 
+    /// A-M3: el resultado de CADA entrada es legible desde otro handle en cuanto se escribe, SIN ningún `flush()` de quien llama.
+    /// Antes se acumulaban hasta 256 líneas en el búfer: un cierre forzoso perdía hasta 255 resultados de entradas ya
+    /// borradas. Un mutante que quite el volcado de `write_event` (o de `write_note`, `write_bin_item`) falla aquí.
     #[test]
-    fn el_registro_se_vuelca_cada_pocas_lineas_sin_esperar_al_final() {
+    fn cada_resultado_es_legible_desde_otro_handle_sin_volcar() {
         let sb = Sandbox::new();
         let dir = sb.path("Tesela");
         let log = Arc::new(LogWriter::create(&dir, false).unwrap());
-        for i in 0..FLUSH_EVERY as usize + 10 {
+        // Otro handle abierto una sola vez: lee lo que haya en el archivo en cada momento.
+        let mut reader = File::open(log.path()).unwrap();
+        let lines_now = |r: &mut File| {
+            use std::io::{Read, Seek};
+            r.seek(std::io::SeekFrom::Start(0)).unwrap();
+            let mut text = String::new();
+            r.read_to_string(&mut text).unwrap();
+            text.lines().map(str::to_owned).collect::<Vec<_>>()
+        };
+        let before = lines_now(&mut reader).len();
+        for i in 0..40usize {
             log.write_event(&event(i, 20));
+            let lines = lines_now(&mut reader);
+            assert_eq!(lines.len(), before + i + 1, "tras el resultado {i}");
+            let v: serde_json::Value = serde_json::from_str(lines.last().unwrap()).unwrap();
+            assert_eq!(
+                (v["t"].as_str(), v["unit"].as_u64()),
+                (Some("entry"), Some(i as u64))
+            );
         }
-        // Sin `flush()` explícito, lo escrito hasta el último volcado periódico ya está en disco.
-        let on_disk = fs::read_to_string(log.path()).unwrap().lines().count();
-        assert!(on_disk as u64 >= FLUSH_EVERY, "{on_disk}");
+        // Las notas de resultado y los elementos de la Papelera, también.
+        let n = lines_now(&mut reader).len();
+        log.write_note("recycle", "x -> Recycled");
+        assert_eq!(lines_now(&mut reader).len(), n + 1);
+        log.write_bin_item(Path::new("a"), OsStr::new("id"), 1, "purged");
+        assert_eq!(lines_now(&mut reader).len(), n + 2);
+        assert!(log.ok());
+    }
+
+    /// A-M3: un error al escribir o volcar un resultado MARCA el registro como fallido y activa la cancelación (no se traga):
+    /// la limpieza se detiene en el siguiente punto seguro.
+    #[test]
+    fn un_error_al_volcar_un_resultado_marca_el_registro_y_cancela() {
+        let sb = Sandbox::new();
+        let dir = sb.path("Tesela");
+        // El presupuesto cubre la línea de arranque (≈ 50 bytes) y poco más: el primer resultado largo falla.
+        let log = LogWriter::create_failing_after(&dir, false, 120).unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        log.cancel_on_error(cancel.clone());
+        assert!(log.ok() && !cancel.load(Ordering::SeqCst));
+        for i in 0..5usize {
+            log.write_event(&event(i, 200));
+        }
+        assert!(!log.ok(), "el fallo consta");
+        assert!(cancel.load(Ordering::SeqCst), "y la limpieza se cancela");
+        assert!(log.error().is_some());
     }
 
     #[test]
