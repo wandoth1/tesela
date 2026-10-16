@@ -803,6 +803,69 @@ try {
     Invoke-Git -C $repo commit -q -m malo
     Expect '-All encuentra lo ya commiteado' $true @('-All')
     Expect 'staging vacio no falla' $false
+    # --- Valores locales con letras NO ASCII (acentos, enes) en cualquier codificacion -----------------------------------------
+    # El usuario y el equipo son SINTETICOS y se fijan solo para los procesos hijo (se restauran al terminar); se construyen con
+    # [char]0x...: este archivo es solo ASCII (Windows PowerShell 5.1 lee los .ps1 sin BOM como ANSI).
+    $uUser = ([string][char]0x00CD) + ([string][char]0x00F1) + 'igo-Prueba'
+    $uPc = 'EQUIPO-' + ([string][char]0x00D1) + 'AND' + ([string][char]0x00DA)
+    $eAcute = [string][char]0x00E9
+    $latin1 = [System.Text.Encoding]::GetEncoding(28591)
+    $oldUser = $env:USERNAME
+    $oldPc = $env:COMPUTERNAME
+    $env:USERNAME = $uUser
+    $env:COMPUTERNAME = $uPc
+    try {
+        # Cada contenido se escribe en: UTF-8, UTF-8 con BOM, UTF-16 con BOM, UTF-16 SIN BOM, Latin-1 y dos binarios (con
+        # NUL y sin BOM: una cadena Latin-1 y una cadena UTF-16 dentro).
+        function Put-Encodings([string]$Text) {
+            $u16 = [System.Text.Encoding]::Unicode.GetBytes($Text)
+            PutBytes 'e/utf8.txt' ($utf8.GetBytes($Text))
+            PutBytes 'e/utf8bom.txt' ([byte[]](0xEF, 0xBB, 0xBF) + $utf8.GetBytes($Text))
+            PutBytes 'e/utf16bom.txt' ([System.Text.Encoding]::Unicode.GetPreamble() + $u16)
+            PutBytes 'e/utf16.txt' $u16
+            PutBytes 'e/latin1.txt' ($latin1.GetBytes($Text))
+            PutBytes 'e/bin-latin1.bin' ([byte[]](0, 1, 2, 0, 255) + $latin1.GetBytes($Text) + [byte[]](0, 0, 9))
+            PutBytes 'e/bin-utf16.bin' ([byte[]](0, 1, 2, 0, 255, 7) + $u16 + [byte[]](0, 0, 9))
+        }
+        $encNames = @('utf8.txt', 'utf8bom.txt', 'utf16bom.txt', 'utf16.txt', 'latin1.txt', 'bin-latin1.bin', 'bin-utf16.bin')
+        # Un archivo por vez (asi se sabe cual falla): se deja solo ese en staging.
+        function Expect-Each([string]$Case, [string]$Text, [bool]$ShouldFail, [string[]]$CheckArgs = @()) {
+            foreach ($n in $encNames) {
+                Reset-Repo
+                Put-Encodings $Text
+                foreach ($other in $encNames) { if ($other -ne $n) { Remove-Item -LiteralPath (Join-Path $repo "e\$other") -Force } }
+                Stage-All
+                Expect "$Case [$n]" $ShouldFail $CheckArgs
+            }
+        }
+        Expect-Each 'usuario local con letras no ASCII, suelto' ("hola`nusuario $uUser fin`n") $true
+        Expect-Each 'usuario local con letras no ASCII, entre parentesis' ("(" + $uUser + ")`n") $true
+        Expect-Each 'usuario local con letras no ASCII, en mayusculas' ("hola " + $uUser.ToUpperInvariant() + " fin`n") $true
+        Expect-Each 'equipo local con letras no ASCII' ("host=" + $uPc + ";`n") $true
+        # Pegado a otras letras o digitos NO es una fuga (ni ASCII ni acentuadas).
+        Expect-Each 'usuario pegado a letras ASCII no cuenta' ("zz" + $uUser + "zz`n") $false
+        Expect-Each 'usuario con una letra acentuada delante no cuenta' ($eAcute + $uUser + "`n") $false
+        Expect-Each 'usuario con una letra acentuada detras no cuenta' ($uUser + $eAcute + "`n") $false
+        Expect-Each 'equipo con una letra acentuada delante no cuenta' ($eAcute + $uPc + "`n") $false
+        Expect-Each 'otro valor parecido (otra letra acentuada) no cuenta' (([string][char]0x00D3) + ([string][char]0x00F1) + "igo-Prueba`n") $false
+        Expect-Each 'contenido limpio en cualquier codificacion' "nada que ver con la maquina`n" $false
+        # Con -GenericOnly (CI) los valores locales no rigen.
+        Expect-Each 'usuario con letras no ASCII con -GenericOnly' ("hola " + $uUser + " fin`n") $false @('-GenericOnly')
+        # El mensaje de commit pasa por la misma decodificacion.
+        foreach ($case in @(
+                @('UTF-8', $utf8.GetBytes("fix: caso de $uUser`n")),
+                @('Latin-1', $latin1.GetBytes("fix: caso de $uUser`n")),
+                @('UTF-16 sin BOM', [System.Text.Encoding]::Unicode.GetBytes("fix: caso de $uUser`n"))
+            )) {
+            [System.IO.File]::WriteAllBytes($msg, $case[1])
+            Expect "mensaje con el usuario local no ASCII ($($case[0]))" $true @('-MessageFile', $msg)
+            Expect "mensaje con el usuario local no ASCII ($($case[0])) con -GenericOnly" $false @('-GenericOnly', '-MessageFile', $msg)
+        }
+        Remove-Item -LiteralPath $msg -Force
+    } finally {
+        $env:USERNAME = $oldUser
+        $env:COMPUTERNAME = $oldPc
+    }
     # --- CI definido y -Local, USERDOMAIN --------------------------------------------------------------------------------
     if ($env:USERNAME -and $env:USERNAME.Length -ge 3) {
         Reset-Repo

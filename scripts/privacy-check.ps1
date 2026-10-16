@@ -31,8 +31,9 @@
        negra local NO versionada: `<git-common-dir>/privacy-denylist` (un termino por linea, sin distinguir
        mayusculas, coincidencia literal; las lineas vacias y las que empiezan por `#` se ignoran).
     3. Los NOMBRES de los archivos pasan por las mismas reglas.
-    4. Cualquier texto se decodifica antes de revisarlo (UTF-8, UTF-8 con BOM, UTF-16 con o sin BOM). Los binarios se
-       revisan buscando cadenas ASCII y UTF-16 (los de mas de 8 MiB se rechazan); las imagenes se rechazan SALVO `docs/img/<nombre>.png` generadas con --demo (ver la excepcion mas abajo).
+    4. Cualquier texto se decodifica antes de revisarlo (UTF-8, UTF-8 con BOM, UTF-16 con o sin BOM y, si los bytes no son
+       UTF-8 valido, tambien como Latin-1/ANSI: un valor local con acentos guardado asi se vera). Los binarios se
+       revisan buscando cadenas de texto (ASCII y letras de cualquier alfabeto) en Latin-1 y UTF-16 (los de mas de 8 MiB se rechazan); las imagenes se rechazan SALVO `docs/img/<nombre>.png` generadas con --demo (ver la excepcion mas abajo).
        Los formatos OPACOS o comprimidos (ZIP y derivados docx/xlsx/jar/apk, gzip, 7z, rar, xz, bz2, zstd, lz4, lzip,
        compress, cab, OLE/msi, pdf, sqlite) se rechazan por su FIRMA con cualquier extension (el ZIP tambien por su
        registro de fin en los ultimos 64 KiB): su contenido no se puede revisar, y un SID dentro de un ZIP pasaria.
@@ -155,7 +156,9 @@ if (-not $GenericOnly) {
                 $alt = [regex]::Escape($val.Trim().Replace('\', '/'))
                 $pattern = "(?i)($esc|$alt)"
             } else {
-                $pattern = "(?i)(?<![A-Za-z0-9_])$esc(?![A-Za-z0-9_])"
+                # Limites de palabra Unicode (\p{L}\p{N}) y no solo A-Za-z0-9: un valor como "Ren" no debe coincidir con una
+                # palabra con acentos que lo contiene, y las letras acentuadas vecinas cuentan como letras pegadas.
+                $pattern = "(?i)(?<![\p{L}\p{N}_])$esc(?![\p{L}\p{N}_])"
             }
             $localRules += @{ Name = "Valor local de `$env:$($pair[0])"; Path = $false; Pattern = $pattern }
         }
@@ -174,13 +177,24 @@ if (-not $GenericOnly) {
 $rules = @($generic) + @($localRules)
 
 # --- Decodificacion de contenido ------------------------------------------------------------------------------------
+function Get-TextWithAnsiFallback {
+    # Decodifica como UTF-8 (permisivo). Si hay bytes que no son UTF-8 valido (U+FFFD), el archivo puede estar en Latin-1/ANSI
+    # (un bloc de notas antiguo, un `>` de Windows PowerShell 5.1 con otra pagina de codigos...): en ese caso se anade
+    # tambien la decodificacion Latin-1 de los mismos bytes para que un valor con acentos no se esconda tras el U+FFFD.
+    param([byte[]]$Bytes, [int]$Offset)
+    $count = $Bytes.Length - $Offset
+    $text = [System.Text.Encoding]::UTF8.GetString($Bytes, $Offset, $count)
+    if ($text.IndexOf([char]0xFFFD) -lt 0) { return $text }
+    return $text + "`n" + [System.Text.Encoding]::GetEncoding(28591).GetString($Bytes, $Offset, $count)
+}
+
 function ConvertTo-ScanText {
     # Devuelve el texto a revisar para unos bytes, o $null si hay que rechazar (se indica en $reject).
     param([byte[]]$Bytes, [ref]$Reject)
     $Reject.Value = $null
     $n = $Bytes.Length
     if ($n -eq 0) { return '' }
-    if ($n -ge 3 -and $Bytes[0] -eq 0xEF -and $Bytes[1] -eq 0xBB -and $Bytes[2] -eq 0xBF) { return [System.Text.Encoding]::UTF8.GetString($Bytes, 3, $n - 3) }
+    if ($n -ge 3 -and $Bytes[0] -eq 0xEF -and $Bytes[1] -eq 0xBB -and $Bytes[2] -eq 0xBF) { return (Get-TextWithAnsiFallback $Bytes 3) }
     # UTF-32 con BOM (el de little endian, FF FE 00 00, empieza como el de UTF-16: se comprueba ANTES).
     if ($n -ge 4 -and $Bytes[0] -eq 0xFF -and $Bytes[1] -eq 0xFE -and $Bytes[2] -eq 0 -and $Bytes[3] -eq 0) { return (New-Object System.Text.UTF32Encoding($false, $false)).GetString($Bytes, 4, (($n - 4) -band -4)) }
     if ($n -ge 4 -and $Bytes[0] -eq 0 -and $Bytes[1] -eq 0 -and $Bytes[2] -eq 0xFE -and $Bytes[3] -eq 0xFF) { return (New-Object System.Text.UTF32Encoding($true, $false)).GetString($Bytes, 4, (($n - 4) -band -4)) }
@@ -188,17 +202,20 @@ function ConvertTo-ScanText {
     if ($n -ge 2 -and $Bytes[0] -eq 0xFE -and $Bytes[1] -eq 0xFF) { return [System.Text.Encoding]::BigEndianUnicode.GetString($Bytes, 2, $n - 2) }
     # UTF-16 sin BOM o binario: cualquier NUL en TODO el archivo (no solo en los primeros 4 KiB: un texto ASCII largo
     # delante no puede esconder lo que viene despues).
-    if ([System.Array]::IndexOf($Bytes, [byte]0) -lt 0) { return [System.Text.Encoding]::UTF8.GetString($Bytes) }
-    # Con NUL y sin BOM: el archivo entero como UTF-8 (las partes de texto con acentos) MAS las cadenas ASCII y UTF-16
-    # (de ambas alineaciones) del resto.
+    if ([System.Array]::IndexOf($Bytes, [byte]0) -lt 0) { return (Get-TextWithAnsiFallback $Bytes 0) }
+    # Con NUL y sin BOM: el archivo entero como UTF-8 (las partes de texto con acentos) MAS las cadenas de texto en Latin-1
+    # y en UTF-16 (de ambas alineaciones) del resto. Una "cadena de texto" son 6 o mas caracteres seguidos entre ASCII
+    # imprimible y letras o digitos de cualquier alfabeto (\p{L}\p{N}): con solo ASCII, un valor local con acentos (en
+    # Latin-1 o en UTF-16 sin BOM) partiria la cadena y no coincidiria con nada.
+    $textRun = '[\x20-\x7E\p{L}\p{N}]{6,}'
     if ($n -gt 8MB) { $Reject.Value = 'binario de mas de 8 MiB (no se puede revisar)'; return $null }
     $sb = New-Object System.Text.StringBuilder
     [void]$sb.AppendLine([System.Text.Encoding]::UTF8.GetString($Bytes))
     $latin = [System.Text.Encoding]::GetEncoding(28591).GetString($Bytes)
-    foreach ($m in [regex]::Matches($latin, '[\x20-\x7E]{6,}')) { [void]$sb.AppendLine($m.Value) }
+    foreach ($m in [regex]::Matches($latin, $textRun)) { [void]$sb.AppendLine($m.Value) }
     foreach ($off in 0, 1) {
         $u = [System.Text.Encoding]::Unicode.GetString($Bytes, $off, (($n - $off) -band -2))
-        foreach ($m in [regex]::Matches($u, '[\x20-\x7E]{6,}')) { [void]$sb.AppendLine($m.Value) }
+        foreach ($m in [regex]::Matches($u, $textRun)) { [void]$sb.AppendLine($m.Value) }
     }
     return $sb.ToString()
 }
