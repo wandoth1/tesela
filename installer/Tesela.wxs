@@ -54,6 +54,18 @@
     <!-- No hay nada que "modificar": solo reparar o desinstalar. -->
     <Property Id="ARPNOMODIFY" Value="1" />
 
+    <!--
+      Carpeta de instalacion personalizada (`msiexec /i ... INSTALLFOLDER="C:Mi carpeta\"`): se RECUERDA en
+      HKCU\Software\Tesela\InstallFolder (el valor `[INSTALLFOLDER]` de abajo) y se RECUPERA con esta busqueda de registro,
+      que se ejecuta tambien al actualizar, reparar y desinstalar. Sin ella, al desinstalar (o actualizar) sin repetir
+      INSTALLFOLDER Windows Installer buscaria la carpeta por defecto y los archivos de la personalizada quedarian
+      huerfanos. No hace falta ninguna accion personalizada. (La busqueda tiene prioridad sobre el valor de la linea de
+      comandos: una actualizacion o reparacion se queda donde estaba instalada.)
+    -->
+    <Property Id="INSTALLFOLDER">
+      <RegistrySearch Id="InstallFolderSearch" Root="HKCU" Key="Software\Tesela" Name="InstallFolder" Type="raw" />
+    </Property>
+
     <StandardDirectory Id="LocalAppDataFolder">
       <Directory Id="ProgramsFolder" Name="Programs">
         <Directory Id="INSTALLFOLDER" Name="Tesela" />
@@ -71,6 +83,7 @@
       <Component Id="TeselaExe" Guid="B684DA7F-4E1F-49DD-9ED7-A7D2C72A1B22">
         <File Id="TeselaExe" Source="$(SourceDir)\tesela.exe" />
         <RegistryValue Root="HKCU" Key="Software\Tesela" Name="tesela.exe" Type="integer" Value="1" KeyPath="yes" />
+        <RegistryValue Root="HKCU" Key="Software\Tesela" Name="InstallFolder" Type="string" Value="[INSTALLFOLDER]" />
         <!-- Quitan las carpetas SOLO si quedan vacias (si el usuario dejo algo suyo dentro, se respeta). -->
         <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
         <RemoveFolder Id="RemoveProgramsFolder" Directory="ProgramsFolder" On="uninstall" />
