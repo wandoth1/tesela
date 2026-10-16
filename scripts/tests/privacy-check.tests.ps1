@@ -37,6 +37,30 @@ $opaqueHex = @{}
 foreach ($p in $raw.opaque.PSObject.Properties) { $opaqueHex[$p.Name] = $p.Value }
 $lookalike = @($raw.'opaque-lookalike' | ForEach-Object { Decode $_ })
 
+# --- Ningun archivo de texto versionado lleva bytes NUL (solo las capturas docs/img/*.png) -----------------------------------
+# Un NUL suelto hace que grep y otras herramientas traten el archivo como binario y oculten su contenido o su diff.
+$realRepo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+$nulFiles = New-Object System.Collections.Generic.List[string]
+if (Test-Path -LiteralPath (Join-Path $realRepo '.git')) {
+    $lsPsi = New-Object System.Diagnostics.ProcessStartInfo
+    $lsPsi.FileName = 'git'
+    $lsPsi.Arguments = '-c core.quotePath=false ls-files --cached -z'
+    $lsPsi.WorkingDirectory = $realRepo
+    $lsPsi.UseShellExecute = $false
+    $lsPsi.RedirectStandardOutput = $true
+    $lsPsi.CreateNoWindow = $true
+    $lsProc = [System.Diagnostics.Process]::Start($lsPsi)
+    $lsMs = New-Object System.IO.MemoryStream
+    $lsProc.StandardOutput.BaseStream.CopyTo($lsMs)
+    $lsProc.WaitForExit()
+    foreach ($name in ([System.Text.Encoding]::UTF8.GetString($lsMs.ToArray()).Split([char]0) | Where-Object { $_ -ne '' })) {
+        if ($name -cmatch '^docs/img/[a-z0-9-]+\.png$') { continue }
+        $full = Join-Path $realRepo $name
+        if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { continue }
+        if ([System.Array]::IndexOf([System.IO.File]::ReadAllBytes($full), [byte]0) -ge 0) { $nulFiles.Add($name) }
+    }
+}
+
 # --- Repositorio de pruebas (solo bajo %TEMP%, con guarda al borrar) -------------------------------------------------
 $temp = [System.IO.Path]::GetTempPath().TrimEnd('\')
 $repo = Join-Path $temp ('tesela-test-' + [guid]::NewGuid().ToString())
@@ -1070,6 +1094,13 @@ try {
     if ($null -eq $oldCI) { Remove-Item Env:CI -ErrorAction SilentlyContinue } else { $env:CI = $oldCI }
     Set-Location $PSScriptRoot
     Remove-Repo
+}
+
+if ($nulFiles.Count -gt 0) {
+    $total++
+    $failures.Add("archivos de texto versionados con bytes NUL (grep los tomaria por binarios): $($nulFiles -join ', ')")
+} else {
+    $total++
 }
 
 if ($failures.Count -gt 0) {

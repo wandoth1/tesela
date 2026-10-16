@@ -144,8 +144,9 @@ $generic = @(
     # no vengan precedidas de otra barra, de `:` (una URL `https://...`), de `.` ni de una letra (`a//b`), y un servidor que
     # empiece por letra, digito o `_` (se excluyen `?`, `.` y `<`: `\\?\C:`, `\\.\pipe` y el marcador `<servidor>`).
     @{ Name = 'Ruta UNC de red'; Path = $false; Pattern = '(?<![A-Za-z0-9_\\.:/])[\\/]{2}(?![?.<])[A-Za-z0-9_][A-Za-z0-9_.-]*[\\/][A-Za-z0-9_$]' },
-    # Escapada (un literal de Rust, JSON...): cada barra invertida va duplicada, la barra normal no.
-    @{ Name = 'Ruta UNC de red escapada'; Path = $false; Pattern = '(?<![A-Za-z0-9_\\.:/])(?:\\\\\\\\|\\\\/|/\\\\)(?![?.<])[A-Za-z0-9_][A-Za-z0-9_.-]*(?:\\\\|[\\/])[A-Za-z0-9_$]' },
+    # Escapada (un literal de Rust, JSON...): cada barra invertida va duplicada, la barra normal no. Hace falta al menos UNA barra
+    # invertida duplicada (con solo barras normales ya vale la regla de arriba): dos barras normales al principio con una barra invertida duplicada despues del servidor tambien cuentan.
+    @{ Name = 'Ruta UNC de red escapada'; Path = $false; Pattern = '(?<![A-Za-z0-9_\\.:/])(?:(?:\\\\\\\\|\\\\/|/\\\\|//)(?![?.<])[A-Za-z0-9_][A-Za-z0-9_.-]*\\\\|(?:\\\\\\\\|\\\\/|/\\\\)(?![?.<])[A-Za-z0-9_][A-Za-z0-9_.-]*(?:\\\\|[\\/]))[A-Za-z0-9_$]' },
     @{ Name = 'Ruta UNC verbatim'; Path = $false; Pattern = '(?i)(?:\\\\|[\\/]){2}\?(?:\\\\|[\\/])UNC(?:\\\\|[\\/])[A-Za-z0-9_]' },
     @{ Name = 'Fabricante o modelo de GPU/CPU/disco'; Path = $false; Pattern = '(?i)\b(N[V]IDIA|Ge[F]orce|R[T]X\s?\d{3,4}\w*|G[T]X\s?\d{3,4}\w*|Rade[o]n|Ry[z]en|Threadrip[p]er|EP[Y]C|X[e]on|Inte[l]\s+Core|Inte[l]\(R\)\s*Core|Core\s+i[3579][ -]|Apple\s+M[1-9]|Sam[s]ung|WD_BL[A]CK|WD\s+Bl[a]ck|Western\s+Dig[i]tal|Sea[g]ate|Kings[t]on|Cruc[i]al|Cors[a]ir|SN8\d\d\w*|H[y]nix|Mic[r]on|Tos[h]iba|SanD[i]sk)\b' },
     @{ Name = 'Antivirus'; Path = $false; Pattern = '(?i)\b(Bitdef[e]nder|Kaspers[k]y|Nor[t]on|McA[f]ee|Av[a]st|AVG\s+Anti\w*|ES[E]T|Malwareby[t]es|Soph[o]s|CrowdStr[i]ke|Sentinel[O]ne|Trend\s*Mi[c]ro|Symant[e]c|F-Se[c]ure|Webr[o]ot|Cylan[c]e|Carbon\s*Bl[a]ck)\b' },
@@ -204,7 +205,7 @@ function Get-TextsWithAnsiFallback {
 function ConvertTo-ScanText {
     # Devuelve la LISTA de textos a revisar para unos bytes (cada uno se revisa por separado), o $null si hay que rechazar (se
     # indica en $reject). A los textos de siempre se ANADEN (nunca los sustituyen: UTF-16 sigue leyendose igual) los mismos
-    # textos sin NUL: un SID o una ruta de perfil partidos por bytes NUL sueltos (`S-1 -5...`) no coinciden con nada en ninguna
+    # textos sin NUL: un SID o una ruta de perfil partidos por bytes NUL sueltos (`S-1<NUL>-5...`) no coinciden con nada en ninguna
     # decodificacion, pero al quitar los NUL vuelven a ser el valor. Los saltos de linea no cambian: las lineas coinciden.
     param([byte[]]$Bytes, [ref]$Reject)
     $texts = ConvertTo-ScanTextCore $Bytes $Reject
