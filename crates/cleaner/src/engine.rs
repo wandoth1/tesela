@@ -70,6 +70,9 @@ pub struct Stats {
     pub not_empty: AtomicU64,
     /// Archivos de la nube dentro (se saltan: son reparse points).
     pub cloud: AtomicU64,
+    /// Entradas que ya no estaban al abrirlas (listadas y desaparecidas antes de llegar a ellas). Al borrar es normal; al
+    /// MEDIR significa que el directorio cambió durante el recorrido (ver [`StatsSnapshot::is_complete`]).
+    pub gone: AtomicU64,
 }
 
 impl Stats {
@@ -98,6 +101,7 @@ impl Stats {
             other_errors: Self::get(&self.other_errors),
             not_empty: Self::get(&self.not_empty),
             cloud: Self::get(&self.cloud),
+            gone: Self::get(&self.gone),
         }
     }
 }
@@ -121,9 +125,23 @@ pub struct StatsSnapshot {
     pub other_errors: u64,
     pub not_empty: u64,
     pub cloud: u64,
+    pub gone: u64,
 }
 
 impl StatsSnapshot {
+    /// ¿Es COMPLETA una medida (modo `Measure`)? Solo si el recorrido vio TODO lo que había: ningún error al abrir o listar
+    /// (en uso, sin permiso, otros: una subcarpeta que no se pudo listar deja su contenido sin contar), ninguna entrada que
+    /// cambiara de identidad o de tipo durante el recorrido y ninguna que desapareciera entre el listado y la apertura. Una
+    /// medida incompleta no vale ni para repartir en la Papelera ni para decir que nada cambió.
+    pub fn is_complete(&self) -> bool {
+        self.in_use == 0
+            && self.denied == 0
+            && self.changed == 0
+            && self.other_errors == 0
+            && self.not_empty == 0
+            && self.gone == 0
+    }
+
     /// Suma de otra instantánea.
     pub fn merge(&mut self, o: &StatsSnapshot) {
         self.bytes += o.bytes;
@@ -142,6 +160,7 @@ impl StatsSnapshot {
         self.other_errors += o.other_errors;
         self.not_empty += o.not_empty;
         self.cloud += o.cloud;
+        self.gone += o.gone;
     }
 }
 
@@ -1029,7 +1048,10 @@ fn process_child(
         };
         let h = match opened {
             Ok(h) => h,
-            Err(c) if is_gone(c) => return true,
+            Err(c) if is_gone(c) => {
+                Stats::add(&unit.stats.gone, 1);
+                return true;
+            }
             Err(c) => {
                 let o = count_error(unit, c);
                 parent.kept.store(true, Ordering::Release);
@@ -1105,7 +1127,10 @@ fn process_child(
     };
     let h = match opened {
         Ok(h) => h,
-        Err(c) if is_gone(c) => return true,
+        Err(c) if is_gone(c) => {
+            Stats::add(&unit.stats.gone, 1);
+            return true;
+        }
         Err(c) => {
             let o = count_error(unit, c);
             parent.kept.store(true, Ordering::Release);

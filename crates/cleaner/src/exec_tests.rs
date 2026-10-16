@@ -3096,6 +3096,104 @@ fn tras_volver_a_medir_se_vuelve_a_comprobar_el_presupuesto() {
     assert_eq!(rep2.no_room, 1);
 }
 
+/// Abre `dir` con `dwShareMode = 0`: mientras viva, abrirla para listarla falla (`ERROR_SHARING_VIOLATION`). Es la forma de
+/// tener una subcarpeta que no se puede listar sin tocar permisos (nada que limpiar después).
+fn lock_dir(dir: &Path) -> fs::File {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(dir)
+        .expect("abre la carpeta en exclusiva")
+}
+
+/// A-B2 (blocker): una medida INCOMPLETA no vale. Una subcarpeta que no se puede listar durante la nueva medida deja su
+/// contenido sin contar; antes `remeasure` aceptaba `Done` sin más y la carpeta se entregaba a la shell con un tamaño que no era
+/// el real. Ahora no se envía: "cambió desde la confirmación". Sin el bloqueo (control), se envía.
+#[test]
+fn una_subcarpeta_que_no_se_puede_listar_al_volver_a_medir_impide_el_envio() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    sb.write("Docs/carpeta/f0.bin", 5_000);
+    sb.write("Docs/carpeta/sub/dentro.bin", 5_000);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/carpeta"), c.protection());
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 1, "{:?}", plan.rejected);
+    let lock = lock_dir(&sb.path("Docs/carpeta/sub"));
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    assert_eq!(
+        rep.items[0].status,
+        ItemStatus::Root(crate::engine::RootStatus::Changed)
+    );
+    assert!(rep.items[0].removed.is_empty());
+    assert!(fake.names().is_empty(), "no llegó a la shell");
+    assert!(sb.path("Docs/carpeta/sub/dentro.bin").exists());
+    assert!(rep.totals.changed >= 1);
+    // También en simulación (que mide lo mismo que el envío real).
+    let dry = exec(&c, &plan, true, false, None).unwrap();
+    assert_eq!(
+        dry.items[0].status,
+        ItemStatus::Root(crate::engine::RootStatus::Changed)
+    );
+    // Control: sin el bloqueo, el mismo plan se envía.
+    drop(lock);
+    let rep2 = exec(&c, &plan, false, false, None).unwrap();
+    assert_eq!(rep2.items[0].status, ItemStatus::Recycled);
+    assert_eq!(fake.names(), vec![vec!["carpeta"]]);
+}
+
+/// A-B2: una medida incompleta es siempre "NO intacto" en el juicio R6 (`dir_untouched`), y `remeasure` la distingue de una
+/// completa por cualquiera de sus causas: una subcarpeta que no se puede listar, un hijo que desaparece entre el listado y la
+/// apertura, o la cancelación a mitad del recorrido.
+#[test]
+fn una_medida_incompleta_nunca_demuestra_que_nada_cambio() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake);
+    sb.write("Docs/carpeta/f0.bin", 5_000);
+    sb.write("Docs/carpeta/f1.bin", 5_000);
+    sb.write("Docs/carpeta/sub/dentro.bin", 5_000);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/carpeta"), c.protection());
+    let plan = approve(&c, &b);
+    let it = &plan.items[0];
+    let mut st = StatsSnapshot::default();
+    let Prepared::Ready(mut p) = c.prepare_recycle(it, &mut st) else {
+        panic!("debía prepararse");
+    };
+    c.fresh_size(it, &mut p, &mut st, &cancel()).unwrap();
+    assert!(p.snapshot.is_some());
+    assert!(c.dir_untouched(it, &p, &cancel()), "sin cambios: intacto");
+    // (1) Una subcarpeta que no se puede listar.
+    {
+        let _lock = lock_dir(&sb.path("Docs/carpeta/sub"));
+        assert!(matches!(c.remeasure(it, &cancel()), Remeasure::Incomplete));
+        assert!(!c.dir_untouched(it, &p, &cancel()));
+    }
+    assert!(
+        c.dir_untouched(it, &p, &cancel()),
+        "soltada, vuelve a valer"
+    );
+    // (2) Un hijo que desaparece justo antes de abrirlo (ya listado).
+    {
+        let victim = sb.path("Docs/carpeta/f1.bin");
+        let _hook = crate::engine::test_hooks::install(sb.long("Docs"), move |q| {
+            if q.ends_with("f1.bin") {
+                let _ = fs::remove_file(&victim);
+            }
+        });
+        assert!(matches!(c.remeasure(it, &cancel()), Remeasure::Incomplete));
+    }
+    // (3) Cancelada a mitad: no se acepta como medida.
+    let cancelled = Arc::new(AtomicBool::new(true));
+    assert!(matches!(c.remeasure(it, &cancelled), Remeasure::Cancelled));
+    assert!(!c.dir_untouched(it, &p, &cancelled));
+}
+
 /// Un error de la shell o de COM al enviar consta en el registro local (con su HRESULT) y en el informe (para el resumen);
 /// los elementos quedan sin tocar.
 #[test]

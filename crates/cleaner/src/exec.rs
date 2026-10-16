@@ -1200,7 +1200,8 @@ impl Cleaner {
     }
 
     /// R6: ¿sigue el directorio igual que justo antes del envío (mismo tamaño y mismo número de entradas)? Si la medida
-    /// falla o difiere en cualquier sentido, `false` (se trata como borrado, aunque sea parcial).
+    /// falla, es INCOMPLETA (A-B2: una subcarpeta que no se pudo listar deja contenido sin contar y no demuestra nada) o
+    /// difiere en cualquier sentido, `false` (se trata como borrado, aunque sea parcial).
     fn dir_untouched(&self, it: &PlanItem, p: &Pending, cancel: &Arc<AtomicBool>) -> bool {
         match (self.remeasure(it, cancel), p.snapshot) {
             (Remeasure::Now(after), Some(before)) => snap_of(&after) == before,
@@ -1269,15 +1270,19 @@ impl Cleaner {
                 ItemStatus::Root(RootStatus::Cancelled),
                 Outcome::NotRecycled,
             )),
-            Remeasure::Failed => changed(st),
+            Remeasure::Incomplete | Remeasure::Failed => changed(st),
         }
     }
 }
 
 /// Resultado de volver a medir un directorio justo antes de enviarlo.
 enum Remeasure {
+    /// La medida de un recorrido COMPLETO (ver [`StatsSnapshot::is_complete`]).
     Now(StatsSnapshot),
     Cancelled,
+    /// El recorrido terminó pero NO vio todo (una subcarpeta sin listar, una entrada que cambió o desapareció...): su resultado
+    /// no vale. Se trata como "cambió desde la confirmación" al enviar y como "NO intacto" al juzgar (R6).
+    Incomplete,
     /// No se pudo medir (cambió, ya no existe, protegido...): se trata como "cambió desde la confirmación".
     Failed,
 }
@@ -1293,10 +1298,23 @@ impl Cleaner {
             self.env(Mode::Measure, it.min_age, cancel, &progress, None),
         );
         engine::run(std::slice::from_ref(&unit), self.threads);
+        // Un recorrido interrumpido por la cancelación (o por un pánico de un hilo, que también la activa) no vio todo.
+        if cancel.load(Ordering::Relaxed) {
+            return Remeasure::Cancelled;
+        }
         match unit.status() {
-            Some(RootStatus::Done) => Remeasure::Now(unit.stats.snapshot()),
+            // A-B2: `Done` solo dice que la RAÍZ se abrió y se listó. La medida vale únicamente si el recorrido entero fue
+            // completo: una subcarpeta que no se pudo listar, una entrada que cambió o desapareció, un error de apertura...
+            // dejan contenido sin contar.
+            Some(RootStatus::Done) => {
+                let s = unit.stats.snapshot();
+                if s.is_complete() {
+                    Remeasure::Now(s)
+                } else {
+                    Remeasure::Incomplete
+                }
+            }
             Some(RootStatus::Cancelled) => Remeasure::Cancelled,
-            _ if cancel.load(Ordering::Relaxed) => Remeasure::Cancelled,
             _ => Remeasure::Failed,
         }
     }
