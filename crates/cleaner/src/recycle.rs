@@ -36,9 +36,15 @@
 //!   Papelera y la shell da su ruta, el paso 3 lo detecta como `RecycledOther` (recuperable). Si no (el reparto y la
 //!   capacidad se calcularon para el objeto APROBADO, no para el sustituto; o la shell no da ruta, o el movimiento falla), se
 //!   informa como `DeletedUnexpectedly` o `Unverified` y un borrado definitivo del sustituto NO se puede deshacer.
+//! * `PreDeleteItem` (A2-B1) vuelve además a medir, POR EL HANDLE DE GUARDA (sin reabrir la ruta), cada ARCHIVO que viaja en
+//!   un lote con otros: si ocupa más de lo que se contó para el presupuesto de la operación, veta con `E_ABORT` (`Grew`). Un
+//!   directorio nunca viaja con otros: va solo y se mide justo antes de entregarlo. RESIDUAL: lo que crece mientras la propia
+//!   operación de la shell está en marcha (entre ese `PreDeleteItem` y el movimiento real).
 //! * `PostDeleteItem` (M2) registra el evento PRIMERO y, si la shell eliminó definitivamente (`psiNewlyCreated` nulo) o no
-//!   dijo dónde quedó, devuelve `E_ABORT`: el primer borrado inesperado ya no arrastra al resto del lote.
-//!   Solo al ENVIAR; al purgar la Papelera el borrado definitivo es lo esperado y no corta.
+//!   dijo dónde quedó, devuelve `E_ABORT`: el primer borrado inesperado ya no arrastra al resto del lote. (A2-M1) Un
+//!   resultado de FALLO (`hrDelete < 0`) corta igual: puede haber una pérdida parcial detrás y no se puede garantizar que lo
+//!   siguiente no sufra lo mismo. Solo al ENVIAR; al purgar la Papelera el borrado definitivo es lo esperado, cada elemento
+//!   es independiente y un fallo no corta (no se cambió: la purga no tiene "pérdida parcial" que evitar).
 //!
 //! # La purga de la Papelera (A-M4)
 //! Los elementos de la lista se verifican por identidad (`$R` y `$I`) al enumerar y la shell actúa después. Para cerrar esa
@@ -415,10 +421,45 @@ pub struct BatchOutcome {
 }
 
 /// Un elemento que se entrega a la shell: su ruta original y la IDENTIDAD aprobada (volumen + FileId).
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct SendItem {
     pub path: PathBuf,
     pub identity: FileIdentity,
+    /// A2-B1: solo un ARCHIVO que viaja en un lote con otros. `PreDeleteItem` vuelve a medirlo por su handle de guarda (sin
+    /// reabrir la ruta) y veta si ocupa más de lo que se contó para el presupuesto. Un directorio va siempre solo en su
+    /// operación y se mide justo antes de entregarlo: no lleva comprobación aquí.
+    pub size_guard: Option<SizeGuard>,
+}
+
+/// Cómo vuelve a medirse un archivo en `PreDeleteItem` (A2-B1): su handle de guarda y el tamaño con el que se contó en el
+/// reparto.
+#[derive(Clone)]
+pub struct SizeGuard {
+    /// El handle de guarda del ejecutor (`DELETE | READ_ATTRIBUTES`, compartiéndolo todo). Sigue abierto durante toda la
+    /// operación.
+    pub handle: Arc<sys::Handle>,
+    /// Lo que se contó para el presupuesto de la operación: el mayor entre bytes en disco y tamaño lógico.
+    pub budget: u64,
+}
+
+impl std::fmt::Debug for SizeGuard {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SizeGuard")
+            .field("budget", &self.budget)
+            .finish_non_exhaustive()
+    }
+}
+
+impl SizeGuard {
+    /// ¿Sigue el archivo dentro de lo que se contó? Lo lee por el handle de guarda: no hay reapertura por ruta ni ventana de
+    /// sustitución. Si no se puede leer, se veta (falla cerrado).
+    fn check(&self) -> std::result::Result<(), VetoKind> {
+        match sys::sizes(&self.handle) {
+            Ok(s) if s.charge() > self.budget => Err(VetoKind::Grew),
+            Ok(_) => Ok(()),
+            Err(c) => Err(VetoKind::OpenFailed(c)),
+        }
+    }
 }
 
 impl SendItem {
@@ -429,6 +470,7 @@ impl SendItem {
         SendItem {
             path: path.to_path_buf(),
             identity: sys::meta(&h).expect("lee la identidad").identity,
+            size_guard: None,
         }
     }
 }
@@ -442,6 +484,9 @@ pub enum VetoKind {
     OpenFailed(u32),
     /// La shell va a borrar algo que no estaba en la lista aprobada (por ejemplo un elemento conectado).
     NotApproved,
+    /// A2-B1: un archivo del lote ocupa ahora MÁS de lo que se contó para el presupuesto de la operación (creció desde que
+    /// se midió). Se veta: el reparto se hizo con un tamaño que ya no es cierto.
+    Grew,
 }
 
 /// Un veto del receptor.
@@ -481,8 +526,11 @@ struct SinkState {
 
 /// Qué se aprobó para una ruta.
 enum Approved {
-    /// Al ENVIAR: la identidad del objeto en su ruta original.
-    Object(FileIdentity),
+    /// Al ENVIAR: la identidad del objeto en su ruta original y, en un archivo de un lote, cómo volver a medirlo (A2-B1).
+    Object {
+        identity: FileIdentity,
+        size: Option<SizeGuard>,
+    },
     /// Al PURGAR (A-M4): las identidades del `$R` (los datos) y del `$I` hermano (los metadatos) capturadas al enumerar. La
     /// ruta es la del `$R` (el `id` del elemento de la Papelera).
     Bin {
@@ -506,7 +554,15 @@ impl Guard {
         Guard {
             approved: items
                 .iter()
-                .map(|i| (PathKey::new(&i.path), Approved::Object(i.identity)))
+                .map(|i| {
+                    (
+                        PathKey::new(&i.path),
+                        Approved::Object {
+                            identity: i.identity,
+                            size: i.size_guard.clone(),
+                        },
+                    )
+                })
                 .collect(),
             purge: false,
         }
@@ -581,7 +637,15 @@ impl Guard {
             Err(c) => Err(VetoKind::OpenFailed(c)),
         };
         match want {
-            Approved::Object(id) => same(Path::new(path), id),
+            Approved::Object { identity, size } => {
+                same(Path::new(path), identity)?;
+                // A2-B1: lo aprobado sigue siendo lo que había, pero un archivo que creció desde que se midió ya no cabe en lo
+                // que se repartió: se mide por el handle de guarda (el mismo objeto), no por la ruta.
+                match size {
+                    Some(g) => g.check(),
+                    None => Ok(()),
+                }
+            }
             Approved::Bin {
                 data_path,
                 data,
@@ -607,15 +671,21 @@ fn bin_state(newly_created: Option<Option<PathBuf>>) -> BinState {
 }
 
 /// ¿Debe el receptor cortar el lote tras este `PostDeleteItem`? Solo al ENVIAR (`sending`: al purgar el borrado
-/// definitivo es lo esperado) y solo si la shell dijo que fue bien pero el elemento no está verificablemente en la
-/// Papelera: eliminado definitivamente (`Deleted`) o sin ruta (`InBinUnknownPath`). Pura.
+/// definitivo es lo esperado y cada elemento es independiente) y en dos casos:
+/// * la shell dijo que fue bien pero el elemento no está verificablemente en la Papelera: eliminado definitivamente
+///   (`Deleted`) o sin ruta (`InBinUnknownPath`);
+/// * (A2-M1) el resultado es un FALLO (`hrdelete < 0`): un fallo no prueba que la shell no tocara nada (puede haber perdido
+///   un hijo de una carpeta antes de fallar) y no hay forma de garantizar que lo siguiente del lote no sufra lo mismo; se
+///   corta lo pendiente por precaución. El ejecutor juzga después el elemento fallido por su objeto y su contenido.
+///
+/// Pura.
 fn post_delete_aborts(sending: bool, hrdelete: i32, state: &BinState) -> bool {
-    sending && hrdelete >= 0 && matches!(state, BinState::Deleted | BinState::InBinUnknownPath)
+    sending && (hrdelete < 0 || matches!(state, BinState::Deleted | BinState::InBinUnknownPath))
 }
 
 /// La lógica del receptor SIN COM (así se prueba en cualquier equipo): `Recorder` solo traduce los argumentos de la shell
 /// y llama aquí.
-struct SinkCore {
+pub(crate) struct SinkCore {
     events: Events,
     state: Arc<SinkState>,
     /// Obligatoria (M-3): sin guarda no hay receptor, así que una operación que borra (enviar o purgar) sin comprobar
@@ -624,8 +694,28 @@ struct SinkCore {
 }
 
 impl SinkCore {
+    /// El receptor de un ENVÍO con la guarda de estos elementos (la misma lógica que usa la shell real; las shells simuladas
+    /// de las pruebas la llaman en vez de reimplementarla).
+    #[cfg(test)]
+    pub(crate) fn for_send(items: &[SendItem]) -> SinkCore {
+        SinkCore {
+            events: Arc::new(Mutex::new(Vec::new())),
+            state: Arc::new(SinkState::default()),
+            guard: Guard::new(items),
+        }
+    }
+
+    /// Lo que el receptor registró: los eventos, los vetos y si cortó el lote.
+    #[cfg(test)]
+    pub(crate) fn finish(&self) -> (Vec<DeleteEvent>, Vec<Veto>, bool) {
+        let events = std::mem::take(&mut *self.events.lock().unwrap_or_else(|e| e.into_inner()));
+        let vetoes =
+            std::mem::take(&mut *self.state.vetoes.lock().unwrap_or_else(|e| e.into_inner()));
+        (events, vetoes, self.state.tripped.load(Ordering::SeqCst))
+    }
+
     /// `PreDeleteItem`: `true` = la shell puede seguir con este elemento; `false` = el receptor debe devolver `E_ABORT`.
-    fn pre_delete(&self, item: OsString) -> bool {
+    pub(crate) fn pre_delete(&self, item: OsString) -> bool {
         let guard = &self.guard;
         // Defensa: si el lote ya está cancelado, ningún elemento más se procesa aunque la shell siguiera.
         if self.state.tripped.load(Ordering::SeqCst) {
@@ -652,7 +742,7 @@ impl SinkCore {
 
     /// `PostDeleteItem`: registra el evento PRIMERO. `true` = el receptor debe devolver `E_ABORT` (y el lote queda
     /// cancelado).
-    fn post_delete(&self, item: OsString, hrdelete: i32, state: BinState) -> bool {
+    pub(crate) fn post_delete(&self, item: OsString, hrdelete: i32, state: BinState) -> bool {
         let abort = post_delete_aborts(self.guard.sends(), hrdelete, &state);
         self.events
             .lock()
@@ -2802,12 +2892,23 @@ mod tests {
         assert!(post_delete_aborts(true, ok, &BinState::InBinUnknownPath));
         assert!(post_delete_aborts(true, 0x0027_0003, &BinState::Deleted));
         assert!(!post_delete_aborts(true, ok, &BinState::InBin(p)));
-        // Si la shell falló, no se corta por esto (el fallo ya consta como error del elemento).
-        assert!(!post_delete_aborts(true, fail, &BinState::Deleted));
-        assert!(!post_delete_aborts(true, fail, &BinState::InBinUnknownPath));
-        // Al PURGAR el borrado definitivo es lo esperado: nunca corta.
+        // A2-M1: un FALLO también corta al enviar, sea cual sea el estado: no prueba que la shell no tocara nada.
+        assert!(post_delete_aborts(true, fail, &BinState::Deleted));
+        assert!(post_delete_aborts(true, fail, &BinState::InBinUnknownPath));
+        let in_bin = |n: &str| BinState::InBin(PathBuf::from(format!(r"C:\$Recycle.Bin\S\{n}")));
+        assert!(post_delete_aborts(true, fail, &in_bin("$R2")));
+        assert!(post_delete_aborts(true, i32::MIN, &BinState::Deleted));
+        // Un código de ÉXITO con facilidad (positivo, como `0x00270003`) no es un fallo.
+        assert!(!post_delete_aborts(true, 0x0027_0008, &in_bin("$R3")));
+        // Al PURGAR el borrado definitivo y los fallos son lo esperado de cada elemento: nunca corta.
         assert!(!post_delete_aborts(false, ok, &BinState::Deleted));
         assert!(!post_delete_aborts(false, ok, &BinState::InBinUnknownPath));
+        assert!(!post_delete_aborts(false, fail, &BinState::Deleted));
+        assert!(!post_delete_aborts(
+            false,
+            fail,
+            &BinState::InBinUnknownPath
+        ));
     }
 
     /// El receptor de un ENVÍO con la guarda de estos elementos.
@@ -2868,6 +2969,141 @@ mod tests {
         assert_eq!(vetoes[0].kind, VetoKind::IdentityMismatch);
         assert!(core.state.tripped.load(Ordering::SeqCst));
         assert!(!core.pre_delete(os(&b.path)), "lo siguiente, también");
+    }
+
+    /// Un archivo a enviar con la comprobación de tamaño (A2-B1): su handle de guarda (el mismo que abre el ejecutor) y lo que se
+    /// contó para el presupuesto. El handle viaja DENTRO del `SendItem` (`size_guard`) y se cierra al soltar el elemento.
+    fn sized_item(sb: &Sandbox, rel: &str, size: usize, budget: u64) -> SendItem {
+        sb.write(rel, size);
+        let path = sb.long(rel);
+        let mut item = SendItem::capture(&path);
+        item.size_guard = Some(SizeGuard {
+            handle: Arc::new(sys::open_path_for_rename(&path).expect("abre la guarda")),
+            budget,
+        });
+        item
+    }
+
+    /// A2-B1 (sin COM): la comprobación de `PreDeleteItem` vuelve a medir el archivo POR SU HANDLE DE GUARDA. Dentro de lo que se
+    /// contó, pasa (también si encogió); más grande (en disco o lógico), se veta como `Grew`; la identidad se comprueba antes
+    /// (un sustituto sigue siendo `IdentityMismatch`) y un archivo sin comprobación de tamaño (un directorio) no se mide.
+    #[test]
+    fn el_guard_veta_un_archivo_que_crecio_por_su_handle_de_guarda() {
+        let sb = Sandbox::new();
+        // 1 000 bytes ocupan 4 096 en disco (un cluster): se cuenta eso.
+        let a = sized_item(&sb, "z/a.txt", 1_000, 4_096);
+        let guard = Guard::new(std::slice::from_ref(&a));
+        let os = |p: &Path| p.as_os_str().to_os_string();
+        assert_eq!(guard.check(&os(&a.path)), Ok(()), "tal cual se midió");
+        // Crece un poco dentro del mismo cluster: el tamaño lógico sube pero no pasa de lo contado.
+        std::fs::write(sb.path("z/a.txt"), vec![1u8; 4_000]).unwrap();
+        assert_eq!(guard.check(&os(&a.path)), Ok(()), "dentro de lo contado");
+        // Pasa del cluster: más en disco y más lógico que lo contado.
+        std::fs::write(sb.path("z/a.txt"), vec![1u8; 1 << 20]).unwrap();
+        assert_eq!(guard.check(&os(&a.path)), Err(VetoKind::Grew));
+        // Encoge: dentro de lo contado (el presupuesto solo se rompe al crecer).
+        std::fs::write(sb.path("z/a.txt"), vec![1u8; 10]).unwrap();
+        assert_eq!(guard.check(&os(&a.path)), Ok(()));
+        // H3: sin tolerancia alguna. Con un presupuesto de 4 096, 4 096 bytes caben (en disco, un cluster) y 4 097 no (el
+        // tamaño lógico pasa de lo contado aunque la asignación siga siendo de un cluster u ocho KiB).
+        let e = sized_item(&sb, "z/exacto.txt", 4_096, 4_096);
+        let ge = Guard::new(std::slice::from_ref(&e));
+        assert_eq!(ge.check(&os(&e.path)), Ok(()), "justo lo contado");
+        std::fs::write(sb.path("z/exacto.txt"), vec![1u8; 4_097]).unwrap();
+        assert_eq!(ge.check(&os(&e.path)), Err(VetoKind::Grew), "un byte más");
+        // H3: la asignación en disco cuenta aunque el tamaño lógico no cambie (`FileAllocationInfo` sin tocar `EndOfFile`).
+        let pre = sized_item(&sb, "z/prealoca.txt", 1_000, 4_096);
+        let gp = Guard::new(std::slice::from_ref(&pre));
+        assert_eq!(gp.check(&os(&pre.path)), Ok(()));
+        sys::preallocate_for_test(&sb.path("z/prealoca.txt"), 1 << 20).unwrap();
+        assert_eq!(
+            gp.check(&os(&pre.path)),
+            Err(VetoKind::Grew),
+            "más en disco"
+        );
+        // Solo el tamaño LÓGICO pasa de lo contado (un disperso: poco en disco, mucho lógico): también se veta.
+        let big = sb.path("z/dispersa.bin");
+        crate::testutil::sparse_file(&big, 1 << 30);
+        let mut d = SendItem::capture(&sb.long("z/dispersa.bin"));
+        d.size_guard = Some(SizeGuard {
+            handle: Arc::new(sys::open_path_for_rename(&sb.long("z/dispersa.bin")).unwrap()),
+            budget: 4_096,
+        });
+        let g2 = Guard::new(std::slice::from_ref(&d));
+        assert_eq!(g2.check(&os(&d.path)), Err(VetoKind::Grew));
+        // Un sustituto en la ruta: la identidad manda y se comprueba ANTES que el tamaño.
+        std::fs::rename(sb.path("z/a.txt"), sb.path("z/a-ori.txt")).unwrap();
+        sb.write("z/a.txt", 10);
+        assert_eq!(guard.check(&os(&a.path)), Err(VetoKind::IdentityMismatch));
+        // Sin comprobación de tamaño (un directorio, o un archivo suelto) no se mide.
+        let dir = SendItem::capture(&sb.mkdir("z/carpeta"));
+        sb.write("z/carpeta/hijo.txt", 1 << 20);
+        let g3 = Guard::new(std::slice::from_ref(&dir));
+        assert_eq!(g3.check(&os(&dir.path)), Ok(()));
+    }
+
+    /// A2-M1 (sin COM): un lote con DOS carpetas pequeñas. La shell pierde un hijo de la primera y notifica un fallo
+    /// (`E_ACCESSDENIED`, sin elemento nuevo): el receptor registra el evento, corta, y la segunda carpeta ya no recibe
+    /// `PreDeleteItem` (la shell no la procesa). Antes un fallo devolvía éxito: el siguiente pasaba y podía perder también un
+    /// hijo.
+    #[test]
+    fn un_fallo_en_la_primera_carpeta_del_lote_corta_antes_de_la_segunda() {
+        let sb = Sandbox::new();
+        sb.write("q/c1/a.bin", 100);
+        sb.write("q/c2/a.bin", 100);
+        let c1 = SendItem::capture(&sb.long("q/c1"));
+        let c2 = SendItem::capture(&sb.long("q/c2"));
+        let core = core_for(&[c1.clone(), c2.clone()]);
+        let os = |p: &Path| p.as_os_str().to_os_string();
+        assert!(core.pre_delete(os(&c1.path)));
+        let denied = 0x8007_0005u32 as i32;
+        assert!(
+            core.post_delete(os(&c1.path), denied, BinState::Deleted),
+            "el fallo corta el lote"
+        );
+        assert!(core.state.tripped.load(Ordering::SeqCst));
+        {
+            let ev = core.events.lock().unwrap();
+            assert_eq!(ev.len(), 1, "el evento consta antes de cortar");
+            assert_eq!(ev[0].hr, denied);
+        }
+        assert!(
+            !core.pre_delete(os(&c2.path)),
+            "la segunda carpeta no se procesa"
+        );
+        assert_eq!(core.events.lock().unwrap().len(), 1);
+        assert!(
+            core.state.vetoes.lock().unwrap().is_empty(),
+            "no es un veto"
+        );
+    }
+
+    /// A2-B1 (sin COM): el receptor veta al archivo que creció, corta el lote y lo anota con su motivo; los anteriores ya
+    /// procesados siguen en sus eventos.
+    #[test]
+    fn el_receptor_veta_el_archivo_que_crecio_y_corta_el_lote() {
+        let sb = Sandbox::new();
+        let a = sized_item(&sb, "w/a.txt", 100, 4_096);
+        let b = sized_item(&sb, "w/b.txt", 100, 4_096);
+        let c = sized_item(&sb, "w/c.txt", 100, 4_096);
+        let core = core_for(&[a.clone(), b.clone(), c.clone()]);
+        let os = |p: &Path| p.as_os_str().to_os_string();
+        let bin = PathBuf::from(r"C:\$Recycle.Bin\S\$R1");
+        assert!(core.pre_delete(os(&a.path)));
+        assert!(!core.post_delete(os(&a.path), 0, BinState::InBin(bin)));
+        // `b` crece después de preparar el lote y antes de su `PreDeleteItem`.
+        std::fs::write(sb.path("w/b.txt"), vec![1u8; 1 << 20]).unwrap();
+        assert!(!core.pre_delete(os(&b.path)), "el que creció se veta");
+        let vetoes = core.state.vetoes.lock().unwrap().clone();
+        assert_eq!(vetoes.len(), 1);
+        assert_eq!(vetoes[0].kind, VetoKind::Grew);
+        assert_eq!(
+            PathKey::new(Path::new(vetoes[0].id())),
+            PathKey::new(&b.path)
+        );
+        assert!(core.state.tripped.load(Ordering::SeqCst));
+        assert!(!core.pre_delete(os(&c.path)), "y el resto no se procesa");
+        assert_eq!(core.events.lock().unwrap().len(), 1);
     }
 
     // ---- A-m1: los CALLBACKS COM del receptor, llamados directamente (sin una operación de la Papelera real) ---------------------
@@ -2933,6 +3169,28 @@ mod tests {
         }
     }
 
+    /// A2-B1: `PreDeleteItem` por la interfaz COM con la comprobación de tamaño: el archivo que creció tras preparar el lote se
+    /// veta con `E_ABORT` y consta `Grew`; antes de crecer, el mismo callback lo deja pasar. (Un mutante que quite la
+    /// comprobación de tamaño de `Guard::check` falla aquí.)
+    #[test]
+    fn el_callback_pre_delete_item_veta_con_e_abort_el_archivo_que_crecio() {
+        let _com = Com::init().unwrap();
+        let sb = Sandbox::new();
+        let a = sized_item(&sb, "k/a.txt", 100, 4_096);
+        let (sink, _events, state) = com_sink(Guard::new(std::slice::from_ref(&a)));
+        // SAFETY: interfaz COM viva y en su hilo; `IShellItem` vivos.
+        unsafe {
+            assert!(sink.PreDeleteItem(0, &shell_item(&a.path)).is_ok());
+            std::fs::write(sb.path("k/a.txt"), vec![7u8; 1 << 20]).unwrap();
+            let veto = sink.PreDeleteItem(0, &shell_item(&a.path));
+            assert!(is_abort(veto), "el archivo que creció se veta con E_ABORT");
+        }
+        assert!(state.tripped.load(Ordering::SeqCst));
+        let vetoes = state.vetoes.lock().unwrap().clone();
+        assert_eq!(vetoes.len(), 1);
+        assert_eq!(vetoes[0].kind, VetoKind::Grew);
+    }
+
     /// A-m1: `PostDeleteItem` por la interfaz COM: registra el evento (con su `HRESULT` y el estado según `psiNewlyCreated`) y
     /// devuelve `E_ABORT` solo cuando la shell eliminó definitivamente con éxito (nulo) o no dio la ruta. (Un mutante
     /// `PostDeleteItem -> Ok(())` falla: no registraría nada ni cortaría.)
@@ -2966,16 +3224,28 @@ mod tests {
             ev[0].state
         );
         assert_eq!(ev[1].state, BinState::Deleted);
-        // Con un FALLO de la shell (y nulo) no se corta, pero consta.
-        let (sink, events, state) = com_sink(Guard::new(std::slice::from_ref(&a)));
+        // A2-M1: con un FALLO de la shell (y nulo) SÍ se corta (antes devolvía éxito y dejaba pasar el siguiente
+        // `PreDeleteItem`), y consta. Es la repetición de Astra: `PostDeleteItem(E_ACCESSDENIED, NULL)`.
+        let (sink, events, state) = com_sink(Guard::new(&[a.clone(), b.clone()]));
         // SAFETY: igual que arriba.
         unsafe {
             let fail = HRESULT(0x8007_0005u32 as i32);
             let r = sink.PostDeleteItem(0, &shell_item(&a.path), fail, None::<&IShellItem>);
-            assert!(r.is_ok(), "un fallo no corta por esto");
-            assert!(!state.tripped.load(Ordering::SeqCst));
+            assert!(is_abort(r), "un fallo corta el lote con E_ABORT");
+            assert!(state.tripped.load(Ordering::SeqCst));
+            // Y lo siguiente del lote, que es lo aprobado, se niega.
+            assert!(is_abort(sink.PreDeleteItem(0, &shell_item(&b.path))));
         }
         assert_eq!(events.lock().unwrap()[0].hr, 0x8007_0005u32 as i32);
+        // Un fallo con elemento en la Papelera (hr < 0 pero `psiNewlyCreated` dado) corta igual.
+        let (sink, _events, state) = com_sink(Guard::new(std::slice::from_ref(&a)));
+        // SAFETY: igual que arriba.
+        unsafe {
+            let fail = HRESULT(0x8007_0020u32 as i32);
+            let r = sink.PostDeleteItem(0, &shell_item(&a.path), fail, &shell_item(&dest));
+            assert!(is_abort(r));
+            assert!(state.tripped.load(Ordering::SeqCst));
+        }
         // Al PURGAR, el borrado definitivo es lo esperado: se registra y no se corta.
         let pi = synthetic_bin_item(&sb, "PPPP05", b"x");
         let (sink, events, state) = com_sink(Guard::purge(&[&pi]));
@@ -3350,6 +3620,169 @@ mod tests {
         );
         purge_items(&mine, &AtomicBool::new(false)).unwrap();
         assert_eq!(ids(), before);
+    }
+
+    /// A2-B1 con la shell REAL (solo elementos propios): tres archivos en una operación, el del medio crece tras "preparar el
+    /// lote" (su tamaño contado se queda corto). El receptor lo vuelve a medir por su handle de guarda en `PreDeleteItem`, lo
+    /// veta con `E_ABORT` y la shell no procesa lo siguiente; el anterior llega a la Papelera. (Es la medida real de lo que
+    /// hace la shell con el veto por tamaño, igual que el veto por identidad de la prueba anterior.)
+    #[test]
+    fn con_la_shell_real_un_archivo_que_crecio_se_veta_y_el_resto_del_lote_no_se_procesa() {
+        let _lock = bin_lock();
+        if !bin_usable() {
+            return;
+        }
+        let before = ids();
+        let sb = Sandbox::new();
+        let _guard = BinGuard { uuid: sb.uuid() };
+        let a = sized_item(&sb, "g/a.txt", 700, 4_096);
+        let b = sized_item(&sb, "g/b.txt", 800, 4_096);
+        let c = sized_item(&sb, "g/c.txt", 900, 4_096);
+        let paths = [a.path.clone(), b.path.clone(), c.path.clone()];
+        // Tras "preparar": b crece más allá de lo contado.
+        std::fs::write(sb.path("g/b.txt"), vec![1u8; 1 << 20]).unwrap();
+        let r = recycle_paths(&[a, b, c], RecycleMode::Normal).unwrap();
+        eprintln!(
+            "crecido: eventos = {:?}, vetos = {:?}, sink_aborted = {}",
+            r.events, r.vetoed, r.sink_aborted
+        );
+        assert!(r.sink_aborted, "el receptor cortó el lote");
+        assert_eq!(r.vetoed.len(), 1, "{:?}", r.vetoed);
+        assert_eq!(r.vetoed[0].kind, VetoKind::Grew);
+        assert_eq!(
+            PathKey::new(Path::new(&r.vetoed[0].item)),
+            PathKey::new(&paths[1])
+        );
+        assert!(sb.path("g/b.txt").exists(), "el que creció no se envió");
+        assert!(sb.path("g/c.txt").exists(), "el resto no se procesó");
+        let mine: Vec<BinItem> = list_bin()
+            .unwrap()
+            .into_iter()
+            .filter(|i| is_mine(i, &sb.uuid()))
+            .collect();
+        assert!(
+            mine.iter().all(|i| i.name != "b.txt" && i.name != "c.txt"),
+            "{mine:?}"
+        );
+        purge_items(&mine, &AtomicBool::new(false)).unwrap();
+        assert_eq!(ids(), before);
+    }
+
+    /// MEDICIÓN A2-B1 (no es una prueba; `cargo test -- --ignored --nocapture medicion_a2_b1`, con
+    /// `TESELA_REAL_RECYCLE_TESTS=1`, sola y con elementos propios): coste con la shell REAL de enviar 500 archivos pequeños
+    /// (a) en UNA operación con la comprobación de tamaño en `PreDeleteItem`, (b) en una operación sin esa comprobación
+    /// (control) y (c) uno por operación (la alternativa descartada). Imprime milisegundos por ronda.
+    #[test]
+    #[ignore = "medición A2-B1"]
+    fn medicion_a2_b1_coste_de_la_comprobacion_de_tamano_con_500_archivos() {
+        const N: usize = 500;
+        let _lock = bin_lock();
+        if !bin_usable() {
+            return;
+        }
+        let before = ids();
+        let sb = Sandbox::new();
+        let _guard = BinGuard { uuid: sb.uuid() };
+        // `guarded`: cada archivo lleva su handle de guarda y su tamaño contado (como en producción).
+        let make = |tag: &str, round: usize, guarded: bool| -> Vec<SendItem> {
+            (0..N)
+                .map(|i| {
+                    let rel = format!("m/{tag}{round}/f{i:04}.txt");
+                    sb.write(&rel, 1_000);
+                    let path = sb.long(&rel);
+                    let mut it = SendItem::capture(&path);
+                    if guarded {
+                        it.size_guard = Some(SizeGuard {
+                            handle: Arc::new(sys::open_path_for_rename(&path).unwrap()),
+                            budget: 4_096,
+                        });
+                    }
+                    it
+                })
+                .collect()
+        };
+        let ms = |t: std::time::Instant| t.elapsed().as_secs_f64() * 1000.0;
+        let mut rows: Vec<(String, f64)> = Vec::new();
+        for round in 0..3 {
+            let items = make("a", round, true);
+            let t = std::time::Instant::now();
+            let r = recycle_paths(&items, RecycleMode::Normal).unwrap();
+            let d = ms(t);
+            assert!(
+                r.vetoed.is_empty() && r.events.len() == N,
+                "{}",
+                r.events.len()
+            );
+            rows.push((format!("a{round} (1 operación, con comprobación)"), d));
+            drop(items);
+            let items = make("b", round, false);
+            let t = std::time::Instant::now();
+            let r = recycle_paths(&items, RecycleMode::Normal).unwrap();
+            let d = ms(t);
+            assert!(r.vetoed.is_empty() && r.events.len() == N);
+            rows.push((format!("b{round} (1 operación, sin comprobación)"), d));
+        }
+        {
+            let items = make("c", 0, false);
+            let t = std::time::Instant::now();
+            for it in &items {
+                let r = recycle_paths(std::slice::from_ref(it), RecycleMode::Normal).unwrap();
+                assert!(r.vetoed.is_empty() && r.events.len() == 1);
+            }
+            rows.push(("c0 (500 operaciones de 1 archivo)".to_string(), ms(t)));
+        }
+        for (name, d) in &rows {
+            eprintln!(
+                "MEDICION {name}: {d:.1} ms ({:.3} ms por archivo)",
+                d / N as f64
+            );
+        }
+        let mine: Vec<BinItem> = list_bin()
+            .unwrap()
+            .into_iter()
+            .filter(|i| is_mine(i, &sb.uuid()))
+            .collect();
+        purge_items(&mine, &AtomicBool::new(false)).unwrap();
+        assert_eq!(ids(), before);
+    }
+
+    /// MEDICIÓN A2-B1 (sin shell, sin Papelera): lo que añade la comprobación de tamaño a `Guard::check` por archivo (la
+    /// reapertura por ruta de la identidad, que ya existía, frente a esa más la lectura de `FileStandardInfo` por el handle
+    /// de guarda). `cargo test -- --ignored --nocapture medicion_a2_b1_coste_del_check`.
+    #[test]
+    #[ignore = "medición A2-B1"]
+    fn medicion_a2_b1_coste_del_check_por_archivo() {
+        const N: usize = 500;
+        let sb = Sandbox::new();
+        let plain: Vec<SendItem> = (0..N)
+            .map(|i| {
+                sb.write(&format!("p/f{i:04}.txt"), 1_000);
+                SendItem::capture(&sb.long(&format!("p/f{i:04}.txt")))
+            })
+            .collect();
+        let sized: Vec<SendItem> = plain
+            .iter()
+            .map(|it| {
+                let mut it = it.clone();
+                it.size_guard = Some(SizeGuard {
+                    handle: Arc::new(sys::open_path_for_rename(&it.path).unwrap()),
+                    budget: 4_096,
+                });
+                it
+            })
+            .collect();
+        for (name, items) in [("solo identidad", &plain), ("identidad + tamaño", &sized)] {
+            let g = Guard::new(items);
+            let mut best = f64::MAX;
+            for _ in 0..20 {
+                let t = std::time::Instant::now();
+                for it in items {
+                    assert_eq!(g.check(&it.path.as_os_str().to_os_string()), Ok(()));
+                }
+                best = best.min(t.elapsed().as_secs_f64() * 1e6 / N as f64);
+            }
+            eprintln!("MEDICION check por archivo, {name}: {best:.1} us");
+        }
     }
 
     /// Centinela: sin `TESELA_REAL_RECYCLE_TESTS=1` las pruebas que usan la Papelera real se saltan EN SILENCIO (pasan sin

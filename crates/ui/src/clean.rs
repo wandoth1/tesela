@@ -1490,6 +1490,61 @@ mod summary_tests {
         assert!(es.contains("sum-freed-hint =") && en.contains("sum-freed-hint ="));
     }
 
+    /// A2-m1: lo que no se pudo comprobar se dice como tal ("no se pudo comprobar") y nunca como una pérdida confirmada ("se
+    /// eliminó"): un elemento `Unverified` puede seguir entero en su sitio.
+    #[test]
+    fn los_textos_de_lo_no_verificado_dicen_que_no_se_pudo_comprobar_y_no_que_se_elimino() {
+        let block = |text: &'static str, key: &str| -> String {
+            let start = text
+                .find(&format!("\n{key} ="))
+                .unwrap_or_else(|| panic!("falta la clave {key}"))
+                + 1;
+            text[start..]
+                .lines()
+                .enumerate()
+                .take_while(|(i, l)| *i == 0 || l.starts_with(' '))
+                .map(|(_, l)| l)
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        for key in ["sum-unverified", "sum-recycle-stopped-unverified"] {
+            let es = block(include_str!("../i18n/es.ftl"), key);
+            let en = block(include_str!("../i18n/en.ftl"), key);
+            assert!(
+                es.to_lowercase().contains("no se pudo comprobar"),
+                "{key}: {es}"
+            );
+            assert!(
+                !es.contains("elimin"),
+                "{key}: no debe decir que se eliminó: {es}"
+            );
+            assert!(en.to_lowercase().contains("could not be"), "{key}: {en}");
+            assert!(!en.to_lowercase().contains("delete"), "{key}: {en}");
+        }
+        // Y la línea del contador y la del corte dicen lo mismo, sin afirmar el borrado de un directorio cuyo contenido solo
+        // cambió (H2): "se eliminó ... o su contenido cambió o perdió una parte", y mandan al registro y a la Papelera.
+        for key in ["sum-unexpected", "sum-recycle-stopped"] {
+            let es = block(include_str!("../i18n/es.ftl"), key);
+            let en = block(include_str!("../i18n/en.ftl"), key);
+            assert!(
+                es.contains("eliminó") || es.contains("eliminaron"),
+                "{key}: {es}"
+            );
+            assert!(es.contains("cambió"), "{key}: {es}");
+            assert!(
+                en.contains("deleted permanently") || en.contains("permanently deleted"),
+                "{key}: {en}"
+            );
+            assert!(en.contains("changed"), "{key}: {en}");
+        }
+        let es = block(include_str!("../i18n/es.ftl"), "sum-unexpected");
+        let en = block(include_str!("../i18n/en.ftl"), "sum-unexpected");
+        assert!(es.contains("registro") && es.contains("Papelera"), "{es}");
+        assert!(en.contains("log") && en.contains("Recycle Bin"), "{en}");
+        // Y el texto no promete el borrado en seco: nunca una frase como "se eliminó definitivamente (entero".
+        assert!(!es.contains("definitivamente (entero"), "{es}");
+    }
+
     /// E3: la nota de `hiberfil.sys` dice lo que hay que saber antes de tocarlo: que hace falta un símbolo del sistema como
     /// administrador, que desactivar la hibernación quita también la suspensión híbrida y el inicio rápido, la alternativa
     /// menos drástica (`/type reduced`) y que Tesela no ejecuta nada (es/en en paridad).

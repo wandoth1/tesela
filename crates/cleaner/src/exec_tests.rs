@@ -2328,7 +2328,7 @@ impl FakeShell {
 
 impl RecycleShell for FakeShell {
     fn recycle(&self, items: &[recycle::SendItem]) -> recycle::BatchOutcome {
-        use crate::recycle::{BinState, DeleteEvent};
+        use crate::recycle::BinState;
         let paths: Vec<PathBuf> = items.iter().map(|i| i.path.clone()).collect();
         let paths = paths.as_slice();
         self.ops.lock().unwrap().push(paths.to_vec());
@@ -2345,21 +2345,21 @@ impl RecycleShell for FakeShell {
             p.file_name()
                 .is_some_and(|n| n.to_string_lossy().contains(self.nuke))
         });
-        let mut events = Vec::new();
-        let mut vetoed = Vec::new();
-        let mut sink_aborted = false;
+        // El receptor de eventos REAL (`SinkCore`): la shell simulada le pasa `PreDeleteItem` y `PostDeleteItem` igual que
+        // la de verdad, así que las pruebas ejercitan la misma lógica de veto y de corte (identidad, tamaño, fallos) y no una
+        // copia que pudiera divergir.
+        let core = recycle::SinkCore::for_send(items);
         for (i, p) in paths.iter().enumerate() {
-            // `PreDeleteItem` (M1): lo que hay ahora en la ruta debe ser el objeto aprobado; si no, veto y se corta el lote.
-            let now = sys::open_for_query(p)
-                .and_then(|h| sys::meta(&h))
-                .map(|m| m.identity);
-            if now.ok() != Some(items[i].identity) {
-                vetoed.push(recycle::Veto {
-                    owner: None,
-                    item: p.clone().into_os_string(),
-                    kind: recycle::VetoKind::IdentityMismatch,
-                });
-                sink_aborted = true;
+            // `PreDeleteItem`: lo que hay ahora en la ruta debe ser el objeto aprobado (y un archivo no puede haber crecido);
+            // si no, veto y se corta el lote.
+            if !core.pre_delete(p.clone().into_os_string()) {
+                // Como la shell REAL (medido): del elemento vetado avisa con `PostDeleteItem(E_ABORT)` y sin elemento nuevo.
+                // El ejecutor no puede tomar ese `E_ABORT` del propio receptor por un error de Windows.
+                let _ = core.post_delete(
+                    p.clone().into_os_string(),
+                    windows::Win32::Foundation::E_ABORT.0,
+                    BinState::Deleted,
+                );
                 break;
             }
             let len = fs::metadata(p).map_or(0, |m| m.len());
@@ -2405,6 +2405,14 @@ impl RecycleShell for FakeShell {
                 // Mismo nombre, mismo tamaño, OTRO objeto (otro `FileId`).
                 fs::write(&child, vec![9u8; len]).unwrap();
                 BinState::Deleted
+            } else if p
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().contains("deniega"))
+            {
+                // La shell falla con acceso denegado SIN tocar nada (archivo o carpeta): el resultado es un FALLO, sin
+                // elemento nuevo.
+                hr = 0x8007_0005u32 as i32;
+                BinState::Deleted
             } else if intact {
                 // La shell notifica "eliminado" (nulo, con éxito) SIN haber tocado nada (medido con un archivo disperso).
                 BinState::Deleted
@@ -2422,20 +2430,13 @@ impl RecycleShell for FakeShell {
                     BinState::InBin(dest)
                 }
             };
-            // El receptor real solo corta tras un EXITO sin Papelera verificable (`post_delete_aborts`).
-            let unsafe_outcome =
-                hr >= 0 && matches!(state, BinState::Deleted | BinState::InBinUnknownPath);
-            events.push(DeleteEvent {
-                item: p.clone().into_os_string(),
-                hr,
-                state,
-            });
-            // El receptor registra el evento y DESPUÉS devuelve E_ABORT: la shell no procesa el resto.
-            if unsafe_outcome {
-                sink_aborted = true;
+            // El receptor registra el evento y DESPUÉS decide si devuelve E_ABORT (`post_delete_aborts`): la shell no procesa
+            // el resto.
+            if core.post_delete(p.clone().into_os_string(), hr, state) {
                 break;
             }
         }
+        let (events, vetoed, sink_aborted) = core.finish();
         recycle::BatchOutcome {
             events,
             sink_aborted,
@@ -2750,6 +2751,115 @@ fn quitar_un_hijo_y_poner_otro_del_mismo_tamano_no_pasa_por_intacto() {
         (after.fp_sum, after.fp_xor),
         "la huella sí cambia"
     );
+}
+
+/// A2-M1 (la repetición de Astra, a nivel de la operación de la shell): DOS carpetas pequeñas en la misma operación, la
+/// shell pierde un hijo de cada una y devuelve un error. Antes el receptor devolvía éxito tras un fallo, el siguiente
+/// `PreDeleteItem` pasaba y acababan en DOS pérdidas inesperadas. Ahora el fallo de la primera corta el lote: la segunda no
+/// se procesa y conserva todos sus hijos. (La shell simulada usa el receptor real, `SinkCore`.)
+#[test]
+fn con_dos_carpetas_en_la_misma_operacion_un_fallo_con_perdida_parcial_corta_antes_de_la_segunda() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(100_000), 0, "nunca");
+    for d in ["falla1", "falla2"] {
+        sb.write(&format!("Docs/{d}/a.bin"), 100);
+        sb.write(&format!("Docs/{d}/b.bin"), 100);
+    }
+    let items = [
+        recycle::SendItem::capture(&sb.long("Docs/falla1")),
+        recycle::SendItem::capture(&sb.long("Docs/falla2")),
+    ];
+    let out = fake.recycle(&items);
+    assert!(out.sink_aborted, "el fallo cortó el lote");
+    assert_eq!(
+        out.events.len(),
+        1,
+        "la segunda no se procesó: {:?}",
+        out.events
+    );
+    assert_eq!(out.events[0].hr, 0x8007_0005u32 as i32);
+    assert!(out.vetoed.is_empty(), "no es un veto");
+    // La primera perdió un hijo; la segunda, intacta.
+    assert_eq!(sb.count_entries("Docs/falla1"), 1);
+    assert_eq!(sb.count_entries("Docs/falla2"), 2);
+}
+
+/// A2-M1 en el ejecutor: tres archivos pequeños en UNA operación y la shell falla con el segundo (acceso denegado, sin tocar
+/// nada). El receptor corta el lote: el segundo se juzga por lo que es (`Denied`, intacto), el tercero queda sin procesar
+/// (`Stopped`, en su sitio) y el envío se detiene con el motivo "Windows no pudo enviar un elemento y lo dejó intacto". El
+/// error de la shell consta aunque el `E_ABORT` sea del receptor.
+#[test]
+fn un_fallo_a_mitad_de_un_lote_de_archivos_cancela_lo_pendiente_y_detiene_el_envio() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(100_000), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    let plan = plan_de(
+        &sb,
+        &c,
+        &[
+            ("a.bin", 100, 4_096),
+            ("deniega.bin", 100, 4_096),
+            ("c.bin", 100, 4_096),
+        ],
+    );
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    let st = |n: &str| {
+        rep.items
+            .iter()
+            .find(|i| i.path.ends_with(n))
+            .unwrap()
+            .status
+    };
+    assert_eq!(st("a.bin"), ItemStatus::Recycled);
+    assert_eq!(
+        st("deniega.bin"),
+        ItemStatus::NotRecycled(RecycleFail::Denied)
+    );
+    assert_eq!(st("c.bin"), ItemStatus::NotRecycled(RecycleFail::Stopped));
+    assert_eq!(fake.names().len(), 1, "una sola operación");
+    assert!(sb.path("Docs/deniega.bin").exists() && sb.path("Docs/c.bin").exists());
+    assert!(rep.recycle_stopped);
+    assert_eq!(rep.stop_reason, Some(StopReason::ShellDeclined));
+    assert_eq!((rep.deleted_unexpectedly, rep.stopped_items), (0, 1));
+    assert_eq!(
+        rep.shell_error,
+        Some(0x8007_0005u32 as i32),
+        "el error de la shell no se pierde tras el E_ABORT del receptor"
+    );
+}
+
+/// A2-M1: lo contrario. Si el fallo es lo ÚLTIMO de su operación (siempre para una carpeta, que va sola) el corte no cancela
+/// nada pendiente y las operaciones siguientes siguen: una carpeta con acceso denegado (intacta, comprobada) no impide enviar
+/// la que viene después.
+#[test]
+fn un_fallo_de_una_carpeta_que_va_sola_no_detiene_las_operaciones_siguientes() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(100_000), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    sb.write("Docs/deniega-d1/x.bin", 100);
+    sb.write("Docs/d2/y.bin", 100);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/deniega-d1"), c.protection());
+    b.add_path(sb.long("Docs/d2"), c.protection());
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 2, "{:?}", plan.rejected);
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    let st = |n: &str| {
+        rep.items
+            .iter()
+            .find(|i| i.path.ends_with(n))
+            .unwrap()
+            .status
+    };
+    assert_eq!(
+        st("deniega-d1"),
+        ItemStatus::NotRecycled(RecycleFail::Denied)
+    );
+    assert_eq!(st("d2"), ItemStatus::Recycled);
+    assert!(!rep.recycle_stopped);
+    assert_eq!(rep.shell_error, Some(0x8007_0005u32 as i32));
+    assert_eq!(fake.names(), vec![vec!["deniega-d1"], vec!["d2"]]);
+    assert_eq!(sb.count_entries("Docs/deniega-d1"), 1, "intacta");
 }
 
 /// R6 con la shell REAL (solo cosas propias, tras `TESELA_REAL_RECYCLE_TESTS=1`): una carpeta con un disperso enorme (que no
@@ -3178,8 +3288,9 @@ fn el_directorio_se_mide_justo_antes_de_su_operacion_no_al_preparar_el_trozo() {
     );
 }
 
-/// A-B1 / M-1: un SEGUNDO directorio de la misma operación que crece mientras se mide el primero no se envía. (Antes de esta
-/// prueba, que los candidatos no primeros no se volvieran a medir —`let skip = true`— sobrevivía a todas las demás.)
+/// A-B1 / M-1: un SEGUNDO directorio que crece mientras se mide el primero no se envía. (Antes de esta prueba, que los
+/// candidatos no primeros no se volvieran a medir —`let skip = true`— sobrevivía a todas las demás. Desde A2-B1 cada
+/// directorio va solo en su operación: el segundo se mide después, cuando le toca.)
 #[test]
 fn un_segundo_directorio_de_la_misma_operacion_que_crece_no_se_envia() {
     let sb = Sandbox::new();
@@ -3215,12 +3326,15 @@ fn un_segundo_directorio_de_la_misma_operacion_que_crece_no_se_envia() {
     assert_eq!(fake.names(), vec![vec!["d1"]]);
 }
 
-/// s-1: el PRIMER directorio de una operación se vuelve a medir el último, justo antes de entregarla: si crece mientras se
-/// miden los demás, no se envía (antes se detectaba solo DESPUÉS de la shell, contra la instantánea de la primera medida).
+/// A2-B1 (blocker de la auditoría externa), la repetición de Astra: una Papelera simulada de 100 000 y dos carpetas pequeñas.
+/// Antes iban en la MISMA operación: se medían una tras otra (la primera, la última) y, mientras la primera recibía su medida
+/// final, la segunda ya medida crecía 1 MiB; `PreDeleteItem` solo comprobaba identidades, así que las dos llegaban a la shell
+/// y volvían `Recycled`. Ahora cada directorio va SOLO en su operación y se mide justo antes de entregarlo: lo que crece
+/// mientras el anterior estaba en la shell no se envía (se mide después, con su tamaño de entonces).
 #[test]
-fn el_primer_directorio_de_la_operacion_que_crece_mientras_se_miden_los_demas_no_se_envia() {
+fn dos_directorios_pequenos_de_astra_no_comparten_operacion_y_el_que_crece_no_se_envia() {
     let sb = Sandbox::new();
-    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let fake = FakeShell::new(&sb, Some(100_000), 0, "nunca");
     let c = cleaner_for(&sb).with_shell(fake.clone());
     sb.write("Docs/d1/x1.bin", 1_000);
     sb.write("Docs/d2/y1.bin", 1_000);
@@ -3229,10 +3343,13 @@ fn el_primer_directorio_de_la_operacion_que_crece_mientras_se_miden_los_demas_no
     b.add_path(sb.long("Docs/d2"), c.protection());
     let plan = approve(&c, &b);
     assert_eq!(plan.items.len(), 2, "{:?}", plan.rejected);
-    let grow = sb.path("Docs/d1/crece.bin");
-    // Mientras se mide d2 (después del primero), d1 crece.
-    let _hook = crate::engine::test_hooks::install(sb.long("Docs"), move |q| {
-        if q.ends_with("y1.bin") {
+    for it in &plan.items {
+        assert_eq!(it.fit, Fit::Fits);
+    }
+    // El crecimiento llega JUSTO cuando d1 se entrega a la shell: con los dos en la misma operación, d2 ya estaba medido.
+    let grow = sb.path("Docs/d2/crece.bin");
+    let _hook = crate::engine::test_hooks::install_before_shell(sb.long("Docs"), move |q| {
+        if q.ends_with("d1") {
             fs::write(&grow, vec![1u8; 1 << 20]).unwrap();
         }
     });
@@ -3244,12 +3361,74 @@ fn el_primer_directorio_de_la_operacion_que_crece_mientras_se_miden_los_demas_no
             .unwrap()
             .status
     };
+    assert_eq!(st("d1"), ItemStatus::Recycled);
     assert_eq!(
-        st("d1"),
-        ItemStatus::Root(crate::engine::RootStatus::Changed)
+        st("d2"),
+        ItemStatus::Root(crate::engine::RootStatus::Changed),
+        "no se entrega con un tamaño que ya no es cierto"
     );
-    assert_eq!(st("d2"), ItemStatus::Recycled);
-    assert_eq!(fake.names(), vec![vec!["d2"]]);
+    assert_eq!(
+        fake.names(),
+        vec![vec!["d1"]],
+        "cada directorio, en su operación; el que creció no llegó a la shell"
+    );
+    assert!(sb.path("Docs/d2/crece.bin").exists() && sb.path("Docs/d2/y1.bin").exists());
+    assert!(rep.totals.changed >= 1);
+    // Y lo que sí se envió no pasa del 90 % de la capacidad simulada.
+    assert!(*fake.used.lock().unwrap() <= 90_000);
+}
+
+/// H1 (auditoría): la recomprobación del presupuesto justo antes de entregar un DIRECTORIO. Papelera simulada de 10 000 con 8 950
+/// ya ocupados (presupuesto 9 000 - 8 950 = 50): la carpeta de 200 bytes (unos 4 KiB en disco) ya no cabe cuando se la va a
+/// entregar. No llega a la shell: `NoRoom` (con la real, la shell la habría eliminado o expulsado lo que hay en la Papelera).
+#[test]
+fn un_directorio_que_ya_no_cabe_al_entregarlo_no_llega_a_la_shell() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(10_000), 8_950, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    sb.write("Docs/d1/x.bin", 200);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/d1"), c.protection());
+    let plan = approve(&c, &b);
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    assert_eq!(
+        rep.items[0].status,
+        ItemStatus::NotRecycled(RecycleFail::NoRoom)
+    );
+    assert!(fake.names().is_empty());
+    assert!(sb.path("Docs/d1/x.bin").exists());
+    assert_eq!(rep.no_room, 1);
+}
+
+/// A2-B1: un directorio NUNCA comparte operación con nada (ni con otros directorios ni con archivos); los archivos pequeños
+/// contiguos sí se agrupan. Cola: archivo, directorio, directorio, archivo, archivo => [a], [d1], [d2], [b, c].
+#[test]
+fn un_directorio_va_siempre_solo_y_los_archivos_contiguos_se_agrupan() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    sb.write("Docs/a.txt", 100);
+    sb.write("Docs/d1/x.bin", 100);
+    sb.write("Docs/d2/y.bin", 100);
+    sb.write("Docs/b.txt", 100);
+    sb.write("Docs/c.txt", 100);
+    let mut b = Basket::new();
+    for n in ["a.txt", "d1", "d2", "b.txt", "c.txt"] {
+        b.add_path(sb.long(&format!("Docs/{n}")), c.protection());
+    }
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 5, "{:?}", plan.rejected);
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    assert!(rep.items.iter().all(|i| i.status == ItemStatus::Recycled));
+    assert_eq!(
+        fake.names(),
+        vec![
+            vec!["a.txt"],
+            vec!["d1"],
+            vec!["d2"],
+            vec!["b.txt", "c.txt"]
+        ]
+    );
 }
 
 /// B2: un directorio que ENCOGIÓ se reparte con su tamaño nuevo (no con el aprobado). El aprobado (estimación falseada
@@ -3322,6 +3501,140 @@ fn un_archivo_que_crece_mientras_espera_su_turno_no_se_envia() {
     assert!(sb.path("Docs/b.bin").exists(), "sigue en su sitio");
     assert!(rep.totals.changed >= 1);
     assert!(!rep.recycle_stopped, "es un cambio, no un corte");
+}
+
+/// A2-B1: dos archivos pequeños viajan en la MISMA operación (cada uno, menos del 10 % de la capacidad). Entre preparar el
+/// lote y el `PreDeleteItem` del segundo, este crece 1 MiB. El receptor lo vuelve a medir por su handle de guarda (sin reabrir
+/// la ruta) y lo veta: no llega a la shell, consta "cambió desde la confirmación" y el envío se detiene.
+#[test]
+fn un_archivo_que_crece_entre_preparar_el_lote_y_su_pre_delete_item_se_veta() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(100_000), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    let plan = plan_de(
+        &sb,
+        &c,
+        &[
+            ("a.bin", 5_000, 8_192),
+            ("b.bin", 5_000, 8_192),
+            ("c.bin", 5_000, 8_192),
+        ],
+    );
+    // El gancho `before_shell` corre DESPUÉS de medir y preparar el lote y justo antes de entregarlo.
+    let grow = sb.path("Docs/b.bin");
+    let _hook = crate::engine::test_hooks::install_before_shell(sb.long("Docs"), move |p| {
+        if p.ends_with("a.bin") {
+            fs::write(&grow, vec![1u8; 1 << 20]).unwrap();
+        }
+    });
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    let st = |n: &str| {
+        rep.items
+            .iter()
+            .find(|i| i.path.ends_with(n))
+            .unwrap()
+            .status
+    };
+    assert_eq!(
+        st("a.bin"),
+        ItemStatus::Recycled,
+        "se procesó antes del veto"
+    );
+    assert_eq!(
+        st("b.bin"),
+        ItemStatus::Root(crate::engine::RootStatus::Changed),
+        "el que creció se veta: cambió desde la confirmación"
+    );
+    assert_eq!(
+        st("c.bin"),
+        ItemStatus::NotRecycled(RecycleFail::Stopped),
+        "el veto corta el resto del lote"
+    );
+    assert_eq!(
+        fake.names(),
+        vec![vec!["a.bin", "b.bin", "c.bin"]],
+        "una sola operación (la comprobación es del receptor)"
+    );
+    assert!(sb.path("Docs/b.bin").exists() && sb.path("Docs/c.bin").exists());
+    assert!(rep.recycle_stopped);
+    assert_eq!(rep.stop_reason, Some(StopReason::Changed));
+    assert!(rep.totals.changed >= 1);
+    assert_eq!(rep.deleted_unexpectedly, 0);
+    assert_eq!(
+        rep.shell_error, None,
+        "el E_ABORT del vetado es del receptor: no es un error de Windows"
+    );
+}
+
+/// A2-B1: el mismo caso con la shell REAL (solo cosas propias, tras `TESELA_REAL_RECYCLE_TESTS=1`): el receptor de verdad
+/// vuelve a medir por la guarda en `PreDeleteItem` y veta con `E_ABORT` al archivo que creció; el anterior llega a la Papelera
+/// y el siguiente no se procesa.
+#[test]
+fn con_la_shell_real_un_archivo_que_crece_en_el_lote_se_veta() {
+    let _lock = bin_lock();
+    if !bin_usable() {
+        return;
+    }
+    let before = ids();
+    let sb = Sandbox::new();
+    let _guard = BinGuard { uuid: sb.uuid() };
+    let c = cleaner_for(&sb);
+    let room =
+        crate::exec::RealShell.bin_room(&crate::volume::volume_root(&sb.long_root()).unwrap());
+    let Some(max) = room.max else {
+        eprintln!("la Papelera de este volumen no tiene capacidad configurada: la prueba se salta");
+        return;
+    };
+    // Con la capacidad real: tres archivos de 1 000 bytes caben juntos (la ocupación real puede dejar poco sitio: se salta).
+    if room
+        .used
+        .is_none_or(|u| max / 10 * 9 < u.saturating_add(1 << 20))
+    {
+        eprintln!("la Papelera de este volumen no tiene sitio de sobra: la prueba se salta");
+        return;
+    }
+    for n in ["a.txt", "b.txt", "c.txt"] {
+        sb.write(&format!("Docs/{n}"), 1_000);
+    }
+    let mut b = Basket::new();
+    for n in ["a.txt", "b.txt", "c.txt"] {
+        b.add_path(sb.long(&format!("Docs/{n}")), c.protection());
+    }
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 3, "{:?}", plan.rejected);
+    let grow = sb.path("Docs/b.txt");
+    let _hook = crate::engine::test_hooks::install_before_shell(sb.long("Docs"), move |p| {
+        if p.ends_with("a.txt") {
+            fs::write(&grow, vec![1u8; 1 << 20]).unwrap();
+        }
+    });
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    let st = |n: &str| {
+        rep.items
+            .iter()
+            .find(|i| i.path.ends_with(n))
+            .unwrap()
+            .status
+    };
+    assert_eq!(st("a.txt"), ItemStatus::Recycled, "{rep:?}");
+    assert_eq!(
+        st("b.txt"),
+        ItemStatus::Root(crate::engine::RootStatus::Changed)
+    );
+    assert_eq!(st("c.txt"), ItemStatus::NotRecycled(RecycleFail::Stopped));
+    assert!(sb.path("Docs/b.txt").exists() && sb.path("Docs/c.txt").exists());
+    assert_eq!(rep.stop_reason, Some(StopReason::Changed));
+    // Un veto del receptor no es un error de Windows: la shell avisa del vetado con `E_ABORT` (el del propio receptor) y eso no
+    // debe aparecer como "la Papelera devolvió un error".
+    assert_eq!(rep.shell_error, None, "{rep:?}");
+    let mine: Vec<BinItem> = recycle::list_bin()
+        .unwrap()
+        .into_iter()
+        .filter(|i| is_mine(i, &sb.uuid()))
+        .collect();
+    assert_eq!(mine.len(), 1, "solo a.txt llegó a la Papelera: {mine:?}");
+    recycle::purge_items(&mine, &AtomicBool::new(false)).unwrap();
+    assert_eq!(ids(), before);
 }
 
 /// A-B1: lo contrario. Si lo que se mide ahora es MENOS que lo medido antes, manda el tamaño nuevo y se actualiza la última
@@ -3731,7 +4044,8 @@ fn el_proceso_de_pruebas_no_esta_elevado_segun_el_token() {
     );
 }
 
-/// A-B2: una medida incompleta es siempre "NO intacto" en el juicio R6 (`dir_untouched`), y `remeasure` la distingue de una
+/// A-B2 + A2-m1: una medida incompleta no demuestra NADA en el juicio R6 (`dir_check`: ni intacto ni cambiado, `Unknown`), y
+/// `remeasure` la distingue de una
 /// completa por cualquiera de sus causas: una subcarpeta que no se puede listar, un hijo que desaparece entre el listado y la
 /// apertura, o la cancelación a mitad del recorrido.
 #[test]
@@ -3752,15 +4066,24 @@ fn una_medida_incompleta_nunca_demuestra_que_nada_cambio() {
     };
     c.fresh_size(it, &mut p, &mut st, &cancel()).unwrap();
     assert!(p.snapshot.is_some());
-    assert!(c.dir_untouched(it, &p, &cancel()), "sin cambios: intacto");
+    assert_eq!(
+        c.dir_check(it, &p, &cancel()),
+        DirCheck::Intact,
+        "sin cambios: intacto"
+    );
     // (1) Una subcarpeta que no se puede listar.
     {
         let _lock = lock_dir(&sb.path("Docs/carpeta/sub"));
         assert!(matches!(c.remeasure(it, &cancel()), Remeasure::Incomplete));
-        assert!(!c.dir_untouched(it, &p, &cancel()));
+        assert_eq!(
+            c.dir_check(it, &p, &cancel()),
+            DirCheck::Unknown,
+            "no se pudo medir entero: no se afirma ni intacto ni perdido"
+        );
     }
-    assert!(
-        c.dir_untouched(it, &p, &cancel()),
+    assert_eq!(
+        c.dir_check(it, &p, &cancel()),
+        DirCheck::Intact,
         "soltada, vuelve a valer"
     );
     // (2) Un hijo que desaparece justo antes de abrirlo (ya listado).
@@ -3776,7 +4099,68 @@ fn una_medida_incompleta_nunca_demuestra_que_nada_cambio() {
     // (3) Cancelada a mitad: no se acepta como medida.
     let cancelled = Arc::new(AtomicBool::new(true));
     assert!(matches!(c.remeasure(it, &cancelled), Remeasure::Cancelled));
-    assert!(!c.dir_untouched(it, &p, &cancelled));
+    assert_eq!(c.dir_check(it, &p, &cancelled), DirCheck::Unknown);
+    // (4) Una medida COMPLETA que difiere: eso sí es un cambio (se perdió un hijo).
+    fs::remove_file(sb.path("Docs/carpeta/f1.bin")).ok();
+    assert_eq!(c.dir_check(it, &p, &cancel()), DirCheck::Changed);
+    // (5) Sin medida anterior con la que comparar, tampoco se afirma nada.
+    p.snapshot = None;
+    assert_eq!(c.dir_check(it, &p, &cancel()), DirCheck::Unknown);
+}
+
+/// A2-m1 (repetición de Astra): la shell simulada devuelve acceso denegado SIN tocar nada y un bloqueo exclusivo impide volver a
+/// leer una subcarpeta al comprobar el contenido. Antes ese "no se pudo comprobar" se contaba como pérdida confirmada
+/// (`DeletedUnexpectedly`, "se eliminó definitivamente"); ahora es `Unverified` ("no se pudo comprobar qué pasó"): no se afirma
+/// ninguna pérdida, y el envío se detiene igualmente (lo siguiente no se toca).
+#[test]
+fn una_comprobacion_que_no_se_pudo_hacer_no_se_cuenta_como_perdida_y_detiene_el_envio() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(100_000), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    sb.write("Docs/deniega-d1/f0.bin", 1_000);
+    sb.write("Docs/deniega-d1/sub/dentro.bin", 1_000);
+    sb.write("Docs/d2/y.bin", 1_000);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/deniega-d1"), c.protection());
+    b.add_path(sb.long("Docs/d2"), c.protection());
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 2, "{:?}", plan.rejected);
+    // El bloqueo llega JUSTO antes de entregar la carpeta a la shell: después de medirla entera (si no, `fresh_size` ya no
+    // la enviaría) y antes de la comprobación posterior.
+    let sub = sb.path("Docs/deniega-d1/sub");
+    let lock: Arc<Mutex<Option<fs::File>>> = Arc::new(Mutex::new(None));
+    let l2 = lock.clone();
+    let _hook = crate::engine::test_hooks::install_before_shell(sb.long("Docs"), move |p| {
+        if p.ends_with("deniega-d1") {
+            *l2.lock().unwrap() = Some(lock_dir(&sub));
+        }
+    });
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    let st = |n: &str| {
+        rep.items
+            .iter()
+            .find(|i| i.path.ends_with(n))
+            .unwrap()
+            .status
+    };
+    assert_eq!(
+        st("deniega-d1"),
+        ItemStatus::Unverified,
+        "no se afirma la pérdida"
+    );
+    assert_eq!(rep.deleted_unexpectedly, 0);
+    assert_eq!(rep.unverified, 1);
+    assert!(rep.recycle_stopped, "pero el envío se detiene");
+    assert_eq!(rep.stop_reason, Some(StopReason::Unverified));
+    assert_eq!(st("d2"), ItemStatus::NotRecycled(RecycleFail::Stopped));
+    assert_eq!(
+        fake.names(),
+        vec![vec!["deniega-d1"]],
+        "d2 no llegó a la shell"
+    );
+    assert!(sb.path("Docs/d2/y.bin").exists());
+    assert_eq!(sb.count_entries("Docs/deniega-d1"), 2, "sigue entera");
+    drop(lock.lock().unwrap().take());
 }
 
 /// Un error de la shell o de COM al enviar consta en el registro local (con su HRESULT) y en el informe (para el resumen);
@@ -3936,7 +4320,7 @@ fn pending(identity: FileIdentity, path: &Path, held_path: &Path) -> Pending {
         path: path.to_path_buf(),
         identity,
         links: 1,
-        held: sys::open_path_for_rename(held_path).unwrap(),
+        held: Arc::new(sys::open_path_for_rename(held_path).unwrap()),
         size: 0,
         last: None,
         snapshot: None,

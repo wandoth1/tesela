@@ -417,15 +417,15 @@ sum-shared =
     }
 sum-unexpected =
     { $n ->
-        [one] { $count } item was deleted permanently (all or part of it) instead of going to the Recycle Bin, for example because it did not fit.
-       *[other] { $count } items were deleted permanently (all or part of them) instead of going to the Recycle Bin, for example because they did not fit.
+        [one] { $count } item was deleted permanently, or its contents changed or lost a part, while Windows was processing it, instead of going to the Recycle Bin (for example because it did not fit). Check the cleanup log and the Recycle Bin.
+       *[other] { $count } items were deleted permanently, or their contents changed or lost a part, while Windows was processing them, instead of going to the Recycle Bin (for example because they did not fit). Check the cleanup log and the Recycle Bin.
     }
 sum-shell-error = The Windows Recycle Bin returned an error (0x{ $code }). Each item that could not be sent was checked: whatever is still intact in place was not touched and the rest is counted separately.
 sum-recycle-stopped =
     { $n ->
-        [0] Sending to the Recycle Bin was stopped: Windows permanently deleted an item (or part of it). As a precaution nothing else was touched.
-        [one] Sending to the Recycle Bin was stopped: Windows permanently deleted an item (or part of it). As a precaution { $count } more item was not sent: it was not touched.
-       *[other] Sending to the Recycle Bin was stopped: Windows permanently deleted an item (or part of it). As a precaution { $count } more items were not sent: they were not touched.
+        [0] Sending to the Recycle Bin was stopped: Windows permanently deleted an item, or its contents changed or lost a part, while processing it. As a precaution nothing else was touched.
+        [one] Sending to the Recycle Bin was stopped: Windows permanently deleted an item, or its contents changed or lost a part, while processing it. As a precaution { $count } more item was not sent: it was not touched.
+       *[other] Sending to the Recycle Bin was stopped: Windows permanently deleted an item, or its contents changed or lost a part, while processing it. As a precaution { $count } more items were not sent: they were not touched.
     }
 sum-recycle-stopped-unverified =
     { $n ->
@@ -457,8 +457,8 @@ sum-recycled-other =
     }
 sum-unverified =
     { $n ->
-        [one] It could not be checked what happened to { $count } item: look for it in the Recycle Bin.
-       *[other] It could not be checked what happened to { $count } items: look for them in the Recycle Bin.
+        [one] It could not be checked what happened to { $count } item: check it in its original place and in the Recycle Bin.
+       *[other] It could not be checked what happened to { $count } items: check them in their original place and in the Recycle Bin.
     }
 sum-not-recycled =
     { $n ->

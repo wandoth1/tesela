@@ -418,15 +418,15 @@ sum-shared =
     }
 sum-unexpected =
     { $n ->
-        [one] { $count } elemento se eliminó definitivamente (entero o en parte) en vez de ir a la Papelera, por ejemplo porque no cabía.
-       *[other] { $count } elementos se eliminaron definitivamente (enteros o en parte) en vez de ir a la Papelera, por ejemplo porque no cabían.
+        [one] { $count } elemento se eliminó definitivamente, o su contenido cambió o perdió una parte, mientras Windows lo procesaba, en vez de ir a la Papelera (por ejemplo porque no cabía). Revisa el registro de la limpieza y la Papelera.
+       *[other] { $count } elementos se eliminaron definitivamente, o su contenido cambió o perdió una parte, mientras Windows los procesaba, en vez de ir a la Papelera (por ejemplo porque no cabían). Revisa el registro de la limpieza y la Papelera.
     }
 sum-shell-error = La Papelera de Windows devolvió un error (0x{ $code }). Cada elemento que no se pudo enviar se comprobó: lo que sigue intacto en su sitio no se tocó y el resto se cuenta aparte.
 sum-recycle-stopped =
     { $n ->
-        [0] Se detuvo el envío a la Papelera: Windows eliminó definitivamente un elemento (o parte de él). Por precaución no se tocó nada más.
-        [one] Se detuvo el envío a la Papelera: Windows eliminó definitivamente un elemento (o parte de él). Por precaución no se envió { $count } elemento más: no se tocó.
-       *[other] Se detuvo el envío a la Papelera: Windows eliminó definitivamente un elemento (o parte de él). Por precaución no se enviaron { $count } elementos más: no se tocaron.
+        [0] Se detuvo el envío a la Papelera: Windows eliminó definitivamente un elemento, o su contenido cambió o perdió una parte, al procesarlo. Por precaución no se tocó nada más.
+        [one] Se detuvo el envío a la Papelera: Windows eliminó definitivamente un elemento, o su contenido cambió o perdió una parte, al procesarlo. Por precaución no se envió { $count } elemento más: no se tocó.
+       *[other] Se detuvo el envío a la Papelera: Windows eliminó definitivamente un elemento, o su contenido cambió o perdió una parte, al procesarlo. Por precaución no se enviaron { $count } elementos más: no se tocaron.
     }
 sum-recycle-stopped-unverified =
     { $n ->
@@ -458,8 +458,8 @@ sum-recycled-other =
     }
 sum-unverified =
     { $n ->
-        [one] No se pudo comprobar qué pasó con { $count } elemento: míralo en la Papelera.
-       *[other] No se pudo comprobar qué pasó con { $count } elementos: míralos en la Papelera.
+        [one] No se pudo comprobar qué pasó con { $count } elemento: revísalo en su sitio y en la Papelera.
+       *[other] No se pudo comprobar qué pasó con { $count } elementos: revísalos en su sitio y en la Papelera.
     }
 sum-not-recycled =
     { $n ->

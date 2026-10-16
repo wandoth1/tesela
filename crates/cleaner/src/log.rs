@@ -10,6 +10,15 @@
 //! como números (no por el texto del nombre: un sufijo `-1` ordena ANTES que el nombre base y la poda podía borrar el registro
 //! recién creado), nunca borra el registro que acaba de crear y, tras crearlo, comprueba que existe.
 //!
+//! # El registro abierto no se puede borrar desde fuera (A2-M2)
+//! El archivo se abre SIN `FILE_SHARE_DELETE` (`FILE_SHARE_READ | FILE_SHARE_WRITE`): mientras un escritor lo tiene abierto,
+//! nadie puede borrarlo ni renombrarlo (error de compartición), ni siquiera la poda de OTRO escritor. Antes, con la
+//! compartición por defecto de Rust (que incluye el borrado), una ejecución con una fecha anterior podía podar el registro
+//! de otra que seguía activa: la ruta desaparecía y el escritor seguía aceptando escrituras con `ok()` verdadero, es decir,
+//! una limpieza "registrada" en un archivo que ya no existía. La poda tolera ese fallo y se salta el archivo (un registro en
+//! uso se conserva aunque eso pase transitoriamente del límite); [`LogWriter::discard`] CIERRA el handle antes de borrar. Se
+//! puede leer desde otro handle (`FILE_SHARE_READ`).
+//!
 //! # Retención (m2)
 //! Hay dos clases de registro, con retención PROPIA e independiente: los reales ([`KEEP_LOGS`]) y los de simulación
 //! (`-simulacion`, [`KEEP_SIM_LOGS`]). Al crear su registro, cada ejecución poda SOLO su clase: una limpieza real, los
@@ -45,9 +54,14 @@ use serde::{Deserialize, Serialize};
 use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
+use std::os::windows::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+
+/// `FILE_SHARE_READ | FILE_SHARE_WRITE`: se puede leer (y abrir otro escritor), pero NO borrar ni renombrar mientras el registro
+/// esté abierto (A2-M2).
+const SHARE_READ_WRITE: u32 = 0x1 | 0x2;
 
 /// Registros REALES que se conservan.
 pub const KEEP_LOGS: usize = 30;
@@ -99,6 +113,9 @@ thread_local! {
 /// El archivo del registro. En las pruebas puede fallar a propósito después de `left` bytes.
 enum LogFile {
     Real(File),
+    /// El registro se descartó (A2-M2): el handle ya se cerró para poder borrar el archivo. Escribir da un error (el registro
+    /// ya no existe); volcar no hace nada.
+    Closed,
     #[cfg(test)]
     FailAfter {
         file: File,
@@ -110,6 +127,7 @@ impl Write for LogFile {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         match self {
             LogFile::Real(f) => f.write(buf),
+            LogFile::Closed => Err(std::io::Error::other("el registro se descartó")),
             #[cfg(test)]
             LogFile::FailAfter { file, left } => {
                 if *left == 0 {
@@ -125,6 +143,7 @@ impl Write for LogFile {
     fn flush(&mut self) -> std::io::Result<()> {
         match self {
             LogFile::Real(f) => f.flush(),
+            LogFile::Closed => Ok(()),
             #[cfg(test)]
             LogFile::FailAfter { file, .. } => file.flush(),
         }
@@ -135,6 +154,7 @@ impl LogFile {
     fn sync_all(&self) -> std::io::Result<()> {
         match self {
             LogFile::Real(f) => f.sync_all(),
+            LogFile::Closed => Err(std::io::Error::other("el registro se descartó")),
             #[cfg(test)]
             LogFile::FailAfter { file, .. } => file.sync_all(),
         }
@@ -241,7 +261,13 @@ impl LogWriter {
         let sim = if dry_run { "-simulacion" } else { "" };
         let (path, f) = loop {
             let path = dir.join(format!("limpieza-{stamp}-{n:03}{sim}.jsonl"));
-            match OpenOptions::new().create_new(true).write(true).open(&path) {
+            // Sin `FILE_SHARE_DELETE` (A2-M2): nadie puede borrar ni renombrar el registro mientras esté abierto.
+            match OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .share_mode(SHARE_READ_WRITE)
+                .open(&path)
+            {
                 Ok(f) => break (path, f),
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => n += 1,
                 Err(e) => return Err(e),
@@ -283,11 +309,7 @@ impl LogWriter {
             }
         });
         // Y se comprueba: un registro que no existe no es un registro, y sin registro no se limpia.
-        if !w.path.is_file() {
-            return Err(std::io::Error::other(
-                "el registro recién creado ya no existe",
-            ));
-        }
+        ensure_exists(&w.path)?;
         Ok(w)
     }
 
@@ -344,13 +366,22 @@ impl LogWriter {
 
     /// Borra el archivo del registro: para una ejecución que se rechazó antes de tocar nada (ver el módulo). SOLO si no se
     /// escribió nada de una operación (intención, entrada, `bin-item`, resultado): con algo escrito NO se borra y devuelve
-    /// un error (R2). No hace falta cerrar nada antes: Windows admite borrar un archivo abierto con compartición de borrado.
+    /// un error (R2). Primero CIERRA el handle (A2-M2: el archivo se abrió sin `FILE_SHARE_DELETE`, así que no se puede borrar
+    /// mientras siga abierto) y después lo borra; tras descartar, escribir en este registro da un error.
     pub(crate) fn discard(&self) -> std::io::Result<()> {
         if self.operation_written.load(Ordering::SeqCst) {
             return Err(std::io::Error::other(
                 "el registro ya contiene operaciones: no se descarta",
             ));
         }
+        {
+            let mut g = self.out.lock().unwrap_or_else(|e| e.into_inner());
+            // Se suelta el escritor anterior (vuelca lo pendiente y cierra el handle) y se deja uno cerrado.
+            drop(std::mem::replace(&mut *g, BufWriter::new(LogFile::Closed)));
+        }
+        // H6a: un escritor descartado ya no es un registro válido: `ok()` lo dice desde ya (sin esperar a una escritura que
+        // falle). No se activa la cancelación del ejecutor: descartar es justo lo que hace al rechazar una ejecución.
+        self.failed.store(true, Ordering::SeqCst);
         match fs::remove_file(&self.path) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
             _ => Ok(()),
@@ -581,8 +612,23 @@ fn prune(dir: &Path, sim: bool, keep: usize, active: Option<&Path>) {
     };
     if logs.len() > allowed {
         for old in &logs[..logs.len() - allowed] {
+            // A2-M2: un registro que OTRO escritor tiene abierto no se puede borrar (se abre sin `FILE_SHARE_DELETE`): el
+            // error de compartición o de acceso se tolera y se salta ese archivo, que se podará cuando ya no esté en uso.
+            // Cualquier otro error tampoco detiene la poda.
             let _ = fs::remove_file(old);
         }
+    }
+}
+
+/// El registro recién creado tiene que seguir existiendo: un registro que no existe no es un registro. Desde A2-M2 el archivo
+/// abierto no se puede borrar desde fuera, pero se conserva la comprobación (defensa en profundidad).
+fn ensure_exists(path: &Path) -> std::io::Result<()> {
+    if path.is_file() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(
+            "el registro recién creado ya no existe",
+        ))
     }
 }
 
@@ -761,14 +807,15 @@ mod tests {
         let sim = LogWriter::create(&dir, true).unwrap();
         assert!(sim.path().exists());
         assert_eq!(count(&dir, false), 31, "la simulación no toca los reales");
+        drop(sim);
         // 40 simulaciones seguidas (en el mismo segundo los nombres llevan sufijo): los reales intactos y las
-        // simulaciones, podadas entre sí.
-        let sims: Vec<LogWriter> = (0..40)
-            .map(|_| LogWriter::create(&dir, true).unwrap())
-            .collect();
+        // simulaciones, podadas entre sí. Cada una termina (se cierra) antes de la siguiente, como en la realidad: desde
+        // A2-M2 un registro ABIERTO no lo poda otro escritor.
+        for _ in 0..40 {
+            drop(LogWriter::create(&dir, true).unwrap());
+        }
         assert_eq!(count(&dir, false), 31);
         assert_eq!(count(&dir, true), KEEP_SIM_LOGS);
-        drop(sims);
         // Una limpieza real poda SOLO los reales (a `KEEP_LOGS`) y deja las simulaciones como están.
         let _real = LogWriter::create(&dir, false).unwrap();
         assert_eq!(count(&dir, false), KEEP_LOGS);
@@ -986,22 +1033,162 @@ mod tests {
         );
     }
 
-    /// s-4: si el registro recién creado desaparece entre la poda y la comprobación, `create` falla (sin registro no se
-    /// limpia) en vez de devolver un escritor desvinculado con `ok()` a `true`.
+    /// s-4 + A2-M2: entre la poda y la comprobación nadie puede borrar el registro recién creado: está abierto sin
+    /// `FILE_SHARE_DELETE`, así que el intento (el gancho de la prueba) falla con un error de compartición y `create` devuelve
+    /// un escritor cuyo archivo sigue ahí. (Antes el gancho lo borraba y `create` fallaba por la comprobación; esa comprobación
+    /// se conserva como defensa en profundidad: ver `ensure_exists`.)
     #[test]
-    fn un_registro_que_desaparece_tras_crearlo_es_un_error() {
+    fn un_registro_recien_creado_no_se_puede_borrar_antes_de_la_comprobacion() {
         let sb = Sandbox::new();
         let dir = sb.mkdir("Tesela");
+        let tried = std::rc::Rc::new(std::cell::Cell::new(None::<i32>));
+        let t2 = tried.clone();
         TEST_AFTER_PRUNE.with(|h| {
-            *h.borrow_mut() = Some(Box::new(|p: &Path| {
-                let _ = fs::remove_file(p);
+            *h.borrow_mut() = Some(Box::new(move |p: &Path| {
+                t2.set(Some(
+                    fs::remove_file(p)
+                        .err()
+                        .and_then(|e| e.raw_os_error())
+                        .unwrap_or(0),
+                ));
             }));
         });
         let r = LogWriter::create(&dir, false);
         TEST_AFTER_PRUNE.with(|h| *h.borrow_mut() = None);
-        assert!(r.is_err(), "sin registro no se limpia");
-        // Sin el gancho, el mismo `create` funciona.
-        assert!(LogWriter::create(&dir, false).unwrap().path().is_file());
+        let w = r.expect("el registro sigue existiendo");
+        assert!(w.path().is_file() && w.ok());
+        assert_eq!(
+            tried.get(),
+            Some(32),
+            "borrarlo da ERROR_SHARING_VIOLATION (el gancho llegó a correr)"
+        );
+    }
+
+    /// A2-M2: la comprobación de existencia sigue ahí (defensa en profundidad): un registro que no existe es un error.
+    #[test]
+    fn la_comprobacion_de_existencia_falla_con_un_registro_que_no_existe() {
+        let sb = Sandbox::new();
+        let dir = sb.mkdir("Tesela");
+        let w = LogWriter::create(&dir, false).unwrap();
+        assert!(ensure_exists(w.path()).is_ok());
+        assert!(ensure_exists(&dir.join("limpieza-20000101-000000-001.jsonl")).is_err());
+    }
+
+    /// Un nombre de registro con fecha `unix` y secuencia 001.
+    fn log_name_at(unix: u64) -> String {
+        let (y, mo, d, h, mi, s) = utc_parts(unix);
+        format!("limpieza-{y:04}{mo:02}{d:02}-{h:02}{mi:02}{s:02}-001.jsonl")
+    }
+
+    /// A2-M2 (blocker de la auditoría externa), la repetición de Astra: 29 registros con fecha futura; el escritor A abre el
+    /// suyo (la más antigua de las futuras) y escribe una intención; el escritor B abre con una fecha ANTERIOR y su poda ve a
+    /// A como el más antiguo de los que sobran. Antes lo borraba: la ruta de A desaparecía mientras A seguía aceptando
+    /// escrituras con `ok()` verdadero. Ahora A se abre sin `FILE_SHARE_DELETE`: la poda de B falla al borrarlo, lo salta, y A
+    /// sigue siendo un registro válido. Cuando A termina (se cierra), la poda siguiente ya puede retirarlo.
+    #[test]
+    fn un_registro_abierto_no_lo_borra_la_poda_de_otro_escritor() {
+        let sb = Sandbox::new();
+        let dir = sb.mkdir("Tesela");
+        const FUT: u64 = 1_900_000_000;
+        const NOW: u64 = 1_760_000_000;
+        for k in 1..=29u64 {
+            fs::write(dir.join(log_name_at(FUT + k * 86_400)), b"{}").unwrap();
+        }
+        let a = LogWriter::create_at(&dir, false, LogFile::Real, FUT).unwrap();
+        a.write_intent("delete-begin", &[PathBuf::from("primera")])
+            .unwrap();
+        let a_path = a.path().to_path_buf();
+        // B abre con una fecha anterior: su poda ve 30 registros ajenos (los 29 y A), de los que sobra uno: A, el más antiguo.
+        let b = LogWriter::create_at(&dir, false, LogFile::Real, NOW).unwrap();
+        assert!(a_path.is_file(), "la poda de B no borró el registro de A");
+        assert!(a.ok(), "A sigue siendo un registro válido");
+        a.write_intent("recycle-begin", &[PathBuf::from("segunda")])
+            .unwrap();
+        a.flush();
+        let text = fs::read_to_string(&a_path).unwrap();
+        assert!(
+            text.contains("primera") && text.contains("segunda"),
+            "A sigue escribiendo en SU archivo: {text}"
+        );
+        assert!(b.path().is_file() && b.ok());
+        assert_eq!(real_logs(&dir).len(), 29 + 2, "los 29, A y B");
+        // Cuando A termina, un tercer escritor sí lo poda (B, que sigue abierto, se salta; A, ya cerrado, se borra).
+        drop(a);
+        let c = LogWriter::create_at(&dir, false, LogFile::Real, NOW + 1).unwrap();
+        assert!(!a_path.exists(), "ya cerrado, la retención lo retira");
+        assert!(b.path().is_file() && c.path().is_file());
+    }
+
+    /// A2-M2: un registro abierto se puede LEER desde otro handle (`FILE_SHARE_READ`: la interfaz y las pruebas lo hacen) pero
+    /// no se puede borrar ni renombrar mientras esté abierto.
+    #[test]
+    fn un_registro_abierto_se_lee_pero_no_se_borra_ni_se_renombra() {
+        let sb = Sandbox::new();
+        let dir = sb.mkdir("Tesela");
+        let w = LogWriter::create(&dir, false).unwrap();
+        w.write_intent("delete-begin", &[PathBuf::from("x")])
+            .unwrap();
+        assert!(
+            fs::read_to_string(w.path())
+                .unwrap()
+                .contains("delete-begin")
+        );
+        let code = |e: std::io::Error| e.raw_os_error();
+        assert_eq!(code(fs::remove_file(w.path()).unwrap_err()), Some(32));
+        assert_eq!(
+            code(fs::rename(w.path(), dir.join("otro.jsonl")).unwrap_err()),
+            Some(32)
+        );
+        assert!(w.path().is_file() && w.ok());
+        // Cerrado, vuelve a poder borrarse.
+        let path = w.path().to_path_buf();
+        drop(w);
+        fs::remove_file(&path).unwrap();
+    }
+
+    /// A2-M2: tras `discard` el registro ya no existe y el escritor queda cerrado: escribir en él da un error (el archivo se
+    /// borró; no hay un escritor desvinculado con `ok()` verdadero que acepte escrituras). Con otro handle de LECTURA abierto
+    /// (compartiendo el borrado, como `File::open`) el descarte funciona igual.
+    #[test]
+    fn descartar_cierra_el_handle_antes_de_borrar_y_el_escritor_queda_cerrado() {
+        let sb = Sandbox::new();
+        let dir = sb.mkdir("Tesela");
+        let w = LogWriter::create(&dir, false).unwrap();
+        let path = w.path().to_path_buf();
+        let reader = File::open(&path).unwrap();
+        assert!(w.discard().is_ok());
+        assert!(!w.ok(), "descartado: ya no es un registro válido");
+        drop(reader);
+        assert!(!path.exists(), "descartado");
+        // Escribir tras descartar no puede pasar por bueno.
+        w.write_rejected(Path::new("x"), "ReparseAncestor");
+        assert!(w.flush_checked().is_err());
+        assert!(
+            !w.ok(),
+            "un escritor descartado ya no es un registro válido"
+        );
+        assert!(!path.exists(), "y no reaparece");
+    }
+
+    /// A2-M2: "Borrar el historial" no puede borrar un registro que está abierto (la limpieza en curso lo necesita): lo salta
+    /// (devuelve el error de compartición, que la interfaz ignora) y borra todo lo demás.
+    #[test]
+    fn borrar_el_historial_no_borra_el_registro_abierto() {
+        let sb = Sandbox::new();
+        let dir = sb.mkdir("Tesela");
+        fs::write(dir.join("limpieza-20000101-000000-001.jsonl"), b"{}").unwrap();
+        fs::write(dir.join("history.jsonl"), b"{}").unwrap();
+        let w = LogWriter::create(&dir, false).unwrap();
+        let r = history_clear(&dir);
+        assert!(r.is_err(), "el registro abierto no se pudo borrar");
+        assert!(
+            w.path().is_file() && w.ok(),
+            "sigue siendo un registro válido"
+        );
+        assert!(!dir.join("limpieza-20000101-000000-001.jsonl").exists());
+        assert!(!dir.join("history.jsonl").exists());
+        drop(w);
+        assert!(history_clear(&dir).is_ok(), "cerrado, ya se puede borrar");
     }
 
     /// A-M2: `prune` nunca borra el registro activo, aunque ordene el primero, y le reserva una plaza.
