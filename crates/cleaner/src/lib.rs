@@ -1,6 +1,7 @@
 //! Limpieza de Tesela (PLAN.md §2.5 a §2.7 y §3.7).
 #![cfg(windows)]
 
+pub mod engine;
 pub mod paths;
 pub mod protect;
 pub mod recycle;

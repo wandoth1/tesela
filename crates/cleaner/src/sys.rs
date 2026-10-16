@@ -764,10 +764,7 @@ mod tests {
             open_child_for_query(&dh, &w(""), Expect::File).err(),
             Some(ERROR_INVALID_PARAMETER)
         );
-        assert_eq!(
-            open_child_for_query(&dh, &w(".."), Expect::Dir).is_err(),
-            true
-        );
+        assert!(open_child_for_query(&dh, &w(".."), Expect::Dir).is_err());
     }
 
     #[test]

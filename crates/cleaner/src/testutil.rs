@@ -122,6 +122,11 @@ impl Sandbox {
         self.junctions.push(link);
     }
 
+    /// Registra un junction creado por fuera (p. ej. dentro de un gancho de carrera) para quitarlo como enlace al soltar.
+    pub fn register_junction(&mut self, link_rel: &str) {
+        self.junctions.push(self.path(link_rel));
+    }
+
     /// Quita un junction creado con [`Sandbox::junction`] (solo el enlace; el destino queda intacto).
     pub fn remove_junction(&mut self, link_rel: &str) {
         let link = self.path(link_rel);
