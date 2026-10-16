@@ -228,6 +228,27 @@ try {
             Check "$a con condicion en $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*$a en $t lleva la condicion*")
         }
     }
+    # FindRelatedProducts ANTES de LaunchConditions en las dos secuencias (si no, la propiedad esta vacia cuando se evalua la
+    # condicion y el bloqueo no hace nada, aunque todas las filas esten).
+    foreach ($t in 'InstallExecuteSequence', 'InstallUISequence') {
+        $path = New-Mutant "seq-order-frp-after-$t" @("UPDATE ``$t`` SET ``Sequence``=200 WHERE ``Action``='FindRelatedProducts'")
+        Check "FindRelatedProducts (200) despues de LaunchConditions (100) en $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*FindRelatedProducts*antes de LaunchConditions*$t*")
+        $path = New-Mutant "seq-order-lc-before-$t" @("UPDATE ``$t`` SET ``Sequence``=10 WHERE ``Action``='LaunchConditions'")
+        Check "LaunchConditions (10) antes de FindRelatedProducts (25) en $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*FindRelatedProducts*antes de LaunchConditions*$t*")
+        $path = New-Mutant "seq-order-equal-$t" @("UPDATE ``$t`` SET ``Sequence``=100 WHERE ``Action``='FindRelatedProducts'")
+        Check "FindRelatedProducts y LaunchConditions con el mismo numero de secuencia en $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*FindRelatedProducts*antes de LaunchConditions*$t*")
+    }
+
+    # Identificadores y propiedades DISTINGUEN mayusculas (Windows Installer lo hace asi).
+    $path = New-Mutant 'case-parent' @("UPDATE ``Directory`` SET ``Directory_Parent``='programsfolder' WHERE ``Directory``='INSTALLFOLDER'")
+    Check 'Directory_Parent en minusculas (programsfolder)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*carpeta INSTALLFOLDER*Directory_Parent*')
+    $path = New-Mutant 'case-actionproperty' @($delDown, (Down-Row $version '1033' 2 'wix_downgrade_detected'))
+    Check 'ActionProperty del bloqueo en minusculas (wix_downgrade_detected)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*falta la fila de Upgrade*WIX_DOWNGRADE_DETECTED*')
+    $path = New-Mutant 'case-launchcondition' @("DELETE FROM ``LaunchCondition``", "INSERT INTO ``LaunchCondition`` (``Condition``, ``Description``) VALUES ('NOT wix_downgrade_detected', '$lcMsg')")
+    Check 'LaunchCondition con la propiedad en minusculas' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*UNA LaunchCondition*')
+    $path = New-Mutant 'case-secure' @("UPDATE ``Property`` SET ``Value``='wix_upgrade_detected;wix_downgrade_detected' WHERE ``Property``='SecureCustomProperties'")
+    Check 'SecureCustomProperties en minusculas' ((Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*SecureCustomProperties no incluye WIX_DOWNGRADE_DETECTED*') -and (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*SecureCustomProperties no incluye WIX_UPGRADE_DETECTED*'))
+
     $path = New-Mutant 'secure-props' @("UPDATE ``Property`` SET ``Value``='WIX_UPGRADE_DETECTED' WHERE ``Property``='SecureCustomProperties'")
     Check 'SecureCustomProperties sin WIX_DOWNGRADE_DETECTED' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*SecureCustomProperties no incluye WIX_DOWNGRADE_DETECTED*')
 
