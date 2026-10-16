@@ -1183,6 +1183,66 @@ fn un_junction_por_encima_de_temp_no_vuelve_borrable_lo_protegido() {
     assert!(sb.path("Prot/T/Temp/sub/y.tmp").exists());
 }
 
+/// H1: la aprobación abre la raíz para listarla DESPUÉS de comprobar la cadena. Si en esa ventana un ancestro se cambia
+/// por un junction hacia otra carpeta del usuario (no denegada), lo que se abriría sería otro objeto, y la identidad
+/// capturada ya sería la equivocada. Se compara con la identidad que vio el recorrido y con la ruta resuelta: se rechaza.
+#[test]
+fn un_ancestro_cambiado_entre_la_cadena_y_la_apertura_se_rechaza() {
+    let mut sb = Sandbox::new();
+    sb.write_aged("Anc/Temp/bueno.tmp", 1_000, 72);
+    sb.write_aged("Otra/Temp/ajeno.tmp", 1_000, 72);
+    let roots = roots_with_raw(&sb, sb.long("Local"), Some(sb.path("Anc/Temp")));
+    let c = Cleaner::new(roots);
+    // Justo antes de que la aprobación abra la raíz: `Anc` pasa a ser un junction hacia `Otra`.
+    let (anc, anc_real, otra) = (sb.path("Anc"), sb.path("Anc-real"), sb.path("Otra"));
+    let _hook = crate::engine::test_hooks::install(sb.long("Anc/Temp"), move |_| {
+        if !anc_real.exists() {
+            fs::rename(&anc, &anc_real).unwrap();
+            let out = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&anc)
+                .arg(&otra)
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+        }
+    });
+    let mut b = Basket::new();
+    b.set_category(CategoryId::UserTemp, true);
+    let plan = approve(&c, &b);
+    sb.register_junction("Anc");
+    assert!(
+        plan.items.is_empty(),
+        "se aprobó el objeto equivocado: {:?}",
+        plan.items.iter().map(|i| &i.path).collect::<Vec<_>>()
+    );
+    assert_eq!(plan.rejected.len(), 1, "{:?}", plan.rejected);
+    assert_eq!(plan.rejected[0].reason, RejectReason::ReparseAncestor);
+    assert!(sb.path("Otra/Temp/ajeno.tmp").exists());
+}
+
+/// H1 (pura): misma identidad y misma ruta resuelta, o no es lo que vio la cadena.
+#[test]
+fn chain_matches_exige_la_misma_identidad_y_la_misma_ruta() {
+    use crate::paths::PathKey;
+    let id = |n: u128| FileIdentity {
+        volume_serial: 7,
+        file_id: n,
+    };
+    let root = Path::new(r"C:\Users\<usuario>\AppData\Local\Temp");
+    let key = PathKey::new(root);
+    assert!(crate::plan::chain_matches(id(1), root, id(1), &key));
+    assert!(!crate::plan::chain_matches(id(1), root, id(2), &key));
+    let otra = PathKey::new(Path::new(r"C:\Otra\Temp"));
+    assert!(!crate::plan::chain_matches(id(1), root, id(1), &otra));
+    // El volumen también cuenta.
+    let otro_vol = FileIdentity {
+        volume_serial: 8,
+        file_id: 1,
+    };
+    assert!(!crate::plan::chain_matches(id(1), root, otro_vol, &key));
+}
+
 /// B1: el caso benigno: raíces reales, sin reparse points, siguen funcionando y llevan la zona declarada.
 #[test]
 fn las_raices_sin_reparse_points_siguen_siendo_categorias() {

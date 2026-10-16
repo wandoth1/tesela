@@ -12,7 +12,7 @@
 use crate::paths::{PathKey, canonical_path};
 use crate::protect::{Exempt, Protection, ProtectionRoots};
 use crate::rules::CategoryId;
-use crate::sys;
+use crate::sys::{self, FileIdentity};
 use std::path::{Path, PathBuf};
 use tesela_scanner::{BrowserRoots, KnownKind, browser_cache_dirs, known_folder};
 use windows_sys::Win32::UI::Shell::{
@@ -59,6 +59,9 @@ pub enum RootRejection {
 pub struct VerifiedRoot {
     /// Ruta canónica larga, resuelta por el handle del último componente.
     pub path: PathBuf,
+    /// Identidad (volumen + FileId) del objeto que vio el recorrido de la cadena. La aprobación la compara con la del
+    /// handle con el que abre la raíz para listarla: si difieren, algo cambió entre los dos pasos (H1).
+    pub identity: FileIdentity,
     /// La zona denegada en cuyo interior vive la raíz (ver [`Exempt`]).
     pub zone: Option<PathBuf>,
 }
@@ -73,19 +76,20 @@ pub struct RootCheck {
 
 /// Capa 1 de B1: acepta `raw` solo si TODA la cadena, desde la raíz del volumen y componente a componente, está libre de
 /// reparse points (ver [`sys::open_reparse_free_dir`]) y la ruta que da el handle del último coincide con la canónica.
-/// Devuelve la ruta canónica.
-pub(crate) fn verify_chain(raw: &Path) -> Result<PathBuf, RootRejection> {
+/// Devuelve la ruta canónica y la identidad del último componente.
+pub(crate) fn verify_chain(raw: &Path) -> Result<(PathBuf, FileIdentity), RootRejection> {
     let h = sys::open_reparse_free_dir(raw).map_err(|e| match e {
         sys::ChainError::Reparse { component } => RootRejection::ReparseInChain { component },
         sys::ChainError::BadPath => RootRejection::Os(ERROR_BAD_PATHNAME),
         sys::ChainError::Os(c) => RootRejection::Os(c),
     })?;
     let canonical = sys::final_path(&h).map_err(RootRejection::Os)?;
+    let identity = sys::meta(&h).map_err(RootRejection::Os)?.identity;
     // `canonical_path` abre por ruta: si no da el mismo sitio que el handle recorrido, algo cambió entre medias.
     if canon(raw).is_none_or(|c| PathKey::new(&c) != PathKey::new(&canonical)) {
         return Err(RootRejection::NotCanonical);
     }
-    Ok(canonical)
+    Ok((canonical, identity))
 }
 
 /// `ERROR_BAD_PATHNAME`.
@@ -139,11 +143,11 @@ impl Roots {
         // %TEMP%: solo si su cadena (tal como la da Windows, SIN canonicalizar) no tiene reparse points y, ya
         // canonicalizada, es %LOCALAPPDATA%\Temp o cuelga de ella.
         let user_temp = crate::volume::temp_path()
-            .and_then(|t| verify_chain(&t).ok())
+            .and_then(|t| verify_chain(&t).ok().map(|(p, _)| p))
             .filter(|t| accept_user_temp(t, local.as_deref()));
         let windows_temp = windows
             .as_ref()
-            .and_then(|w| verify_chain(&w.join("Temp")).ok());
+            .and_then(|w| verify_chain(&w.join("Temp")).ok().map(|(p, _)| p));
 
         let mut denied: Vec<PathBuf> = Vec::new();
         denied.extend(windows.iter().cloned());
@@ -259,9 +263,10 @@ impl Roots {
         };
         raws.into_iter()
             .map(|raw| {
-                let result = verify_chain(&raw).map(|path| VerifiedRoot {
+                let result = verify_chain(&raw).map(|(path, identity)| VerifiedRoot {
                     zone: self.zone_of(id, &path),
                     path,
+                    identity,
                 });
                 RootCheck { raw, result }
             })
@@ -380,7 +385,7 @@ mod tests {
         if temp.is_dir() {
             let ok = verify_chain(&temp);
             assert_eq!(
-                ok.as_deref().ok(),
+                ok.as_ref().ok().map(|(p, _)| p.as_path()),
                 Some(canon(&temp).unwrap().as_path()),
                 "{ok:?}"
             );

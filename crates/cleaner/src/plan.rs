@@ -424,8 +424,8 @@ impl Cleaner {
         }
         let Some(dest) = rule.destination else { return };
         for check in self.roots.category_root_checks(id) {
-            let root = match check.result {
-                Ok(v) => v.path,
+            let (root, chain_identity) = match check.result {
+                Ok(v) => (v.path, v.identity),
                 Err(RootRejection::Os(c)) => {
                     plan.rejected.push(Rejected {
                         path: check.raw,
@@ -442,6 +442,8 @@ impl Cleaner {
                     continue;
                 }
             };
+            #[cfg(test)]
+            crate::engine::test_hooks::before_open(&root);
             let h = match sys::open_dir_for_listing(&root) {
                 Ok(h) => h,
                 Err(c) => {
@@ -455,6 +457,16 @@ impl Cleaner {
             let Some((m, canon, key)) = self.verify(&h, &root, plan) else {
                 continue;
             };
+            // H1: lo que se abre para listar es EXACTAMENTE lo que vio el recorrido de la cadena (misma identidad y misma
+            // ruta resuelta). Si un ancestro se cambió por un enlace entre los dos pasos, se rechaza: la identidad que se
+            // capturaría ya sería la del objeto equivocado.
+            if !chain_matches(chain_identity, &root, m.identity, &key) {
+                plan.rejected.push(Rejected {
+                    path: canon,
+                    reason: RejectReason::ReparseAncestor,
+                });
+                continue;
+            }
             // La raíz de una categoría solo vale si es un directorio de verdad y NO está denegada (los ancestros de lo
             // protegido y las carpetas conocidas valen: se limpia su contenido, no ella).
             if !m.is_dir
@@ -731,6 +743,17 @@ struct Candidate {
     volume: Option<PathBuf>,
     links: u32,
     cloud: bool,
+}
+
+/// ¿Es el objeto que abrió la aprobación (`opened`, con su ruta resuelta `key`) el mismo que vio el recorrido de la cadena
+/// (`chain`, con la ruta canónica `root`)? Misma identidad (volumen + FileId) Y misma ruta resuelta.
+pub(crate) fn chain_matches(
+    chain: sys::FileIdentity,
+    root: &Path,
+    opened: sys::FileIdentity,
+    key: &PathKey,
+) -> bool {
+    chain == opened && PathKey::new(root) == *key
 }
 
 fn reason_of(code: u32) -> RejectReason {
