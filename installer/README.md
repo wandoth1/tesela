@@ -39,7 +39,7 @@ completo.
 
 ### Carpeta personalizada
 
-`msiexec /i tesela-<versión>-x64.msi INSTALLFOLDER="C:Mi carpeta\"` instala ahí. La carpeta se **recuerda** en
+`msiexec /i tesela-<versión>-x64.msi INSTALLFOLDER="C:\Mi carpeta\"` instala ahí. La carpeta se **recuerda** en
 `HKCU\Software\Tesela\InstallFolder` (un `RegistryValue` con `[INSTALLFOLDER]`) y se **recupera** con una `RegistrySearch`
 hacia `INSTALLFOLDER`, que corre también al actualizar, reparar y desinstalar: así `msiexec /x` (o Aplicaciones instaladas)
 quita los archivos de la carpeta personalizada sin necesidad de repetir el parámetro, y una actualización se queda donde

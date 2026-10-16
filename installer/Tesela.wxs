@@ -55,7 +55,7 @@
     <Property Id="ARPNOMODIFY" Value="1" />
 
     <!--
-      Carpeta de instalacion personalizada (`msiexec /i ... INSTALLFOLDER="C:Mi carpeta\"`): se RECUERDA en
+      Carpeta de instalacion personalizada (`msiexec /i ... INSTALLFOLDER="C:\Mi carpeta\"`): se RECUERDA en
       HKCU\Software\Tesela\InstallFolder (el valor `[INSTALLFOLDER]` de abajo) y se RECUPERA con esta busqueda de registro,
       que se ejecuta tambien al actualizar, reparar y desinstalar. Sin ella, al desinstalar (o actualizar) sin repetir
       INSTALLFOLDER Windows Installer buscaria la carpeta por defecto y los archivos de la personalizada quedarian
