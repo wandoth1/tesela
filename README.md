@@ -65,7 +65,7 @@ Rust · [egui/eframe](https://github.com/emilk/egui) · [windows-rs](https://git
 
 ---
 
-**English:** Tesela is a visual disk space analyzer and cleaner for Windows, written in Rust. Phase 0 (measurement spike) is done and the MVP is pending; see [docs/PLAN.md](docs/PLAN.md) and [docs/fase-0-conclusiones.md](docs/fase-0-conclusiones.md) (in Spanish).
+**English:** Tesela is a visual disk space analyzer and cleaner for Windows, written in Rust. Phase 0 (measurement spike) is done and the MVP v0.1 is under construction (scan, treemap, and the cleaner with handle-based safe deletion are in; the installer is pending); see [docs/PLAN.md](docs/PLAN.md) and [docs/fase-0-conclusiones.md](docs/fase-0-conclusiones.md) (in Spanish).
 
 ## Desarrollo
 
