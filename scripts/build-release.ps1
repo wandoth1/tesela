@@ -21,8 +21,9 @@
   .exe que esta compilacion no ha producido.
 
   Despues de compilar:
-    1. busca en cada .exe (ASCII y UTF-16, con ambas barras) los valores locales -nombre de usuario, perfil, repositorio,
-       CARGO_HOME y toolchain- leidos del entorno, y falla si aparece alguno. Nunca se escriben;
+    1. busca en cada .exe (ASCII y UTF-16, con ambas barras `\` y `/`) los valores locales -nombre de usuario, nombre del
+       equipo, perfil, repositorio, CARGO_HOME y toolchain- leidos del entorno, y falla si aparece alguno. Nunca se
+       escriben (ver scripts/leak-scan.ps1);
     2. con `scripts/check-pe.py` (Python, solo biblioteca estandar) lee la tabla de imports PE de cada .exe y falla si
        aparece `VCRUNTIME*.dll`, `MSVCP*.dll` o `api-ms-win-crt-*.dll` o si la arquitectura no es la esperada.
 
@@ -52,6 +53,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path $PSScriptRoot 'leak-scan.ps1')
 $repo = (& git rev-parse --show-toplevel).Trim()
 $cargoHome = $env:CARGO_HOME
 if (-not $cargoHome) { $cargoHome = Join-Path $env:USERPROFILE '.cargo' }
@@ -149,39 +151,12 @@ try {
     }
     if ($SkipCheck) { exit 0 }
 
-    $needles = @{
-        'USERNAME'    = $env:USERNAME
-        'USERPROFILE' = $env:USERPROFILE
-        'repositorio' = $repo
-        'CARGO_HOME'  = $cargoHome
-        'toolchain'   = $sysroot
-        'RUSTUP_HOME' = $rustupHome
-    }
+    # Valores locales (usuario, equipo, perfil, repositorio, CARGO_HOME, toolchain...) en cada .exe, con `\` y con `/`.
+    $needles = Get-LocalValueNeedles -Repo $repo -CargoHome $cargoHome -Sysroot $sysroot -RustupHome $rustupHome
     $leaks = New-Object System.Collections.Generic.List[string]
     foreach ($exePath in $artifacts) {
-        $exeName = Split-Path -Leaf $exePath
-        $bytes = [System.IO.File]::ReadAllBytes($exePath)
-        $texts = @(
-            [System.Text.Encoding]::GetEncoding(28591).GetString($bytes),
-            [System.Text.Encoding]::Unicode.GetString($bytes),
-            [System.Text.Encoding]::Unicode.GetString($bytes, 1, ($bytes.Length - 1) -band -2)
-        )
-        foreach ($k in $needles.Keys) {
-            $v = $needles[$k]
-            if (-not $v -or $v.Length -lt 3) { continue }
-            foreach ($form in @($v, $v.Replace('\', '/'))) {
-                # El nombre de usuario es corto y suelto: sin limites de palabra coincidiria con el nombre de un autor en el
-                # texto de una licencia (p. ej. un "Alexander" para quien se llame "Alex"). Como fuga real solo cuenta
-                # si no esta pegado a otras letras o digitos (una ruta, un correo, un nombre de carpeta...).
-                $pattern = if ($k -eq 'USERNAME') { '(?<![A-Za-z0-9])' + [regex]::Escape($form) + '(?![A-Za-z0-9])' } else { [regex]::Escape($form) }
-                foreach ($t in $texts) {
-                    if ([regex]::IsMatch($t, $pattern, [System.Text.RegularExpressions.RegexOptions]::IgnoreCase)) {
-                        $leaks.Add("${exeName}: contiene el valor local '$k'")
-                        break
-                    }
-                }
-            }
-        }
+        $found = Find-LocalValueLeaks -Bytes ([System.IO.File]::ReadAllBytes($exePath)) -Needles $needles -Name (Split-Path -Leaf $exePath)
+        foreach ($f in $found) { $leaks.Add($f) }
     }
     if ($leaks.Count -gt 0) {
         Write-Host 'build-release: los binarios contienen datos de esta maquina:' -ForegroundColor Red

@@ -34,8 +34,12 @@
     4. Cualquier texto se decodifica antes de revisarlo (UTF-8, UTF-8 con BOM, UTF-16 con o sin BOM). Los binarios se
        revisan buscando cadenas ASCII y UTF-16 (los de mas de 8 MiB se rechazan); las imagenes se rechazan SALVO `docs/img/<nombre>.png` generadas con --demo (ver la excepcion mas abajo).
        Los formatos OPACOS o comprimidos (ZIP y derivados docx/xlsx/jar/apk, gzip, 7z, rar, xz, bz2, zstd, lz4, lzip,
-       compress, cab, OLE/msi, pdf, sqlite) se rechazan por su FIRMA con cualquier extension: su contenido no se puede
-       revisar, y un SID dentro de un ZIP pasaria. No hay lista blanca (`$opaqueAllow`, vacia a proposito).
+       compress, cab, OLE/msi, pdf, sqlite) se rechazan por su FIRMA con cualquier extension (el ZIP tambien por su
+       registro de fin en los ultimos 64 KiB): su contenido no se puede revisar, y un SID dentro de un ZIP pasaria.
+       No hay lista blanca (`$opaqueAllow`, vacia a proposito).
+       LIMITES inherentes que ninguna firma detecta: zlib crudo, lzma-alone (`.lzma`), datos cifrados u ofuscados y texto
+       codificado en base64 u otra transformacion. Lo unico que los frena es que el repositorio no admite binarios
+       desconocidos y que quien audita el cambio los vea.
     5. `docs/spike-results.md` NO puede existir (se rehace por separado) y `spike/` se revisa con las reglas que no
        dependen de rutas (SID, hardware, antivirus, builds, valores locales y lista negra).
 
@@ -57,6 +61,10 @@
 .PARAMETER To
   SHA completo del ultimo commit de un rango a revisar (mensajes y blobs de lo que introduce).
 
+.PARAMETER LegacyImageSha256
+  Solo para las pruebas: SHA-256 adicionales que el modo -To acepta como capturas historicas (ademas de la lista cerrada
+  `$legacyDemoImages` del script).
+
 .PARAMETER From
   SHA completo anterior al rango (se revisa `From..To`). Si falta, es todo ceros o no esta en el clon, se revisa toda
   la historia hasta `To`.
@@ -73,7 +81,8 @@ param(
     [switch]$Local,
     [string]$MessageFile,
     [string]$From,
-    [string]$To
+    [string]$To,
+    [string[]]$LegacyImageSha256 = @()
 )
 
 $ErrorActionPreference = 'Stop'
@@ -172,15 +181,19 @@ function ConvertTo-ScanText {
     $n = $Bytes.Length
     if ($n -eq 0) { return '' }
     if ($n -ge 3 -and $Bytes[0] -eq 0xEF -and $Bytes[1] -eq 0xBB -and $Bytes[2] -eq 0xBF) { return [System.Text.Encoding]::UTF8.GetString($Bytes, 3, $n - 3) }
+    # UTF-32 con BOM (el de little endian, FF FE 00 00, empieza como el de UTF-16: se comprueba ANTES).
+    if ($n -ge 4 -and $Bytes[0] -eq 0xFF -and $Bytes[1] -eq 0xFE -and $Bytes[2] -eq 0 -and $Bytes[3] -eq 0) { return (New-Object System.Text.UTF32Encoding($false, $false)).GetString($Bytes, 4, (($n - 4) -band -4)) }
+    if ($n -ge 4 -and $Bytes[0] -eq 0 -and $Bytes[1] -eq 0 -and $Bytes[2] -eq 0xFE -and $Bytes[3] -eq 0xFF) { return (New-Object System.Text.UTF32Encoding($true, $false)).GetString($Bytes, 4, (($n - 4) -band -4)) }
     if ($n -ge 2 -and $Bytes[0] -eq 0xFF -and $Bytes[1] -eq 0xFE) { return [System.Text.Encoding]::Unicode.GetString($Bytes, 2, $n - 2) }
     if ($n -ge 2 -and $Bytes[0] -eq 0xFE -and $Bytes[1] -eq 0xFF) { return [System.Text.Encoding]::BigEndianUnicode.GetString($Bytes, 2, $n - 2) }
-    $zeros = 0
-    $lim = [Math]::Min($n, 4096)
-    for ($i = 0; $i -lt $lim; $i++) { if ($Bytes[$i] -eq 0) { $zeros++ } }
-    if ($zeros -eq 0) { return [System.Text.Encoding]::UTF8.GetString($Bytes) }
-    # Con NUL y sin BOM (UTF-16 sin BOM o binario): se extraen las cadenas ASCII y UTF-16 de ambas alineaciones.
+    # UTF-16 sin BOM o binario: cualquier NUL en TODO el archivo (no solo en los primeros 4 KiB: un texto ASCII largo
+    # delante no puede esconder lo que viene despues).
+    if ([System.Array]::IndexOf($Bytes, [byte]0) -lt 0) { return [System.Text.Encoding]::UTF8.GetString($Bytes) }
+    # Con NUL y sin BOM: el archivo entero como UTF-8 (las partes de texto con acentos) MAS las cadenas ASCII y UTF-16
+    # (de ambas alineaciones) del resto.
     if ($n -gt 8MB) { $Reject.Value = 'binario de mas de 8 MiB (no se puede revisar)'; return $null }
     $sb = New-Object System.Text.StringBuilder
+    [void]$sb.AppendLine([System.Text.Encoding]::UTF8.GetString($Bytes))
     $latin = [System.Text.Encoding]::GetEncoding(28591).GetString($Bytes)
     foreach ($m in [regex]::Matches($latin, '[\x20-\x7E]{6,}')) { [void]$sb.AppendLine($m.Value) }
     foreach ($off in 0, 1) {
@@ -336,6 +349,18 @@ function Test-DemoPng {
 
 # Origen de docs/img/README.md: `$null` = disco (-All) o indice (staging); un SHA = ese commit (modo -To).
 $script:ImgReadmeRef = $null
+# CAPTURAS HISTORICAS de --demo (solo modo -To): las dos que entraron en el commit dcebdb2 ANTES de que el README
+# registrara el SHA-256 de cada imagen, y que e1d1903 sustituyo por otras (por eso ningun README posterior lista su hash).
+# Se revisaron a ojo: son del modo demostracion (datos inventados y el rotulo "Modo demostracion"). Siguen pasando la
+# comprobacion estructural (lista cerrada de fragmentos), el patron de ruta de docs/img/ y el limite de tamano. Lista
+# CERRADA: ninguna captura nueva entra por aqui, se registra en el README.
+$legacyDemoImages = @(
+    'df18aa75fd3a2318db99a5324cc9b7824042226997f12802199b5173aaa18cbe',
+    '2fb2810bad36cdfe13b36379c8de5c0a6f13eaac38278f58338ba51b78445aa3'
+)
+$script:RangeMode = $false
+# Modo -To: ademas del README del propio commit, vale el del commit `To` (una captura de --demo pudo registrarse despues).
+$script:ImgReadmeExtraRef = $null
 
 function Get-ImgReadme {
     # Texto de docs/img/README.md (disco con -All; indice en modo staging; el commit en modo -To), o $null si no existe.
@@ -358,16 +383,31 @@ function Get-ImgReadme {
     }
 }
 
+function Get-ImgReadmeAt {
+    # Texto de docs/img/README.md en el commit `$Ref`, o $null.
+    param([string]$Ref)
+    try {
+        return [System.Text.Encoding]::UTF8.GetString((Invoke-GitBytes ('cat-file blob "' + $Ref + ':docs/img/README.md"') $repoRoot))
+    } catch {
+        return $null
+    }
+}
+
 function Test-ImgRegistered {
-    # Hay en docs/img/README.md una linea anclada `- <leaf> | sha256: <hash> | ...--demo...` con el SHA-256 de $Bytes
+    # Hay en docs/img/README.md una linea anclada `- <leaf> | sha256: <hash> | ...--demo...` con el SHA-256 de $Bytes.
+    # En modo -To se mira el README del commit de la imagen Y el del commit `To`.
     param([string]$Leaf, [byte[]]$Bytes)
-    $readme = Get-ImgReadme
-    if (-not $readme) { return $false }
+    $readmes = @(Get-ImgReadme)
+    if ($script:ImgReadmeExtraRef) { $readmes += Get-ImgReadmeAt $script:ImgReadmeExtraRef }
     $sha = [System.Security.Cryptography.SHA256]::Create()
     try { $hex = ([System.BitConverter]::ToString($sha.ComputeHash($Bytes))).Replace('-', '').ToLowerInvariant() } finally { $sha.Dispose() }
+    if ($script:RangeMode -and (($legacyDemoImages + $LegacyImageSha256) -contains $hex)) { return $true }
     $pattern = '^[-*]\s+' + [regex]::Escape($Leaf) + '\s*\|\s*sha256:\s*' + $hex + '\s*\|.*--demo'
-    foreach ($line in ($readme -split "`n")) {
-        if ($line.TrimEnd("`r") -match $pattern) { return $true }
+    foreach ($readme in $readmes) {
+        if (-not $readme) { continue }
+        foreach ($line in ($readme -split "`n")) {
+            if ($line.TrimEnd("`r") -match $pattern) { return $true }
+        }
     }
     return $false
 }
@@ -407,6 +447,16 @@ function Get-OpaqueFormat {
     param([byte[]]$Bytes)
     foreach ($fmt in $opaqueFormats) {
         if (Test-Signature $Bytes $fmt.Sig) { return $fmt.Name }
+    }
+    # ZIP por el registro de FIN (`PK 05 06`, 22 bytes como minimo) en los ultimos 64 KiB: un ZIP con datos delante (un
+    # autoextraible) o con la cabecera local alterada no empieza por `PK 03 04`.
+    if ($Bytes.Length -ge 22) {
+        $tail = [Math]::Min($Bytes.Length, 65536 + 22)
+        $start = $Bytes.Length - $tail
+        $chunk = [System.Text.Encoding]::GetEncoding(28591).GetString($Bytes, $start, $tail)
+        $sig = ([char]0x50).ToString() + ([char]0x4B).ToString() + ([char]5).ToString() + ([char]6).ToString()
+        $at = $chunk.LastIndexOf($sig, [System.StringComparison]::Ordinal)
+        if ($at -ge 0 -and ($at + 22) -le $chunk.Length) { return 'ZIP (registro de fin)' }
     }
     # bzip2: "BZh", nivel 1-9 y el numero pi del primer bloque (evita un texto que empiece por "BZh").
     if ($Bytes.Length -ge 10 -and $Bytes[0] -eq 0x42 -and $Bytes[1] -eq 0x5A -and $Bytes[2] -eq 0x68 -and $Bytes[3] -ge 0x31 -and $Bytes[3] -le 0x39) {
@@ -481,6 +531,8 @@ if ($To) {
     $commits = @((Split-Nul (Invoke-GitBytes "rev-list -z --reverse $revSpec" $repoRoot)) | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' })
     $seen = @{}
     $blobCount = 0
+    $script:ImgReadmeExtraRef = $To
+    $script:RangeMode = $true
     foreach ($c in $commits) {
         $short = $c.Substring(0, 10)
         $script:ImgReadmeRef = $c
@@ -489,7 +541,7 @@ if ($To) {
         $msgText = ConvertTo-ScanText (Invoke-GitBytes "log -1 --format=%B $c" $repoRoot) ([ref]$reject)
         foreach ($hit in (Test-Rules $msgText $rules)) { $problems.Add("commit ${short}: mensaje:$($hit[1]): $($hit[0])") }
         # Archivos que introduce (altas, cambios, copias y renombrados; con -m tambien los de los merges).
-        $raw = Split-Nul (Invoke-GitBytes "diff-tree -r -m --root --no-commit-id --no-renames --diff-filter=ACMR --raw -z $c" $repoRoot)
+        $raw = Split-Nul (Invoke-GitBytes "diff-tree -r -m --root --no-commit-id --no-renames --diff-filter=ACMRT --raw -z $c" $repoRoot)
         for ($i = 0; $i -lt $raw.Count; $i++) {
             if (-not $raw[$i].StartsWith(':')) { continue }
             $fields = $raw[$i].Split(' ')

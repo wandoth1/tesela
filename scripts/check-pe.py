@@ -55,8 +55,10 @@ def parse(data):
     magic = _u16(data, opt)
     if magic == 0x20B:  # PE32+
         dd = opt + 112
+        image_base = struct.unpack_from("<Q", data, opt + 24)[0]
     elif magic == 0x10B:  # PE32
         dd = opt + 96
+        image_base = _u32(data, opt + 28)
     else:
         raise PeError("cabecera opcional desconocida")
     ndd = _u32(data, dd - 4)
@@ -109,9 +111,13 @@ def parse(data):
             name_rva = _u32(data, o + 4)
             if attrs == 0 and name_rva == 0:
                 break
-            # Con el bit 0 de `attrs` las direcciones son RVA; si no (muy antiguo), son VA y no se razona.
-            if attrs & 1:
-                delay.append(cstr(name_rva))
+            # Con el bit 0 de `attrs` las direcciones son RVA; sin el (formato antiguo de VC6) son direcciones virtuales
+            # absolutas: se convierten con la base de la imagen. Un descriptor NUNCA se ignora: o se interpreta o falla.
+            if not attrs & 1:
+                if name_rva < image_base:
+                    raise PeError("descriptor de carga retardada con una direccion fuera de la imagen")
+                name_rva -= image_base
+            delay.append(cstr(name_rva))
             o += 32
         else:
             raise PeError("demasiados imports de carga retardada")

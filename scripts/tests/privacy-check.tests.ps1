@@ -538,6 +538,54 @@ try {
     PutBytes 'datos.txt' $gms.ToArray()
     Stage-All
     Expect 'gzip real con texto comprimido que contiene un SID' $true
+    # ZIP por el registro de FIN: con datos delante (un autoextraible) o con la cabecera local alterada no empieza por `PK 03 04`.
+    Reset-Repo
+    PutBytes 'datos.bin' ($utf8.GetBytes(('x' * 3000) + "`n") + $zipBytes)
+    Stage-All
+    Expect 'ZIP con datos delante (se reconoce por su registro de fin)' $true
+    $brokenZip = [byte[]]$zipBytes.Clone()
+    $brokenZip[2] = 0x99
+    Reset-Repo
+    PutBytes 'datos.bin' $brokenZip
+    Stage-All
+    Expect 'ZIP con la cabecera local alterada (registro de fin intacto)' $true
+    # Un texto normal que solo menciona "PK" no es un ZIP.
+    Reset-Repo
+    Put 'notas.txt' ("PK 05 06 y PK\n en un texto`n" + ('limpio ' * 50) + "`n")
+    Stage-All
+    Expect 'texto que menciona PK sin ser un ZIP' $false
+
+    # --- Codificaciones: UTF-32 con BOM y UTF-16 sin BOM detras de un texto largo ---------------------------------------------
+    $secretLine = "cuenta $sid`n"
+    $utf32le = New-Object System.Text.UTF32Encoding($false, $true)
+    $utf32be = New-Object System.Text.UTF32Encoding($true, $true)
+    Reset-Repo
+    PutBytes 'u32le.txt' ($utf32le.GetPreamble() + $utf32le.GetBytes($secretLine))
+    Stage-All
+    Expect 'UTF-32 LE con BOM con SID' $true
+    Reset-Repo
+    PutBytes 'u32be.txt' ($utf32be.GetPreamble() + $utf32be.GetBytes($secretLine))
+    Stage-All
+    Expect 'UTF-32 BE con BOM con SID' $true
+    Reset-Repo
+    PutBytes 'u32ok.txt' ($utf32le.GetPreamble() + $utf32le.GetBytes("todo limpio`n"))
+    Stage-All
+    Expect 'UTF-32 con BOM limpio' $false
+    # Texto ASCII de mas de 4096 bytes y DESPUES texto en UTF-16 sin BOM: antes solo se miraban los primeros 4 KiB.
+    $longAscii = $utf8.GetBytes(('a' * 6000) + "`n")
+    Reset-Repo
+    PutBytes 'largo.txt' ($longAscii + [System.Text.Encoding]::Unicode.GetBytes($secretLine))
+    Stage-All
+    Expect 'UTF-16 sin BOM tras 6000 bytes de ASCII con SID' $true
+    Reset-Repo
+    PutBytes 'largo.txt' ($longAscii + [System.Text.Encoding]::Unicode.GetBytes("todo limpio`n"))
+    Stage-All
+    Expect 'UTF-16 sin BOM tras 6000 bytes de ASCII, limpio' $false
+    # Y un NUL suelto tampoco esconde un SID en UTF-8 (con acentos) del mismo archivo.
+    Reset-Repo
+    PutBytes 'mixto.txt' ($utf8.GetBytes("canci" + [char]0xF3 + "n $sid`n") + [byte[]](0, 1, 2) + $utf8.GetBytes("fin`n"))
+    Stage-All
+    Expect 'NUL suelto con SID en UTF-8 del mismo archivo' $true
     # Un PNG registrado de docs/img/ sigue permitido (tiene su excepcion propia, antes que la regla de opacos).
     Reset-Repo
     PutBytes $img $png
@@ -677,6 +725,61 @@ try {
     New-Commit 'docs: captura sin registrar'
     $img2Tip = Sha 'HEAD'
     Expect 'rango: PNG de docs/img SIN registrar se rechaza' $true @('-From', $base, '-To', $img2Tip)
+    # Una captura de --demo que se registro en un commit POSTERIOR (el README del commit `To` la lista): el rango pasa.
+    Reset-Repo
+    Invoke-Git -C $repo checkout -q -f -B imagenes3 $base
+    PutBytes $img $png
+    Stage-All
+    New-Commit 'docs: captura (aun sin registrar)'
+    $pngEarly = Sha 'HEAD'
+    Put 'docs/img/README.md' $readmeOk
+    Stage-All
+    New-Commit 'docs: se registra la captura'
+    $pngLate = Sha 'HEAD'
+    Expect 'rango que empieza antes del registro del PNG de --demo pasa (README del commit To)' $false @('-From', $base, '-To', $pngLate)
+    Expect 'toda la historia con el PNG registrado despues pasa (from a ceros)' $false @('-From', ('0' * 40), '-To', $pngLate)
+    Expect 'sin el registro en To, el mismo PNG se rechaza' $true @('-From', $base, '-To', $pngEarly)
+    # Registrar OTRA imagen (otro hash) no sirve para esta.
+    Reset-Repo
+    Invoke-Git -C $repo checkout -q -f -B imagenes4 $base
+    PutBytes $img $png
+    Put 'docs/img/README.md' ("# Capturas`n`n" + (ReadmeLine $imgLeaf ([byte[]](1, 2, 3))))
+    Stage-All
+    New-Commit 'docs: captura con el hash de otra'
+    Expect 'el README de To con el hash de otra imagen no vale' $true @('-From', $base, '-To', (Sha 'HEAD'))
+
+    # Capturas HISTORICAS de --demo: su hash esta en la lista cerrada del script (solo en modo -To), no en ningun README.
+    Reset-Repo
+    Invoke-Git -C $repo checkout -q -f -B historica $base
+    PutBytes $img $png
+    Stage-All
+    New-Commit 'docs: captura historica'
+    $legacyTip = Sha 'HEAD'
+    Expect 'rango: una captura sin registrar y fuera de la lista historica se rechaza' $true @('-From', $base, '-To', $legacyTip)
+    Expect 'rango: una captura historica (hash de la lista cerrada) se acepta' $false @('-From', $base, '-To', $legacyTip, '-LegacyImageSha256', (Sha256Hex $png))
+    Expect 'la lista historica no vale en staging ni en -All' $true @('-All', '-LegacyImageSha256', (Sha256Hex $png))
+    # Una imagen historica con metadatos sigue rechazada (la comprobacion estructural no se salta).
+    $pngMeta = New-Png -Chunks @((Fill 'tEXt' 4))
+    Reset-Repo
+    Invoke-Git -C $repo checkout -q -f -B historica2 $base
+    PutBytes $img $pngMeta
+    Stage-All
+    New-Commit 'docs: captura historica con metadatos'
+    Expect 'rango: la captura historica con un fragmento no permitido se rechaza' $true @('-From', $base, '-To', (Sha 'HEAD'), '-LegacyImageSha256', (Sha256Hex $pngMeta))
+
+    # Cambio de TIPO (un archivo que pasa a enlace simbolico): el destino del enlace es su contenido y se revisa.
+    Reset-Repo
+    Invoke-Git -C $repo checkout -q -f -B tipo $base
+    Put 'enlace.txt' "texto limpio`n"
+    Stage-All
+    New-Commit 'feat: archivo normal'
+    $beforeType = Sha 'HEAD'
+    $targetOid = (($secretLine) | & git -C $repo hash-object -w --stdin | Out-String).Trim()
+    Invoke-Git -C $repo update-index --cacheinfo "120000,$targetOid,enlace.txt"
+    New-Commit 'feat: ahora es un enlace'
+    $afterType = Sha 'HEAD'
+    Expect 'rango: un archivo que pasa a enlace simbolico con el SID en su destino (cambio de tipo)' $true @('-From', $beforeType, '-To', $afterType)
+    Expect 'rango anterior al cambio de tipo pasa' $false @('-From', $base, '-To', $beforeType)
 
     # --- Modo -All sobre lo versionado ---------------------------------------------------------------------------------------
     Reset-Repo

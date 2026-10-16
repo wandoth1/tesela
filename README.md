@@ -96,12 +96,20 @@ discos reales ni resultados de escaneos (los ejemplos, capturas y fixtures son s
   reales, unidades D:–Z:, rutas UNC de red (`\\<servidor>\<recurso>`: en la documentación usa un marcador entre `<>`), hardware,
   antivirus y builds de Windows; en local añade el usuario, el equipo y el perfil leídos
   del entorno en tiempo de ejecución. Se decodifica UTF-8 y UTF-16, se revisan cadenas de binarios, se rechazan **por su firma** los
-  formatos opacos o comprimidos (ZIP y derivados, gzip, 7z, rar, xz, bz2, zstd, cab, msi, pdf, sqlite: su contenido no se puede revisar) y se rechazan las imágenes, con UNA excepción estrecha: `docs/img/<nombre>.png` si es un PNG sin metadatos (solo fragmentos IHDR, PLTE, tRNS, IDAT, IEND, sRGB, gAMA, cHRM y pHYs), de menos de 2 MiB, y `docs/img/README.md` tiene una línea con su nombre y la orden `--demo` que lo genera.
+  formatos opacos o comprimidos (ZIP y derivados, también por su registro de fin en los últimos 64 KiB, gzip, 7z, rar, xz,
+  bz2, zstd, cab, msi, pdf, sqlite: su contenido no se puede revisar) y se rechazan las imágenes, con UNA excepción estrecha: `docs/img/<nombre>.png` si es un PNG sin metadatos (solo fragmentos IHDR, PLTE, tRNS, IDAT, IEND, sRGB, gAMA, cHRM y pHYs), de menos de 2 MiB, y `docs/img/README.md` tiene una línea con su nombre y la orden `--demo` que lo genera.
   `docs/spike-results.md` no puede existir y `spike/` pasa las reglas no ligadas a rutas.
+- **Límites que ninguna firma detecta:** zlib crudo, lzma-alone (`.lzma`), datos cifrados u ofuscados y texto en base64 u otra
+  transformación. Los frena que el repositorio no admite binarios desconocidos y que quien audita el cambio los vea. Se
+  decodifican UTF-8, UTF-16 y UTF-32 (con BOM) y, ante cualquier NUL en TODO el archivo, se revisan además sus cadenas ASCII y
+  UTF-16.
 - **Mensajes y rangos:** el mensaje de commit se revisa entero (también las líneas con `#` y lo que sigue a la línea de tijera
   de `git commit --verbose`, aunque git lo recortaría: el hook ve el archivo antes). `privacy-check.ps1 -From <sha> -To <sha>`
   revisa el mensaje de cada commit y TODOS los blobs que introduce el rango, también los que un commit posterior borra; el CI lo
-  ejecuta en cada push (`before..sha`; con `before` a ceros o ausente, toda la historia) y pull request (`base..head`).
+  ejecuta en cada push a CUALQUIER rama o etiqueta (`before..sha`; con `before` a ceros o ausente, que es lo que pasa en una rama
+  nueva o en una etiqueta, toda la historia) y en cada pull request (`base..head`). En un rango, un PNG de `docs/img/` se acepta
+  si su SHA-256 figura en el `docs/img/README.md` de su propio commit o del commit final (`-To`). Los cambios de tipo (un archivo
+  que pasa a enlace simbólico, cuyo destino es su contenido) también se revisan.
 - **Lista negra local (opcional, no versionada):** crea `<git-common-dir>/privacy-denylist` (en un clon normal,
   `.git/privacy-denylist`; en un worktree, el `.git` del repositorio principal; `git rev-parse --git-common-dir` lo dice) con
   **un término por línea**. Coincidencia literal sin distinguir mayúsculas; se ignoran las líneas vacías y las que empiezan por

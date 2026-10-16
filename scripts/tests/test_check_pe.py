@@ -20,7 +20,7 @@ SECTION_RVA = 0x1000
 FILE_ALIGN = 0x200
 
 
-def make_pe(machine=0x8664, imports=(), delay=(), pe32=False):
+def make_pe(machine=0x8664, imports=(), delay=(), pe32=False, delay_old=False):
     """Un PE mínimo: una sección con la tabla de imports (y la de carga retardada) y los nombres de las DLL."""
     # Datos de la sección: [descriptores de import][terminador][descriptores de delay][terminador][nombres]
     n_imp = len(imports)
@@ -38,8 +38,13 @@ def make_pe(machine=0x8664, imports=(), delay=(), pe32=False):
     for n in imports:
         sec += struct.pack("<IIIII", 0, 0, 0, name_rva[n], 0)
     sec += b"\0" * 20
+    image_base = 0x400000 if pe32 else 0x140000000
     for n in delay:
-        sec += struct.pack("<IIIIIIII", 1, name_rva[n], 0, 0, 0, 0, 0, 0)
+        # `attrs` con el bit 0 = direcciones RVA; sin el (formato antiguo) = direcciones virtuales absolutas.
+        # (En PE32+ los campos son de 32 bits: una direccion absoluta no cabe, y el descriptor es inválido.)
+        absolute = image_base + name_rva[n] if pe32 else name_rva[n]
+        attrs, name = (0, absolute) if delay_old else (1, name_rva[n])
+        sec += struct.pack("<IIIIIIII", attrs, name, 0, 0, 0, 0, 0, 0)
     sec += b"\0" * 32
     sec += names
     sec = bytes(sec).ljust(FILE_ALIGN, b"\0")
@@ -50,6 +55,10 @@ def make_pe(machine=0x8664, imports=(), delay=(), pe32=False):
     opt = bytearray(opt_size)
     struct.pack_into("<H", opt, 0, opt_magic)
     struct.pack_into("<I", opt, dd_off - 4, 16)
+    if pe32:
+        struct.pack_into("<I", opt, 28, image_base)
+    else:
+        struct.pack_into("<Q", opt, 24, image_base)
     if n_imp:
         struct.pack_into("<II", opt, dd_off + 8 * 1, SECTION_RVA + imp_off, 20 * (n_imp + 1))
     if n_del:
@@ -94,6 +103,20 @@ class CheckPe(unittest.TestCase):
         self.assertEqual((m, imp, dly), (0xAA64, [], []))
         m, imp, _ = check_pe.parse(make_pe(0x014C, ["KERNEL32.dll"], pe32=True))
         self.assertEqual((m, imp), (0x014C, ["KERNEL32.dll"]))
+
+    def test_un_descriptor_diferido_en_formato_antiguo_se_interpreta_y_no_se_ignora(self):
+        # PE32 con descriptor antiguo (direcciones virtuales absolutas): se convierte con la base de la imagen.
+        m, imp, dly = check_pe.parse(make_pe(machine=0x014C, imports=["KERNEL32.dll"], delay=["VCRUNTIME140.dll"], pe32=True, delay_old=True))
+        self.assertEqual(dly, ["VCRUNTIME140.dll"])
+        self.assertEqual(check_pe.forbidden(imp + dly), ["VCRUNTIME140.dll"])
+        with Temp() as t:
+            old = t.write("old.exe", make_pe(machine=0x014C, imports=["KERNEL32.dll"], delay=["MSVCP140.dll"], pe32=True, delay_old=True))
+            self.assertEqual(len(check_pe.check(old, "x86")), 1)
+            # Un descriptor sin el bit de RVA cuya direccion cae por debajo de la base de la imagen: error, NO se ignora.
+            bad = t.write("bad.exe", make_pe(imports=["KERNEL32.dll"], delay=["a.dll"], delay_old=True))
+            problems = check_pe.check(bad, "x64")
+            self.assertEqual(len(problems), 1)
+            self.assertIn("fuera de la imagen", problems[0])
 
     def test_acepta_un_ejecutable_sin_runtime_de_c_y_rechaza_cada_dll_prohibida(self):
         with Temp() as t:
