@@ -8,7 +8,7 @@ Iconos: Fluent UI System Icons, Microsoft Corporation, licencia MIT.
 
 ## Licencias usadas
 
-- MIT License (155 componente(s))
+- MIT License (156 componente(s))
 - Apache License 2.0 (9 componente(s))
 - Boost Software License 1.0 (2 componente(s))
 - Unicode License v3 (2 componente(s))
@@ -1627,6 +1627,42 @@ DEALINGS IN THE SOFTWARE.
 
 Usada por:
 
+- getrandom 0.4.3 (https://github.com/rust-random/getrandom)
+
+```text
+Copyright (c) 2018-2026 The rust-random Project Developers
+Copyright (c) 2014 The Rust Project Developers
+
+Permission is hereby granted, free of charge, to any
+person obtaining a copy of this software and associated
+documentation files (the "Software"), to deal in the
+Software without restriction, including without
+limitation the rights to use, copy, modify, merge,
+publish, distribute, sublicense, and/or sell copies of
+the Software, and to permit persons to whom the Software
+is furnished to do so, subject to the following
+conditions:
+
+The above copyright notice and this permission notice
+shall be included in all copies or substantial portions
+of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF
+ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED
+TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A
+PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT
+SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY
+CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
+IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+DEALINGS IN THE SOFTWARE.
+
+```
+
+## MIT License
+
+Usada por:
+
 - presser 0.3.1 (https://github.com/EmbarkStudios/presser)
 
 ```text
@@ -2328,7 +2364,7 @@ SOFTWARE.
 
 Usada por:
 
-- tesela-ui 0.1.0 (https://github.com/wandoth1/tesela)
+- tesela-ui 0.1.1 (https://github.com/wandoth1/tesela)
 
 ```text
 MIT License
@@ -2552,12 +2588,12 @@ SOFTWARE.
 
 Usada por:
 
-- tesela-app 0.1.0 (https://github.com/wandoth1/tesela)
-- tesela-cleaner 0.1.0 (https://github.com/wandoth1/tesela)
-- tesela-layout 0.1.0 (https://github.com/wandoth1/tesela)
-- tesela-model 0.1.0 (https://github.com/wandoth1/tesela)
-- tesela-scanner 0.1.0 (https://github.com/wandoth1/tesela)
-- tesela-scan 0.1.0 (https://github.com/wandoth1/tesela)
+- tesela-app 0.1.1 (https://github.com/wandoth1/tesela)
+- tesela-cleaner 0.1.1 (https://github.com/wandoth1/tesela)
+- tesela-layout 0.1.1 (https://github.com/wandoth1/tesela)
+- tesela-model 0.1.1 (https://github.com/wandoth1/tesela)
+- tesela-scanner 0.1.1 (https://github.com/wandoth1/tesela)
+- tesela-scan 0.1.1 (https://github.com/wandoth1/tesela)
 - accesskit 0.24.1 (https://github.com/AccessKit/accesskit)
 - accesskit_consumer 0.35.0 (https://github.com/AccessKit/accesskit)
 - accesskit_windows 0.32.1 (https://github.com/AccessKit/accesskit)

@@ -13,7 +13,7 @@ members = [
 exclude = ["spike"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 # MSRV: la fija egui (PLAN.md §1). Se comprueba con `cargo +1.95 check --workspace`.
 rust-version = "1.95"
@@ -53,11 +53,11 @@ windows = { version = "0.62.2", default-features = false }
 windows-core = "0.62.2"
 
 # Crates internos.
-tesela-model = { version = "0.1.0", path = "crates/model" }
-tesela-scanner = { version = "0.1.0", path = "crates/scanner" }
-tesela-layout = { version = "0.1.0", path = "crates/layout" }
-tesela-cleaner = { version = "0.1.0", path = "crates/cleaner" }
-tesela-ui = { version = "0.1.0", path = "crates/ui" }
+tesela-model = { version = "0.1.1", path = "crates/model" }
+tesela-scanner = { version = "0.1.1", path = "crates/scanner" }
+tesela-layout = { version = "0.1.1", path = "crates/layout" }
+tesela-cleaner = { version = "0.1.1", path = "crates/cleaner" }
+tesela-ui = { version = "0.1.1", path = "crates/ui" }
 
 [workspace.lints.rust]
 # Todo `unsafe` está confinado a módulos pequeños que lo permiten expresamente (`#![allow(unsafe_code)]`).

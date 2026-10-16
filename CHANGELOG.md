@@ -4,6 +4,40 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). L
 (`major.minor.patch`, sin sufijos: un MSI no admite `-rc1`). `release.yml` copia la sección de la versión de la etiqueta a las
 notas de la GitHub Release, así que cada versión necesita su sección aquí.
 
+## [0.1.1] - 2026-10-16
+
+Correcciones de seguridad de la limpieza tras una auditoría externa de la 0.1.0. **Actualiza si usas la limpieza**: el
+análisis del disco (mapa, lista y detalles) no cambia. Sigue **sin firmar**: Windows SmartScreen puede avisar.
+
+### Seguridad
+
+- Un *junction* por encima de una carpeta de caché o de temporales ya no puede volver borrable una carpeta protegida. La
+  ruta de cada categoría se comprueba pieza a pieza, sin aceptar ningún enlace, y cada excepción solo levanta su propia
+  zona. Si una categoría se descarta por eso (por ejemplo, la carpeta del navegador movida a otro disco con un enlace),
+  Recomendaciones la muestra como "no disponible" con el motivo.
+- El envío a la Papelera falla cerrado: si no se sabe cuánto cabe, no se envía. Las carpetas se vuelven a medir justo
+  antes de enviarlas, y si crecieron desde la confirmación no se envían.
+- Justo antes de que Windows actúe se comprueba que cada elemento sigue siendo el aprobado; un sustituto con el mismo
+  nombre no se envía. El envío se detiene en cuanto Windows elimina algo de forma definitiva, no al final del lote, y ya
+  no arrastra archivos asociados (la carpeta `_files` de una página guardada).
+- Si Windows dice que ha eliminado algo, Tesela lo comprueba sobre el propio objeto y su contenido: un borrado real,
+  aunque sea parcial, nunca se anota como "no se tocó nada".
+- Vaciar la Papelera comprueba la identidad de cada elemento antes de purgarlo y solo limpia metadatos huérfanos con
+  pruebas completas.
+- Un archivo al que se le añade o quita un enlace duro después de la confirmación se rechaza.
+
+### Cambiado
+
+- **Sin registro no hay limpieza**: si no se puede crear o escribir el registro local, la limpieza no empieza o se
+  detiene. Antes de cada operación se anota qué se va a hacer, y vaciar la Papelera anota cada elemento.
+- En un disco **sin tamaño máximo de Papelera configurado**, lo que iría a la Papelera pasa al grupo de borrado
+  definitivo, que solo se ejecuta si lo marcas expresamente; la confirmación explica cómo fijar ese tamaño.
+- Los elementos que cambiaron desde la confirmación salen como "cambió desde la confirmación" y no se tocan.
+- Una simulación (`--dry-run`) ya no borra registros de limpiezas reales; cada clase de registro tiene su propio límite.
+- `leak-scan` y `privacy-check` detectan también nombres con letras no ASCII (UTF-8, Latin-1 y UTF-16 sin BOM), y el
+  validador del MSI comprueba el árbol de carpetas, las reglas de actualización y su orden exactos.
+- Avisos de terceros regenerados: faltaba `getrandom` 0.4.
+
 ## [0.1.0] - 2026-10-16
 
 Primera versión (MVP). **Sin firmar**: Windows SmartScreen puede avisar (ver el README, "Instalación").
