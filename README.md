@@ -32,7 +32,7 @@ instalador solo se puede construir desde el código: `pwsh -File scripts/build-m
    silencio: `msiexec /i tesela-<versión>-x64.msi /qn`.)
    **Carpeta de instalación:** con `INSTALLFOLDER=` el MSI instala donde le digas, **sin comprobar quién puede escribir allí**; elige una
    carpeta que solo tú (y los administradores) puedas escribir. Si otros usuarios pueden escribir en ella, podrían dejar una DLL junto
-   a `tesela.exe` que se cargaría al abrirlo (riesgo sospechado, no demostrado; detalle en [installer/README.md](installer/README.md)).
+   a `tesela.exe` que se cargaría al abrirlo (riesgo sospechado, no demostrado; el programa ya busca sus DLL solo en `System32`, pero conviene no depender de ello; detalle en [installer/README.md](installer/README.md)).
 3. **Actualizar:** instala encima el MSI de la versión nueva; sustituye a la anterior sin dejar duplicados. Instalar una versión
    **más antigua** que la instalada se bloquea con un mensaje (desinstala primero la nueva si de verdad quieres volver atrás).
 4. **Reparar:** *Aplicaciones instaladas* no ofrece "Modificar" (no hay nada que elegir); para reparar, ejecuta
