@@ -351,12 +351,9 @@ pub fn open_reparse_free_dir(path: &Path) -> Result<Handle, ChainError> {
         return Err(ChainError::BadPath);
     }
     let root = PathBuf::from(format!("{}:\\", drive as char));
-    let mut cur = open_path(
-        &root,
-        FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
-        FILE_SHARE_ALL,
-    )
-    .map_err(ChainError::Os)?;
+    // Solo se piden atributos (no `FILE_LIST_DIRECTORY`): hay carpetas que un usuario sin elevar no puede listar
+    // (`Windows\Temp`) y la cadena no necesita listar nada.
+    let mut cur = open_for_query(&root).map_err(ChainError::Os)?;
     let check = |h: &Handle, name: &str| -> Result<(), ChainError> {
         let m = meta(h).map_err(ChainError::Os)?;
         if m.is_reparse() {
@@ -372,7 +369,7 @@ pub fn open_reparse_free_dir(path: &Path) -> Result<Handle, ChainError> {
             return Err(ChainError::BadPath);
         };
         let wide: Vec<u16> = name.encode_wide().collect();
-        let next = open_child_dir_for_listing(&cur, &wide).map_err(ChainError::Os)?;
+        let next = open_child_for_query(&cur, &wide, Expect::Dir).map_err(ChainError::Os)?;
         check(&next, &name.to_string_lossy())?;
         cur = next;
     }

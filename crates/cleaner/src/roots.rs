@@ -370,6 +370,26 @@ mod tests {
         }
     }
 
+    /// La comprobación de la cadena solo pide ATRIBUTOS de cada componente: `Windows\Temp` se acepta aunque un usuario sin
+    /// elevar no pueda listarla (antes de esto, pedir `FILE_LIST_DIRECTORY` la descartaba en silencio). Y las raíces del
+    /// sistema que existen pasan la cadena en este equipo.
+    #[test]
+    fn la_cadena_no_exige_poder_listar_la_carpeta() {
+        let win = kf(&FOLDERID_Windows).expect("Windows");
+        let temp = win.join("Temp");
+        if temp.is_dir() {
+            let ok = verify_chain(&temp);
+            assert_eq!(
+                ok.as_deref().ok(),
+                Some(canon(&temp).unwrap().as_path()),
+                "{ok:?}"
+            );
+            assert!(Roots::from_system(None).windows_temp.is_some());
+        }
+        let local = kf(&FOLDERID_LocalAppData).expect("LocalAppData");
+        assert!(verify_chain(&local).is_ok());
+    }
+
     #[test]
     fn solo_se_acepta_un_temp_que_es_localappdata_temp_o_cuelga_de_el() {
         let local = Path::new(r"C:\Users\<usuario>\AppData\Local");
