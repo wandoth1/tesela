@@ -472,6 +472,7 @@ sum-bin-changed =
        *[other] { $count } elementos de la Papelera cambiaron desde la confirmación y no se tocaron.
     }
 sum-log-failed = No se pudo escribir el registro de la limpieza, así que se detuvo en el siguiente punto seguro y no se tocó nada más. Lo que ya estaba hecho se queda y puede no constar entero en el registro.
+sum-log-truncated = El registro de la limpieza llegó a su tamaño máximo y dejó de anotar: lo que se hizo después no consta en él.
 sum-cancelled = Cancelaste la limpieza: lo que ya estaba hecho se queda.
 sum-diverge = "Eliminado definitivamente" y "liberado ahora" no coinciden: puede ser por enlaces duros, archivos que otro programa tenía abiertos o cambios del propio Windows.
 

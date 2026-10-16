@@ -63,6 +63,9 @@ pub enum Phase {
 pub struct Progress {
     /// Poner a `true` cancela entre entradas: lo que ya empezó termina bien, lo demás no se toca.
     pub cancel: Arc<AtomicBool>,
+    /// El USUARIO pidió cancelar (`cancel()`). `cancel` también se activa solo si el registro falla (M4): este distingue una
+    /// cosa de la otra para que el informe diga las dos (H6.5).
+    user_cancelled: AtomicBool,
     /// Entradas procesadas por el recorrido.
     pub entries: Arc<AtomicU64>,
     phase: AtomicU8,
@@ -75,6 +78,7 @@ impl Progress {
     pub fn new() -> Arc<Progress> {
         Arc::new(Progress {
             cancel: Arc::new(AtomicBool::new(false)),
+            user_cancelled: AtomicBool::new(false),
             entries: Arc::new(AtomicU64::new(0)),
             phase: AtomicU8::new(Phase::Preparing as u8),
             items_done: AtomicUsize::new(0),
@@ -104,7 +108,12 @@ impl Progress {
         self.items_done.fetch_add(1, Ordering::Relaxed);
     }
     pub fn cancel(&self) {
+        self.user_cancelled.store(true, Ordering::SeqCst);
         self.cancel.store(true, Ordering::SeqCst);
+    }
+    /// ¿Lo canceló el usuario (aunque además haya fallado el registro)?
+    pub fn user_cancelled(&self) -> bool {
+        self.user_cancelled.load(Ordering::SeqCst)
     }
 }
 
@@ -252,6 +261,9 @@ pub struct Report {
     /// El registro local FALLÓ al escribir o volcar (M4): la limpieza se detuvo en el siguiente punto seguro y no se tocó
     /// nada más. Lo que ya estaba hecho se queda (y puede no constar entero en el registro).
     pub log_failed: bool,
+    /// El registro llegó a su tope (líneas o bytes) y dejó de anotar: la limpieza siguió, pero lo que vino después NO consta
+    /// en el registro (H5).
+    pub log_truncated: bool,
 }
 
 /// Por qué se detuvo el envío a la Papelera (corte de seguridad).
@@ -538,8 +550,9 @@ impl Cleaner {
             let _ = l.sync();
         }
         report.log_failed = opts.log.as_ref().is_some_and(|l| !l.ok());
-        // La cancelación que provoca el propio fallo del registro no es una cancelación del usuario.
-        report.cancelled = report.cancelled && !report.log_failed;
+        report.log_truncated = opts.log.as_ref().is_some_and(|l| l.truncated());
+        // `cancelled` es SOLO la cancelación del usuario; un fallo del registro se informa aparte (y pueden darse las dos).
+        report.cancelled = progress.user_cancelled();
         progress.set_phase(Phase::Done);
         Ok(report)
     }

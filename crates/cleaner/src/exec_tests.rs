@@ -1781,6 +1781,75 @@ fn una_ejecucion_rechazada_no_deja_registro() {
     assert!(!bad_path.exists());
 }
 
+/// H5: si el registro llega a su tope y deja de anotar, la limpieza sigue pero el informe lo dice (`log_truncated`).
+#[test]
+fn un_registro_truncado_se_propaga_al_informe() {
+    let sb = Sandbox::new();
+    let c = cleaner_for(&sb);
+    for i in 0..60 {
+        sb.write_aged(&format!("Temp/t{i:02}.tmp"), 100, 72);
+    }
+    let mut b = Basket::new();
+    b.set_category(CategoryId::UserTemp, true);
+    let plan = approve(&c, &b);
+    let log = Arc::new(LogWriter::create(&sb.path("Tesela"), false).unwrap());
+    log.set_max_bytes_for_test(2_000);
+    let rep = exec(&c, &plan, false, false, Some(log.clone())).unwrap();
+    assert!(log.truncated());
+    assert!(
+        rep.log_truncated && !rep.log_failed && !rep.cancelled,
+        "{rep:?}"
+    );
+    assert_eq!(
+        sb.count_entries("Temp"),
+        0,
+        "la limpieza siguió hasta el final"
+    );
+    // Un registro normal no se marca.
+    let sb2 = Sandbox::new();
+    let c2 = cleaner_for(&sb2);
+    sb2.write_aged("Temp/a.tmp", 100, 72);
+    let plan2 = approve(&c2, &b);
+    let rep2 = exec(&c2, &plan2, false, false, None).unwrap();
+    assert!(!rep2.log_truncated);
+}
+
+/// H6.5: la cancelación del usuario y el fallo del registro se informan por separado; ya no se oculta una cancelación real
+/// porque además falló el registro.
+#[test]
+fn la_cancelacion_del_usuario_no_se_oculta_si_ademas_falla_el_registro() {
+    let sb = Sandbox::new();
+    let c = cleaner_for(&sb);
+    sb.write_aged("Temp/a.tmp", 10_000, 72);
+    let mut b = Basket::new();
+    b.set_category(CategoryId::UserTemp, true);
+    let plan = approve(&c, &b);
+    // Cancela el usuario Y el registro falla (la intención no cabe).
+    let log = Arc::new(LogWriter::create_failing_after(&sb.path("L1"), false, 80).unwrap());
+    let progress = Progress::new();
+    progress.cancel();
+    let rep = c
+        .execute(
+            &plan,
+            &ExecOptions {
+                log: Some(log),
+                ..ExecOptions::default()
+            },
+            &progress,
+        )
+        .unwrap();
+    assert!(rep.cancelled, "la cancelación real consta");
+    assert!(sb.path("Temp/a.tmp").exists());
+    // Solo falla el registro: no es una cancelación del usuario.
+    let sb2 = Sandbox::new();
+    let c2 = cleaner_for(&sb2);
+    sb2.write_aged("Temp/a.tmp", 10_000, 72);
+    let plan2 = approve(&c2, &b);
+    let log2 = Arc::new(LogWriter::create_failing_after(&sb2.path("L2"), false, 80).unwrap());
+    let rep2 = exec(&c2, &plan2, false, false, Some(log2)).unwrap();
+    assert!(rep2.log_failed && !rep2.cancelled);
+}
+
 /// M4: un registro que no se puede crear es un error (la interfaz no ejecuta nada): aquí, la carpeta de datos es un archivo.
 #[test]
 fn un_registro_que_no_se_puede_crear_es_un_error() {

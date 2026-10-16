@@ -287,6 +287,17 @@ impl LogWriter {
         let _ = fs::remove_file(&self.path);
     }
 
+    /// ¿Llegó el registro a su tope (líneas o bytes) y dejó de anotar? La limpieza sigue, pero lo posterior no consta.
+    pub fn truncated(&self) -> bool {
+        self.truncated.load(Ordering::Relaxed)
+    }
+
+    /// SOLO PARA PRUEBAS: baja el tope de bytes.
+    #[cfg(test)]
+    pub(crate) fn set_max_bytes_for_test(&self, n: u64) {
+        self.max_bytes.store(n, Ordering::Relaxed);
+    }
+
     /// ¿Va bien el registro? `false` en cuanto falló una escritura o un volcado (ya no se puede confiar en que conste lo
     /// que se haga).
     pub fn ok(&self) -> bool {

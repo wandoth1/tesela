@@ -86,6 +86,8 @@ pub(crate) enum Note {
     NothingToClean,
     /// No se pudo crear el registro local: sin registro no se limpia (M4). No se ha tocado nada.
     NoLog,
+    /// Lo que cabe en la Papelera cambió desde la confirmación: hay que revisar y confirmar otra vez.
+    Reconfirm,
 }
 
 impl Drop for CleanFlow {
@@ -212,13 +214,16 @@ impl CleanFlow {
             allow_unfit_permanent: false,
             log: None,
         };
-        if let Ok(report) = backend.execute(&plan, &opts, &Progress::new()) {
-            self.finish(
+        match backend.execute(&plan, &opts, &Progress::new()) {
+            Ok(report) => self.finish(
                 backend,
                 report,
                 dry,
                 vol.volume.map(|(t, f)| t.saturating_sub(f)),
-            );
+            ),
+            // El error no se traga: se enseña con el mismo aviso que en el flujo normal (H6.7).
+            Err(ExecError::LogRequired) => self.note = Some(Note::NoLog),
+            Err(ExecError::NeedsReconfirm(_)) => self.note = Some(Note::Reconfirm),
         }
     }
 
@@ -375,6 +380,7 @@ impl CleanFlow {
                 Note::NothingToClean => ("confirm-empty", 4.0),
                 // Más larga: explica por qué no pasó nada.
                 Note::NoLog => ("confirm-no-log", 12.0),
+                Note::Reconfirm => ("confirm-reconfirm", 8.0),
             };
             let msg = env.tr.t(key);
             toast(ctx, &msg);
@@ -1008,11 +1014,16 @@ fn summary_lines(env: &Env, s: &Summary) -> Vec<(String, bool)> {
     let tr = env.tr;
     let mut v: Vec<(String, bool)> = Vec::new();
     let n = |k: &str, n: u64| tr.ta(k, args!["n" => n, "count" => tr.int(n)]);
-    if r.log_failed {
-        // El registro falló al escribir: la limpieza se detuvo sola (no es una cancelación del usuario).
-        v.push((tr.t("sum-log-failed"), true));
-    } else if r.cancelled {
+    // Las dos cosas pueden darse a la vez y se dicen las dos: la cancelación del usuario y el fallo del registro (que
+    // detiene la limpieza solo).
+    if r.cancelled {
         v.push((tr.t("sum-cancelled"), true));
+    }
+    if r.log_failed {
+        v.push((tr.t("sum-log-failed"), true));
+    }
+    if r.log_truncated {
+        v.push((tr.t("sum-log-truncated"), true));
     }
     if r.deleted_unexpectedly > 0 {
         v.push((n("sum-unexpected", r.deleted_unexpectedly), true));

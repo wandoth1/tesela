@@ -471,6 +471,7 @@ sum-bin-changed =
        *[other] { $count } Recycle Bin items changed since you confirmed and were not touched.
     }
 sum-log-failed = The cleaning log could not be written, so the cleaning stopped at the next safe point and nothing else was touched. What was already done stays and may not be fully recorded in the log.
+sum-log-truncated = The cleaning log reached its maximum size and stopped recording: what was done afterwards is not in it.
 sum-cancelled = You cancelled the cleanup: what was already done stays done.
 sum-diverge = "Deleted permanently" and "freed now" differ: this can be because of hard links, files another program had open, or changes made by Windows itself.
 
