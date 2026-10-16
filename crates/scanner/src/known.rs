@@ -238,6 +238,20 @@ mod tests {
         // Con un entorno sintético, la lista de rutas conocidas lleva SOLO cachés concretas de navegador.
         let base = dunce::canonicalize(std::env::temp_dir()).unwrap();
         let root = base.join(format!("tesela-test-{}", uuid::Uuid::new_v4()));
+        // Guarda: se borra al soltarla, también si la prueba entra en pánico (solo bajo `%TEMP%`, nombre `tesela-test-*`).
+        struct Guard(PathBuf);
+        impl Drop for Guard {
+            fn drop(&mut self) {
+                if self
+                    .0
+                    .file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with("tesela-test-"))
+                {
+                    let _ = std::fs::remove_dir_all(&self.0);
+                }
+            }
+        }
+        let _guard = Guard(root.clone());
         let mk = |rel: &str| {
             let p = root.join(rel);
             std::fs::create_dir_all(&p).unwrap();
@@ -271,6 +285,5 @@ mod tests {
             );
             assert!(!p.to_string_lossy().contains("Roaming"), "{p:?}");
         }
-        let _ = std::fs::remove_dir_all(&root);
     }
 }

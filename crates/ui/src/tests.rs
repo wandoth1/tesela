@@ -667,7 +667,7 @@ fn el_zoom_animado_dura_unos_frames_y_se_desactiva_sin_animaciones() {
 fn un_escaneo_real_de_una_carpeta_temporal_llega_al_mapa_y_a_la_lista() {
     use std::io::Write;
     // Árbol sintético SOLO bajo %TEMP%\tesela-test-<uuid>.
-    let base = std::env::temp_dir().join(format!("tesela-test-{}", uuid::Uuid::new_v4()));
+    let base = crate::testdir::TestDir::new();
     let root = base.join("raiz");
     std::fs::create_dir_all(root.join("fotos")).unwrap();
     std::fs::create_dir_all(root.join("docs")).unwrap();
@@ -710,13 +710,12 @@ fn un_escaneo_real_de_una_carpeta_temporal_llega_al_mapa_y_a_la_lista() {
     h.key_press(Key::Enter);
     h.run_steps(3);
     h.get_by_label_contains("a.jpg, ");
-    std::fs::remove_dir_all(&base).unwrap();
 }
 
 #[test]
 fn el_escaneo_en_modo_de_respaldo_muestra_la_insignia_aproximado() {
     use std::io::Write;
-    let base = std::env::temp_dir().join(format!("tesela-test-{}", uuid::Uuid::new_v4()));
+    let base = crate::testdir::TestDir::new();
     let root = base.join("raiz");
     std::fs::create_dir_all(root.join("sub")).unwrap();
     for name in ["sub/a.bin", "b.bin"] {
@@ -754,7 +753,6 @@ fn el_escaneo_en_modo_de_respaldo_muestra_la_insignia_aproximado() {
         "insignia en la barra de estado y en los detalles"
     );
     // Un escaneo normal no la lleva.
-    std::fs::remove_dir_all(&base).unwrap();
     let h2 = harness(opts(StartScreen::Map(MapStart::default())));
     assert!(h2.query_all_by_label("Aproximado").count() == 0);
 }
@@ -762,7 +760,7 @@ fn el_escaneo_en_modo_de_respaldo_muestra_la_insignia_aproximado() {
 #[test]
 fn el_breadcrumb_de_una_carpeta_escaneada_usa_su_nombre_y_no_la_ruta_entera() {
     use std::io::Write;
-    let base = std::env::temp_dir().join(format!("tesela-test-{}", uuid::Uuid::new_v4()));
+    let base = crate::testdir::TestDir::new();
     let root = base.join("mi-carpeta");
     std::fs::create_dir_all(&root).unwrap();
     std::fs::File::create(root.join("a.bin"))
@@ -789,7 +787,6 @@ fn el_breadcrumb_de_una_carpeta_escaneada_usa_su_nombre_y_no_la_ruta_entera() {
     h.state_mut().ui_mut().screen = crate::app::Screen::Explore(Box::new(ex));
     h.run_steps(4);
     h.get_by_label("mi-carpeta");
-    std::fs::remove_dir_all(&base).unwrap();
 }
 
 #[test]
@@ -908,7 +905,7 @@ fn los_nombres_en_otros_alfabetos_acaban_en_una_fuente_que_tiene_el_glifo() {
     use crate::fonts::{self, Scripts};
     use std::io::Write;
     // Árbol sintético SOLO bajo %TEMP%\tesela-test-<uuid>, con nombres de cada escritura.
-    let base = std::env::temp_dir().join(format!("tesela-test-{}", uuid::Uuid::new_v4()));
+    let base = crate::testdir::TestDir::new();
     let root = base.join("raiz");
     std::fs::create_dir_all(&root).unwrap();
     let names: [(&str, Scripts); 11] = [
@@ -1005,7 +1002,6 @@ fn los_nombres_en_otros_alfabetos_acaban_en_una_fuente_que_tiene_el_glifo() {
     h.get_by_label("Lista").click();
     h.run_steps(4);
     assert!(h.query_by_label_contains("日本語の名前.txt, ").is_some());
-    std::fs::remove_dir_all(&base).unwrap();
 }
 
 #[test]
@@ -1190,7 +1186,7 @@ fn cancelar_o_cerrar_la_pantalla_detiene_el_escaneo_sin_dejarlo_huerfano() {
     use crate::app::ScanRequest;
     use crate::scan::{ScanOutcome, ScanScreen, test_hooks};
     use std::time::{Duration, Instant};
-    let base = std::env::temp_dir().join(format!("tesela-test-{}", uuid::Uuid::new_v4()));
+    let base = crate::testdir::TestDir::new();
     let mk = |name: &str| {
         let d = base.join(name);
         std::fs::create_dir_all(d.join("a")).unwrap();
@@ -1278,7 +1274,6 @@ fn cancelar_o_cerrar_la_pantalla_detiene_el_escaneo_sin_dejarlo_huerfano() {
         }
     }
     assert!(all_cancelled(&root, 0) <= 40);
-    std::fs::remove_dir_all(&base).unwrap();
 }
 
 /// ¿Hay en la salida del último frame un anillo de foco (trazo de 2 px de acento) alrededor del centro de `r`?

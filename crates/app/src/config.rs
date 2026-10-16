@@ -84,10 +84,34 @@ pub fn config_path() -> Option<PathBuf> {
 mod tests {
     use super::*;
 
-    fn temp_dir() -> PathBuf {
+    /// Carpeta temporal de la prueba con guarda: se borra al soltarla, también si la prueba entra en pánico (solo si es
+    /// hija directa de `%TEMP%` y se llama `tesela-test-*`).
+    struct TempDir(PathBuf);
+
+    impl std::ops::Deref for TempDir {
+        type Target = std::path::Path;
+        fn deref(&self) -> &std::path::Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let ok = self
+                .0
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("tesela-test-"))
+                && self.0.parent().is_some_and(|p| p == std::env::temp_dir());
+            if ok {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+    }
+
+    fn temp_dir() -> TempDir {
         let d = std::env::temp_dir().join(format!("tesela-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&d).unwrap();
-        d
+        TempDir(d)
     }
 
     #[test]
@@ -111,7 +135,6 @@ mod tests {
             !path.with_extension("toml.tmp").exists(),
             "no queda el temporal"
         );
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
@@ -164,6 +187,5 @@ mod tests {
         assert_eq!(c.window_size(), (MIN_SIZE.0, 8192.0));
         std::fs::write(&path, "theme = \"naranja\"\n").unwrap();
         assert_eq!(Config::load(&path), Config::default());
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

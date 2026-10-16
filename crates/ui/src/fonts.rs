@@ -372,9 +372,8 @@ mod tests {
 
     #[test]
     fn un_equipo_sin_las_fuentes_de_reserva_las_declara_ausentes_para_saltarse_la_prueba() {
-        // Carpeta de fuentes FALSA (solo %TEMP%	esela-test-<uuid>): un Windows Server mínimo.
-        let dir = std::env::temp_dir().join(format!("tesela-test-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        // Carpeta de fuentes FALSA (solo `%TEMP%\tesela-test-<uuid>`, con guarda): un Windows Server mínimo.
+        let dir = crate::testdir::TestDir::new();
         let all = Scripts::KANA
             | Scripts::HANGUL
             | Scripts::THAI
@@ -403,18 +402,16 @@ mod tests {
         // Sin la fuente de símbolos, solo falta ese grupo.
         std::fs::remove_file(dir.join("seguisym.ttf")).unwrap();
         assert_eq!(missing_groups(&dir, all), vec!["Tesela-symbols"]);
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
     fn con_japones_y_chino_a_la_vez_se_cargan_las_dos_reservas_y_sin_duplicar_el_archivo() {
-        let dir = std::env::temp_dir().join(format!("tesela-test-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let dir = crate::testdir::TestDir::new();
         for f in ["segoeui.ttf", "segoeuib.ttf", "msgothic.ttc", "msyh.ttc"] {
             std::fs::write(dir.join(f), b"x").unwrap();
         }
         let both = Scripts::KANA | Scripts::HAN;
-        let (fd, _) = definitions(Some(&dir), both);
+        let (fd, _) = definitions(Some(dir.path()), both);
         let prop = &fd.families[&FontFamily::Proportional];
         // La japonesa primero y la china después (para los caracteres solo simplificados).
         let kana = prop.iter().position(|n| n == "Tesela-kana").expect("kana");
@@ -422,12 +419,11 @@ mod tests {
         assert!(kana < han, "{prop:?}");
         // Si la única fuente CJK es YaHei, sirve para las dos y no se carga dos veces.
         // (otra carpeta: los bytes de cada ruta se comparten y se recuerdan durante el proceso)
-        let dir2 = std::env::temp_dir().join(format!("tesela-test-{}", uuid::Uuid::new_v4()));
-        std::fs::create_dir_all(&dir2).unwrap();
+        let dir2 = crate::testdir::TestDir::new();
         for f in ["segoeui.ttf", "segoeuib.ttf", "msyh.ttc"] {
             std::fs::write(dir2.join(f), b"x").unwrap();
         }
-        let (fd, _) = definitions(Some(&dir2), both);
+        let (fd, _) = definitions(Some(dir2.path()), both);
         let prop = &fd.families[&FontFamily::Proportional];
         assert_eq!(
             prop.iter()
@@ -436,7 +432,6 @@ mod tests {
             1,
             "{prop:?}"
         );
-        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

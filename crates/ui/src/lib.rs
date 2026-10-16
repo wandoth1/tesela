@@ -38,4 +38,6 @@ pub use i18n::{Lang, Tr};
 pub use theme::ThemePref;
 
 #[cfg(test)]
+mod testdir;
+#[cfg(test)]
 mod tests;
