@@ -170,6 +170,11 @@ impl Protection {
         self.anc_denied.contains(key) || self.anc_retain.contains(key)
     }
 
+    /// ¿Es `key` una raíz que se respeta como tal (intocable como destino o carpeta conocida)?
+    pub fn is_retained_root(&self, key: &PathKey) -> bool {
+        self.untouchable.contains(key) || self.content_roots.contains(key)
+    }
+
     /// ¿Es `key` una raíz de carpeta conocida ("Contenido de …")?
     pub fn is_content_root(&self, key: &PathKey) -> bool {
         self.content_roots.contains(key)

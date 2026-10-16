@@ -415,7 +415,7 @@ fn sustituir_un_hijo_entre_el_listado_y_la_apertura_se_rechaza() {
     let target = sb.path("R/victima.bin");
     let done = Arc::new(AtomicBool::new(false));
     let d2 = done.clone();
-    let _g = test_hooks::install(move |p| {
+    let _g = test_hooks::install(sb.long_root(), move |p| {
         if p.file_name().is_some_and(|n| n == "victima.bin") && !d2.swap(true, Ordering::SeqCst) {
             // Justo antes de abrirlo: borrar y crear otro archivo del mismo tamaño y nombre (otro FileId).
             fs::remove_file(p).unwrap();
@@ -438,7 +438,7 @@ fn cambiar_un_hijo_directorio_por_un_junction_antes_de_abrirlo_no_borra_nada_fue
     let (sbp_sub, sbp_out) = (sb.path("R/sub"), sb.path("fuera"));
     let done = Arc::new(AtomicBool::new(false));
     let d2 = done.clone();
-    let _g = test_hooks::install(move |p| {
+    let _g = test_hooks::install(sb.long_root(), move |p| {
         if p.file_name().is_some_and(|n| n == "sub") && !d2.swap(true, Ordering::SeqCst) {
             // El directorio listado se sustituye por un junction a otra carpeta del sandbox.
             fs::remove_dir_all(&sbp_sub).unwrap();
@@ -587,7 +587,7 @@ fn cancelar_a_mitad_deja_de_empezar_entradas_y_no_deja_nada_a_medias_roto() {
     let env = mk_env(Mode::Delete, no_protection(), 0, events);
     let c = env.cancel.clone();
     let count = Arc::new(AtomicUsize::new(0));
-    let _g = test_hooks::install(move |_| {
+    let _g = test_hooks::install(sb.long_root(), move |_| {
         if count.fetch_add(1, Ordering::SeqCst) == 30 {
             c.store(true, Ordering::SeqCst);
         }

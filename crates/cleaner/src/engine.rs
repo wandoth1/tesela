@@ -150,6 +150,14 @@ pub enum Outcome {
     Deleted,
     /// Simulación: se habría borrado.
     WouldDelete,
+    /// Enviado a la Papelera (verificado).
+    Recycled,
+    /// Simulación: se habría enviado a la Papelera.
+    WouldRecycle,
+    /// Tras enviarlo, sigue en su sitio: no se envió.
+    NotRecycled,
+    /// Desapareció sin llegar a la Papelera: se eliminó definitivamente.
+    DeletedUnexpectedly,
     InUse,
     Denied,
     Changed,
@@ -1027,36 +1035,51 @@ fn process_child(
 }
 
 /// Ganchos de las pruebas de carreras: se ejecutan justo ANTES de abrir cada entrada (ya listada y aprobada), que es
-/// donde un atacante (o un programa) podría sustituirla. Solo existen en las pruebas.
+/// donde un atacante (o un programa) podría sustituirla. Solo existen en las pruebas y solo actúan sobre rutas que
+/// cuelgan de la carpeta de la prueba que los instaló (las demás pruebas corren en paralelo).
 #[cfg(test)]
 pub(crate) mod test_hooks {
-    use std::path::Path;
+    use crate::paths::PathKey;
+    use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
 
     type Hook = Arc<dyn Fn(&Path) + Send + Sync>;
-    static HOOK: Mutex<Option<Hook>> = Mutex::new(None);
-    static SERIAL: Mutex<()> = Mutex::new(());
+    static HOOKS: Mutex<Vec<(u64, PathKey, Hook)>> = Mutex::new(Vec::new());
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
-    /// Instala un gancho mientras viva la guarda (y serializa las pruebas que usan ganchos).
-    pub struct HookGuard {
-        _serial: std::sync::MutexGuard<'static, ()>,
-    }
+    /// Quita el gancho al soltarla.
+    pub struct HookGuard(u64);
 
-    pub fn install(f: impl Fn(&Path) + Send + Sync + 'static) -> HookGuard {
-        let serial = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
-        *HOOK.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(f));
-        HookGuard { _serial: serial }
+    /// Instala un gancho que solo se ejecuta para rutas bajo `root`.
+    pub fn install(root: PathBuf, f: impl Fn(&Path) + Send + Sync + 'static) -> HookGuard {
+        let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        HOOKS.lock().unwrap_or_else(|e| e.into_inner()).push((
+            id,
+            PathKey::new(&root),
+            Arc::new(f),
+        ));
+        HookGuard(id)
     }
 
     impl Drop for HookGuard {
         fn drop(&mut self) {
-            *HOOK.lock().unwrap_or_else(|e| e.into_inner()) = None;
+            HOOKS
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .retain(|h| h.0 != self.0);
         }
     }
 
     pub fn before_open(p: &Path) {
-        let h = HOOK.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        if let Some(h) = h {
+        let key = PathKey::new(p);
+        let hooks: Vec<Hook> = HOOKS
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|(_, root, _)| key.is_same_or_under(root))
+            .map(|(_, _, h)| h.clone())
+            .collect();
+        for h in hooks {
             h(p);
         }
     }
