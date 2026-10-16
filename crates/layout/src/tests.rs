@@ -823,3 +823,57 @@ fn el_presupuesto_es_unico_para_los_dos_niveles() {
         }
     }
 }
+
+// --- Overlay de limpieza ------------------------------------------------------------------------------------------------
+
+#[test]
+fn con_overlay_el_layout_oculta_lo_eliminado_y_usa_los_tamanos_visibles() {
+    use tesela_model::{Overlay, View};
+    // raiz: d0 (3 archivos), f1, f2, d3...
+    let spec = random_spec(11, 12, 5);
+    let tree = build(&spec, None);
+    let mut o = Overlay::new(&tree);
+    let first = tree.children(0).next().unwrap();
+    let second = tree.children(0).nth(1).unwrap();
+    let total = tree.node(0).alloc;
+    let removed_alloc = tree.node(first).alloc;
+    o.remove(&tree, first);
+    // Una limpieza parcial de otro hijo.
+    let part = tree.node(second).alloc / 2;
+    o.shrink(&tree, second, part, part, 0);
+    let view = View::new(&tree, Some(&o));
+    let mut k = key((900, 600), Depth::Two);
+    k.version = 2;
+    let l = Layout::compute_view(view, k);
+    // Ninguna celda es el nodo eliminado ni algo de dentro.
+    for c in l.cells() {
+        if let CellKind::Node(n) = c.kind {
+            assert!(view.is_visible(n), "celda de un nodo eliminado: {n}");
+            assert_ne!(n, first);
+        }
+    }
+    // El área total sigue llenando el viewport y la suma visible es la de antes menos lo quitado.
+    let kids = Children::of_view(&view, 0);
+    let sum: u64 = kids.iter_from(0).map(|c| view.alloc(c)).sum();
+    assert_eq!(sum, total - removed_alloc - part);
+    assert_eq!(view.alloc(0), total - removed_alloc - part);
+    let covered: f32 = level(&l, 0).iter().map(|c| c.rect.w * c.rect.h).sum();
+    assert!(
+        (covered - 900.0 * 600.0).abs() < 900.0 * 600.0 * 0.01,
+        "{covered}"
+    );
+    // El orden de los hijos visibles es por tamaño visible descendente.
+    let sizes: Vec<u64> = kids.iter_from(0).map(|c| view.alloc(c)).collect();
+    assert!(sizes.windows(2).all(|w| w[0] >= w[1]), "{sizes:?}");
+    // Sin overlay vuelve al árbol base; la caché distingue las versiones.
+    let base = Layout::compute(&tree, key((900, 600), Depth::Two));
+    assert!(
+        base.cells().len() > l.cells().len()
+            || base.cells().iter().any(|c| c.kind == CellKind::Node(first))
+    );
+    let mut cache = LayoutCache::new(4);
+    let a = cache.get_view(view, k);
+    let b = cache.get_view(view, k);
+    assert!(Arc::ptr_eq(&a, &b));
+    assert_eq!(cache.hits(), 1);
+}

@@ -24,7 +24,7 @@ use crate::grid::Grid;
 use crate::order::Children;
 use crate::squarify::squarify;
 use std::sync::OnceLock;
-use tesela_model::{NodeId, Tree};
+use tesela_model::{NodeId, Tree, View};
 
 /// Profundidad del layout.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -196,8 +196,14 @@ pub struct Layout {
 }
 
 impl Layout {
-    /// Calcula el layout de `key` sobre `tree`.
+    /// Calcula el layout de `key` sobre `tree` (sin overlay de limpieza).
     pub fn compute(tree: &Tree, key: Key) -> Layout {
+        Layout::compute_view(View::new(tree, None), key)
+    }
+
+    /// Calcula el layout de `key` sobre una vista del árbol (con el overlay de limpieza, si lo hay): los tamaños son los
+    /// visibles y los hijos de las carpetas tocadas, los que quedan.
+    pub fn compute_view(view: View, key: Key) -> Layout {
         let (w, h) = (key.size.0 as f32, key.size.1 as f32);
         let mut cells: Vec<Cell> = Vec::new();
         let mut others: Vec<Others> = Vec::new();
@@ -205,10 +211,10 @@ impl Layout {
         let params = key.params;
         let viewport = Rect::new(0.0, 0.0, w, h);
 
-        let kids = Children::of(tree, key.root.node);
+        let kids = Children::of_view(&view, key.root.node);
         let end = (key.root.end as usize).min(kids.len());
         let start = (key.root.start as usize).min(end);
-        let alloc_of = |i: usize| tree.node(kids.get(i)).alloc;
+        let alloc_of = |i: usize| view.alloc(kids.get(i));
         let area = (w as f64) * (h as f64);
         let total: f64 = (start..end).map(|i| alloc_of(i) as f64).sum();
 
@@ -320,7 +326,7 @@ impl Layout {
             stats.level0 = cells.len();
 
             if key.depth == Depth::Two {
-                hint_level(tree, &params, &mut cells, &mut stats);
+                hint_level(view, &params, &mut cells, &mut stats);
             }
         }
         Layout {
@@ -389,7 +395,8 @@ fn partition(n: usize, pred: impl Fn(usize) -> bool) -> usize {
 
 /// Nivel insinuado: los hijos de cada carpeta del nivel 0, de las más grandes a las más pequeñas (así el tope de
 /// rectángulos se gasta primero donde más se ve).
-fn hint_level(tree: &Tree, params: &Params, cells: &mut Vec<Cell>, stats: &mut LayoutStats) {
+fn hint_level(view: View, params: &Params, cells: &mut Vec<Cell>, stats: &mut LayoutStats) {
+    let tree = view.tree();
     let level0 = cells.len();
     let lod_area = (params.lod_px as f64).powi(2);
     let mut rects: Vec<Rect> = Vec::new();
@@ -398,8 +405,12 @@ fn hint_level(tree: &Tree, params: &Params, cells: &mut Vec<Cell>, stats: &mut L
         let CellKind::Node(node) = cells[pi].kind else {
             continue;
         };
-        let n = tree.node(node);
-        if !n.is_dir() || n.child_count == 0 || n.alloc == 0 {
+        let total_alloc = view.alloc(node);
+        if !tree.node(node).is_dir() || total_alloc == 0 {
+            continue;
+        }
+        let kids = view.kids(node);
+        if kids.is_empty() {
             continue;
         }
         let Some(inner) = params.inner_rect(&cells[pi].rect) else {
@@ -409,11 +420,10 @@ fn hint_level(tree: &Tree, params: &Params, cells: &mut Vec<Cell>, stats: &mut L
             stats.truncated = true;
             break;
         }
-        let kids = tree.children(node);
-        let scale = (inner.w as f64) * (inner.h as f64) / n.alloc as f64;
+        let scale = (inner.w as f64) * (inner.h as f64) / total_alloc as f64;
         // Los hijos que quedarían por debajo del área mínima de dibujo se dejan sin crear.
         let mut count = partition(kids.len(), |i| {
-            tree.node(kids.start + i as u32).alloc as f64 * scale >= lod_area
+            view.alloc(kids.get(i)) as f64 * scale >= lod_area
         });
         let budget = params.max_rects - cells.len();
         if count > budget {
@@ -424,18 +434,18 @@ fn hint_level(tree: &Tree, params: &Params, cells: &mut Vec<Cell>, stats: &mut L
             continue;
         }
         vals.clear();
-        vals.extend((0..count).map(|i| tree.node(kids.start + i as u32).alloc as f64));
+        vals.extend((0..count).map(|i| view.alloc(kids.get(i)) as f64));
         rects.clear();
         // `total` es el `alloc` de la carpeta: lo que no se reparte (la cola diminuta y el espacio propio de la
         // carpeta) queda como hueco al final, sin cambiar la escala de las celdas que sí se dibujan.
-        squarify(&vals, n.alloc as f64, inner, &mut rects);
+        squarify(&vals, total_alloc as f64, inner, &mut rects);
         for (i, r) in rects.iter().enumerate() {
             if r.w < params.lod_px || r.h < params.lod_px {
                 continue;
             }
             cells.push(Cell {
                 rect: *r,
-                kind: CellKind::Node(kids.start + i as u32),
+                kind: CellKind::Node(kids.get(i)),
                 level: 1,
                 parent: pi as u32,
             });

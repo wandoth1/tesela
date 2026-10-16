@@ -2,7 +2,7 @@
 
 use crate::layout::{Key, Layout};
 use std::sync::Arc;
-use tesela_model::Tree;
+use tesela_model::{Tree, View};
 
 /// Caché pequeña (las últimas claves usadas) de layouts. Guardar más de uno permite animar el zoom entre dos
 /// niveles y volver atrás sin recalcular.
@@ -27,6 +27,11 @@ impl LayoutCache {
 
     /// El layout de `key`: el guardado si la clave coincide exactamente, o uno nuevo (que desaloja al más antiguo).
     pub fn get(&mut self, tree: &Tree, key: Key) -> Arc<Layout> {
+        self.get_view(View::new(tree, None), key)
+    }
+
+    /// Como [`LayoutCache::get`] sobre una vista con overlay: quien llama cambia `key.version` cuando cambia el overlay.
+    pub fn get_view(&mut self, view: View, key: Key) -> Arc<Layout> {
         if let Some(pos) = self.entries.iter().position(|(k, _)| *k == key) {
             self.hits += 1;
             let e = self.entries.remove(pos);
@@ -35,7 +40,7 @@ impl LayoutCache {
             return l;
         }
         self.misses += 1;
-        let layout = Arc::new(Layout::compute(tree, key));
+        let layout = Arc::new(Layout::compute_view(view, key));
         if self.entries.len() >= self.capacity {
             self.entries.remove(0);
         }

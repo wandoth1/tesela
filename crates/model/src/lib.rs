@@ -9,12 +9,14 @@
 
 pub mod builder;
 pub mod flags;
+pub mod overlay;
 pub mod record;
 pub mod tree;
 pub mod types;
 pub mod wtf8;
 
 pub use builder::{BuildError, FinishOptions, SYSTEM_INFO_NAME, TreeBuilder};
+pub use overlay::{Delta, Kids, Overlay, View};
 pub use record::{Batch, DirOutcome, EntryData, NO_PARENT, Record};
 pub use tree::{Hist, NONE, Node, NodeId, Tree, TreeStats};
 pub use types::{AGE_BUCKETS, FileType, age_bucket};

@@ -6,7 +6,7 @@
 //! así que en el caso normal esto es el rango contiguo del árbol, sin reservar memoria.
 
 use std::ops::Range;
-use tesela_model::{NodeId, Tree, flags};
+use tesela_model::{Kids, NodeId, Tree, View, flags};
 
 /// Por debajo de este porcentaje del tamaño del directorio, el bloque del sistema no se muestra.
 pub const SYSTEM_BLOCK_MIN_PERCENT: u64 = 1;
@@ -21,26 +21,35 @@ pub enum Children {
 }
 
 impl Children {
-    /// Hijos visibles de `node`.
+    /// Hijos visibles de `node` (sin overlay de limpieza).
     pub fn of(tree: &Tree, node: NodeId) -> Children {
-        let r = tree.children(node);
-        if r.is_empty() {
+        Children::of_view(&View::new(tree, None), node)
+    }
+
+    /// Hijos visibles de `node` a través de una vista (con el overlay de limpieza, si lo hay).
+    pub fn of_view(view: &View, node: NodeId) -> Children {
+        let tree = view.tree();
+        let kids = view.kids(node);
+        if kids.is_empty() {
             return Children::Range(0..0);
         }
-        let last = r.end - 1;
+        let last = kids.get(kids.len() - 1);
         if tree.node(last).flags & flags::SYSTEM_INFO == 0 {
-            return Children::Range(r);
+            return match kids {
+                Kids::Range(r) => Children::Range(r),
+                Kids::List(v) => Children::List(v),
+            };
         }
-        let sys = tree.node(last);
-        let parent_alloc = tree.node(node).alloc;
-        let visible = sys.alloc > 0
-            && (sys.alloc as u128) * 100
+        let sys_alloc = view.alloc(last);
+        let parent_alloc = view.alloc(node);
+        let visible = sys_alloc > 0
+            && (sys_alloc as u128) * 100
                 >= (parent_alloc as u128) * SYSTEM_BLOCK_MIN_PERCENT as u128;
-        let mut ids: Vec<NodeId> = (r.start..last).collect();
+        let mut ids: Vec<NodeId> = kids.iter().take(kids.len() - 1).collect();
         if visible {
             // `partition_point` exige que el criterio sea `true` primero y `false` después: es el caso, porque
-            // los hijos van en orden descendente de `alloc`.
-            let pos = ids.partition_point(|&c| tree.node(c).alloc >= sys.alloc);
+            // los hijos van en orden descendente de tamaño visible.
+            let pos = ids.partition_point(|&c| view.alloc(c) >= sys_alloc);
             ids.insert(pos, last);
         }
         Children::List(ids)
