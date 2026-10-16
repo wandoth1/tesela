@@ -427,6 +427,7 @@ impl Backend for DemoBackend {
                 unverifiable: 0,
                 bytes_hint: b.bytes_hint,
                 failed: false,
+                ..BinReport::default()
             });
             progress.add_item_done();
         }

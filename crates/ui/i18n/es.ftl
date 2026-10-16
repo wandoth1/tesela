@@ -473,6 +473,11 @@ sum-bin-changed =
         [one] { $count } elemento de la Papelera cambió desde la confirmación y no se tocó.
        *[other] { $count } elementos de la Papelera cambiaron desde la confirmación y no se tocaron.
     }
+sum-bin-replaced =
+    { $n ->
+        [one] { $count } elemento de la Papelera cambió justo antes de borrarlo: Windows borró otro objeto con su nombre. No se pudo evitar y no se puede deshacer.
+       *[other] { $count } elementos de la Papelera cambiaron justo antes de borrarlos: Windows borró otros objetos con sus nombres. No se pudo evitar y no se puede deshacer.
+    }
 sum-log-failed = No se pudo escribir el registro de la limpieza, así que se detuvo en el siguiente punto seguro y no se tocó nada más. Lo que ya estaba hecho se queda y puede no constar entero en el registro.
 sum-log-truncated = El registro de la limpieza llegó a su tamaño máximo y dejó de anotar: lo que se hizo después no consta en él.
 sum-bin-unverifiable =

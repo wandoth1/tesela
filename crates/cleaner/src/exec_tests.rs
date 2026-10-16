@@ -481,6 +481,82 @@ fn vaciar_salta_el_elemento_cuya_identidad_cambio_y_lo_deja_en_el_registro() {
     assert_eq!(ids(), before);
 }
 
+/// A-M4 con la Papelera real (solo elementos propios): si el `$R` del PRIMER elemento se sustituye justo antes de que la shell
+/// lo borre (la ventana entre la verificación y el borrado), el receptor lo veta. El informe lo cuenta como "cambiado desde
+/// la confirmación" (no se purgó nada: la shell no sigue con el resto del lote tras el veto), el registro lleva una línea
+/// `vetoed` y una `not-processed` por cada uno de los demás, y el sustituto sigue ahí.
+#[test]
+fn vaciar_con_un_r_sustituido_al_final_consta_como_vetado_y_no_se_purga_nada_mas() {
+    struct RemoveOnDrop(PathBuf);
+    impl Drop for RemoveOnDrop {
+        fn drop(&mut self) {
+            let _ = fs::remove_file(&self.0);
+        }
+    }
+    let _lock = bin_lock();
+    if !bin_usable() {
+        return;
+    }
+    let before = ids();
+    let sb = Sandbox::new();
+    let _guard = BinGuard { uuid: sb.uuid() };
+    let c = cleaner_for(&sb);
+    for n in ["uno.txt", "dos.txt", "tres.txt"] {
+        sb.write(&format!("Docs/{n}"), 2_000);
+    }
+    let mut b = Basket::new();
+    for n in ["uno.txt", "dos.txt", "tres.txt"] {
+        b.add_path(sb.long(&format!("Docs/{n}")), c.protection());
+    }
+    exec(&c, &approve(&c, &b), false, false, None).unwrap();
+    let mut v = Basket::new();
+    v.set_empty_bin(true);
+    let plan = c.approve(&v, &ApproveOptions::default(), &cancel());
+    let items = plan.bin.as_ref().unwrap().items.clone();
+    assert_eq!(items.len(), 3);
+    // El primero en el orden en que la shell los procesa.
+    let victim = PathBuf::from(&items[0].id);
+    let _apartado = RemoveOnDrop(victim.with_extension("apartado"));
+    let hook = crate::engine::test_hooks::install_before_shell(victim.clone(), {
+        let victim = victim.clone();
+        move |_| {
+            fs::rename(&victim, victim.with_extension("apartado")).unwrap();
+            fs::write(&victim, b"sustituto").unwrap();
+        }
+    });
+    let log = Arc::new(LogWriter::create(&sb.path("Tesela"), false).unwrap());
+    let rep = exec(&c, &plan, false, false, Some(log.clone())).unwrap();
+    let bin = rep.bin.unwrap();
+    eprintln!("vaciar con veto: {bin:?}");
+    assert_eq!((bin.requested, bin.purged, bin.still_there), (3, 0, 3));
+    assert_eq!(bin.changed, 1, "el vetado cuenta como cambiado");
+    assert_eq!((bin.replaced, bin.unverifiable), (0, 0));
+    assert!(!bin.failed, "el E_ABORT propio no es un fallo de la shell");
+    assert_eq!(fs::read(&victim).unwrap(), b"sustituto");
+    let text = fs::read_to_string(log.path()).unwrap();
+    let outs: Vec<String> = text
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|v| v["t"] == "bin-item")
+        .map(|v| v["out"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(outs.iter().filter(|o| *o == "vetoed").count(), 1, "{text}");
+    assert_eq!(
+        outs.iter().filter(|o| *o == "not-processed").count(),
+        2,
+        "{text}"
+    );
+    assert!(!outs.iter().any(|o| o == "purged"), "{text}");
+    drop(hook);
+    let left: Vec<BinItem> = recycle::list_bin()
+        .unwrap()
+        .into_iter()
+        .filter(|i| is_mine(i, &sb.uuid()))
+        .collect();
+    recycle::purge_items(&left, &AtomicBool::new(false)).unwrap();
+    assert_eq!(ids(), before);
+}
+
 /// M4 con la Papelera real (solo un elemento propio): si no se puede escribir la intención `bin-begin` del trozo, la shell NO
 /// llega a ver ese trozo: nada se purga (`purged = 0`), el elemento sigue en la Papelera y el informe dice `log_failed`.
 #[test]

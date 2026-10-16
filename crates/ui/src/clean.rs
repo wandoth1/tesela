@@ -1103,11 +1103,12 @@ fn summary_lines(env: &Env, s: &Summary) -> Vec<(String, bool)> {
         if b.unverifiable > 0 {
             v.push((n("sum-bin-unverifiable", b.unverifiable), true));
         }
-        if b.still_there > b.changed + b.unverifiable {
-            v.push((
-                n("sum-bin-failed", b.still_there - b.changed - b.unverifiable),
-                true,
-            ));
+        if b.replaced > 0 {
+            v.push((n("sum-bin-replaced", b.replaced), true));
+        }
+        let explained = b.changed + b.unverifiable + b.replaced;
+        if b.still_there > explained {
+            v.push((n("sum-bin-failed", b.still_there - explained), true));
         }
     }
     // Si "liberado ahora" y "eliminado" divergen, se dice por qué en una línea.

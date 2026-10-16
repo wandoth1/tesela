@@ -211,6 +211,10 @@ pub struct BinReport {
     /// De ellos, los que NO se tocaron porque su `$R` o su `$I` ya no eran los de la enumeración (cambiaron desde la
     /// confirmación) o no se pudieron verificar.
     pub changed: u64,
+    /// Elementos que la shell dio por purgados pero cuyo objeto aprobado NO se eliminó: entre la última comprobación y el
+    /// borrado se sustituyó su `$R` y se borró lo que había con su nombre (A-M4). No cuentan como purgados y no se pudo
+    /// evitar: la ventana que queda entre el receptor y la shell.
+    pub replaced: u64,
     /// Elementos que no se tocaron porque su sistema de archivos no da identidad (FAT, exFAT) y no se pueden verificar.
     /// No es que hayan cambiado (H6.9).
     pub unverifiable: u64,
@@ -637,6 +641,20 @@ impl Cleaner {
                     }
                     l.flush();
                 }
+                recycle::PurgeStep::Replaced(items) => {
+                    // A-M4: la shell dio la purga por buena pero lo borrado no fue el objeto aprobado.
+                    for i in items {
+                        l.write_bin_item(&i.original_path(), &i.id, i.size, "replaced");
+                    }
+                    l.flush();
+                }
+                recycle::PurgeStep::Vetoed(items) => {
+                    // A-M4: la shell iba a borrar algo que ya no era lo capturado y el receptor lo vetó.
+                    for i in items {
+                        l.write_bin_item(&i.original_path(), &i.id, i.size, "vetoed");
+                    }
+                    l.flush();
+                }
                 recycle::PurgeStep::Done(done) => {
                     for (i, hr) in done {
                         let out = match hr {
@@ -657,13 +675,27 @@ impl Cleaner {
                     .events
                     .iter()
                     .filter(|e| e.succeeded() && wanted.contains(&e.item))
+                    .filter(|e| !out.replaced_bin.contains(&e.item))
                     .map(|e| &e.item)
                     .collect();
+                rep.replaced = out
+                    .replaced_bin
+                    .iter()
+                    .filter(|i| wanted.contains(i))
+                    .count() as u64;
                 rep.purged = purged.len() as u64;
                 rep.still_there = rep.requested - rep.purged;
-                rep.changed = out.changed_bin.len() as u64;
+                // Cambiaron desde la confirmación: los que no cuadraban al enumerar y los que cambiaron DESPUÉS, justo antes de
+                // que la shell los borrara (veto de `PreDeleteItem`, A-M4).
+                rep.changed = (out.changed_bin.len()
+                    + out
+                        .vetoed
+                        .iter()
+                        .filter(|v| wanted.contains(&v.item))
+                        .count()) as u64;
                 rep.unverifiable = out.unverifiable_bin.len() as u64;
-                rep.failed = out.error.is_some();
+                // El `E_ABORT` que provoca el propio receptor al vetar no es un fallo de la shell.
+                rep.failed = out.error.is_some() && !out.sink_aborted;
             }
             Err(_) => {
                 rep.failed = true;

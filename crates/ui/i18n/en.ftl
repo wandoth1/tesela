@@ -472,6 +472,11 @@ sum-bin-changed =
         [one] { $count } Recycle Bin item changed since you confirmed and was not touched.
        *[other] { $count } Recycle Bin items changed since you confirmed and were not touched.
     }
+sum-bin-replaced =
+    { $n ->
+        [one] { $count } Recycle Bin item changed right before it was deleted: Windows deleted a different object with its name. It could not be prevented and cannot be undone.
+       *[other] { $count } Recycle Bin items changed right before they were deleted: Windows deleted different objects with their names. It could not be prevented and cannot be undone.
+    }
 sum-log-failed = The cleaning log could not be written, so the cleaning stopped at the next safe point and nothing else was touched. What was already done stays and may not be fully recorded in the log.
 sum-log-truncated = The cleaning log reached its maximum size and stopped recording: what was done afterwards is not in it.
 sum-bin-unverifiable =
