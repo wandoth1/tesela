@@ -379,6 +379,9 @@ impl LogWriter {
             // Se suelta el escritor anterior (vuelca lo pendiente y cierra el handle) y se deja uno cerrado.
             drop(std::mem::replace(&mut *g, BufWriter::new(LogFile::Closed)));
         }
+        // H6a: un escritor descartado ya no es un registro válido: `ok()` lo dice desde ya (sin esperar a una escritura que
+        // falle). No se activa la cancelación del ejecutor: descartar es justo lo que hace al rechazar una ejecución.
+        self.failed.store(true, Ordering::SeqCst);
         match fs::remove_file(&self.path) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
             _ => Ok(()),
@@ -1154,6 +1157,7 @@ mod tests {
         let path = w.path().to_path_buf();
         let reader = File::open(&path).unwrap();
         assert!(w.discard().is_ok());
+        assert!(!w.ok(), "descartado: ya no es un registro válido");
         drop(reader);
         assert!(!path.exists(), "descartado");
         // Escribir tras descartar no puede pasar por bueno.

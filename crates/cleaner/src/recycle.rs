@@ -2972,7 +2972,7 @@ mod tests {
     }
 
     /// Un archivo a enviar con la comprobación de tamaño (A2-B1): su handle de guarda (el mismo que abre el ejecutor) y lo que se
-    /// contó para el presupuesto. Devuelve también el handle para poder soltarlo al final.
+    /// contó para el presupuesto. El handle viaja DENTRO del `SendItem` (`size_guard`) y se cierra al soltar el elemento.
     fn sized_item(sb: &Sandbox, rel: &str, size: usize, budget: u64) -> SendItem {
         sb.write(rel, size);
         let path = sb.long(rel);
@@ -3004,6 +3004,23 @@ mod tests {
         // Encoge: dentro de lo contado (el presupuesto solo se rompe al crecer).
         std::fs::write(sb.path("z/a.txt"), vec![1u8; 10]).unwrap();
         assert_eq!(guard.check(&os(&a.path)), Ok(()));
+        // H3: sin tolerancia alguna. Con un presupuesto de 4 096, 4 096 bytes caben (en disco, un cluster) y 4 097 no (el
+        // tamaño lógico pasa de lo contado aunque la asignación siga siendo de un cluster u ocho KiB).
+        let e = sized_item(&sb, "z/exacto.txt", 4_096, 4_096);
+        let ge = Guard::new(std::slice::from_ref(&e));
+        assert_eq!(ge.check(&os(&e.path)), Ok(()), "justo lo contado");
+        std::fs::write(sb.path("z/exacto.txt"), vec![1u8; 4_097]).unwrap();
+        assert_eq!(ge.check(&os(&e.path)), Err(VetoKind::Grew), "un byte más");
+        // H3: la asignación en disco cuenta aunque el tamaño lógico no cambie (`FileAllocationInfo` sin tocar `EndOfFile`).
+        let pre = sized_item(&sb, "z/prealoca.txt", 1_000, 4_096);
+        let gp = Guard::new(std::slice::from_ref(&pre));
+        assert_eq!(gp.check(&os(&pre.path)), Ok(()));
+        sys::preallocate_for_test(&sb.path("z/prealoca.txt"), 1 << 20).unwrap();
+        assert_eq!(
+            gp.check(&os(&pre.path)),
+            Err(VetoKind::Grew),
+            "más en disco"
+        );
         // Solo el tamaño LÓGICO pasa de lo contado (un disperso: poco en disco, mucho lógico): también se veta.
         let big = sb.path("z/dispersa.bin");
         crate::testutil::sparse_file(&big, 1 << 30);

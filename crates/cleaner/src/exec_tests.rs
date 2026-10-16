@@ -3378,6 +3378,28 @@ fn dos_directorios_pequenos_de_astra_no_comparten_operacion_y_el_que_crece_no_se
     assert!(*fake.used.lock().unwrap() <= 90_000);
 }
 
+/// H1 (auditoría): la recomprobación del presupuesto justo antes de entregar un DIRECTORIO. Papelera simulada de 10 000 con 8 950
+/// ya ocupados (presupuesto 9 000 - 8 950 = 50): la carpeta de 200 bytes (unos 4 KiB en disco) ya no cabe cuando se la va a
+/// entregar. No llega a la shell: `NoRoom` (con la real, la shell la habría eliminado o expulsado lo que hay en la Papelera).
+#[test]
+fn un_directorio_que_ya_no_cabe_al_entregarlo_no_llega_a_la_shell() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(10_000), 8_950, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    sb.write("Docs/d1/x.bin", 200);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/d1"), c.protection());
+    let plan = approve(&c, &b);
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    assert_eq!(
+        rep.items[0].status,
+        ItemStatus::NotRecycled(RecycleFail::NoRoom)
+    );
+    assert!(fake.names().is_empty());
+    assert!(sb.path("Docs/d1/x.bin").exists());
+    assert_eq!(rep.no_room, 1);
+}
+
 /// A2-B1: un directorio NUNCA comparte operación con nada (ni con otros directorios ni con archivos); los archivos pequeños
 /// contiguos sí se agrupan. Cola: archivo, directorio, directorio, archivo, archivo => [a], [d1], [d2], [b, c].
 #[test]

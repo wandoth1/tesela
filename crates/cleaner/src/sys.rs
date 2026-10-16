@@ -527,8 +527,6 @@ pub struct Sizes {
     pub alloc: u64,
     /// `EndOfFile`: tamaño lógico.
     pub logical: u64,
-    /// `DeletePending`: alguien ya lo marcó para borrar.
-    pub delete_pending: bool,
 }
 
 impl Sizes {
@@ -545,7 +543,6 @@ pub fn sizes(h: &Handle) -> Result<Sizes, Win32> {
     Ok(Sizes {
         alloc: std_info.AllocationSize.max(0) as u64,
         logical: std_info.EndOfFile.max(0) as u64,
-        delete_pending: std_info.DeletePending,
     })
 }
 
@@ -721,6 +718,28 @@ pub(crate) fn delete_on_handle(h: &Handle) -> Result<(), Win32> {
             FileDispositionInfo,
             &legacy as *const _ as *const c_void,
             size_of::<FILE_DISPOSITION_INFO>() as u32,
+        )
+    };
+    if ok == 0 { Err(last_error()) } else { Ok(()) }
+}
+
+/// SOLO PARA PRUEBAS: preasigna `bytes` en disco (`FileAllocationInfo`) SIN cambiar el tamaño lógico (`EndOfFile`).
+#[cfg(test)]
+pub fn preallocate_for_test(path: &Path, bytes: i64) -> Result<(), Win32> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ALLOCATION_INFO, FILE_WRITE_DATA, FileAllocationInfo,
+    };
+    let h = open_path(path, FILE_WRITE_DATA | FILE_READ_ATTRIBUTES, FILE_SHARE_ALL)?;
+    let info = FILE_ALLOCATION_INFO {
+        AllocationSize: bytes,
+    };
+    // SAFETY: `h.0` es un handle válido abierto con FILE_WRITE_DATA; el puntero apunta a `info` y se pasa su tamaño.
+    let ok = unsafe {
+        SetFileInformationByHandle(
+            h.0,
+            FileAllocationInfo,
+            &info as *const _ as *const c_void,
+            size_of::<FILE_ALLOCATION_INFO>() as u32,
         )
     };
     if ok == 0 { Err(last_error()) } else { Ok(()) }
