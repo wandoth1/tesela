@@ -588,3 +588,42 @@ fn cancelar_durante_el_arranque_omite_la_resolucion_de_las_rutas_prioritarias() 
     r.tree.check_invariants().unwrap();
     assert!(r.summary.priority.is_empty());
 }
+
+#[test]
+fn una_raiz_que_es_un_junction_se_resuelve_al_destino_antes_de_clasificarla() {
+    // `start` canonicaliza la raíz (resuelve junctions y symlinks) ANTES de abrirla, así que un junction NO llega a ser
+    // la raíz: se escanea su destino. La rama `SkipReparse` de `classify::root_plan` queda para raíces que sigan siendo
+    // reparse points tras canonicalizar (en la práctica, las carpetas de la nube); este test documenta el comportamiento real.
+    let t = TempTree::new();
+    t.write("destino/a.bin", 10_000);
+    t.write("destino/sub/b.bin", 20_000);
+    let link = t.path("enlace");
+    let made = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(&link)
+        .arg(t.path("destino"))
+        .output();
+    if !made.is_ok_and(|o| o.status.success()) {
+        return; // sin permiso para crear junctions en este equipo
+    }
+    let mut a = opts(&t);
+    a.root = link.clone();
+    a.priority_paths = Some(vec![]);
+    let via_link = scan(a).unwrap();
+    via_link.tree.check_invariants().unwrap();
+    let mut b = opts(&t);
+    b.root = t.path("destino");
+    b.priority_paths = Some(vec![]);
+    let direct = scan(b).unwrap();
+    assert_eq!(via_link.tree.stats().files, direct.tree.stats().files);
+    assert_eq!(via_link.tree.stats().files, 2);
+    assert_eq!(
+        via_link.tree.node(0).flags & flags::REPARSE,
+        0,
+        "la raíz ya es el destino"
+    );
+    assert!(!via_link.summary.cancelled);
+    // El junction se quita sin tocar el destino.
+    std::fs::remove_dir(&link).unwrap();
+    assert!(t.path("destino/a.bin").exists());
+}
