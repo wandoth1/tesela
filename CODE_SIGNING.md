@@ -76,8 +76,9 @@ Los tres roles de SignPath (ver sus [términos](https://signpath.org/terms)):
 
 Hoy **no hay protección de `main`** ni de las etiquetas: cualquiera con permiso de escritura puede empujar a `main` o crear una
 etiqueta `v*`, y eso dispararía el flujo de release. El flujo se ha endurecido por dentro (la etiqueta tiene que ser de `main` y
-coincidir con `Cargo.toml`, permisos mínimos por job, borrador, attestation verificada), pero lo que sigue es del repositorio, no
-del código, y **hay que configurarlo antes de la primera release y antes de solicitar la firma**:
+coincidir con `Cargo.toml`, permisos mínimos por job, borrador, attestation verificada), pero **eso son comprobaciones DENTRO del propio
+workflow, no controles de seguridad**: quien empuja la etiqueta (y tiene permiso de escritura) puede editar el workflow en esa misma
+etiqueta y saltárselas. Lo que de verdad lo impide es lo que sigue, que es del repositorio, no del código, y **hay que configurarlo antes de la primera release y antes de solicitar la firma**:
 
 **[A CONFIGURAR POR EL MANTENEDOR]**
 1. Ruleset de etiquetas `v*`: solo administradores pueden crearlas, sin force-push ni borrado.

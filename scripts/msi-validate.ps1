@@ -13,7 +13,8 @@
     * version, UpgradeCode fijo, nombre y editor, propiedades de Aplicaciones instaladas;
     * por usuario: sin ALLUSERS (o ALLUSERS=2 con MSIINSTALLPERUSER=1) y bit "no hace falta elevar" del Summary Information;
     * exactamente los 5 archivos esperados y componentes solo en la carpeta de instalacion y el menu Inicio;
-    * registro solo en HKCU\Software\Tesela; carpetas solo del perfil del usuario;
+    * registro solo en HKCU\Software\Tesela; carpetas solo del perfil del usuario; RemoveFile solo con las dos filas
+      esperadas y sin nombre de archivo; busqueda de registro de InstallFolder de tipo 18;
     * un acceso directo del menu Inicio, un icono, MajorUpgrade y bloqueo de versiones anteriores.
 
   El script es solo ASCII a proposito (Windows PowerShell 5.1 lee los .ps1 sin BOM como ANSI).
@@ -152,12 +153,24 @@ function Test-MsiPackage {
         $lc = @(Get-MsiRows $msi 'SELECT `Condition`, `Description` FROM `LaunchCondition`' 2)
         if (-not @($lc | Where-Object { $_[0] -like '*WIX_DOWNGRADE_DETECTED*' -and $_[1] })) { $problems.Add('falta el bloqueo de versiones anteriores con su mensaje (LaunchCondition)') }
 
+        # RemoveFile: SOLO las dos filas esperadas (quitar INSTALLFOLDER y ProgramsFolder si quedan vacias), sin nombre de
+        # archivo: una fila con FileName (p. ej. *.*) borraria archivos del usuario al desinstalar.
+        $rm = @(Get-MsiRows $msi 'SELECT `FileKey`, `Component_`, `FileName`, `DirProperty`, `InstallMode` FROM `RemoveFile`' 5)
+        foreach ($r in $rm) {
+            if ($r[2] -ne '' -or @('INSTALLFOLDER', 'ProgramsFolder') -notcontains $r[3] -or $r[4] -ne '2') {
+                $problems.Add("fila de RemoveFile no esperada: '$($r[0])' FileName='$($r[2])' DirProperty='$($r[3])' InstallMode='$($r[4])'")
+            }
+        }
+        $rmDirs = @($rm | ForEach-Object { $_[3] } | Sort-Object -Unique)
+        if ($rm.Count -ne 2 -or $rmDirs.Count -ne 2) { $problems.Add("RemoveFile tiene que tener exactamente 2 filas (INSTALLFOLDER y ProgramsFolder); hay $($rm.Count)") }
+
         # La carpeta de instalacion se recuerda en HKCU\Software\Tesela\InstallFolder (valor `[INSTALLFOLDER]`) y se recupera
         # con UNA busqueda de registro hacia INSTALLFOLDER (sin accion personalizada): sin eso, al desinstalar un MSI que se
         # instalo en una carpeta personalizada los archivos quedarian huerfanos.
         $loc = @(Get-MsiRows $msi 'SELECT `Signature_`, `Root`, `Key`, `Name`, `Type` FROM `RegLocator`' 5)
-        if ($loc.Count -ne 1 -or $loc[0][1] -ne '1' -or $loc[0][2] -ne 'Software\Tesela' -or $loc[0][3] -ne 'InstallFolder') {
-            $problems.Add("se esperaba UNA busqueda de registro de HKCU\Software\Tesela\InstallFolder; hay $($loc.Count)")
+        # Type 18 = 2 (valor crudo, raw) + 16 (vista de 64 bits: el paquete es x64).
+        if ($loc.Count -ne 1 -or $loc[0][1] -ne '1' -or $loc[0][2] -ne 'Software\Tesela' -or $loc[0][3] -ne 'InstallFolder' -or $loc[0][4] -ne '18') {
+            $problems.Add("se esperaba UNA busqueda de registro de HKCU\Software\Tesela\InstallFolder (tipo 18); hay $($loc.Count), tipo '$($loc | ForEach-Object { $_[4] })'")
         }
         $app = @(Get-MsiRows $msi 'SELECT `Property`, `Signature_` FROM `AppSearch`' 2)
         if ($app.Count -ne 1 -or $app[0][0] -ne 'INSTALLFOLDER') { $problems.Add('AppSearch tiene que asignar solo INSTALLFOLDER') }

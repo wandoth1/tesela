@@ -119,6 +119,16 @@ try {
     $path = New-Mutant 'nosearch' @('DELETE FROM `AppSearch`')
     Check 'sin la busqueda de la carpeta de instalacion' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*AppSearch*')
 
+    $path = New-Mutant 'removefile-extra' @('INSERT INTO `RemoveFile` (`FileKey`, `Component_`, `FileName`, `DirProperty`, `InstallMode`) VALUES (''evilrm'', ''TeselaExe'', ''*.*'', ''INSTALLFOLDER'', 2)')
+    $p = Test-MsiPackage -Path $path -ExpectedVersion $version
+    Check 'una fila de RemoveFile de mas (con *.*)' ((Has-Problem $p '*RemoveFile no esperada*evilrm*') -and (Has-Problem $p '*exactamente 2 filas*'))
+
+    $path = New-Mutant 'removefile-otradir' @('UPDATE `RemoveFile` SET `DirProperty`=''LocalAppDataFolder'' WHERE `FileKey`=''RemoveProgramsFolder''')
+    Check 'RemoveFile sobre otra carpeta' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*RemoveFile no esperada*')
+
+    $path = New-Mutant 'reglocator-type2' @('UPDATE `RegLocator` SET `Type`=2')
+    Check 'RegLocator con Type=2 (vista de 32 bits) en lugar de 18' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*busqueda de registro*tipo 18*')
+
     # --- Un error de la API no es una tabla vacia ------------------------------------------------------------------------
     $m = Open-MsiDatabase $Msi
     try {

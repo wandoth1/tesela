@@ -46,6 +46,8 @@ quita los archivos de la carpeta personalizada sin necesidad de repetir el pará
 estaba. Consecuencia: **la carpeta de una instalación existente no se cambia pasando otro `INSTALLFOLDER`**; hay que
 desinstalar e instalar de nuevo. Sin esto, los archivos de una instalación personalizada quedaban huérfanos al desinstalar.
 
+**No edites `HKCU\Software\Tesela\InstallFolder`:** lo gestiona el instalador. Si se manipula a mano, el instalador no lo respeta como fuente de verdad ni lo quita al desinstalar de forma fiable (una instalación con el valor cambiado puede dejar archivos o la propia clave sin quitar). Para mover la instalación, desinstala y vuelve a instalar con `INSTALLFOLDER`.
+
 ## Identificadores (NO cambiar)
 
 | Qué | Valor | Por qué |

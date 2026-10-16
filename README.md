@@ -54,8 +54,11 @@ público `release.yml` de este repositorio, sin manipular).
 Get-FileHash .\tesela-0.1.0-x64.msi -Algorithm SHA256
 # 2. La procedencia (necesita GitHub CLI: https://cli.github.com):
 gh attestation verify .\tesela-0.1.0-x64.msi --repo wandoth1/tesela `
-    --signer-workflow wandoth1/tesela/.github/workflows/release.yml
+    --signer-workflow wandoth1/tesela/.github/workflows/release.yml `
+    --source-ref refs/tags/v0.1.0
 ```
+
+`--source-ref refs/tags/vX.Y.Z` comprueba que el archivo se construyó desde ESA etiqueta (cambia `v0.1.0` por la versión que has descargado); `--signer-workflow` comprueba que lo firmó el flujo `release.yml` de este repositorio.
 
 ### Aviso de Windows SmartScreen
 

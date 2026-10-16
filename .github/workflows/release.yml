@@ -4,15 +4,17 @@ name: Release
 # el MSI, el zip portable y SHA256SUMS.txt. La publica una persona, después de verificarla (descargar, comprobar el
 # SHA-256, `gh attestation verify`, probar el MSI) con "Publish release" o `gh release edit vX.Y.Z --draft=false`.
 #
-# Diseño (tres jobs, permisos separados; ver también installer/README.md, "Antes de la primera release"):
+# Diseño (cuatro jobs, permisos separados; ver también installer/README.md, "Antes de la primera release"):
 #   build    contents: read. Comprueba etiqueta y privacidad, construye con scripts/build-msi.ps1 y sube los archivos como
 #            artefacto. No puede escribir en el repositorio ni firmar nada.
 #   attest   SOLO id-token: write + attestations: write. No hace checkout ni ejecuta código del repositorio: descarga el
 #            artefacto y atesta la procedencia (SLSA) de los tres archivos.
-#   release  SOLO contents: write. Tampoco hace checkout: descarga el artefacto, VERIFICA su attestation (con
-#            `--signer-workflow`) y crea el borrador con `gh release create --draft` (sin acciones de terceros).
+#   verify   SOLO attestations: read (+ contents: read). Sin checkout: descarga el artefacto y VERIFICA la attestation de cada
+#            archivo con `gh attestation verify --signer-workflow --source-ref`. Corre tambien en el ensayo.
+#   release  SOLO contents: write, y solo tras `verify`. Tampoco hace checkout: descarga el artefacto y crea el borrador con
+#            `gh release create --draft` (sin acciones de terceros).
 #
-# Ensayo (workflow_dispatch, dry_run=true por defecto): "Run workflow" desde main ejecuta build y attest SIN la comprobación
+# Ensayo (workflow_dispatch, dry_run=true por defecto, SOLO desde main): "Run workflow" ejecuta build, attest y verify SIN la comprobación
 # de etiqueta y SIN el job release: no puede publicar nada, ni siquiera en borrador (release exige un push de etiqueta).
 # Con una etiqueta real el flujo es el de siempre.
 #
@@ -47,12 +49,20 @@ jobs:
     permissions:
       contents: read
     steps:
-      # Un workflow_dispatch NUNCA publica: solo se admite el ensayo.
+      # Un workflow_dispatch NUNCA publica (solo se admite el ensayo) y solo se ensaya desde main.
       - name: Solo se admite el ensayo con workflow_dispatch
         if: ${{ github.event_name == 'workflow_dispatch' && !inputs.dry_run }}
         shell: bash
         run: |
           echo "::error::workflow_dispatch solo admite dry_run=true. Para publicar, empuja una etiqueta vX.Y.Z (ver la cabecera de release.yml)."
+          exit 1
+      - name: El ensayo solo se ejecuta desde main
+        if: ${{ github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main' }}
+        shell: bash
+        env:
+          REF: ${{ github.ref }}
+        run: |
+          echo "::error::El ensayo (workflow_dispatch) solo se ejecuta desde main; se lanzo desde $REF. Elige main en Use workflow from."
           exit 1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -207,10 +217,41 @@ jobs:
             release-files/*.zip
             release-files/SHA256SUMS.txt
 
-  # SOLO este job puede escribir en el repositorio. No hace checkout ni ejecuta código del repositorio, y solo corre con un
-  # push de etiqueta: un workflow_dispatch (el ensayo) no puede llegar aquí.
+  # Verifica la attestation de CADA archivo antes de publicar nada, y tambien en el ensayo. Solo lee (attestations: read, que
+  # es lo que pide el endpoint de attestations para `gh attestation verify`); no hace checkout ni ejecuta codigo del repo.
+  # Cada archivo tiene que venir firmado por ESTE workflow, de ESTE repositorio y del MISMO ref que lanzo la ejecucion (la
+  # etiqueta en una release; main en el ensayo).
+  verify:
+    needs: attest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      attestations: read
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-files
+          path: release-files
+      - name: Verificar la attestation de cada archivo
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          REF: ${{ github.ref }}
+        run: |
+          set -euo pipefail
+          cd release-files
+          for f in ./*.msi ./*.zip ./SHA256SUMS.txt; do
+            echo "verificando $f"
+            gh attestation verify "$f" --repo "$REPO" \
+              --signer-workflow "$REPO/.github/workflows/release.yml" \
+              --source-ref "$REF"
+          done
+
+  # SOLO este job puede escribir en el repositorio. No hace checkout ni ejecuta codigo del repositorio, y solo corre con un
+  # push de etiqueta tras verificar las attestations: un workflow_dispatch (el ensayo) no puede llegar aqui.
   release:
-    needs: [build, attest]
+    needs: [build, attest, verify]
     if: ${{ github.event_name == 'push' && github.ref_type == 'tag' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -221,22 +262,6 @@ jobs:
         with:
           name: release-files
           path: release-files
-      # Antes de crear nada, cada archivo tiene que traer una attestation firmada por ESTE workflow, de ESTE repositorio y
-      # de ESTA etiqueta.
-      - name: Verificar la attestation de cada archivo
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
-        run: |
-          set -euo pipefail
-          cd release-files
-          for f in ./*.msi ./*.zip ./SHA256SUMS.txt; do
-            echo "verificando $f"
-            gh attestation verify "$f" --repo "$REPO" \
-              --signer-workflow "$REPO/.github/workflows/release.yml" \
-              --source-ref "refs/tags/$TAG"
-          done
       - name: Crear la GitHub Release en BORRADOR
         env:
           GH_TOKEN: ${{ github.token }}
