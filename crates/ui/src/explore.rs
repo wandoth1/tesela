@@ -34,6 +34,9 @@ pub struct ScanInfo {
     pub full_volume: bool,
     /// (total, libre) del volumen al terminar.
     pub volume: Option<(u64, u64)>,
+    /// `total` y `libre` son del VOLUMEN. `false` con una cuota cuando Windows no da la capacidad real: son las cifras de
+    /// la cuenta del usuario y la barra de estado lo avisa (igual que la tarjeta de inicio).
+    pub volume_scope: bool,
     /// Se paró con "Parar y ver": las cifras con "≥" son un mínimo.
     pub cancelled: bool,
     /// Escaneo en modo de respaldo (`FindFirstFileExW`): sin deduplicación de enlaces duros.
@@ -173,10 +176,12 @@ impl Explore {
         let tree = demo::tree(variant);
         let files = tree.stats().files;
         let volume = req.drive.as_ref().map(|d| (d.total, d.free));
+        let volume_scope = req.drive.as_ref().is_none_or(|d| d.volume_scope);
         let info = ScanInfo {
             display_root: req.root.display().to_string(),
             full_volume: true,
             volume,
+            volume_scope,
             cancelled: variant == demo::Variant::Stopped,
             approximate: false,
             dir_errors: 0,
@@ -843,6 +848,14 @@ impl Explore {
             |ui| {
                 ui.set_clip_rect(ui.clip_rect().intersect(left_rect));
                 ui.label(RichText::new(main).size(12.0).color(pal.text_muted));
+                if info.full_volume && info.volume.is_some() && !info.volume_scope {
+                    // Con cuota y sin la capacidad real del volumen: las cifras son las de la cuenta, y no hay hueco sin explicar.
+                    ui.label(
+                        RichText::new(env.tr.t("drive-quota-scope"))
+                            .size(12.0)
+                            .color(pal.review),
+                    );
+                }
                 if info.approximate {
                     let tip = env.tr.t("approx-tip");
                     widgets::chip(ui, env, Some(Icon::Info), &env.tr.t("approx-badge"), pal.review, pal.accent_soft)

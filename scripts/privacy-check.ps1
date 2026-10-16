@@ -574,7 +574,7 @@ if ($To) {
 if ($All) {
     $names = Split-Nul (Invoke-GitBytes '-c core.quotePath=false ls-files --cached --others --exclude-standard -z' $repoRoot)
 } else {
-    $names = Split-Nul (Invoke-GitBytes '-c core.quotePath=false diff --cached --name-only -z --diff-filter=ACMR' $repoRoot)
+    $names = Split-Nul (Invoke-GitBytes '-c core.quotePath=false diff --cached --name-only -z --diff-filter=ACMRT' $repoRoot)
 }
 $names = @($names | Sort-Object -Unique)
 

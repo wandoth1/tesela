@@ -10,9 +10,13 @@
 //!   `Profile <N>` (`kMultiProfileDirPrefix = "Profile "`) y `Cache` es `kCacheDirname`.
 //! * Chromium, `gpu/ipc/common/gpu_disk_cache_type.cc`, función `GetGpuDiskCacheSubdir`: `GPUCache` (`kGlShaders`),
 //!   `DawnWebGPUCache` (`kDawnWebGPU`) y `DawnGraphiteCache` (`kDawnGraphite`). Cuelgan del directorio del perfil igual
-//!   que `GPUCache`. `GraphiteDawnCache` NO aparece en esa función y no se incluye.
-//! * `Code Cache` (por perfil) y `ShaderCache` / `GrShaderCache` (a nivel de `User Data`) son cachés regenerables
-//!   habituales de Chromium que NO se han confirmado en una fuente oficial: no ampliar la lista sin comprobarlo.
+//!   que `GPUCache`.
+//! * `GraphiteDawnCache` (a nivel de `User Data`, como `ShaderCache`): `chrome/browser/chrome_content_browser_client.cc`
+//!   (`user_data_dir.Append("GraphiteDawnCache")`) y `gpu/ipc/common/gpu_disk_cache_factory.cc` (del tipo DawnGraphite,
+//!   regenerable).
+//! * `Code Cache` (por perfil): `content/browser/storage_partition_impl.cc`. `ShaderCache` y `GrShaderCache` (a nivel de
+//!   `User Data`): `chrome/browser/chrome_content_browser_client.cc`. Todos confirmados en fuente; no ampliar la lista sin
+//!   comprobar igual.
 //! * `Service Worker\CacheStorage` NO es caché: en `content/public/browser/browsing_data_remover.h`,
 //!   `DATA_TYPE_CACHE_STORAGE` es uno de los tipos de `DATA_TYPE_DOM_STORAGE` (datos de sitios, junto a IndexedDB,
 //!   Local Storage y service workers) y puede contener el modo sin conexión de una PWA. `Service Worker` entero también
@@ -20,7 +24,7 @@
 //!   ni los `*_crx_cache`.
 //! * Firefox, `netwerk/cache2/CacheFileIOManager.cpp`: la caché HTTP es `cache2` bajo el directorio LOCAL del perfil
 //!   (`NS_APP_USER_PROFILE_LOCAL_50_DIR`: `%LOCALAPPDATA%\Mozilla\Firefox\Profiles\<perfil>`). `startupCache` está en ese
-//!   mismo directorio (no confirmado en una fuente oficial). El perfil de `%APPDATA%` guarda `places.sqlite`, `key4.db`,
+//!   mismo directorio (confirmado en `StartupCache.cpp` y `xpcom/build/nsXULAppAPI.h`). El perfil de `%APPDATA%` guarda `places.sqlite`, `key4.db`,
 //!   `logins.json`, `cookies.sqlite`... y NUNCA es caché.
 //!
 //! Lo que NO es caché: todo lo demás dentro de `User Data` (`Local State`, `Bookmarks`, `History`, `Cookies`,
@@ -111,7 +115,7 @@ const CHROMIUM_PROFILE_CACHE: [&str; 5] = [
     "DawnGraphiteCache",
 ];
 /// Cachés a nivel de `User Data` (no por perfil).
-const CHROMIUM_ROOT_CACHE: [&str; 2] = ["ShaderCache", "GrShaderCache"];
+const CHROMIUM_ROOT_CACHE: [&str; 3] = ["ShaderCache", "GrShaderCache", "GraphiteDawnCache"];
 /// Cachés dentro de un perfil LOCAL de Firefox.
 const FIREFOX_PROFILE_CACHE: [&str; 2] = ["cache2", "startupCache"];
 
@@ -159,7 +163,7 @@ fn child_dirs(dir: &Path) -> Vec<(String, PathBuf)> {
 /// Directorios de CACHÉ concretos (y SOLO esos) de los navegadores, que existen ahora mismo:
 ///
 /// * Chrome y Edge: de cada perfil de `User Data` (`Default`, `Profile N`), `Cache`, `Code Cache`, `GPUCache`,
-///   `DawnWebGPUCache` y `DawnGraphiteCache`; y `ShaderCache` y `GrShaderCache` a nivel de `User Data`.
+///   `DawnWebGPUCache` y `DawnGraphiteCache`; y `ShaderCache`, `GrShaderCache` y `GraphiteDawnCache` a nivel de `User Data`.
 ///   NO `Service Worker\CacheStorage` (datos de sitios).
 /// * Firefox: `cache2` y `startupCache` de cada perfil de `%LOCALAPPDATA%\Mozilla\Firefox\Profiles`. Nunca
 ///   `%APPDATA%\Mozilla\Firefox\Profiles`.
@@ -550,6 +554,7 @@ mod tests {
         t.file(&format!("{user_data}/GrShaderCache/f"));
         t.file(&format!("{user_data}/Safe Browsing/f"));
         t.file(&format!("{user_data}/GraphiteDawnCache/f"));
+        t.file(&format!("{user_data}/GraphiteDawnCache/sub/g"));
     }
 
     fn rel_to(base: &Path, p: &Path) -> String {
@@ -574,6 +579,7 @@ mod tests {
         }
         esperado.push("ShaderCache".into());
         esperado.push("GrShaderCache".into());
+        esperado.push("GraphiteDawnCache".into());
         esperado.sort();
         for (kind, fam_dir) in [
             (KnownKind::ChromeCache, "Local/Google/Chrome/User Data"),
@@ -603,7 +609,6 @@ mod tests {
             "CacheStorage",
             "GPUPersistentCache",
             "Media Cache",
-            "GraphiteDawnCache",
         ] {
             assert!(
                 !esperado.iter().any(|e| e.contains(never)),
@@ -624,7 +629,7 @@ mod tests {
                     let c = classify_browser_path(&roots, &p);
                     let rel = rel_to(&ud, &p);
                     let parts: Vec<&str> = rel.split('/').collect();
-                    let esperada_cache = ["ShaderCache", "GrShaderCache"].contains(&parts[0])
+                    let esperada_cache = CHROMIUM_ROOT_CACHE.contains(&parts[0])
                         || (parts.len() >= 2
                             && ["Default", "Profile 1", "Profile 12"].contains(&parts[0])
                             && CHROMIUM_PROFILE_CACHE.contains(&parts[1]));
@@ -814,7 +819,7 @@ mod tests {
             r"Default\Network\Cache",
             r"Default\Media Cache",
             r"Default\GPUPersistentCache",
-            r"Default\GraphiteDawnCache",
+            r"Default\GraphiteDawnCache", // a nivel de `User Data`, no por perfil
             r"Guest Profile\Cache",
             r"System Profile\Cache",
             r"Profile\Cache",

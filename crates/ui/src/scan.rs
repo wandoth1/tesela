@@ -940,6 +940,7 @@ pub(crate) fn info_from_summary(
         display_root: summary.root.display().to_string(),
         full_volume: summary.full_volume,
         volume: summary.volume.map(|v| (v.total, v.free)),
+        volume_scope: summary.volume.is_none_or(|v| v.volume_scope),
         cancelled: summary.cancelled,
         approximate: is_approximate(summary.api),
         dir_errors: summary.errors(),

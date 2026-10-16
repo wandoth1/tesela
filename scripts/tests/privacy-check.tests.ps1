@@ -443,6 +443,21 @@ try {
     Expect 'termino de la lista negra (insensible a mayusculas)' $true
     Expect 'la lista negra no se usa con -GenericOnly' $false @('-GenericOnly')
 
+    # Cambio de TIPO en staging: un archivo que pasa a enlace simbolico (su destino es su contenido) se revisa; antes quedaba
+    # en "0 archivos, OK".
+    Reset-Repo
+    Put 'enlace.txt' "texto limpio`n"
+    Stage-All
+    Invoke-Git -C $repo commit -q -m 'archivo normal'
+    $symOid = ((("cuenta $sid`n") | & git -C $repo hash-object -w --stdin) | Out-String).Trim()
+    Invoke-Git -C $repo update-index --cacheinfo "120000,$symOid,enlace.txt"
+    Expect 'staging: un archivo que pasa a enlace simbolico con el SID en su destino (cambio de tipo)' $true
+    $symClean = ((("destino limpio`n") | & git -C $repo hash-object -w --stdin) | Out-String).Trim()
+    Invoke-Git -C $repo update-index --cacheinfo "120000,$symClean,enlace.txt"
+    Expect 'staging: un enlace simbolico con un destino limpio pasa' $false
+    Invoke-Git -C $repo reset -q
+    Invoke-Git -C $repo checkout -q -- .
+
     # --- El contenido que cuenta es el del indice ----------------------------------------------------------------------
     Reset-Repo
     Put 'x.txt' "limpio`n"

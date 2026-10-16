@@ -2001,3 +2001,27 @@ fn descargas_y_papelera_no_cuentan_en_la_cifra_de_sitios_conocidos_y_llevan_revi
         h.get_by_label_contains(excluded);
     }
 }
+
+#[test]
+fn la_barra_de_estado_avisa_de_que_las_cifras_son_de_la_cuota_de_la_cuenta() {
+    for (lang, label) in [
+        (LangPref::Es, "Cifras de tu cuenta (cuota de disco)"),
+        (LangPref::En, "Figures for your account (disk quota)"),
+    ] {
+        let mut o = opts(StartScreen::Map(MapStart::default()));
+        o.settings.language = lang;
+        let mut h = harness(o);
+        // Con ámbito de volumen (lo normal) no hay aviso.
+        assert!(explore(&h).info.volume.is_some() && explore(&h).info.volume_scope);
+        assert!(h.query_by_label_contains(label).is_none());
+        // Con cuota y sin la capacidad real del volumen, la barra de estado lo dice (como la tarjeta de inicio).
+        h.state_mut()
+            .ui_mut()
+            .explore_mut()
+            .unwrap()
+            .info
+            .volume_scope = false;
+        h.run_steps(3);
+        assert_eq!(h.query_all_by_label_contains(label).count(), 1, "{lang:?}");
+    }
+}

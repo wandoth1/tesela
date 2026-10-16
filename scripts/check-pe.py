@@ -8,9 +8,10 @@ Uso (lo llama scripts/build-release.ps1; ejecutar con `python -I`):
 Falla (codigo 1) si algun ejecutable:
   * no es un PE valido,
   * es de otra arquitectura que la esperada (--machine x64|arm64|x86),
-  * importa (tabla de imports normal o de carga retardada) alguna de estas DLL del runtime de C, que no vienen en un
-    Windows limpio y el instalador por usuario no puede asumir: `VCRUNTIME*.dll`, `MSVCP*.dll`, `api-ms-win-crt-*.dll`
-    (y `UCRTBASE.dll`, que es lo que arrastran). El release enlaza el CRT de forma estatica (.cargo/config.toml).
+  * importa (tabla de imports normal o de carga retardada) alguna de estas DLL del runtime de C: `VCRUNTIME*.dll`,
+    `MSVCP*.dll`, `api-ms-win-crt-*.dll` (y `UCRTBASE.dll`, que es lo que arrastran). En Windows 10/11 el UCRT es del
+    sistema, pero el release se enlaza estatico (.cargo/config.toml) para no depender del runtime de VC++ redistribuible
+    (`VCRUNTIME*`, `MSVCP*`), que el instalador por usuario y sin administrador no puede instalar.
 
 Solo lee los archivos. Solo usa la biblioteca estandar.
 """

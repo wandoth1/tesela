@@ -1,5 +1,6 @@
-# Runtime de C enlazado de forma ESTATICA en Windows: sin esto el .exe importa VCRUNTIME140.dll y las api-ms-win-crt-*,
-# que no vienen en un Windows limpio (el instalador es por usuario y sin administrador, no puede instalarlas).
+# Runtime de C enlazado de forma ESTATICA en Windows: sin esto el .exe importa VCRUNTIME140.dll y las api-ms-win-crt-*.
+# En Windows 10/11 el UCRT es del sistema; se enlaza estatico para no depender del runtime de VC++ redistribuible (el
+# instalador es por usuario y sin administrador, no puede instalarlo).
 # `scripts/build-release.ps1` repite este flag en CARGO_ENCODED_RUSTFLAGS (que tiene prioridad sobre este archivo y no se
 # combina con él) y comprueba la tabla de imports de cada .exe.
 [target.'cfg(windows)']

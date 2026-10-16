@@ -80,7 +80,8 @@ CPU por frame y `--idle-memory <segundos>` deja la ventana en reposo e imprime e
 
 El release enlaza el runtime de C de forma estática (`.cargo/config.toml`, repetido en `build-release.ps1` porque
 `CARGO_ENCODED_RUSTFLAGS` tiene prioridad sobre el config): el `.exe` no importa `VCRUNTIME*.dll`, `MSVCP*.dll` ni
-`api-ms-win-crt-*.dll`, que no vienen en un Windows limpio. `build-release.ps1` toma los ejecutables de la salida JSON de
+`api-ms-win-crt-*.dll`. En Windows 10/11 el UCRT es del sistema; se enlaza estático para no depender del runtime de VC++
+redistribuible, que un instalador por usuario y sin administrador no puede instalar. `build-release.ps1` toma los ejecutables de la salida JSON de
 Cargo, exige `tesela.exe` y `tesela-scan.exe` (falla si falta alguno, aparece otro o queda uno antiguo en la carpeta) y
 lee la tabla de imports PE con `scripts/check-pe.py` (necesita Python 3).
 

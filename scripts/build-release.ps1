@@ -11,8 +11,9 @@
 
   CARGO_ENCODED_RUSTFLAGS tiene prioridad sobre `target.<cfg>.rustflags` de `.cargo/config.toml` (no se combinan), asi que
   el enlace estatico del runtime de C (`-Ctarget-feature=+crt-static`, que el config tambien fija para los builds de
-  desarrollo) se repite aqui: sin el, el release importaria VCRUNTIME140.dll y las `api-ms-win-crt-*`, que no vienen en
-  un Windows limpio (el instalador es por usuario y sin administrador). La validacion de abajo lo comprueba.
+  desarrollo) se repite aqui: sin el, el release importaria VCRUNTIME140.dll y las `api-ms-win-crt-*`. En Windows 10/11 el
+  UCRT es del sistema; se enlaza estatico para no depender del runtime de VC++ redistribuible (el instalador es por
+  usuario y sin administrador). La validacion de abajo lo comprueba.
 
   Los ejecutables que se comprueban salen de la salida JSON de Cargo (`--message-format=json`, campo `executable` de
   cada `compiler-artifact`), no de un listado de la carpeta: asi no se aprueban 0 binarios, los de otra arquitectura ni
