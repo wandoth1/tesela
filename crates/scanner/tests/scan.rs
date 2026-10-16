@@ -724,3 +724,47 @@ fn una_ruta_prioritaria_que_es_un_junction_roto_se_descarta_sin_errores() {
     assert_eq!(paths, vec![t.long_root().join("real")]);
     assert_eq!(r.tree.stats().reparse_dirs, 1);
 }
+
+#[test]
+fn una_raiz_junction_se_rechaza_escrita_de_cualquier_forma() {
+    // Barra final, mayúsculas, barras `/`, prefijo `\\?\`, `\.` final y el nombre corto 8.3 del propio enlace: el último
+    // componente es SIEMPRE el enlace y se rechaza, nunca se resuelve a su destino. (Solo carpetas propias de `%TEMP%`.)
+    let mut t = TempTree::new();
+    t.write("destino/a.bin", 10_000);
+    t.junction("enlace_con_un_nombre_largo", "destino");
+    let link = t.path("enlace_con_un_nombre_largo");
+    let s = link.to_string_lossy().into_owned();
+    let slashes = s.replace('\\', "/");
+    let mut variants: Vec<(&str, String)> = vec![
+        ("tal cual", s.clone()),
+        ("barra final", format!("{s}\\")),
+        ("mayúsculas", s.to_uppercase()),
+        ("barras /", slashes.clone()),
+        ("barras / y final", format!("{slashes}/")),
+        ("punto final", format!("{s}\\.")),
+        ("prefijo verbatim", format!(r"\\?\{s}")),
+        ("prefijo verbatim y barra final", format!(r"\\?\{s}\")),
+    ];
+    let short = common::short_path(&link);
+    if short != link {
+        variants.push(("nombre corto 8.3", short.to_string_lossy().into_owned()));
+        variants.push((
+            "nombre corto 8.3 con prefijo verbatim",
+            format!(r"\\?\{}", short.display()),
+        ));
+    } else {
+        eprintln!("este volumen no genera nombres 8.3: se omiten esas dos variantes");
+    }
+    for (name, root) in &variants {
+        let mut o = opts(&t);
+        o.root = std::path::PathBuf::from(root);
+        o.priority_paths = Some(vec![]);
+        let r = scan(o);
+        assert!(es_raiz_enlace(&r), "{name} ({root}): {:?}", r.map(|_| ()));
+    }
+    // Control: el destino, escrito con barra final, sí se escanea.
+    let mut o = opts(&t);
+    o.root = std::path::PathBuf::from(format!("{}\\", t.path("destino").display()));
+    o.priority_paths = Some(vec![]);
+    assert_eq!(scan(o).unwrap().tree.stats().files, 1);
+}
