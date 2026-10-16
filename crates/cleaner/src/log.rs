@@ -2,7 +2,9 @@
 //!
 //! * `%LOCALAPPDATA%\Tesela\limpieza-<fecha>.jsonl`: una línea JSON por entrada procesada (ruta, identidad, tamaño,
 //!   resultado). SOLO en la máquina del usuario: contiene rutas reales y nunca se sube ni se versiona. Se conservan los
-//!   últimos [`KEEP_LOGS`] y cada uno tiene un tope de líneas ([`MAX_LINES`]).
+//!   últimos [`KEEP_LOGS`] y cada uno tiene un tope de líneas ([`MAX_LINES`]) y de bytes ([`MAX_BYTES`]). Se vuelca a disco
+//!   cada pocas líneas y tras cada elemento (si la aplicación se cierra a mitad, consta hasta dónde llegó). "Borrar el
+//!   historial" de Ajustes los borra también ([`history_clear`]).
 //! * `%LOCALAPPDATA%\Tesela\history.jsonl`: SOLO resúmenes (fecha, unidad, usado, liberado ahora, enviado a la
 //!   Papelera). Nunca el árbol ni rutas. Se puede borrar desde Ajustes.
 
@@ -11,13 +13,17 @@ use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 /// Registros que se conservan.
 pub const KEEP_LOGS: usize = 30;
 /// Tope de líneas de un registro (un `%TEMP%` enorme tiene cientos de miles de archivos).
 pub const MAX_LINES: u64 = 250_000;
+/// Tope de bytes de un registro (rutas largas: 250 000 líneas podrían pasar de cien MiB).
+pub const MAX_BYTES: u64 = 64 * 1024 * 1024;
+/// Cada cuántas líneas se vuelca el registro a disco sin esperar a que termine un elemento.
+const FLUSH_EVERY: u64 = 256;
 
 /// Fecha y hora UTC a partir de segundos Unix (algoritmo de días civiles de H. Hinnant).
 pub fn utc_parts(secs: u64) -> (i64, u32, u32, u32, u32, u32) {
@@ -53,6 +59,10 @@ pub struct LogWriter {
     path: PathBuf,
     out: Mutex<BufWriter<File>>,
     lines: AtomicU64,
+    bytes: AtomicU64,
+    truncated: AtomicBool,
+    /// Tope de bytes (las pruebas lo bajan).
+    max_bytes: AtomicU64,
 }
 
 #[derive(Serialize)]
@@ -112,6 +122,9 @@ impl LogWriter {
             path,
             out: Mutex::new(BufWriter::new(f)),
             lines: AtomicU64::new(0),
+            bytes: AtomicU64::new(0),
+            truncated: AtomicBool::new(false),
+            max_bytes: AtomicU64::new(MAX_BYTES),
         };
         w.raw(&format!(
             "{{\"t\":\"start\",\"dry_run\":{dry_run},\"unix\":{}}}",
@@ -128,16 +141,25 @@ impl LogWriter {
     fn raw(&self, line: &str) {
         let mut g = self.out.lock().unwrap_or_else(|e| e.into_inner());
         let _ = writeln!(g, "{line}");
+        self.bytes
+            .fetch_add(line.len() as u64 + 1, Ordering::Relaxed);
     }
 
     /// Escribe una entrada procesada.
     pub fn write_event(&self, ev: &Event) {
         let n = self.lines.fetch_add(1, Ordering::Relaxed);
-        if n > MAX_LINES {
-            if n == MAX_LINES + 1 {
+        if n > MAX_LINES
+            || self.bytes.load(Ordering::Relaxed) > self.max_bytes.load(Ordering::Relaxed)
+        {
+            // Una sola marca de truncado; después no se escribe más (el tope en líneas y en bytes).
+            if !self.truncated.swap(true, Ordering::Relaxed) {
                 self.raw("{\"t\":\"truncated\"}");
+                self.flush();
             }
             return;
+        }
+        if n % FLUSH_EVERY == FLUSH_EVERY - 1 {
+            self.flush();
         }
         let line = Line {
             t: "entry",
@@ -236,13 +258,31 @@ pub fn history_load(dir: &Path) -> Vec<HistoryEntry> {
         .collect()
 }
 
-/// Borra el historial (Ajustes).
+/// Borra el historial y TAMBIÉN los registros de limpieza (`limpieza-*.jsonl`, que llevan rutas) de la carpeta de datos
+/// (Ajustes: "Borrar el historial"). Solo toca esos nombres, y los registros no se siguen si son enlaces.
 pub fn history_clear(dir: &Path) -> std::io::Result<()> {
-    match fs::remove_file(dir.join("history.jsonl")) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e),
+    let mut first_err: Option<std::io::Error> = None;
+    let mut remove = |p: &Path| match fs::remove_file(p) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => {
+            first_err.get_or_insert(e);
+        }
+    };
+    remove(&dir.join("history.jsonl"));
+    if let Ok(rd) = fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            let is_log = p.extension().is_some_and(|x| x == "jsonl")
+                && p.file_name()
+                    .is_some_and(|n| n.to_string_lossy().starts_with("limpieza-"));
+            // `file_type` de la entrada no sigue enlaces: un enlace con ese nombre no se toca.
+            if is_log && e.file_type().is_ok_and(|t| t.is_file()) {
+                remove(&p);
+            }
+        }
     }
+    first_err.map_or(Ok(()), Err)
 }
 
 #[cfg(test)]
@@ -304,6 +344,79 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().starts_with("limpieza-"))
             .count();
         assert!(n <= KEEP_LOGS + 1, "{n}");
+    }
+
+    fn event(i: usize, path_len: usize) -> Event {
+        Event {
+            unit: i,
+            path: PathBuf::from("a".repeat(path_len)),
+            is_dir: false,
+            identity: None,
+            bytes: 1,
+            links: 1,
+            outcome: Outcome::Deleted,
+        }
+    }
+
+    #[test]
+    fn el_registro_se_vuelca_cada_pocas_lineas_sin_esperar_al_final() {
+        let sb = Sandbox::new();
+        let dir = sb.path("Tesela");
+        let log = Arc::new(LogWriter::create(&dir, false).unwrap());
+        for i in 0..FLUSH_EVERY as usize + 10 {
+            log.write_event(&event(i, 20));
+        }
+        // Sin `flush()` explícito, lo escrito hasta el último volcado periódico ya está en disco.
+        let on_disk = fs::read_to_string(log.path()).unwrap().lines().count();
+        assert!(on_disk as u64 >= FLUSH_EVERY, "{on_disk}");
+    }
+
+    #[test]
+    fn el_registro_tiene_tope_de_bytes_ademas_del_de_lineas() {
+        let sb = Sandbox::new();
+        let dir = sb.path("Tesela");
+        let log = Arc::new(LogWriter::create(&dir, false).unwrap());
+        log.max_bytes.store(10_000, Ordering::Relaxed);
+        for i in 0..200 {
+            log.write_event(&event(i, 300));
+        }
+        log.flush();
+        let text = fs::read_to_string(log.path()).unwrap();
+        assert!(text.len() < 10_000 + 1_000, "{}", text.len());
+        assert_eq!(text.matches("\"truncated\"").count(), 1);
+        assert!(text.lines().count() < 200);
+    }
+
+    #[test]
+    fn borrar_el_historial_borra_tambien_los_registros_y_nada_mas() {
+        let sb = Sandbox::new();
+        let dir = sb.path("Tesela");
+        history_append(
+            &dir,
+            &HistoryEntry {
+                unix: 1,
+                drive: b'C',
+                used: 1,
+                freed_now: 1,
+                to_bin: 0,
+            },
+        )
+        .unwrap();
+        let log = LogWriter::create(&dir, false).unwrap();
+        let log_path = log.path().to_path_buf();
+        drop(log);
+        fs::write(dir.join("limpieza-2000-001.jsonl"), b"x").unwrap();
+        // Lo que no es de Tesela o no tiene ese nombre se queda: otro archivo, otra extensión y una carpeta homónima.
+        fs::write(dir.join("config.toml"), b"x").unwrap();
+        fs::write(dir.join("limpieza-notas.txt"), b"x").unwrap();
+        fs::create_dir(dir.join("limpieza-carpeta.jsonl")).unwrap();
+        history_clear(&dir).unwrap();
+        assert!(!dir.join("history.jsonl").exists());
+        assert!(!log_path.exists() && !dir.join("limpieza-2000-001.jsonl").exists());
+        assert!(dir.join("config.toml").exists());
+        assert!(dir.join("limpieza-notas.txt").exists());
+        assert!(dir.join("limpieza-carpeta.jsonl").is_dir());
+        history_clear(&dir).unwrap();
     }
 
     #[test]

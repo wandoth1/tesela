@@ -278,6 +278,7 @@ confirm-bin-note =
 confirm-group-recycle = Goes to the Recycle Bin · you can recover it
 confirm-recycle-note = These are your own files; they are not recreated. The space is only really freed when you empty the Recycle Bin.
 confirm-your-file = Your file
+confirm-in-folder = in { $folder }
 confirm-no-space = will not free space
 confirm-more =
     { $n ->
@@ -339,6 +340,7 @@ run-phase-delete = Deleting…
 run-phase-recycle = Moving to the Recycle Bin…
 run-phase-verify = Checking every item…
 run-progress = { $done } of { $total } items · { $count } entries checked
+run-close-blocked = Wait for it to finish or cancel: closing now would leave the cleanup half done.
 run-cancelling = Cancelling: what already started finishes and nothing else is touched.
 sum-freed = Freed now
 sum-dry = Simulation: this is what would have been freed
@@ -433,5 +435,5 @@ ago-days =
         [one] { $count } day ago
        *[other] { $count } days ago
     }
-settings-clear-history = Delete the cleanup history
+settings-clear-history = Delete the cleanup history and logs
 home-last-clean = Last cleanup: { $ago } · you freed { $size }

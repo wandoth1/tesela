@@ -365,5 +365,47 @@ fn los_textos_de_la_limpieza_estan_en_ingles_con_el_idioma_en_ingles() {
     h.get_by_label("Deleted and recreated on its own");
     h.get_by_label("Goes to the Recycle Bin · you can recover it");
     assert!(h.query_all_by_label_contains("Your file").count() >= 1);
+    // Los archivos del usuario llevan su carpeta padre (distingue nombres repetidos).
+    assert!(h.query_all_by_label_contains("in Descargas").count() >= 1);
     h.get_by_label_contains("These are your own files; they are not recreated");
+}
+
+/// M2: mientras se ejecuta la limpieza, cerrar la ventana se bloquea (dejaría el trabajo a medias) y la ventana de
+/// progreso explica que espere o cancele; "Cancelar" sigue disponible. Fuera de la ejecución, cerrar no se toca.
+#[test]
+fn cerrar_la_ventana_durante_la_ejecucion_se_bloquea_y_lo_explica() {
+    // El respaldo simulado con pausas, para que la ejecución dure lo bastante.
+    let be = std::sync::Arc::new(crate::demo_backend::DemoBackend::new(
+        std::time::Duration::from_millis(1500),
+    ));
+    let mut o = clean_opts(CleanStart::Recommendations);
+    o.backend = Some(crate::app::BackendRef(be));
+    let mut h = harness(o);
+    h.run_steps(3);
+    // Sin ejecutar nada: el cierre pasa.
+    assert!(!h.state_mut().ui_mut().guard_close(true));
+    h.get_by_label_contains("Limpiar lo seguro").click();
+    assert!(wait_contains(&mut h, "Revisa antes de limpiar"));
+    // Con la confirmación abierta (nada se ejecuta aún) también pasa.
+    assert!(!h.state_mut().ui_mut().guard_close(true));
+    h.get_by_label_contains("Liberar ").click();
+    assert!(wait_contains(&mut h, "Limpiando"));
+    assert!(explore(&h).flow.is_running());
+    // Sin petición de cierre no se bloquea nada ni se avisa.
+    assert!(!h.state_mut().ui_mut().guard_close(false));
+    assert!(
+        h.query_all_by_label_contains("Espera a que termine")
+            .count()
+            == 0
+    );
+    // Con la petición: se bloquea y se explica.
+    assert!(h.state_mut().ui_mut().guard_close(true));
+    h.run_steps(3);
+    assert!(
+        h.query_all_by_label_contains("Espera a que termine o cancela")
+            .count()
+            >= 1
+    );
+    // Cancelar sigue disponible.
+    assert!(!h.get_by_label("Cancelar").accesskit_node().is_disabled());
 }

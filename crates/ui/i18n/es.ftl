@@ -279,6 +279,7 @@ confirm-bin-note =
 confirm-group-recycle = Va a la Papelera de reciclaje · puedes recuperarlo
 confirm-recycle-note = Son archivos tuyos; no se recrean. El espacio se libera de verdad al vaciar la Papelera.
 confirm-your-file = Tu archivo
+confirm-in-folder = en { $folder }
 confirm-no-space = no liberará espacio
 confirm-more =
     { $n ->
@@ -340,6 +341,7 @@ run-phase-delete = Eliminando…
 run-phase-recycle = Moviendo a la Papelera…
 run-phase-verify = Comprobando cada elemento…
 run-progress = { $done } de { $total } elementos · { $count } entradas revisadas
+run-close-blocked = Espera a que termine o cancela: cerrar ahora dejaría la limpieza a medias.
 run-cancelling = Cancelando: termina lo que ya empezó y no toca nada más.
 sum-freed = Liberados ahora
 sum-dry = Simulación: esto es lo que se habría liberado
@@ -434,5 +436,5 @@ ago-days =
         [one] hace { $count } día
        *[other] hace { $count } días
     }
-settings-clear-history = Borrar el historial de limpiezas
+settings-clear-history = Borrar el historial y los registros de limpieza
 home-last-clean = Última limpieza: { $ago } · liberaste { $size }

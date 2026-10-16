@@ -546,6 +546,22 @@ impl TeselaUi {
         }
     }
 
+    /// Si se pidió cerrar la ventana (`requested`) mientras se ejecuta una limpieza, devuelve `true` (hay que cancelar el
+    /// cierre) y la ventana de progreso explica que espere o cancele: cerrar a mitad dejaría la limpieza a medias. En
+    /// cualquier otro momento no se interfiere.
+    pub(crate) fn guard_close(&mut self, requested: bool) -> bool {
+        if !requested {
+            return false;
+        }
+        match &mut self.screen {
+            Screen::Explore(e) if e.flow.is_running() => {
+                e.flow.block_close();
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Pinta la pantalla actual.
     pub fn show(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
@@ -556,6 +572,9 @@ impl TeselaUi {
             return;
         }
         self.poll(&ctx);
+        if self.guard_close(ctx.input(|i| i.viewport().close_requested())) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
         self.about.handle_escape(&ctx);
         let pal = theme::palette(&ctx);
         let mut actions = Vec::new();

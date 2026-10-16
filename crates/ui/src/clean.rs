@@ -57,6 +57,8 @@ struct Running {
     started: Instant,
     /// Espacio usado del volumen al empezar (para el historial).
     used_before: Option<u64>,
+    /// El usuario intentó cerrar la ventana mientras se ejecutaba: se le dice que espere o cancele.
+    close_blocked: bool,
 }
 
 struct Summary {
@@ -146,6 +148,18 @@ impl CleanFlow {
     /// ¿Se está mostrando el resumen (ocupa toda la ventana)?
     pub fn in_summary(&self) -> bool {
         matches!(self.stage, Stage::Summary(_))
+    }
+
+    /// ¿Se está ejecutando la limpieza (borrando o enviando a la Papelera)? Cerrar la ventana entonces la dejaría a medias.
+    pub fn is_running(&self) -> bool {
+        matches!(self.stage, Stage::Running(_))
+    }
+
+    /// Anota que se intentó cerrar la ventana durante la ejecución (la ventana de progreso lo explica).
+    pub fn block_close(&mut self) {
+        if let Stage::Running(r) = &mut self.stage {
+            r.close_blocked = true;
+        }
     }
 
     /// ¿Hay algo en marcha (aprobando, confirmando o ejecutando)?
@@ -404,6 +418,7 @@ impl CleanFlow {
                 cancelled: false,
                 started: Instant::now(),
                 used_before,
+                close_blocked: false,
             }));
         }
     }
@@ -448,6 +463,7 @@ fn unfit_reason_key(r: UnfitReason) -> &'static str {
     }
 }
 
+/// `hover`: la ruta completa, que sale al pasar el ratón por el nombre (distingue elementos con el mismo nombre).
 fn row(
     ui: &mut Ui,
     pal: &Palette,
@@ -455,12 +471,19 @@ fn row(
     chip: Option<&str>,
     size: &str,
     muted: Option<&str>,
+    hover: Option<&str>,
 ) {
     ui.horizontal(|ui| {
         ui.set_min_height(26.0);
-        ui.label(RichText::new(left).color(pal.text));
+        let name = ui.label(RichText::new(left).color(pal.text));
+        if let Some(h) = hover {
+            name.on_hover_text(h);
+        }
         if let Some(m) = muted {
-            ui.label(RichText::new(m).size(12.0).color(pal.text_muted));
+            let l = ui.label(RichText::new(m).size(12.0).color(pal.text_muted));
+            if let Some(h) = hover {
+                l.on_hover_text(h);
+            }
         }
         if let Some(c) = chip {
             ui.label(
@@ -642,7 +665,16 @@ fn confirm_groups(ui: &mut Ui, env: &mut Env, c: &mut Confirm, plan: &Plan) {
             } else {
                 env.tr.size(it.bytes())
             };
-            row(ui, &pal, &item_name(env, it), None, &size, None);
+            let (folder, full) = folder_hint(env, it);
+            row(
+                ui,
+                &pal,
+                &item_name(env, it),
+                None,
+                &size,
+                folder.as_deref(),
+                full.as_deref(),
+            );
         }
         ui.add_space(4.0);
         note_line(ui, &pal, &env.tr.t("confirm-permanent-note"), false);
@@ -740,6 +772,7 @@ fn confirm_groups(ui: &mut Ui, env: &mut Env, c: &mut Confirm, plan: &Plan) {
                         None,
                         &env.tr.size(it.bytes()),
                         Some(&why),
+                        Some(&it.path.display().to_string()),
                     );
                 }
                 ui.add_space(6.0);
@@ -804,7 +837,15 @@ fn confirm_groups(ui: &mut Ui, env: &mut Env, c: &mut Confirm, plan: &Plan) {
                     || r.path.display().to_string(),
                     |n| n.to_string_lossy().into_owned(),
                 );
-                row(ui, &pal, &name, None, &why, None);
+                row(
+                    ui,
+                    &pal,
+                    &name,
+                    None,
+                    &why,
+                    None,
+                    Some(&r.path.display().to_string()),
+                );
             }
         }
     }
@@ -818,7 +859,34 @@ fn recycle_row(ui: &mut Ui, env: &mut Env, it: &PlanItem) {
     if it.hard_linked || it.estimate.shared_files > 0 {
         size = env.tr.t("confirm-no-space");
     }
-    row(ui, &pal, &name, chip.as_deref(), &size, None);
+    let (folder, full) = folder_hint(env, it);
+    row(
+        ui,
+        &pal,
+        &name,
+        chip.as_deref(),
+        &size,
+        folder.as_deref(),
+        full.as_deref(),
+    );
+}
+
+/// Para los archivos y carpetas del usuario ("Tu archivo"): "en <carpeta padre>" y la ruta completa (para el ratón). Las
+/// categorías con regla se llaman por su nombre conocido y no lo necesitan.
+fn folder_hint(env: &Env, it: &PlanItem) -> (Option<String>, Option<String>) {
+    if it.category.is_some() {
+        return (None, None);
+    }
+    let folder = it.path.parent().map(|p| {
+        p.file_name().map_or_else(
+            || p.display().to_string(),
+            |n| n.to_string_lossy().into_owned(),
+        )
+    });
+    (
+        folder.map(|f| env.tr.ta("confirm-in-folder", args!["folder" => f])),
+        Some(it.path.display().to_string()),
+    )
 }
 
 fn running_ui(ctx: &egui::Context, env: &mut Env, r: &mut Running, cancel: &mut bool) {
@@ -861,6 +929,10 @@ fn running_ui(ctx: &egui::Context, env: &mut Env, r: &mut Running, cancel: &mut 
         if r.cancelled {
             ui.add_space(6.0);
             note_line(ui, &pal, &env.tr.t("run-cancelling"), true);
+        }
+        if r.close_blocked {
+            ui.add_space(6.0);
+            note_line(ui, &pal, &env.tr.t("run-close-blocked"), true);
         }
         ui.add_space(14.0);
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
