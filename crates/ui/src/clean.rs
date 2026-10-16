@@ -84,10 +84,13 @@ pub(crate) enum Note {
 }
 
 impl Drop for CleanFlow {
-    /// Si la pantalla se cierra mientras se aprueba la cesta, la aprobación se cancela.
+    /// Si la pantalla se cierra mientras se aprueba la cesta o se ejecuta, se cancela (entre entradas: lo que ya empezó
+    /// termina bien y nada más se toca).
     fn drop(&mut self) {
-        if let Stage::Approving { cancel, .. } = &self.stage {
-            cancel.store(true, Ordering::SeqCst);
+        match &self.stage {
+            Stage::Approving { cancel, .. } => cancel.store(true, Ordering::SeqCst),
+            Stage::Running(r) => r.progress.cancel(),
+            _ => {}
         }
     }
 }

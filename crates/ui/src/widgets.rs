@@ -408,6 +408,7 @@ mod tests {
                                 settings: Settings::default(),
                                 backend: &backend,
                                 dry_run: false,
+                                history: &[],
                                 modal_open: false,
                                 actions: &mut actions,
                             };

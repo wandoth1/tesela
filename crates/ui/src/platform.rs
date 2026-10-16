@@ -280,12 +280,17 @@ pub fn show_properties_async(path: PathBuf) -> std::thread::JoinHandle<bool> {
     })
 }
 
+/// Verbo y destino de la petición a la shell (UTF-16 con NUL final). La llamada en sí abre una ventana del Explorador y
+/// no se puede ejecutar en las pruebas: esta parte, que decide QUÉ se pide, sí se prueba.
+fn recycle_bin_request() -> (Vec<u16>, Vec<u16>) {
+    (wide("open"), wide("shell:RecycleBinFolder"))
+}
+
 /// Abre la Papelera de reciclaje en el Explorador (`shell:RecycleBinFolder`), en un hilo propio: la E/S de la shell no
 /// debe bloquear la interfaz. No hay nada que comprobar: si Windows no puede, no pasa nada.
 pub fn open_recycle_bin() {
     std::thread::spawn(|| {
-        let file = wide("shell:RecycleBinFolder");
-        let verb = wide("open");
+        let (verb, file) = recycle_bin_request();
         // SAFETY: `SHELLEXECUTEINFOW` es una estructura de enteros y punteros para la que todo cero es un valor válido
         // (punteros nulos); se rellenan a continuación los campos que usa esta llamada.
         let mut info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
@@ -904,5 +909,12 @@ mod tests {
             RevealOutcome::Failed(RevealError::Open(_))
         ));
         wait_for(|| (TEST_LIVE.load(Ordering::SeqCst) == 0).then_some(()));
+    }
+
+    #[test]
+    fn la_peticion_de_abrir_la_papelera_es_la_carpeta_de_la_shell() {
+        let (verb, file) = recycle_bin_request();
+        assert_eq!(String::from_utf16_lossy(&verb), "open\0");
+        assert_eq!(String::from_utf16_lossy(&file), "shell:RecycleBinFolder\0");
     }
 }

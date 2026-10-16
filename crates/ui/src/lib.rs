@@ -1,9 +1,11 @@
-//! Interfaz de Tesela (egui). SOLO LECTURA en este incremento: no borra ni mueve nada.
+//! Interfaz de Tesela (egui). Todo lo que borra o mueve va por el `Backend` del `cleaner` (el real, o el SIMULADO de
+//! `--demo`, que nunca toca el disco) y solo después de la confirmación.
 //!
 //! * [`TeselaUi`]: la interfaz completa; pinta contra un `egui::Ui` (sin depender de `eframe`).
 //! * Pantallas: [`home`] (inicio), [`scan`] (escaneo), [`explore`] (mapa, lista y detalles).
 //! * [`map`]: el treemap como `Mesh` teselado una vez y cacheado.
-//! * [`demo`]: árbol sintético y determinista para `tesela --demo`.
+//! * [`demo`] y [`demo_backend`]: árbol sintético y determinista y respaldo de limpieza simulado para `tesela --demo`.
+//! * `clean`, `basket` y `recs`: el flujo de limpieza (cesta, Recomendaciones, confirmación, ejecución y resumen).
 
 mod about;
 pub mod app;

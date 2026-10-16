@@ -1,6 +1,6 @@
 [package]
 name = "tesela-ui"
-description = "Interfaz de Tesela (egui): pantallas de inicio, escaneo y exploracion; mapa, lista y detalles. Solo lectura."
+description = "Interfaz de Tesela (egui): inicio, escaneo, exploracion (mapa, lista, detalles), Recomendaciones, cesta, confirmacion y resumen de la limpieza."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

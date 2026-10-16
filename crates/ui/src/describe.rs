@@ -67,6 +67,20 @@ pub fn fold(s: &str) -> String {
         .collect()
 }
 
+/// "hace menos de 1 min", "hace 5 min", "hace 3 h", "hace 2 días": el tiempo transcurrido en lenguaje natural.
+pub fn ago_phrase(tr: &Tr, secs: u64) -> String {
+    if secs < 60 {
+        tr.t("ago-now")
+    } else if secs < 3600 {
+        tr.ta("ago-minutes", args!["n" => secs / 60])
+    } else if secs < 86_400 {
+        tr.ta("ago-hours", args!["n" => secs / 3600])
+    } else {
+        let n = secs / 86_400;
+        tr.ta("ago-days", args!["n" => n, "count" => tr.int(n)])
+    }
+}
+
 /// ¿Es un directorio al que se puede entrar, según lo que se ve tras limpiar (un directorio vaciado ya no tiene hijos)?
 pub fn can_enter_view(view: &tesela_model::View, id: NodeId) -> bool {
     let n = view.tree().node(id);

@@ -414,3 +414,11 @@ sum-bin-failed =
     }
 sum-cancelled = Cancelaste la limpieza: lo que ya estaba hecho se queda.
 sum-diverge = "Eliminado definitivamente" y "liberado ahora" no coinciden: puede ser por enlaces duros, archivos que otro programa tenía abiertos o cambios del propio Windows.
+
+ago-days =
+    { $n ->
+        [one] hace { $count } día
+       *[other] hace { $count } días
+    }
+settings-clear-history = Borrar el historial de limpiezas
+home-last-clean = Última limpieza: { $ago } · liberaste { $size }

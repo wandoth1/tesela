@@ -185,6 +185,8 @@ pub struct Env<'a> {
     pub backend: &'a Arc<dyn Backend>,
     /// Modo simulación: no se borra nada.
     pub dry_run: bool,
+    /// Resúmenes de las limpiezas anteriores (`history.jsonl`).
+    pub history: &'a [tesela_cleaner::HistoryEntry],
     /// Hay una ventana modal abierta ("Acerca de"): las teclas de navegación de la exploración no actúan.
     pub modal_open: bool,
     pub actions: &'a mut Vec<Action>,
@@ -206,6 +208,7 @@ pub struct TeselaUi {
     animate: bool,
     backend: Arc<dyn Backend>,
     dry_run: bool,
+    history: Vec<tesela_cleaner::HistoryEntry>,
     drives: Vec<DriveInfo>,
     drives_rx: Option<Receiver<Vec<DriveInfo>>>,
     folder_rx: Option<Receiver<Option<PathBuf>>>,
@@ -239,6 +242,7 @@ impl TeselaUi {
                 .map(|b| b.0)
                 .unwrap_or_else(|| default_backend(opts.demo.is_some())),
             dry_run: opts.dry_run,
+            history: Vec::new(),
             drives: Vec::new(),
             drives_rx: None,
             folder_rx: None,
@@ -250,6 +254,7 @@ impl TeselaUi {
             fonts_pending: true,
             font_scripts: crate::fonts::Scripts::NONE,
         };
+        ui.reload_history();
         if opts.demo.is_some() {
             ui.drives = demo::drives();
         } else {
@@ -302,6 +307,14 @@ impl TeselaUi {
             _ => {}
         }
         ui
+    }
+
+    /// Vuelve a leer el historial de limpiezas (la demostración no lo tiene: nunca escribe nada).
+    fn reload_history(&mut self) {
+        self.history = match (self.demo.is_some(), self.backend.data_dir()) {
+            (false, Some(dir)) => tesela_cleaner::log::history_load(&dir),
+            _ => Vec::new(),
+        };
     }
 
     fn demo_request(&self) -> ScanRequest {
@@ -484,6 +497,7 @@ impl TeselaUi {
                         s.cancel();
                     }
                     self.screen = Screen::Home;
+                    self.reload_history();
                 }
                 Action::StartScan(req) => self.start_scan(ctx, req),
                 Action::Rescan => {
@@ -516,6 +530,7 @@ impl TeselaUi {
                     if let Some(dir) = self.backend.data_dir() {
                         let _ = tesela_cleaner::log::history_clear(&dir);
                     }
+                    self.history.clear();
                 }
                 Action::SetTheme(t) => {
                     self.settings.theme = t;
@@ -556,6 +571,7 @@ impl TeselaUi {
                 settings: self.settings,
                 backend: &self.backend,
                 dry_run: self.dry_run,
+                history: &self.history,
                 modal_open: self.about.open,
                 actions: &mut actions,
             };
@@ -610,4 +626,11 @@ fn default_backend(demo: bool) -> Arc<dyn Backend> {
     Arc::new(tesela_cleaner::Cleaner::new(
         tesela_cleaner::Roots::from_system(exe_dir.as_deref()),
     ))
+}
+
+/// Segundos Unix de ahora.
+pub(crate) fn unix_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }

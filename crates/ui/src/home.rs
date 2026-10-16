@@ -60,7 +60,7 @@ pub fn drive_title_plain(tr: &crate::i18n::Tr, d: &DriveInfo) -> String {
 pub fn settings_button(ui: &mut Ui, env: &mut Env) {
     let label = env.tr.t("settings");
     let resp = widgets::icon_button(ui, env, Icon::Settings, &label, true);
-    let (tr, settings) = (env.tr, env.settings);
+    let (tr, settings, history) = (env.tr, env.settings, env.history);
     let mut acts: Vec<Action> = Vec::new();
     egui::Popup::menu(&resp).show(|ui| {
         ui.set_min_width(200.0);
@@ -90,6 +90,17 @@ pub fn settings_button(ui: &mut Ui, env: &mut Env) {
             {
                 acts.push(Action::SetLanguage(pref));
             }
+        }
+        ui.separator();
+        // El historial guarda solo resúmenes (fecha, unidad, usado, liberado, enviado a la Papelera): se puede borrar.
+        let has_history = !history.is_empty();
+        let clear = ui.add_enabled(
+            has_history,
+            egui::Button::new(tr.t("settings-clear-history")),
+        );
+        if clear.clicked() {
+            acts.push(Action::ClearHistory);
+            ui.close();
         }
         ui.separator();
         if ui.button(tr.t("about")).clicked() {
@@ -178,6 +189,18 @@ fn card(ui: &mut Ui, env: &mut Env, d: &DriveInfo) {
                         env.tr
                             .ta("drive-quota", args!["avail" => env.tr.size(d.available)]),
                     )
+                    .size(12.0)
+                    .color(pal.text_muted),
+                );
+            }
+            // La última limpieza de esta unidad (solo si hay historial).
+            if let Some(h) = env.history.iter().rev().find(|e| e.drive != 0 && e.drive as char == d.letter) {
+                let secs = crate::app::unix_now().saturating_sub(h.unix);
+                ui.label(
+                    RichText::new(env.tr.ta(
+                        "home-last-clean",
+                        args!["ago" => crate::describe::ago_phrase(env.tr, secs), "size" => env.tr.size(h.freed_now)],
+                    ))
                     .size(12.0)
                     .color(pal.text_muted),
                 );

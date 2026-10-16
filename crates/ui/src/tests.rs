@@ -2006,6 +2006,7 @@ fn wait_label(h: &mut Harness<'static, App>, label: &str) -> bool {
     for _ in 0..200 {
         h.run_steps(2);
         if h.query_by_label(label).is_some() {
+            h.run_steps(4);
             return true;
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
@@ -2094,3 +2095,5 @@ fn la_barra_de_estado_avisa_de_que_las_cifras_son_de_la_cuota_de_la_cuenta() {
         assert_eq!(h.query_all_by_label_contains(label).count(), 1, "{lang:?}");
     }
 }
+
+mod flow;

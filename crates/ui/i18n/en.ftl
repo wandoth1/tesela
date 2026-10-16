@@ -413,3 +413,11 @@ sum-bin-failed =
     }
 sum-cancelled = You cancelled the cleanup: what was already done stays done.
 sum-diverge = "Deleted permanently" and "freed now" differ: this can be because of hard links, files another program had open, or changes made by Windows itself.
+
+ago-days =
+    { $n ->
+        [one] { $count } day ago
+       *[other] { $count } days ago
+    }
+settings-clear-history = Delete the cleanup history
+home-last-clean = Last cleanup: { $ago } · you freed { $size }
