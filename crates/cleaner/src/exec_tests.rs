@@ -481,6 +481,44 @@ fn vaciar_salta_el_elemento_cuya_identidad_cambio_y_lo_deja_en_el_registro() {
     assert_eq!(ids(), before);
 }
 
+/// M4 con la Papelera real (solo un elemento propio): si no se puede escribir la intención `bin-begin` del trozo, la shell NO
+/// llega a ver ese trozo: nada se purga (`purged = 0`), el elemento sigue en la Papelera y el informe dice `log_failed`.
+#[test]
+fn un_error_de_escritura_en_bin_begin_impide_que_la_shell_vea_el_trozo() {
+    let _lock = bin_lock();
+    if !bin_usable() {
+        return;
+    }
+    let before = ids();
+    let sb = Sandbox::new();
+    let _guard = BinGuard { uuid: sb.uuid() };
+    let c = cleaner_for(&sb);
+    sb.write("Docs/uno.txt", 2_000);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/uno.txt"), c.protection());
+    exec(&c, &approve(&c, &b), false, false, None).unwrap();
+    let mut v = Basket::new();
+    v.set_empty_bin(true);
+    let plan = c.approve(&v, &ApproveOptions::default(), &cancel());
+    assert_eq!(plan.bin.as_ref().unwrap().items.len(), 1);
+    // El presupuesto cubre la línea de arranque pero no la intención `bin-begin`.
+    let log = Arc::new(LogWriter::create_failing_after(&sb.path("L"), false, 80).unwrap());
+    let rep = exec(&c, &plan, false, false, Some(log.clone())).unwrap();
+    let bin = rep.bin.unwrap();
+    assert_eq!((bin.requested, bin.purged, bin.still_there), (1, 0, 1));
+    assert!(rep.log_failed, "{rep:?}");
+    assert!(!log.ok());
+    let left: Vec<BinItem> = recycle::list_bin()
+        .unwrap()
+        .into_iter()
+        .filter(|i| is_mine(i, &sb.uuid()))
+        .collect();
+    assert_eq!(left.len(), 1, "el elemento sigue en la Papelera: {left:?}");
+    assert!(PathBuf::from(&left[0].id).exists());
+    recycle::purge_items(&left, &AtomicBool::new(false)).unwrap();
+    assert_eq!(ids(), before);
+}
+
 #[test]
 fn el_orden_primero_vaciar_y_despues_mover() {
     let _lock = bin_lock();
