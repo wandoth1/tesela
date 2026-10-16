@@ -65,7 +65,7 @@ pub enum Phase {
 /// Progreso compartido con la interfaz y cancelación.
 pub struct Progress {
     /// Poner a `true` cancela entre entradas: lo que ya empezó termina bien, lo demás no se toca.
-    pub cancel: Arc<AtomicBool>,
+    cancel: Arc<AtomicBool>,
     /// El USUARIO pidió cancelar (`cancel()`). `cancel` también se activa solo si el registro falla (M4): este distingue una
     /// cosa de la otra para que el informe diga las dos (H6.5).
     user_cancelled: AtomicBool,
@@ -110,6 +110,12 @@ impl Progress {
     pub fn add_item_done(&self) {
         self.items_done.fetch_add(1, Ordering::Relaxed);
     }
+    /// ¿Se pidió cancelar (el usuario, o el fallo del registro, que también detiene la limpieza)?
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel.load(Ordering::SeqCst)
+    }
+    /// Cancela: entre entradas, lo que ya empezó termina bien y lo demás no se toca. Es la ÚNICA forma de cancelar desde
+    /// fuera y siempre anota que lo pidió el usuario (`user_cancelled`), que es lo que distingue el informe (R3).
     pub fn cancel(&self) {
         self.user_cancelled.store(true, Ordering::SeqCst);
         self.cancel.store(true, Ordering::SeqCst);

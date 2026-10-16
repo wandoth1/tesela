@@ -9,7 +9,7 @@ use crate::recs::eligible_by_age;
 use crate::treepath::Locator;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tesela_cleaner::engine::{StatsSnapshot, UnitSpec};
@@ -432,7 +432,7 @@ impl Backend for DemoBackend {
         }
         step(Phase::Deleting);
         for it in &plan.items {
-            if progress.cancel.load(Ordering::Relaxed) {
+            if progress.is_cancelled() {
                 break;
             }
             let unfit_skipped = it.is_unfit() && !opts.allow_unfit_permanent;
@@ -525,7 +525,7 @@ impl Backend for DemoBackend {
             progress.add_item_done();
         }
         step(Phase::Verifying);
-        rep.cancelled = progress.cancel.load(Ordering::Relaxed);
+        rep.cancelled = progress.is_cancelled();
         if !opts.dry_run && rep.recycled_bytes > 0 {
             // Toda la Papelera ficticia: lo que ya tenía (la carpeta del árbol, si no se vació) más lo recién enviado.
             let before = if rep.bin.is_some() {

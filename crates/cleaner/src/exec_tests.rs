@@ -1889,6 +1889,16 @@ fn la_cancelacion_del_usuario_no_se_oculta_si_ademas_falla_el_registro() {
     assert!(rep2.log_failed && !rep2.cancelled);
 }
 
+/// R3: la bandera de cancelación ya no es pública: `cancel()` es la única forma de cancelar desde fuera y siempre anota que lo
+/// pidió el usuario.
+#[test]
+fn cancelar_siempre_anota_que_lo_pidio_el_usuario() {
+    let p = Progress::new();
+    assert!(!p.is_cancelled() && !p.user_cancelled());
+    p.cancel();
+    assert!(p.is_cancelled() && p.user_cancelled());
+}
+
 /// R4: un plan con muchos rechazados no infla el registro (tope de notas con una línea final con el resto).
 #[test]
 fn los_rechazados_del_plan_se_anotan_con_tope() {
