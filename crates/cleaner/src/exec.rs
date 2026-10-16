@@ -4,10 +4,12 @@
 //! lo que va a la Papelera: así lo que el usuario quiere conservar recuperable no se borra en el mismo paso.
 //!
 //! * **Definitivo**: el recorrido por handle de `engine` (apertura exclusiva, identidad, `FileDispositionInfoEx`).
-//! * **Papelera**: se abre el elemento por handle, se verifica su identidad y su ruta resuelta, se RENOMBRA por ese handle a
-//!   una lápida aleatoria en el mismo directorio (falla en seguro si hay algo abierto dentro) y se entrega la ruta lápida a
-//!   `IFileOperation`. Después se VERIFICA cada elemento: sigue ahí (falló, se le devuelve su nombre), está en la Papelera
-//!   (bien) o desapareció sin llegar a ella (se eliminó definitivamente y así se informa; nunca en silencio).
+//! * **Papelera** (sin lápidas): se abre el elemento en exclusiva, se verifica su identidad y su ruta resuelta (local y
+//!   permitida), se CIERRA el handle y se entrega la RUTA ORIGINAL a `IFileOperation` con un receptor de eventos propio.
+//!   La shell dice, por elemento, el resultado y la ruta real del elemento ya en la Papelera; se abre y se compara su
+//!   IDENTIDAD con la aprobada: igual = enviado; distinta = "se movió a la Papelera un objeto distinto del aprobado"
+//!   (recuperable); sin elemento en la Papelera = eliminado definitivamente (no cabía); error = omitido con su motivo.
+//!   Un directorio con algo abierto dentro falla en seguro (mover es renombrar) y se informa como "en uso".
 //! * **Tres contadores**: "eliminado definitivamente" y "movido a la Papelera" son sumas de tamaños; "liberado ahora" es la
 //!   diferencia MEDIDA del espacio libre de cada volumen antes y después.
 //! * **Simulación** (`dry_run`): hace todo salvo lo destructivo y registra las identidades que habría tocado.
@@ -15,7 +17,7 @@
 use crate::engine::{self, Event, Mode, Outcome, RootStatus, StatsSnapshot, Unit, UnitSpec};
 use crate::log::LogWriter;
 use crate::paths::PathKey;
-use crate::plan::{Cleaner, Plan, PlanItem, TOMBSTONE_EXTRA, fit_for};
+use crate::plan::{Cleaner, Plan, PlanItem, fit_for};
 use crate::protect::Verdict;
 use crate::recycle::{self, BinItem, RecycleMode};
 use crate::rules::{CategoryId, Destination};
@@ -23,10 +25,9 @@ use crate::sys::{self, FileIdentity};
 use crate::volume;
 use std::collections::{HashMap, HashSet};
 use std::ffi::OsString;
-use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 /// Opciones de la ejecución.
@@ -104,14 +105,14 @@ impl Progress {
 /// Qué falló al enviar un elemento a la Papelera.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecycleFail {
-    /// Algo dentro o el propio elemento está en uso (el renombrado falló en seguro).
+    /// Algo dentro o el propio elemento está en uso (falló en seguro: mover es renombrar).
     InUse,
     /// Sin permiso.
     Denied,
-    /// Otro error del sistema al renombrar.
-    Rename(u32),
-    /// La Papelera no lo aceptó (sigue en su sitio).
-    Shell,
+    /// La shell no lo procesó y sigue en su sitio.
+    NotProcessed,
+    /// La shell lo rechazó con este `HRESULT` (sigue en su sitio).
+    Shell(i32),
 }
 
 /// Cómo terminó un elemento.
@@ -125,9 +126,12 @@ pub enum ItemStatus {
     WouldRecycle,
     /// No se envió.
     NotRecycled(RecycleFail),
-    /// Desapareció sin llegar a la Papelera (se eliminó definitivamente).
+    /// Desapareció sin llegar a la Papelera (la shell lo eliminó definitivamente: no cabía).
     DeletedUnexpectedly,
-    /// Desapareció y no se pudo comprobar si llegó a la Papelera.
+    /// Se movió a la Papelera un objeto DISTINTO del aprobado (alguien lo sustituyó entre la comprobación y la shell).
+    /// Está en la Papelera: se puede restaurar.
+    RecycledOther,
+    /// No se pudo comprobar qué pasó (la shell no dio la ruta del elemento en la Papelera, o no se pudo abrir).
     Unverified,
     /// La raíz no se pudo procesar (no existe, cambió, protegida, en uso, cancelada...).
     Root(RootStatus),
@@ -204,6 +208,10 @@ pub struct Report {
     pub volumes: Vec<VolumeDelta>,
     /// Elementos que desaparecieron sin llegar a la Papelera.
     pub deleted_unexpectedly: u64,
+    /// Elementos cuyo destino en la Papelera es un objeto distinto del aprobado (recuperables).
+    pub recycled_other: u64,
+    /// Elementos de los que no se pudo comprobar qué pasó.
+    pub unverified: u64,
     /// Elementos que no se pudieron enviar.
     pub not_recycled: u64,
     /// Elementos que no caben en la Papelera y no se confirmaron.
@@ -217,46 +225,6 @@ pub struct Report {
 pub enum ExecError {
     /// Lo que cabe en la Papelera cambió desde la confirmación: hay que volver a confirmar (PLAN.md §2.5). Lleva los ids.
     NeedsReconfirm(Vec<usize>),
-}
-
-/// Un elemento que ya está renombrado a su lápida y espera a la Papelera.
-struct Moved {
-    item: usize,
-    landed: PathBuf,
-    original_path: PathBuf,
-    original_name: OsString,
-    identity: FileIdentity,
-    links: u32,
-}
-
-/// Nombre de lápida: `<raíz>.tesela-<12 hex><extensión>` (conserva el nombre y la extensión para que, al restaurarlo, se
-/// reconozca). El sufijo es aleatorio: el uuid hace imposible adivinarlo.
-pub fn tombstone_name(original: &OsString) -> OsString {
-    let token = uuid::Uuid::new_v4().simple().to_string();
-    let token = &token[..12];
-    let wide: Vec<u16> = original.encode_wide().collect();
-    // La extensión solo si es corta y "normal"; la raíz se recorta para no pasar de 200 unidades.
-    let dot = wide
-        .iter()
-        .rposition(|&c| c == b'.' as u16)
-        .filter(|&i| i > 0);
-    let (stem, ext) = match dot {
-        Some(i)
-            if wide.len() - i <= 12
-                && wide[i + 1..]
-                    .iter()
-                    .all(|&c| c < 128 && (c as u8).is_ascii_alphanumeric()) =>
-        {
-            (&wide[..i], &wide[i..])
-        }
-        _ => (&wide[..], &wide[wide.len()..]),
-    };
-    let stem = &stem[..stem.len().min(200)];
-    let mut out: Vec<u16> = stem.to_vec();
-    out.extend(format!(".tesela-{token}").encode_utf16());
-    out.extend_from_slice(ext);
-    debug_assert!(out.len() <= wide.len().min(212) + TOMBSTONE_EXTRA + 12);
-    OsString::from_wide(&out)
 }
 
 impl Cleaner {
@@ -413,7 +381,7 @@ impl Cleaner {
             }
         }
 
-        // 3. Lo que va a la Papelera: lápida por handle, IFileOperation y verificación por elemento.
+        // 3. Lo que va a la Papelera: comprobar, soltar el handle, IFileOperation con receptor y juicio por identidad.
         if !recyc.is_empty() {
             progress.set_phase(Phase::Recycling);
             self.recycle_items(&recyc, opts, progress, sink.clone(), &mut report);
@@ -432,6 +400,8 @@ impl Cleaner {
                     report.recycled_bytes += ir.stats.bytes;
                 }
                 (_, ItemStatus::DeletedUnexpectedly) => report.deleted_unexpectedly += 1,
+                (_, ItemStatus::RecycledOther) => report.recycled_other += 1,
+                (_, ItemStatus::Unverified) => report.unverified += 1,
                 (_, ItemStatus::NotRecycled(_)) => report.not_recycled += 1,
                 _ => {}
             }
@@ -505,20 +475,20 @@ impl Cleaner {
             rep.still_there = rep.requested;
             return rep;
         }
-        // En trozos: cada `IFileOperation` es una operación de la shell y la cancelación se mira entre trozos.
-        for chunk in items.chunks(500) {
-            if cancel.load(Ordering::Relaxed) {
-                break;
-            }
-            if recycle::purge_items(chunk).is_err() {
-                rep.failed = true;
-            }
-        }
-        match recycle::list_bin() {
-            Ok(now) => {
-                let ids: HashSet<&OsString> = now.iter().map(|i| &i.id).collect();
-                rep.still_there = items.iter().filter(|i| ids.contains(&i.id)).count() as u64;
-                rep.purged = rep.requested - rep.still_there;
+        // Se purga a través de la carpeta shell de la Papelera (ver `recycle::purge_items`): la shell borra `$R` y `$I` a la
+        // vez. El resultado sale de lo que la propia shell notificó por elemento (no se vuelve a enumerar la Papelera).
+        match recycle::purge_items(items, cancel) {
+            Ok(out) => {
+                let wanted: HashSet<&OsString> = items.iter().map(|i| &i.id).collect();
+                let purged: HashSet<&OsString> = out
+                    .events
+                    .iter()
+                    .filter(|e| e.succeeded() && wanted.contains(&e.item))
+                    .map(|e| &e.item)
+                    .collect();
+                rep.purged = purged.len() as u64;
+                rep.still_there = rep.requested - rep.purged;
+                rep.failed = out.error.is_some();
             }
             Err(_) => {
                 rep.failed = true;
@@ -544,7 +514,10 @@ impl Cleaner {
         rep
     }
 
-    /// Envía los elementos a la Papelera (ver el módulo).
+    /// Envía los elementos a la Papelera (ver el módulo): por trozos, y en cada trozo se prepara cada elemento (apertura
+    /// exclusiva, identidad, ruta y protección, y se CIERRA el handle), se entregan las rutas ORIGINALES a la shell y se
+    /// juzga cada elemento con lo que la propia shell notificó. Cada elemento se anota y se vuelca al registro en cuanto
+    /// termina.
     fn recycle_items(
         &self,
         items: &[&PlanItem],
@@ -553,10 +526,7 @@ impl Cleaner {
         sink: Option<Arc<engine::EventSink>>,
         report: &mut Report,
     ) {
-        let results: Mutex<HashMap<usize, (ItemStatus, StatsSnapshot)>> =
-            Mutex::new(HashMap::new());
-        let moved: Mutex<Vec<Moved>> = Mutex::new(Vec::new());
-        let next = AtomicUsize::new(0);
+        let mut results: HashMap<usize, (ItemStatus, StatsSnapshot)> = HashMap::new();
         let cancel = &progress.cancel;
         let emit = |it: &PlanItem, id: Option<FileIdentity>, links: u32, o: Outcome| {
             if let Some(s) = &sink {
@@ -570,118 +540,87 @@ impl Cleaner {
                     outcome: o,
                 });
             }
+            // Tras CADA elemento se vuelca el registro: si la aplicación se cierra a mitad, consta hasta dónde llegó.
+            if let Some(l) = &opts.log {
+                l.flush();
+            }
         };
-        let threads = self.threads.min(items.len()).max(1);
-        std::thread::scope(|s| {
-            for _ in 0..threads {
-                s.spawn(|| {
-                    loop {
-                        let i = next.fetch_add(1, Ordering::SeqCst);
-                        let Some(&it) = items.get(i) else { return };
-                        let mut st = StatsSnapshot::default();
-                        if cancel.load(Ordering::Relaxed) {
-                            results
-                                .lock()
-                                .unwrap_or_else(|e| e.into_inner())
-                                .insert(it.id, (ItemStatus::Root(RootStatus::Cancelled), st));
-                            continue;
-                        }
-                        progress.entries.fetch_add(1, Ordering::Relaxed);
-                        let outcome = self.prepare_move(it, opts.dry_run, &mut st);
-                        match outcome {
-                            Prepared::Moved(m) => {
-                                emit(it, Some(m.identity), m.links, Outcome::WouldRecycle);
-                                if opts.dry_run {
-                                    st.bytes = it.estimate.bytes;
-                                    results
-                                        .lock()
-                                        .unwrap_or_else(|e| e.into_inner())
-                                        .insert(it.id, (ItemStatus::WouldRecycle, st));
-                                } else {
-                                    moved.lock().unwrap_or_else(|e| e.into_inner()).push(m);
-                                }
-                            }
-                            Prepared::Rejected(status, o) => {
-                                emit(it, None, 0, o);
-                                results
-                                    .lock()
-                                    .unwrap_or_else(|e| e.into_inner())
-                                    .insert(it.id, (status, st));
-                            }
-                        }
-                    }
-                });
-            }
-        });
-        let mut results = results.into_inner().unwrap_or_else(|e| e.into_inner());
-        let moved = moved.into_inner().unwrap_or_else(|e| e.into_inner());
-
-        // Lo renombrado SIEMPRE se termina (aunque se cancele): una lápida a medias dejaría un nombre raro en su sitio.
-        if !moved.is_empty() {
-            for chunk in moved.chunks(64) {
-                let paths: Vec<PathBuf> = chunk.iter().map(|m| m.landed.clone()).collect();
-                let _ = recycle::recycle_paths(&paths, RecycleMode::Normal);
-            }
-            progress.set_phase(Phase::Verifying);
-            // Verificación POR ELEMENTO.
-            let bin = recycle::list_bin().ok();
-            let in_bin: Option<HashSet<(PathKey, String)>> = bin.as_ref().map(|b| {
-                b.iter()
-                    .map(|i| {
+        for chunk in items.chunks(RECYCLE_CHUNK) {
+            if cancel.load(Ordering::Relaxed) {
+                for it in chunk {
+                    results.insert(
+                        it.id,
                         (
-                            PathKey::new(&i.original_parent),
-                            PathKey::new(Path::new(&i.name)).as_str().to_string(),
-                        )
-                    })
-                    .collect()
-            });
-            let by_id: HashMap<usize, &PlanItem> = items.iter().map(|i| (i.id, *i)).collect();
-            for m in &moved {
-                let it = by_id[&m.item];
-                let mut st = StatsSnapshot::default();
-                let still_there = std::fs::symlink_metadata(&m.landed).is_ok();
-                let status = if still_there {
-                    // No lo aceptó la Papelera: se le devuelve su nombre.
-                    restore_name(m);
-                    emit(it, Some(m.identity), m.links, Outcome::NotRecycled);
-                    ItemStatus::NotRecycled(RecycleFail::Shell)
-                } else {
-                    let key = m.landed.parent().map(PathKey::new);
-                    let name = m
-                        .landed
-                        .file_name()
-                        .map(|n| PathKey::new(Path::new(n)).as_str().to_string());
-                    let found = match (&in_bin, key, name) {
-                        (Some(set), Some(k), Some(n)) => Some(set.contains(&(k, n))),
-                        _ => None,
-                    };
-                    match found {
-                        Some(true) => {
-                            st.bytes = it.estimate.bytes;
-                            st.files = it.estimate.files;
-                            st.dirs = it.estimate.dirs;
-                            emit(it, Some(m.identity), m.links, Outcome::Recycled);
-                            ItemStatus::Recycled
-                        }
-                        Some(false) => {
-                            emit(it, Some(m.identity), m.links, Outcome::DeletedUnexpectedly);
-                            ItemStatus::DeletedUnexpectedly
-                        }
-                        None => ItemStatus::Unverified,
-                    }
-                };
-                if let Some(l) = &opts.log {
-                    l.write_note(
-                        "tombstone",
-                        &format!(
-                            "{} -> {} ({:?})",
-                            m.original_path.display(),
-                            m.landed.display(),
-                            status
+                            ItemStatus::Root(RootStatus::Cancelled),
+                            StatsSnapshot::default(),
                         ),
                     );
                 }
-                results.insert(m.item, (status, st));
+                continue;
+            }
+            // 1. Preparar: comprobar y soltar el handle.
+            let mut ready: Vec<(&PlanItem, Pending)> = Vec::new();
+            for &it in chunk {
+                let mut st = StatsSnapshot::default();
+                progress.entries.fetch_add(1, Ordering::Relaxed);
+                match self.prepare_recycle(it, &mut st) {
+                    Prepared::Ready(p) if opts.dry_run => {
+                        emit(it, Some(p.identity), p.links, Outcome::WouldRecycle);
+                        st.bytes = it.estimate.bytes;
+                        results.insert(it.id, (ItemStatus::WouldRecycle, st));
+                    }
+                    Prepared::Ready(p) => ready.push((it, p)),
+                    Prepared::Rejected(status, o) => {
+                        emit(it, None, 0, o);
+                        results.insert(it.id, (status, st));
+                    }
+                }
+            }
+            if ready.is_empty() {
+                continue;
+            }
+            // 2. La shell envía las rutas ORIGINALES a la Papelera y avisa de cada una.
+            #[cfg(test)]
+            for (_, p) in &ready {
+                crate::engine::test_hooks::before_shell(&p.path);
+            }
+            let paths: Vec<PathBuf> = ready.iter().map(|(_, p)| p.path.clone()).collect();
+            let outcome = recycle::recycle_paths(&paths, RecycleMode::Normal).unwrap_or_default();
+            let events: HashMap<PathKey, &recycle::DeleteEvent> = outcome
+                .events
+                .iter()
+                .map(|e| (PathKey::new(Path::new(&e.item)), e))
+                .collect();
+            // 3. Juzgar cada elemento por lo que notificó la shell (identidad del elemento que llegó a la Papelera).
+            for (it, p) in &ready {
+                let ev = events.get(&PathKey::new(&p.path)).copied();
+                let (status, o) = judge(p, ev);
+                let mut st = StatsSnapshot::default();
+                if status == ItemStatus::Recycled {
+                    st.bytes = it.estimate.bytes;
+                    st.files = it.estimate.files;
+                    st.dirs = it.estimate.dirs;
+                } else if let ItemStatus::NotRecycled(RecycleFail::InUse) = status {
+                    st.in_use += 1;
+                } else if let ItemStatus::NotRecycled(RecycleFail::Denied) = status {
+                    st.denied += 1;
+                } else if let ItemStatus::NotRecycled(_) = status {
+                    st.other_errors += 1;
+                }
+                emit(it, Some(p.identity), p.links, o);
+                if let Some(l) = &opts.log {
+                    l.write_note(
+                        "recycle",
+                        &format!(
+                            "{} -> {:?} (hresult 0x{:08X})",
+                            p.path.display(),
+                            status,
+                            ev.map_or(0, |e| e.hr as u32)
+                        ),
+                    );
+                    l.flush();
+                }
+                results.insert(it.id, (status, st));
             }
         }
         for it in items {
@@ -721,9 +660,10 @@ impl Cleaner {
         }
     }
 
-    /// Abre el elemento por handle, verifica su identidad y su ruta resuelta y lo renombra a su lápida (o, en simulación,
-    /// solo verifica).
-    fn prepare_move(&self, it: &PlanItem, dry: bool, st: &mut StatsSnapshot) -> Prepared {
+    /// Abre el elemento en exclusiva (un archivo en uso falla con `SHARING_VIOLATION`; un directorio se abre
+    /// compartiendo, y si tiene algo abierto dentro la propia shell falla al moverlo), verifica su identidad, su ruta
+    /// resuelta (local, la aprobada, permitida) y SUELTA el handle. Devuelve lo que hay que entregar a la shell.
+    fn prepare_recycle(&self, it: &PlanItem, st: &mut StatsSnapshot) -> Prepared {
         let UnitSpec::Entry {
             path,
             approved,
@@ -735,7 +675,12 @@ impl Cleaner {
         };
         #[cfg(test)]
         crate::engine::test_hooks::before_open(path);
-        let h = match sys::open_path_for_rename(path) {
+        let opened = if *is_dir {
+            sys::open_path_for_rename(path)
+        } else {
+            sys::open_path_exclusive(path)
+        };
+        let h = match opened {
             Ok(h) => h,
             Err(c) => return map_open_error(c, st),
         };
@@ -749,64 +694,98 @@ impl Cleaner {
             st.changed += 1;
             return Prepared::Rejected(ItemStatus::Root(RootStatus::Changed), Outcome::Changed);
         }
-        let landed_from = match sys::final_path(&h) {
+        let final_path = match sys::final_path(&h) {
             Ok(p) => p,
             Err(c) => return map_open_error(c, st),
         };
-        let key = PathKey::new(&landed_from);
+        if !volume::is_local_path(&final_path) {
+            st.protected += 1;
+            return Prepared::Rejected(ItemStatus::Root(RootStatus::NotLocal), Outcome::Protected);
+        }
+        let key = PathKey::new(&final_path);
         if PathKey::new(path) != key || self.protection.target_verdict(&key) != Verdict::Allowed {
             st.protected += 1;
             return Prepared::Rejected(ItemStatus::Root(RootStatus::Protected), Outcome::Protected);
         }
-        let original_name = landed_from
-            .file_name()
-            .map(OsString::from)
-            .unwrap_or_default();
-        let mv = |landed: PathBuf| Moved {
-            item: it.id,
-            landed,
-            original_path: landed_from.clone(),
-            original_name: original_name.clone(),
+        // Aquí se suelta el handle (fin de la función): `IFileOperation` trabaja por ruta.
+        Prepared::Ready(Pending {
+            path: final_path,
             identity: m.identity,
             links: m.links,
+        })
+    }
+}
+
+/// Elementos por operación de la shell (y por vuelta de la cancelación).
+const RECYCLE_CHUNK: usize = 32;
+
+/// Un elemento comprobado y listo para entregar a la shell por su ruta original.
+struct Pending {
+    path: PathBuf,
+    identity: FileIdentity,
+    links: u32,
+}
+
+/// Qué pasó con un elemento según la shell. La comparación es por IDENTIDAD (volumen + FileId), nunca por nombre:
+/// da igual `.lnk`, `.url`, extensiones conocidas o `HideFileExt`, y no se enumera la Papelera.
+fn judge(p: &Pending, ev: Option<&recycle::DeleteEvent>) -> (ItemStatus, Outcome) {
+    use recycle::BinState;
+    let Some(ev) = ev else {
+        // La shell no llegó a procesarlo: si sigue ahí, no se envió; si no, no se puede saber qué pasó.
+        return if std::fs::symlink_metadata(&p.path).is_ok() {
+            (
+                ItemStatus::NotRecycled(RecycleFail::NotProcessed),
+                Outcome::NotRecycled,
+            )
+        } else {
+            (ItemStatus::Unverified, Outcome::Unverified)
         };
-        if dry {
-            return Prepared::Moved(mv(landed_from.clone()));
-        }
-        let tomb = tombstone_name(&original_name);
-        let tomb_wide: Vec<u16> = tomb.encode_wide().collect();
-        match sys::rename_on_handle(&h, &tomb_wide) {
-            Ok(landed) => Prepared::Moved(mv(landed)),
-            Err(c) => {
-                let (status, o) = match c {
-                    sys::SHARING_VIOLATION => {
-                        st.in_use += 1;
-                        (ItemStatus::NotRecycled(RecycleFail::InUse), Outcome::InUse)
-                    }
-                    sys::ACCESS_DENIED => {
-                        // Una carpeta con algo abierto dentro falla el renombrado con "acceso denegado".
-                        st.denied += 1;
-                        (
-                            ItemStatus::NotRecycled(RecycleFail::Denied),
-                            Outcome::Denied,
-                        )
-                    }
-                    other => {
-                        st.other_errors += 1;
-                        (
-                            ItemStatus::NotRecycled(RecycleFail::Rename(other)),
-                            Outcome::Failed(other),
-                        )
-                    }
-                };
-                Prepared::Rejected(status, o)
+    };
+    if !ev.succeeded() {
+        let fail = classify_hr(ev.hr);
+        let o = match fail {
+            RecycleFail::InUse => Outcome::InUse,
+            RecycleFail::Denied => Outcome::Denied,
+            _ => Outcome::NotRecycled,
+        };
+        return (ItemStatus::NotRecycled(fail), o);
+    }
+    match &ev.state {
+        BinState::Deleted => (
+            ItemStatus::DeletedUnexpectedly,
+            Outcome::DeletedUnexpectedly,
+        ),
+        BinState::InBinUnknownPath => (ItemStatus::Unverified, Outcome::Unverified),
+        BinState::InBin(bin_path) => {
+            let found = sys::open_for_query(bin_path)
+                .and_then(|h| sys::meta(&h))
+                .map(|m| m.identity);
+            match found {
+                Ok(id) if id == p.identity => (ItemStatus::Recycled, Outcome::Recycled),
+                Ok(_) => (ItemStatus::RecycledOther, Outcome::RecycledOther),
+                Err(_) => (ItemStatus::Unverified, Outcome::Unverified),
             }
         }
     }
 }
 
+/// Traduce el `HRESULT` de una eliminación fallida de la shell.
+fn classify_hr(hr: i32) -> RecycleFail {
+    let code = hr as u32;
+    // HRESULT_FROM_WIN32(x) = 0x8007_0000 | x.
+    let win32 = (code & 0xFFFF_0000 == 0x8007_0000).then_some(code & 0xFFFF);
+    match win32 {
+        Some(32 | 33) => RecycleFail::InUse,
+        Some(5) => RecycleFail::Denied,
+        // 0x80270021 se MIDIÓ al mover a la Papelera una carpeta con un archivo abierto dentro (mover es renombrar):
+        // el nombre simbólico de la shell es `COPYENGINE_E_SHARING_VIOLATION_SRC`.
+        _ if code == 0x8027_0021 => RecycleFail::InUse,
+        _ => RecycleFail::Shell(hr),
+    }
+}
+
 enum Prepared {
-    Moved(Moved),
+    Ready(Pending),
     Rejected(ItemStatus, Outcome),
 }
 
@@ -861,18 +840,6 @@ fn removed_of(it: &PlanItem, u: &Unit) -> Vec<Removed> {
                 files: t.files,
             })
             .collect(),
-    }
-}
-
-/// Un elemento que la Papelera no aceptó sigue en su sitio con el nombre de lápida: se le devuelve su nombre, por handle
-/// y comprobando que es el mismo objeto.
-fn restore_name(m: &Moved) {
-    let Ok(h) = sys::open_path_for_rename(&m.landed) else {
-        return;
-    };
-    if sys::meta(&h).is_ok_and(|x| x.identity == m.identity) {
-        let name: Vec<u16> = m.original_name.encode_wide().collect();
-        let _ = sys::rename_on_handle(&h, &name);
     }
 }
 

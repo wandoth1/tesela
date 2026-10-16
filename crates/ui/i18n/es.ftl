@@ -320,6 +320,7 @@ reject-reparse = es un enlace
 reject-protected = protegido
 reject-untouchable = no se puede borrar entero
 reject-other = error del sistema
+reject-not-local = no es una unidad local
 confirm-see-all = Ver la lista completa
 confirm-hide-all = Ver menos
 confirm-go-both = Liberar { $free } y mover { $bin } a la Papelera

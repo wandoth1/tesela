@@ -37,7 +37,7 @@ pub enum UnfitReason {
     NukeOnDelete,
     /// Supera (con margen) el tamaño máximo de la Papelera del volumen.
     TooBig,
-    /// La ruta (con el nombre de lápida) no cabe en los 260 caracteres que admite la Papelera.
+    /// La ruta no cabe en los 260 caracteres que admite la Papelera.
     PathTooLong,
 }
 
@@ -59,6 +59,10 @@ pub enum RejectReason {
     NoIdentity,
     /// Es un enlace (junction, symlink, punto de montaje): no se sigue ni se borra.
     Reparse,
+    /// La ruta resuelta no es de una unidad local con letra (UNC, también hacia un disco local por su compartición
+    /// administrativa, o una unidad de red): el `cleaner` solo limpia unidades locales, porque la protección se define
+    /// sobre rutas de unidad.
+    NotLocal,
     /// Protegida: denegada, intocable o carpeta conocida.
     Protected(Verdict),
     /// Cualquier otro error del sistema.
@@ -229,8 +233,6 @@ pub fn default_threads() -> usize {
 /// compara con su propio criterio y, si no cabe, elimina SIN avisar: ver las pruebas de `recycle`).
 const BIN_MARGIN_PERCENT: u64 = 90;
 
-/// Caracteres que añade el nombre de lápida (`.tesela-` + 12 hex) al nombre original.
-pub const TOMBSTONE_EXTRA: usize = 20;
 /// La Papelera no admite rutas de 260 caracteres o más.
 const MAX_BIN_PATH: usize = 258;
 
@@ -466,6 +468,13 @@ impl Cleaner {
                 return None;
             }
         };
+        if !volume::is_local_path(&canon) {
+            plan.rejected.push(Rejected {
+                path: canon,
+                reason: RejectReason::NotLocal,
+            });
+            return None;
+        }
         let key = PathKey::new(&canon);
         Some((m, canon, key))
     }
@@ -683,8 +692,8 @@ fn reason_of(code: u32) -> RejectReason {
 
 /// ¿Cabe un elemento de `bytes` con ruta `path` en la Papelera de su volumen?
 pub(crate) fn fit_for(path: &Path, bytes: u64) -> Fit {
-    // La Papelera no admite rutas de 260 caracteres o más (y la lápida alarga el nombre).
-    if path.as_os_str().len() + TOMBSTONE_EXTRA > MAX_BIN_PATH {
+    // La Papelera no admite rutas de 260 caracteres o más.
+    if path.as_os_str().len() > MAX_BIN_PATH {
         return Fit::Unfit(UnfitReason::PathTooLong);
     }
     let Some(root) = volume::volume_root(path) else {

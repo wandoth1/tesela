@@ -63,6 +63,24 @@ pub fn drive_kind(root: &Path) -> DriveKind {
     }
 }
 
+/// ¿Es `path` (la ruta FINAL resuelta por un handle, con o sin `\\?\`) un archivo de una unidad LOCAL con letra, fija o
+/// extraíble según `GetDriveTypeW`? Todo lo demás (UNC, también hacia un disco local con `localhost` o `127.0.0.1`,
+/// comparticiones administrativas, unidades de red, volúmenes sin letra, discos ópticos) NO es local: el `cleaner` lo
+/// rechaza porque la protección se escribe sobre rutas de unidad y una ruta de red al mismo sitio la esquivaría. El escáner
+/// sí puede leerlas.
+pub fn is_local_path(path: &Path) -> bool {
+    let p = crate::sys::strip_verbatim(path.to_path_buf());
+    let w: Vec<u16> = p.as_os_str().encode_wide().collect();
+    if w.len() < 3 || w[1] != u16::from(b':') || w[2] != u16::from(b'\\') {
+        return false;
+    }
+    let Some(letter) = u8::try_from(w[0]).ok().filter(u8::is_ascii_alphabetic) else {
+        return false;
+    };
+    let root = PathBuf::from(format!("{}:\\", letter as char));
+    matches!(drive_kind(&root), DriveKind::Fixed | DriveKind::Removable)
+}
+
 /// GUID del volumen (`{xxxxxxxx-...}`), a partir de su raíz.
 pub fn volume_guid(root: &Path) -> Option<String> {
     let mut r = wide_nul(root);
@@ -155,6 +173,48 @@ mod tests {
         }
         // No panica y da una de las cuatro respuestas.
         let _ = bin_limit(&root);
+    }
+
+    #[test]
+    fn solo_las_rutas_de_unidades_locales_con_letra_son_locales() {
+        let tmp = dunce::canonicalize(std::env::temp_dir()).unwrap();
+        // El temporal de la prueba está en una unidad local, con o sin prefijo verbatim.
+        assert!(is_local_path(&tmp), "{tmp:?}");
+        assert!(is_local_path(&PathBuf::from(format!(
+            r"\\?\{}",
+            tmp.display()
+        ))));
+        let sub = tmp.join("tesela-test-x").join("a b");
+        assert!(is_local_path(&sub));
+        let letter = tmp.to_string_lossy().chars().next().unwrap();
+        let rest: String = tmp.to_string_lossy().chars().skip(3).collect();
+        // La misma carpeta por la compartición administrativa o por una ruta de red: NO es local.
+        for host in ["localhost", "127.0.0.1", "[::1]", "equipo.invalid"] {
+            let sep = '\\';
+            for p in [
+                format!("{sep}{sep}{host}{sep}{letter}${sep}{rest}"),
+                format!("{sep}{sep}?{sep}UNC{sep}{host}{sep}{letter}${sep}{rest}"),
+                format!("{sep}{sep}{host}{sep}compartida{sep}{rest}"),
+            ] {
+                assert!(!is_local_path(Path::new(&p)), "{p}");
+            }
+        }
+        // Volumen sin letra, rutas relativas, raíces sin barra, dispositivos y unidades que no existen.
+        for p in [
+            r"\\?\Volume{00000000-0000-0000-0000-000000000000}\x",
+            r"\\.\C:\x",
+            r"relativa\x",
+            r"C:",
+            r"C:x",
+            r"1:\x",
+            "",
+        ] {
+            assert!(!is_local_path(Path::new(p)), "{p}");
+        }
+        let nonexistent = ["Q", r":\x"].concat();
+        if drive_kind(Path::new(&["Q", r":\"].concat())) == DriveKind::Unknown {
+            assert!(!is_local_path(Path::new(&nonexistent)));
+        }
     }
 
     #[test]

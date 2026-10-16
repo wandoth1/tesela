@@ -76,6 +76,8 @@ fn outcome_name(o: Outcome) -> String {
         Outcome::WouldRecycle => "would-recycle".into(),
         Outcome::NotRecycled => "not-recycled".into(),
         Outcome::DeletedUnexpectedly => "deleted-unexpectedly".into(),
+        Outcome::RecycledOther => "recycled-other-object".into(),
+        Outcome::Unverified => "unverified".into(),
         Outcome::InUse => "in-use".into(),
         Outcome::Denied => "denied".into(),
         Outcome::Changed => "changed".into(),

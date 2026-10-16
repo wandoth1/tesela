@@ -18,6 +18,7 @@
 use crate::paths::PathKey;
 use crate::protect::{ChildAction, Protection, Verdict};
 use crate::sys::{self, DirEntry, Expect, FileIdentity, Handle, Win32};
+use crate::volume;
 use crossbeam_deque::{Injector, Steal, Stealer, Worker};
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStringExt;
@@ -158,6 +159,10 @@ pub enum Outcome {
     NotRecycled,
     /// Desapareció sin llegar a la Papelera: se eliminó definitivamente.
     DeletedUnexpectedly,
+    /// Se movió a la Papelera un objeto distinto del aprobado (recuperable).
+    RecycledOther,
+    /// No se pudo comprobar qué pasó.
+    Unverified,
     InUse,
     Denied,
     Changed,
@@ -239,6 +244,8 @@ pub enum RootStatus {
     Changed,
     /// La ruta resuelta de la raíz no es la aprobada o ahora está protegida.
     Protected,
+    /// La ruta resuelta de la raíz no es de una unidad local con letra (UNC, también hacia un disco local, o red).
+    NotLocal,
     /// La raíz es un archivo en uso.
     InUse,
     Denied,
@@ -748,6 +755,20 @@ fn verify_root(
             return None;
         }
     };
+    if !volume::is_local_path(&final_path) {
+        unit.set_status(RootStatus::NotLocal);
+        Stats::add(&unit.stats.protected, 1);
+        emit(
+            unit,
+            final_path,
+            true,
+            Some(m.identity),
+            0,
+            m.links,
+            Outcome::Protected,
+        );
+        return None;
+    }
     let key = PathKey::new(&final_path);
     // La ruta resuelta por el handle es la aprobada, y sigue siendo un destino permitido (re-validación de protección).
     let same_route = PathKey::new(approved_path) == key;
@@ -829,10 +850,25 @@ fn entry_file(unit: &Arc<Unit>, path: &Path, approved: &FileIdentity, approved_t
         );
         return;
     }
-    let key = match sys::final_path(&h) {
-        Ok(p) => PathKey::new(&p),
+    let final_path = match sys::final_path(&h) {
+        Ok(p) => p,
         Err(c) => return root_open_error(unit, c),
     };
+    if !volume::is_local_path(&final_path) {
+        unit.set_status(RootStatus::NotLocal);
+        Stats::add(&unit.stats.protected, 1);
+        emit(
+            unit,
+            path.to_path_buf(),
+            false,
+            Some(m.identity),
+            m.alloc,
+            m.links,
+            Outcome::Protected,
+        );
+        return;
+    }
+    let key = PathKey::new(&final_path);
     if PathKey::new(path) != key || env.protection.target_verdict(&key) != Verdict::Allowed {
         unit.set_status(RootStatus::Protected);
         Stats::add(&unit.stats.protected, 1);
@@ -1181,17 +1217,36 @@ pub(crate) mod test_hooks {
     use std::sync::{Arc, Mutex};
 
     type Hook = Arc<dyn Fn(&Path) + Send + Sync>;
-    static HOOKS: Mutex<Vec<(u64, PathKey, Hook)>> = Mutex::new(Vec::new());
+    /// (id, etapa, raíz, gancho). Etapa 0: justo antes de abrir una entrada; etapa 1: justo antes de entregar una ruta a
+    /// la shell (con el handle ya soltado: la ventana que el diseño de la Papelera acota por el destino).
+    static HOOKS: Mutex<Vec<(u64, u8, PathKey, Hook)>> = Mutex::new(Vec::new());
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
     /// Quita el gancho al soltarla.
     pub struct HookGuard(u64);
 
-    /// Instala un gancho que solo se ejecuta para rutas bajo `root`.
+    /// Instala un gancho que solo se ejecuta para rutas bajo `root`, antes de abrirlas.
     pub fn install(root: PathBuf, f: impl Fn(&Path) + Send + Sync + 'static) -> HookGuard {
+        install_at(0, root, f)
+    }
+
+    /// Instala un gancho que solo se ejecuta para rutas bajo `root`, justo antes de entregarlas a la shell.
+    pub fn install_before_shell(
+        root: PathBuf,
+        f: impl Fn(&Path) + Send + Sync + 'static,
+    ) -> HookGuard {
+        install_at(1, root, f)
+    }
+
+    fn install_at(
+        stage: u8,
+        root: PathBuf,
+        f: impl Fn(&Path) + Send + Sync + 'static,
+    ) -> HookGuard {
         let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         HOOKS.lock().unwrap_or_else(|e| e.into_inner()).push((
             id,
+            stage,
             PathKey::new(&root),
             Arc::new(f),
         ));
@@ -1207,18 +1262,26 @@ pub(crate) mod test_hooks {
         }
     }
 
-    pub fn before_open(p: &Path) {
+    fn run(stage: u8, p: &Path) {
         let key = PathKey::new(p);
         let hooks: Vec<Hook> = HOOKS
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .iter()
-            .filter(|(_, root, _)| key.is_same_or_under(root))
-            .map(|(_, _, h)| h.clone())
+            .filter(|(_, st, root, _)| *st == stage && key.is_same_or_under(root))
+            .map(|(_, _, _, h)| h.clone())
             .collect();
         for h in hooks {
             h(p);
         }
+    }
+
+    pub fn before_open(p: &Path) {
+        run(0, p);
+    }
+
+    pub fn before_shell(p: &Path) {
+        run(1, p);
     }
 }
 

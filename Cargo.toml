@@ -47,6 +47,8 @@ wgpu = { version = "30.0.1", default-features = false, features = ["std", "parki
 windows-sys = "0.61.2"
 # COM (IFileOperation, la Papelera) del cleaner: ya está en el árbol (accesskit, wgpu); solo con las features que se usan.
 windows = { version = "0.62.2", default-features = false }
+# La macro `#[implement]` (el receptor de eventos de IFileOperation) genera rutas `windows_core::...`: hace falta el crate directo.
+windows-core = "0.62.2"
 
 # Crates internos.
 tesela-model = { version = "0.1.0", path = "crates/model" }

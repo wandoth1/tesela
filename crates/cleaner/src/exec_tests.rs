@@ -203,7 +203,7 @@ fn dry_run_no_toca_nada_y_registra_las_identidades_aprobadas() {
 }
 
 #[test]
-fn un_elemento_del_usuario_va_a_la_papelera_con_lapida_y_se_verifica() {
+fn un_elemento_del_usuario_va_a_la_papelera_por_su_ruta_original_y_se_verifica() {
     let _lock = bin_lock();
     if !bin_usable() {
         return;
@@ -240,15 +240,19 @@ fn un_elemento_del_usuario_va_a_la_papelera_con_lapida_y_se_verifica() {
     );
     assert!(!sb.path("Docs/vacaciones.mov").exists());
     assert!(!sb.path("Docs/carpeta").exists());
-    assert_eq!(
-        sb.count_entries("Docs"),
-        0,
-        "ninguna lápida queda en su sitio"
-    );
+    assert_eq!(sb.count_entries("Docs"), 0, "no queda nada en su sitio");
     assert!(rep.recycled_bytes >= 76_000);
     assert_eq!(rep.permanent_bytes, 0);
-    assert_eq!((rep.deleted_unexpectedly, rep.not_recycled), (0, 0));
-    // Están en la Papelera, con nombre de lápida que conserva la raíz y la extensión.
+    assert_eq!(
+        (
+            rep.deleted_unexpectedly,
+            rep.not_recycled,
+            rep.recycled_other,
+            rep.unverified
+        ),
+        (0, 0, 0, 0)
+    );
+    // Están en la Papelera con su NOMBRE ORIGINAL (no hay lápidas: nada que el usuario vea o restaure con un nombre raro).
     let mine: Vec<BinItem> = recycle::list_bin()
         .unwrap()
         .into_iter()
@@ -259,17 +263,13 @@ fn un_elemento_del_usuario_va_a_la_papelera_con_lapida_y_se_verifica() {
         .iter()
         .map(|i| i.name.to_string_lossy().into_owned())
         .collect();
+    assert!(names.iter().any(|n| n == "vacaciones.mov"), "{names:?}");
+    assert!(names.iter().any(|n| n == "carpeta"), "{names:?}");
     assert!(
-        names
-            .iter()
-            .any(|n| n.starts_with("vacaciones.tesela-") && n.ends_with(".mov")),
-        "{names:?}"
+        names.iter().all(|n| !n.contains("tesela-")),
+        "ninguna lápida: {names:?}"
     );
-    assert!(
-        names.iter().any(|n| n.starts_with("carpeta.tesela-")),
-        "{names:?}"
-    );
-    recycle::purge_items(&mine).unwrap();
+    recycle::purge_items(&mine, &AtomicBool::new(false)).unwrap();
     assert_eq!(ids(), before, "la Papelera queda exactamente como estaba");
 }
 
@@ -338,7 +338,7 @@ fn vaciar_la_papelera_purga_solo_la_lista_capturada() {
         1,
         "lo que entró después de confirmar no se toca: {left:?}"
     );
-    assert!(left[0].name.to_string_lossy().starts_with("tres.tesela-"));
+    assert_eq!(left[0].name.to_string_lossy(), "tres.txt");
     // Y los ajenos siguen exactamente como estaban.
     let foreign: HashSet<OsString> = recycle::list_bin()
         .unwrap()
@@ -379,8 +379,8 @@ fn el_orden_primero_vaciar_y_despues_mover() {
         .collect();
     // El nuevo (movido DESPUÉS de vaciar) sigue recuperable en la Papelera.
     assert_eq!(mine.len(), 1);
-    assert!(mine[0].name.to_string_lossy().starts_with("nuevo.tesela-"));
-    recycle::purge_items(&mine).unwrap();
+    assert_eq!(mine[0].name.to_string_lossy(), "nuevo.txt");
+    recycle::purge_items(&mine, &AtomicBool::new(false)).unwrap();
     assert_eq!(ids(), before);
 }
 
@@ -388,8 +388,8 @@ fn el_orden_primero_vaciar_y_despues_mover() {
 fn lo_que_no_cabe_en_la_papelera_exige_la_casilla() {
     let sb = Sandbox::new();
     let c = cleaner_for(&sb);
-    // Una ruta demasiado larga para la Papelera (más de 258 caracteres con la lápida).
-    let seg = "x".repeat(60);
+    // Una ruta demasiado larga para la Papelera (más de 258 caracteres).
+    let seg = "x".repeat(80);
     let rel = format!("Docs/{seg}/{seg}/{seg}/{seg}");
     let verbatim = PathBuf::from(format!(
         r"\\?\{}\{}",
@@ -399,7 +399,7 @@ fn lo_que_no_cabe_en_la_papelera_exige_la_casilla() {
     fs::create_dir_all(&verbatim).unwrap();
     fs::write(verbatim.join("grande.bin"), vec![3u8; 10_000]).unwrap();
     let file = sb.long(&format!("{rel}/grande.bin"));
-    assert!(file.as_os_str().len() > 258 - TOMBSTONE_EXTRA);
+    assert!(file.as_os_str().len() > 258);
     let mut b = Basket::new();
     b.add_path(file.clone(), c.protection());
     let plan = approve(&c, &b);
@@ -542,10 +542,10 @@ fn un_archivo_abierto_en_exclusiva_no_se_envia_y_una_carpeta_con_algo_abierto_de
         "{:?}",
         st("Docs/en-uso.bin")
     );
-    assert!(
-        matches!(st("Docs/carpeta"), ItemStatus::NotRecycled(_)),
-        "{:?}",
-        st("Docs/carpeta")
+    assert_eq!(
+        st("Docs/carpeta"),
+        ItemStatus::NotRecycled(RecycleFail::InUse),
+        "una carpeta con algo abierto dentro falla en seguro (mover es renombrar) y se informa como en uso"
     );
     // No se renombró nada: siguen con su nombre.
     assert!(sb.path("Docs/en-uso.bin").exists() && sb.path("Docs/carpeta/dentro.bin").exists());
@@ -565,7 +565,7 @@ fn un_archivo_abierto_en_exclusiva_no_se_envia_y_una_carpeta_con_algo_abierto_de
         .into_iter()
         .filter(|i| is_mine(i, &sb.uuid()))
         .collect();
-    recycle::purge_items(&mine).unwrap();
+    recycle::purge_items(&mine, &AtomicBool::new(false)).unwrap();
     assert_eq!(ids(), before);
 }
 
@@ -638,7 +638,7 @@ fn una_carpeta_con_una_carpeta_conocida_dentro_se_expande_y_esa_se_respeta() {
         .into_iter()
         .filter(|i| is_mine(i, &sb.uuid()))
         .collect();
-    recycle::purge_items(&mine).unwrap();
+    recycle::purge_items(&mine, &AtomicBool::new(false)).unwrap();
     assert_eq!(ids(), before);
 }
 
@@ -754,7 +754,7 @@ fn contenido_de_una_carpeta_conocida_son_sus_hijos_y_no_ella() {
         .into_iter()
         .filter(|i| is_mine(i, &sb.uuid()))
         .collect();
-    recycle::purge_items(&mine).unwrap();
+    recycle::purge_items(&mine, &AtomicBool::new(false)).unwrap();
     assert_eq!(ids(), before);
 }
 
@@ -777,44 +777,381 @@ fn cancelar_antes_de_empezar_no_toca_nada() {
     assert!(sb.path("Temp/a.tmp").exists() && sb.path("Docs/b.txt").exists());
 }
 
+// ---- Solo unidades locales (B2) y la propia aplicación dentro del temporal (B3) ---------------------------------------
+
+/// La misma carpeta del sandbox por una ruta de red a la compartición administrativa.
+fn via_share(host: &str, p: &Path) -> PathBuf {
+    let s = p.to_string_lossy().into_owned();
+    let letter = s.chars().next().unwrap();
+    let rest: String = s.chars().skip(3).collect();
+    let sep = '\\';
+    PathBuf::from(format!("{sep}{sep}{host}{sep}{letter}${sep}{rest}"))
+}
+
+/// B2: una ruta de red a la compartición administrativa de un disco local (con `localhost` o `127.0.0.1` como equipo)
+/// esquivaba la protección (que se escribe sobre rutas de unidad). Se rechazan
+/// al aprobar, aunque la ruta de red sea accesible; y si alguien las cuela en un plan, la ejecución también las rechaza.
 #[test]
-fn la_lapida_conserva_nombre_y_extension_y_es_unica() {
-    let a = tombstone_name(&OsString::from("vacaciones.mov"));
-    let b = tombstone_name(&OsString::from("vacaciones.mov"));
-    assert_ne!(a, b);
-    let s = a.to_string_lossy().into_owned();
-    assert!(
-        s.starts_with("vacaciones.tesela-") && s.ends_with(".mov"),
-        "{s}"
+fn las_rutas_de_red_a_un_disco_local_no_esquivan_la_proteccion() {
+    let _lock = bin_lock();
+    let sb = Sandbox::new();
+    let c = cleaner_for(&sb);
+    let f = sb.write("Docs/privado.txt", 2_000);
+    sb.write_aged("Temp/viejo.tmp", 3_000, 72);
+    for host in ["localhost", "127.0.0.1"] {
+        // Al aprobar: nunca llega al plan.
+        let net = via_share(host, &sb.long("Docs/privado.txt"));
+        let mut b = Basket::new();
+        b.add_path(net.clone(), c.protection());
+        let plan = approve(&c, &b);
+        eprintln!("{host}: rechazos al aprobar = {:?}", plan.rejected);
+        assert!(plan.items.is_empty(), "{host}: {:?}", plan.items);
+        assert!(plan.rejected.iter().all(|r| matches!(
+            r.reason,
+            RejectReason::NotLocal
+                | RejectReason::AccessDenied
+                | RejectReason::Missing
+                | RejectReason::Other(_)
+        )));
+        assert!(!plan.rejected.is_empty());
+        // En la ejecución: se toma un plan legítimo y se le cambia la ruta por la de red (misma identidad).
+        let mut b2 = Basket::new();
+        b2.add_path(sb.long("Docs/privado.txt"), c.protection());
+        let mut plan2 = approve(&c, &b2);
+        assert_eq!(plan2.items.len(), 1);
+        let it = &mut plan2.items[0];
+        it.path = net.clone();
+        it.fit = crate::plan::fit_for(&net, 2_000);
+        if let UnitSpec::Entry { path, .. } = &mut it.spec {
+            *path = net.clone();
+        }
+        // Una ruta de red nunca "cabe" en la Papelera: sin la casilla se salta...
+        let rep = exec(&c, &plan2, false, false, None).unwrap();
+        assert_eq!(rep.items[0].status, ItemStatus::SkippedUnfit);
+        // ...y con la casilla (borrado definitivo por el recorrido por handle) la raíz se rechaza por no ser local.
+        let rep = exec(&c, &plan2, false, true, None).unwrap();
+        eprintln!("{host}: estado en la ejecución = {:?}", rep.items[0].status);
+        assert_eq!(rep.items[0].status, ItemStatus::Root(RootStatus::NotLocal));
+        assert!(f.exists(), "{host}: no se tocó nada");
+        // La raíz de una categoría por la ruta de red (borrado definitivo del contenido).
+        let mut b3 = Basket::new();
+        b3.set_category(CategoryId::UserTemp, true);
+        let mut plan3 = approve(&c, &b3);
+        assert_eq!(plan3.items.len(), 1);
+        let net_temp = via_share(host, &sb.long("Temp"));
+        plan3.items[0].path = net_temp.clone();
+        if let UnitSpec::Contents { path, .. } = &mut plan3.items[0].spec {
+            *path = net_temp;
+        }
+        let rep3 = exec(&c, &plan3, false, false, None).unwrap();
+        eprintln!("{host}: categoría por la red = {:?}", rep3.items[0].status);
+        assert_eq!(rep3.items[0].status, ItemStatus::Root(RootStatus::NotLocal));
+        assert!(
+            sb.path("Temp/viejo.tmp").exists(),
+            "{host}: no se borró nada por la ruta de red"
+        );
+    }
+}
+
+/// B3: la carpeta de la propia aplicación DENTRO del temporal (una raíz exenta) nunca se borra, ni su contenido: la
+/// exención levanta lo que hay por encima de la raíz exenta, no una denegación que está dentro de ella.
+#[test]
+fn la_propia_aplicacion_dentro_del_temporal_nunca_se_borra() {
+    let sb = Sandbox::new();
+    sb.mkdir("Temp");
+    let roots = Roots {
+        user_temp: Some(sb.long("Temp")),
+        windows_temp: None,
+        browser: BrowserRoots::default(),
+        downloads: None,
+        protection: ProtectionRoots {
+            denied: vec![sb.long("Temp/app")],
+            untouchable: vec![],
+            content_roots: vec![],
+            exempt: vec![],
+        },
+    };
+    let c = Cleaner::new(roots).with_threads(4);
+    sb.write_aged("Temp/app/tesela.exe", 5_000, 72);
+    sb.write_aged("Temp/app/datos/config.toml", 1_000, 72);
+    sb.write_aged("Temp/viejo.tmp", 3_000, 72);
+    sb.write_aged("Temp/otra/x.tmp", 3_000, 72);
+    sb.set_age(&sb.path("Temp/otra"), 72);
+    let mut b = Basket::new();
+    b.set_category(CategoryId::UserTemp, true);
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 1, "{:?}", plan.rejected);
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    assert_eq!(rep.items[0].status, ItemStatus::Done);
+    assert!(sb.path("Temp/app/tesela.exe").exists());
+    assert!(sb.path("Temp/app/datos/config.toml").exists());
+    assert!(!sb.path("Temp/viejo.tmp").exists());
+    assert!(!sb.path("Temp/otra").exists());
+    assert!(rep.totals.protected >= 1);
+    // Y como destino suelto tampoco se puede añadir ni aprobar.
+    let mut b2 = Basket::new();
+    b2.add_path(sb.long("Temp/app"), c.protection());
+    assert!(approve(&c, &b2).items.is_empty());
+}
+
+// ---- El receptor de eventos: identidad (no nombre), carreras tras soltar el handle, y el juicio por elemento ----------
+
+/// B1: `.lnk`, `.url` y extensiones conocidas (`.txt`, `.jpg`...): el elemento se reconoce en la Papelera por su
+/// IDENTIDAD, no por nombre, así que ni la extensión ni "ocultar extensiones" lo despistan.
+#[test]
+fn lnk_url_y_extensiones_conocidas_se_verifican_por_identidad() {
+    let _lock = bin_lock();
+    if !bin_usable() {
+        return;
+    }
+    let before = ids();
+    let sb = Sandbox::new();
+    let _guard = BinGuard { uuid: sb.uuid() };
+    let c = cleaner_for(&sb);
+    let names = [
+        "acceso directo.lnk",
+        "enlace web.url",
+        "nota.txt",
+        "foto.jpg",
+        "datos.csv",
+        "sin-extension",
+        "Mayusculas.TXT",
+        "con.varios.puntos.tar.gz",
+    ];
+    let mut b = Basket::new();
+    for n in names {
+        sb.write(&format!("Docs/{n}"), 2_500);
+        b.add_path(sb.long(&format!("Docs/{n}")), c.protection());
+    }
+    sb.write("Docs/carpeta.lnk/dentro.txt", 1_000);
+    b.add_path(sb.long("Docs/carpeta.lnk"), c.protection());
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), names.len() + 1);
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    for it in &rep.items {
+        assert_eq!(it.status, ItemStatus::Recycled, "{:?}", it.path);
+        assert_eq!(
+            it.removed.len(),
+            1,
+            "se actualiza el árbol solo con lo verificado"
+        );
+    }
+    assert_eq!(sb.count_entries("Docs"), 0);
+    assert_eq!(
+        (
+            rep.recycled_other,
+            rep.unverified,
+            rep.deleted_unexpectedly,
+            rep.not_recycled
+        ),
+        (0, 0, 0, 0)
     );
-    assert_eq!(s.len(), "vacaciones.tesela-".len() + 12 + ".mov".len());
-    assert!(!s.contains(['\\', '/']));
-    // Sin extensión, con varios puntos, con extensión rara o larguísima.
+    let mine: Vec<BinItem> = recycle::list_bin()
+        .unwrap()
+        .into_iter()
+        .filter(|i| is_mine(i, &sb.uuid()))
+        .collect();
+    assert_eq!(mine.len(), names.len() + 1, "{mine:?}");
+    recycle::purge_items(&mine, &AtomicBool::new(false)).unwrap();
+    assert_eq!(ids(), before);
+}
+
+/// Carrera: tras SOLTAR el handle y antes de que la shell abra el elemento, el mismo usuario lo sustituye por otro
+/// objeto del mismo nombre y tamaño. La shell manda el sustituto a la Papelera, el receptor lo ve (identidad distinta) y se
+/// informa; el original no se toca.
+#[test]
+fn sustituir_tras_soltar_el_handle_manda_otro_objeto_a_la_papelera_y_se_informa() {
+    let _lock = bin_lock();
+    if !bin_usable() {
+        return;
+    }
+    let before = ids();
+    let sb = Sandbox::new();
+    let _guard = BinGuard { uuid: sb.uuid() };
+    let c = cleaner_for(&sb);
+    sb.write("Docs/foto.jpg", 12_288);
+    sb.write("Docs/otro.jpg", 4_096);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/foto.jpg"), c.protection());
+    b.add_path(sb.long("Docs/otro.jpg"), c.protection());
+    let plan = approve(&c, &b);
+    let (orig, moved) = (sb.path("Docs/foto.jpg"), sb.path("Docs/foto-original.jpg"));
+    let _hook = crate::engine::test_hooks::install_before_shell(sb.long("Docs"), {
+        let (orig, moved) = (orig.clone(), moved.clone());
+        move |p| {
+            if p.ends_with("foto.jpg") {
+                fs::rename(&orig, &moved).unwrap();
+                fs::write(&orig, vec![7u8; 12_288]).unwrap();
+            }
+        }
+    });
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    let st = |n: &str| rep.items.iter().find(|i| i.path.ends_with(n)).unwrap();
+    assert_eq!(st("foto.jpg").status, ItemStatus::RecycledOther);
     assert!(
-        tombstone_name(&OsString::from("carpeta"))
-            .to_string_lossy()
-            .starts_with("carpeta.tesela-")
+        st("foto.jpg").removed.is_empty(),
+        "el árbol no se actualiza con lo que no es lo aprobado"
+    );
+    assert_eq!(st("otro.jpg").status, ItemStatus::Recycled);
+    assert_eq!((rep.recycled_other, rep.unverified), (1, 0));
+    assert!(moved.exists(), "el original aprobado no se toca");
+    assert!(
+        !orig.exists(),
+        "el sustituto está en la Papelera (recuperable)"
+    );
+    assert_eq!(
+        rep.recycled_bytes,
+        st("otro.jpg").stats.bytes,
+        "solo lo verificado cuenta como movido"
+    );
+    let mine: Vec<BinItem> = recycle::list_bin()
+        .unwrap()
+        .into_iter()
+        .filter(|i| is_mine(i, &sb.uuid()))
+        .collect();
+    assert_eq!(mine.len(), 2, "{mine:?}");
+    recycle::purge_items(&mine, &AtomicBool::new(false)).unwrap();
+    assert_eq!(ids(), before);
+}
+
+/// Carrera: tras soltar el handle, un ancestro pasa a ser un junction a otra carpeta del mismo árbol. Lo peor que puede
+/// pasar es que la shell mande a la Papelera lo que hay en el destino del junction: el receptor lo ve por la identidad.
+#[test]
+fn con_un_ancestro_cambiado_por_un_junction_tras_soltar_el_handle_nunca_se_da_por_bueno() {
+    let _lock = bin_lock();
+    if !bin_usable() {
+        return;
+    }
+    let before = ids();
+    let mut sb = Sandbox::new();
+    let _guard = BinGuard { uuid: sb.uuid() };
+    let c = cleaner_for(&sb);
+    sb.write("Docs/a/b/aprobado.txt", 4_000);
+    sb.write("Docs/otra/b/ajeno.txt", 4_000);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/a/b"), c.protection());
+    let plan = approve(&c, &b);
+    let (a, a_orig, otra) = (
+        sb.path("Docs/a"),
+        sb.path("Docs/a-original"),
+        sb.path("Docs/otra"),
+    );
+    let _hook = crate::engine::test_hooks::install_before_shell(sb.long("Docs"), move |_| {
+        fs::rename(&a, &a_orig).unwrap();
+        let out = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&a)
+            .arg(&otra)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+    });
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    sb.register_junction("Docs/a");
+    let status = rep.items[0].status;
+    eprintln!("ancestro cambiado tras soltar el handle: {status:?}");
+    assert_ne!(status, ItemStatus::Recycled, "nunca se da por bueno");
+    assert!(
+        rep.items[0].removed.is_empty(),
+        "el árbol no se actualiza con lo que no es lo aprobado"
     );
     assert!(
-        tombstone_name(&OsString::from("a.b.tar.gz"))
-            .to_string_lossy()
-            .ends_with(".gz")
+        sb.path("Docs/a-original/b/aprobado.txt").exists(),
+        "el original aprobado no se toca"
     );
-    assert!(
-        tombstone_name(&OsString::from(".gitignore"))
-            .to_string_lossy()
-            .starts_with(".gitignore.tesela-")
+    // Si la shell se llevó el destino del junction, está en la Papelera: es recuperable y el informe lo dice.
+    if !sb.path("Docs/otra/b").exists() {
+        assert_eq!(status, ItemStatus::RecycledOther);
+        assert_eq!(rep.recycled_other, 1);
+    }
+    let mine: Vec<BinItem> = recycle::list_bin()
+        .unwrap()
+        .into_iter()
+        .filter(|i| is_mine(i, &sb.uuid()))
+        .collect();
+    recycle::purge_items(&mine, &AtomicBool::new(false)).unwrap();
+    assert_eq!(ids(), before);
+}
+
+fn pending(identity: FileIdentity) -> Pending {
+    Pending {
+        path: PathBuf::from("no-existe-x"),
+        identity,
+        links: 1,
+    }
+}
+
+fn ident(n: u128) -> FileIdentity {
+    FileIdentity {
+        volume_serial: 7,
+        file_id: n,
+    }
+}
+
+/// El juicio por elemento sale de lo que dijo la shell: identidad igual / distinta, eliminado, error, sin aviso.
+#[test]
+fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
+    use crate::recycle::{BinState, DeleteEvent};
+    let sb = Sandbox::new();
+    let bin_file = sb.write("bin/R1.txt", 10);
+    let id = {
+        let h = sys::open_for_query(&bin_file).unwrap();
+        sys::meta(&h).unwrap().identity
+    };
+    let ev = |hr: i32, state: BinState| DeleteEvent {
+        item: OsString::from("no-existe-x"),
+        hr,
+        state,
+    };
+    // Misma identidad -> enviado.
+    let p = pending(id);
+    let e = ev(0, BinState::InBin(bin_file.clone()));
+    assert_eq!(judge(&p, Some(&e)).0, ItemStatus::Recycled);
+    // Otra identidad -> se movió a la Papelera un objeto distinto del aprobado.
+    let p2 = pending(ident(id.file_id ^ 1));
+    assert_eq!(judge(&p2, Some(&e)).0, ItemStatus::RecycledOther);
+    let p3 = pending(FileIdentity {
+        volume_serial: id.volume_serial ^ 1,
+        file_id: id.file_id,
+    });
+    assert_eq!(judge(&p3, Some(&e)).0, ItemStatus::RecycledOther);
+    // La shell lo eliminó definitivamente (`psiNewlyCreated` nulo).
+    assert_eq!(
+        judge(&p, Some(&ev(0, BinState::Deleted))).0,
+        ItemStatus::DeletedUnexpectedly
     );
-    let weird = tombstone_name(&OsString::from("x.exten sion con espacios"));
-    assert!(
-        !weird.to_string_lossy().ends_with("espacios"),
-        "una extensión rara no se conserva"
+    // No dio ruta, o la ruta no se puede abrir -> no verificado.
+    assert_eq!(
+        judge(&p, Some(&ev(0, BinState::InBinUnknownPath))).0,
+        ItemStatus::Unverified
     );
-    let long = "n".repeat(250);
-    assert!(
-        tombstone_name(&OsString::from(format!("{long}.txt"))).len()
-            <= 200 + ".tesela-".len() + 12 + 4
+    let gone = ev(0, BinState::InBin(sb.path("bin/no-esta.txt")));
+    assert_eq!(judge(&p, Some(&gone)).0, ItemStatus::Unverified);
+    // Errores: en uso, sin permiso y otros, con su HRESULT.
+    let hr_win32 = |c: u32| (0x8007_0000u32 | c) as i32;
+    assert_eq!(
+        judge(&p, Some(&ev(hr_win32(32), BinState::Deleted))).0,
+        ItemStatus::NotRecycled(RecycleFail::InUse)
     );
+    assert_eq!(
+        judge(&p, Some(&ev(hr_win32(5), BinState::Deleted))).0,
+        ItemStatus::NotRecycled(RecycleFail::Denied)
+    );
+    assert_eq!(
+        judge(&p, Some(&ev(0x8000_4005u32 as i32, BinState::Deleted))).0,
+        ItemStatus::NotRecycled(RecycleFail::Shell(0x8000_4005u32 as i32))
+    );
+    // Sin aviso: sigue en su sitio -> no procesado; ya no está -> no verificado.
+    let here = Pending {
+        path: bin_file.clone(),
+        identity: id,
+        links: 1,
+    };
+    assert_eq!(
+        judge(&here, None).0,
+        ItemStatus::NotRecycled(RecycleFail::NotProcessed)
+    );
+    assert_eq!(judge(&p, None).0, ItemStatus::Unverified);
 }
 
 #[test]

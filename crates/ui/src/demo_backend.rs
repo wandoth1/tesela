@@ -334,6 +334,7 @@ impl Backend for DemoBackend {
                                 self.root
                             )),
                             time_deleted: DEMO_NOW as i64 - 86_400 * (i as i64 % 60),
+                            size: 0,
                         })
                         .collect();
                     plan.bin = Some(BinPlan {

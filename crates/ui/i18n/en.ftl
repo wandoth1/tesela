@@ -319,6 +319,7 @@ reject-reparse = is a link
 reject-protected = protected
 reject-untouchable = cannot be deleted as a whole
 reject-other = system error
+reject-not-local = not a local drive
 confirm-see-all = See the full list
 confirm-hide-all = See less
 confirm-go-both = Free { $free } and move { $bin } to the Recycle Bin
