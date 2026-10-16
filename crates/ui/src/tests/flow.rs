@@ -40,11 +40,56 @@ fn basket_count(h: &Harness<'static, App>) -> usize {
     explore(h).flow.basket.len()
 }
 
+/// R-1: con la ventana MÍNIMA real (960x600) la pantalla de Recomendaciones no pisa nada: el titular largo ("Hasta X en
+/// candidatos de bajo riesgo...") pasa a varias líneas junto al botón principal sin cubrirlo, ni al subtítulo, ni al texto
+/// (largo) de hiberfil.sys. En español y en inglés.
+#[test]
+fn con_la_ventana_minima_recomendaciones_no_pisa_titular_boton_ni_textos() {
+    for (lang, items) in [
+        (
+            LangPref::Es,
+            vec![
+                "candidatos de bajo riesgo",
+                "más que conviene que mires tú",
+                "Limpiar lo seguro",
+                "powercfg /h /type reduced",
+            ],
+        ),
+        (
+            LangPref::En,
+            vec![
+                "low-risk candidates",
+                "you should look at yourself",
+                "Clean the safe items",
+                "powercfg /h /type reduced",
+            ],
+        ),
+    ] {
+        let mut o = clean_opts(CleanStart::Recommendations);
+        o.settings.language = lang;
+        let mut h = harness_sized(o, egui::vec2(960.0, 600.0));
+        h.run_steps(4);
+        let rects = rects_of(&h, &items);
+        for (i, (a, ra)) in rects.iter().enumerate() {
+            assert!(
+                ra.left() >= -0.5 && ra.right() <= 960.5,
+                "{lang:?}: `{a}` fuera de la ventana por los lados: {ra:?}"
+            );
+            for (b, rb) in &rects[i + 1..] {
+                assert!(
+                    !ra.intersects(*rb),
+                    "{lang:?}: `{a}` y `{b}` se solapan: {ra:?} {rb:?}"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn recomendaciones_ensenan_el_titular_las_tarjetas_y_preseleccionan_lo_seguro() {
     let mut h = harness(clean_opts(CleanStart::Recommendations));
     h.run_steps(3);
-    h.get_by_label_contains("sin riesgo");
+    h.get_by_label_contains("candidatos de bajo riesgo");
     h.get_by_label_contains("más que conviene que mires tú");
     // Las tres clases de riesgo con su frase.
     h.get_by_label("Seguro");
@@ -138,7 +183,7 @@ fn confirmar_ejecuta_enseña_el_resumen_y_el_arbol_encoge_sin_reescanear() {
     assert!(wait_contains(&mut h, "Revisa antes de limpiar"));
     h.get_by_label_contains("Liberar ").click();
     assert!(
-        wait_contains(&mut h, "Liberados ahora"),
+        wait_contains(&mut h, "Cambio medido del espacio libre"),
         "no llegó el resumen"
     );
     // Los tres contadores y lo que se saltó.
@@ -283,7 +328,9 @@ fn lo_que_no_cabe_en_la_papelera_sale_en_el_grupo_ambar_con_su_casilla() {
 fn vaciar_ahora_del_resumen_vuelve_a_pedir_confirmacion_con_alcance_enumerado() {
     let mut h = harness(clean_opts(CleanStart::Summary));
     h.run_steps(3);
-    h.get_by_label("Liberados ahora");
+    h.get_by_label("Cambio medido del espacio libre");
+    // T1: y dice que otros programas pueden influir en esa cifra.
+    h.get_by_label_contains("otros programas que escriban o borren a la vez");
     h.get_by_label_contains("están en la Papelera de reciclaje");
     h.get_by_label_contains("Vaciar ahora").click();
     assert!(wait_contains(&mut h, "Revisa antes de limpiar"));
@@ -306,7 +353,7 @@ fn la_simulacion_no_cambia_el_arbol_y_lo_dice() {
     h.get_by_label("Simular la limpieza").click();
     assert!(wait_contains(
         &mut h,
-        "Simulación: esto es lo que se habría liberado"
+        "Simulación: esto es lo que se habría eliminado (estimación)"
     ));
     h.get_by_label("Volver al mapa").click();
     h.run_steps(3);

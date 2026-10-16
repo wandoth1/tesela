@@ -27,6 +27,17 @@ impl Sandbox {
         }
     }
 
+    /// Como [`Sandbox::new`], con el uuid dado (un proceso hijo de una prueba lo recibe de su padre, que ya lo vigila con su
+    /// `BinGuard`).
+    pub fn with_uuid(uuid: &str) -> Sandbox {
+        let root = std::env::temp_dir().join(format!("tesela-test-{uuid}"));
+        fs::create_dir(&root).expect("crea la carpeta temporal");
+        Sandbox {
+            root,
+            junctions: Vec::new(),
+        }
+    }
+
     /// Raíz tal como se creó (`temp_dir()`; en algunos runners con componentes 8.3).
     pub fn root(&self) -> &Path {
         &self.root
@@ -182,9 +193,32 @@ impl Drop for Sandbox {
 /// Serializa las pruebas que tocan la Papelera real (comparan el conjunto de ids antes y después).
 pub static BIN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Bloquea [`BIN_LOCK`] aunque otra prueba haya entrado en pánico con él cogido.
+/// Bloquea [`BIN_LOCK`] aunque otra prueba haya entrado en pánico con él cogido. Con las pruebas de la Papelera real
+/// activadas, antes barre los restos de ejecuciones anteriores (SOLO elementos cuyo origen está bajo `tesela-test-*`).
 pub fn bin_lock() -> std::sync::MutexGuard<'static, ()> {
-    BIN_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    let g = BIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    if crate::recycle::bintest::real_recycle_requested() {
+        crate::recycle::bintest::sweep_leftovers();
+    }
+    g
+}
+
+/// Borra al soltarse un archivo o una carpeta propios de una prueba (p. ej. el `$R` apartado dentro de la Papelera). Una
+/// carpeta se borra entera, pero nunca se sigue un enlace.
+pub struct RemoveOnDrop(pub PathBuf);
+
+impl Drop for RemoveOnDrop {
+    fn drop(&mut self) {
+        match fs::symlink_metadata(&self.0) {
+            Ok(m) if m.is_dir() => {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+            Ok(_) => {
+                let _ = fs::remove_file(&self.0);
+            }
+            Err(_) => {}
+        }
+    }
 }
 
 /// Crea un archivo DISPERSO de `len` bytes lógicos (no ocupa espacio en disco), para probar elementos "demasiado
@@ -228,4 +262,19 @@ pub fn short_path(path: &Path) -> PathBuf {
         return path.to_path_buf();
     }
     PathBuf::from(std::ffi::OsString::from_wide(&buf[..n]))
+}
+
+unsafe extern "system" {
+    /// `kernel32`: restringe la búsqueda de DLL de todo el proceso (la que hace `tesela.exe` al arrancar).
+    fn SetDefaultDllDirectories(directory_flags: u32) -> i32;
+}
+
+/// `LOAD_LIBRARY_SEARCH_SYSTEM32`: solo se buscan DLL en `System32`.
+const LOAD_LIBRARY_SEARCH_SYSTEM32: u32 = 0x0000_0800;
+
+/// `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)` en ESTE proceso (sin añadir ninguna característica de crate:
+/// se declara la función de `kernel32`). `true` si Windows lo aceptó.
+pub fn restrict_dll_search_to_system32() -> bool {
+    // SAFETY: llamada de `kernel32` sin punteros; solo cambia la búsqueda de DLL del proceso.
+    unsafe { SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32) != 0 }
 }

@@ -70,8 +70,8 @@ scan-counts-of = { $files } files · { $size } of { $total } · { $time }
 scan-stop = Stop and view what we have
 scan-progress-label = Scan progress: { $pct }%
 scan-known-title = Places where temporary files usually pile up
-scan-known-sum = You can free at least { $size }
-scan-known-note = Only safe things count: temporary files older than a day and browser caches. We show you what is deleted and what goes to the Recycle Bin before cleaning.
+scan-known-sum = Up to { $size } in low-risk candidates (checked when cleaning)
+scan-known-note = This is an estimate, not a guaranteed minimum, and it only counts low-risk items: temporary files older than 7 days and browser caches. We show you what is deleted and what goes to the Recycle Bin before cleaning, and the real figure is measured when cleaning.
 scan-known-excluded = Downloads and the Recycle Bin are your own data: they are shown, but not counted in the figure above.
 risk-review-tag = Review
 scan-clean-safe = Clean the safe stuff
@@ -127,7 +127,7 @@ system-block = Windows and other system data
 system-tip = Includes Windows files, hibernation, restore points and folders your user cannot see. This is normal and cannot be deleted from here.
 system-admin-link = See the detail (administrator mode)
 info-pagefile = Windows paging file. Windows manages it; it cannot be deleted from here.
-info-hiberfil = Windows hibernation file. If you do not use hibernation it can be turned off with powercfg /h off; Tesela runs nothing.
+info-hiberfil = Windows hibernation file. If you do not use hibernation it can be shrunk or turned off from a command prompt run as administrator: powercfg /h /type reduced shrinks it and keeps fast startup; powercfg /h off removes it, but also removes hybrid sleep and fast startup. Tesela runs nothing.
 info-swapfile = Swap file for Windows apps. Windows manages it.
 risk-info-only = Information only
 incomplete-note = The scan stopped before covering everything: this size is a minimum.
@@ -233,7 +233,7 @@ dest-permanent = Deleted · recreated on its own
 
 # Recommendations
 risk-safe-tag = Safe
-recs-title-safe = You can free { $size } with no risk
+recs-title-safe = Up to { $size } in low-risk candidates (checked when cleaning)
 recs-title-none = Nothing safe to clean right now
 recs-subtitle-review = And there is { $size } more that you should look at yourself.
 recs-clean-safe = Clean the safe items ({ $size })
@@ -256,8 +256,8 @@ recs-view = View
 recs-empty-bin = Empty
 rule-browsers-name = Browser caches
 rule-browsers-why = Copies of web pages that the browser downloads again. Your passwords, history and sessions are not touched.
-rule-user-temp-why = Temporary files older than a day. Recent ones are left in case an installer is using them.
-rule-windows-temp-why = Windows temporary files older than a day. Recent ones are left in case an installer is using them.
+rule-user-temp-why = Temporary files not modified in the last week (older than 7 days). Recent ones are left in case an installer is using them.
+rule-windows-temp-why = Windows temporary files not modified in the last week (older than 7 days). Recent ones are left in case an installer is using them.
 rule-downloads-why = Your own files: look at them and choose. Nothing here is checked automatically.
 rule-recycle-bin-why = Emptying it is permanent. Only what is in it when you confirm is emptied; what arrives later is not touched.
 
@@ -268,6 +268,7 @@ confirm-subtitle =
         [one] { $count } item · { $size } · we check every path again right before deleting
        *[other] { $count } items · { $size } · we check every path again right before deleting
     }
+confirm-elevated = Tesela is running as administrator; for safety, cleaning only works without elevation. Close it and open it normally.
 confirm-no-log = The cleaning log could not be created, so nothing was done. Check that the Tesela data folder (in your local app data) is writable and try again. Simulation still works without a log.
 confirm-empty = There is nothing to clean with this basket.
 confirm-dry-banner = Simulation mode: nothing will be deleted or moved; only what would be done is logged.
@@ -331,12 +332,17 @@ reject-reparse-ancestor = a link on its path
 reject-outside-local = the temporary folder is redirected outside the user's local data
 reject-protected = protected
 reject-untouchable = cannot be deleted as a whole
+reject-incomplete =
+    { $n ->
+        [one] could not be read in full: { $count } item without access
+       *[other] could not be read in full: { $count } items without access
+    }
 reject-other = system error
 reject-not-local = not a local drive
 confirm-see-all = See the full list
 confirm-hide-all = See less
-confirm-go-both = Free { $free } and move { $bin } to the Recycle Bin
-confirm-go-free = Free { $free }
+confirm-go-both = Free up to { $free } and move { $bin } to the Recycle Bin
+confirm-go-free = Free up to { $free }
 confirm-go-bin = Move { $bin } to the Recycle Bin
 confirm-go-free-zero = Clean
 confirm-go-dry = Simulate the cleanup
@@ -352,8 +358,9 @@ run-phase-verify = Checking every item…
 run-progress = { $done } of { $total } items · { $count } entries checked
 run-close-blocked = Wait for it to finish or cancel: closing now would leave the cleanup half done.
 run-cancelling = Cancelling: what already started finishes and nothing else is touched.
-sum-freed = Freed now
-sum-dry = Simulation: this is what would have been freed
+sum-freed = Measured change in free space
+sum-freed-hint = This is how much the free space of the drive changed during the cleanup: other programs writing or deleting at the same time also change it. What was deleted and what was sent to the Recycle Bin are counted separately.
+sum-dry = Simulation: this is what would have been deleted (estimate)
 sum-permanent = Deleted permanently
 sum-recycled = Moved to the Recycle Bin
 sum-bin-purged = Recycle Bin emptied
@@ -399,8 +406,8 @@ sum-reparse =
     }
 sum-young =
     { $n ->
-        [one] { $count } recent file was left alone (less than a day old).
-       *[other] { $count } recent files were left alone (less than a day old).
+        [one] { $count } recent file was left alone (less than 7 days old).
+       *[other] { $count } recent files were left alone (less than 7 days old).
     }
 sum-shared =
     { $n ->
@@ -409,38 +416,38 @@ sum-shared =
     }
 sum-unexpected =
     { $n ->
-        [one] { $count } item did not fit in the Recycle Bin and was deleted permanently.
-       *[other] { $count } items did not fit in the Recycle Bin and were deleted permanently.
+        [one] { $count } item was deleted permanently (all or part of it) instead of going to the Recycle Bin, for example because it did not fit.
+       *[other] { $count } items were deleted permanently (all or part of them) instead of going to the Recycle Bin, for example because they did not fit.
     }
-sum-shell-error = The Windows Recycle Bin returned an error (0x{ $code }). Whatever could not be sent is still where it was.
+sum-shell-error = The Windows Recycle Bin returned an error (0x{ $code }). Each item that could not be sent was checked: whatever is still intact in place was not touched and the rest is counted separately.
 sum-recycle-stopped =
     { $n ->
-        [0] Sending to the Recycle Bin was stopped: Windows permanently deleted an item that did not fit. As a precaution nothing else was touched.
-        [one] Sending to the Recycle Bin was stopped: Windows permanently deleted an item that did not fit. As a precaution { $count } more item was not sent: it is still where it was.
-       *[other] Sending to the Recycle Bin was stopped: Windows permanently deleted an item that did not fit. As a precaution { $count } more items were not sent: they are still where they were.
+        [0] Sending to the Recycle Bin was stopped: Windows permanently deleted an item (or part of it). As a precaution nothing else was touched.
+        [one] Sending to the Recycle Bin was stopped: Windows permanently deleted an item (or part of it). As a precaution { $count } more item was not sent: it was not touched.
+       *[other] Sending to the Recycle Bin was stopped: Windows permanently deleted an item (or part of it). As a precaution { $count } more items were not sent: they were not touched.
     }
 sum-recycle-stopped-unverified =
     { $n ->
         [0] Sending to the Recycle Bin was stopped: what happened to one item could not be verified. As a precaution nothing else was touched.
-        [one] Sending to the Recycle Bin was stopped: what happened to one item could not be verified. As a precaution { $count } more item was not sent: it is still where it was.
-       *[other] Sending to the Recycle Bin was stopped: what happened to one item could not be verified. As a precaution { $count } more items were not sent: they are still where they were.
+        [one] Sending to the Recycle Bin was stopped: what happened to one item could not be verified. As a precaution { $count } more item was not sent: it was not touched.
+       *[other] Sending to the Recycle Bin was stopped: what happened to one item could not be verified. As a precaution { $count } more items were not sent: they were not touched.
     }
 sum-recycle-stopped-changed =
     { $n ->
         [0] Sending to the Recycle Bin was stopped: one item changed right before it was sent and was not sent. As a precaution nothing else was touched.
-        [one] Sending to the Recycle Bin was stopped: one item changed right before it was sent and was not sent. As a precaution { $count } more item was not sent: it is still where it was.
-       *[other] Sending to the Recycle Bin was stopped: one item changed right before it was sent and was not sent. As a precaution { $count } more items were not sent: they are still where they were.
+        [one] Sending to the Recycle Bin was stopped: one item changed right before it was sent and was not sent. As a precaution { $count } more item was not sent: it was not touched.
+       *[other] Sending to the Recycle Bin was stopped: one item changed right before it was sent and was not sent. As a precaution { $count } more items were not sent: they were not touched.
     }
 sum-recycle-stopped-declined =
     { $n ->
-        [0] Sending to the Recycle Bin was stopped: Windows could not send one item (it did not fit) and left it where it was. As a precaution nothing else was touched.
-        [one] Sending to the Recycle Bin was stopped: Windows could not send one item (it did not fit) and left it where it was. As a precaution { $count } more item was not sent: it is still where it was.
-       *[other] Sending to the Recycle Bin was stopped: Windows could not send one item (it did not fit) and left it where it was. As a precaution { $count } more items were not sent: they are still where they were.
+        [0] Sending to the Recycle Bin was stopped: Windows could not send one item and it was checked that it left it intact in place. As a precaution nothing else was touched.
+        [one] Sending to the Recycle Bin was stopped: Windows could not send one item and it was checked that it left it intact in place. As a precaution { $count } more item was not sent: it was not touched.
+       *[other] Sending to the Recycle Bin was stopped: Windows could not send one item and it was checked that it left it intact in place. As a precaution { $count } more items were not sent: they were not touched.
     }
 sum-no-room =
     { $n ->
-        [one] { $count } item was not sent because there is no room in the Recycle Bin: empty it or free up space. It is still where it was.
-       *[other] { $count } items were not sent because there is no room in the Recycle Bin: empty it or free up space. They are still where they were.
+        [one] { $count } item was not sent because there is no room in the Recycle Bin: empty it or free up space. It was not touched.
+       *[other] { $count } items were not sent because there is no room in the Recycle Bin: empty it or free up space. They were not touched.
     }
 sum-recycled-other =
     { $n ->
@@ -454,8 +461,8 @@ sum-unverified =
     }
 sum-not-recycled =
     { $n ->
-        [one] { $count } item could not be moved to the Recycle Bin (in use or no permission): it is still where it was.
-       *[other] { $count } items could not be moved to the Recycle Bin (in use or no permission): they are still where they were.
+        [one] { $count } item was not moved to the Recycle Bin (in use, no permission or another Windows reason): it was not touched.
+       *[other] { $count } items were not moved to the Recycle Bin (in use, no permission or another Windows reason): they were not touched.
     }
 sum-skipped-unfit =
     { $n ->
@@ -472,6 +479,11 @@ sum-bin-changed =
         [one] { $count } Recycle Bin item changed since you confirmed and was not touched.
        *[other] { $count } Recycle Bin items changed since you confirmed and were not touched.
     }
+sum-bin-replaced =
+    { $n ->
+        [one] { $count } Recycle Bin item changed right before it was deleted: Windows deleted a different object with its name. It could not be prevented and cannot be undone.
+       *[other] { $count } Recycle Bin items changed right before they were deleted: Windows deleted different objects with their names. It could not be prevented and cannot be undone.
+    }
 sum-log-failed = The cleaning log could not be written, so the cleaning stopped at the next safe point and nothing else was touched. What was already done stays and may not be fully recorded in the log.
 sum-log-truncated = The cleaning log reached its maximum size and stopped recording: what was done afterwards is not in it.
 sum-bin-unverifiable =
@@ -480,7 +492,7 @@ sum-bin-unverifiable =
        *[other] { $count } Recycle Bin items are on a drive whose file system cannot be verified (FAT or exFAT) and were not touched.
     }
 sum-cancelled = You cancelled the cleanup: what was already done stays done.
-sum-diverge = "Deleted permanently" and "freed now" differ: this can be because of hard links, files another program had open, or changes made by Windows itself.
+sum-diverge = "Deleted permanently" and the measured change in free space differ: this can be because of hard links, files another program had open, writes by other programs, or changes made by Windows itself.
 
 ago-days =
     { $n ->
@@ -488,4 +500,4 @@ ago-days =
        *[other] { $count } days ago
     }
 settings-clear-history = Delete the cleanup history and logs
-home-last-clean = Last cleanup: { $ago } · you freed { $size }
+home-last-clean = Last cleanup: { $ago } · measured change in free space: { $size }

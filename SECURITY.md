@@ -31,6 +31,13 @@ Tesela **borra archivos** y se instala sin administrador, así que interesa sobr
   máquina que lo construyó.
 - Que la aplicación envíe información fuera del equipo (no debe: no tiene telemetría ni cuentas).
 
+## Elevación
+
+Tesela **no limpia con privilegios elevados** (el análisis y la simulación sí funcionan): si el proceso está elevado, la limpieza
+real y vaciar la Papelera se rechazan antes de tocar nada. Con el control de cuentas (UAC) desactivado, o con la cuenta
+Administrador integrada, todos los procesos cuentan como elevados y Tesela se negará siempre a limpiar: usa una cuenta de usuario
+estándar (o con UAC activado) y ábrelo con un doble clic normal, sin "Ejecutar como administrador".
+
 ## Versiones con soporte
 
 Solo la **última versión publicada** recibe correcciones de seguridad (hoy, la serie 0.x).

@@ -70,6 +70,14 @@ pub struct Stats {
     pub not_empty: AtomicU64,
     /// Archivos de la nube dentro (se saltan: son reparse points).
     pub cloud: AtomicU64,
+    /// Entradas que ya no estaban al abrirlas (listadas y desaparecidas antes de llegar a ellas). Al borrar es normal; al
+    /// MEDIR significa que el directorio cambió durante el recorrido (ver [`StatsSnapshot::is_complete`]).
+    pub gone: AtomicU64,
+    /// HUELLA del contenido visto, independiente del ORDEN (A-M1): suma (con vuelta) y XOR de un hash de 64 bits por entrada
+    /// (identidad `FileId` de 128 bits, tipo, tamaños y enlaces). O(1) de memoria. Dos recorridos del mismo árbol dan la misma
+    /// huella aunque los hilos lo recorran en otro orden; quitar un hijo y crear otro del mismo tamaño la cambia (otro `FileId`).
+    pub fp_sum: AtomicU64,
+    pub fp_xor: AtomicU64,
 }
 
 impl Stats {
@@ -78,6 +86,13 @@ impl Stats {
     }
     fn get(a: &AtomicU64) -> u64 {
         a.load(Ordering::Relaxed)
+    }
+    /// Añade una entrada a la huella (ver [`Stats::fp_sum`]). `class` distingue cómo se trató (contada, protegida, reparse,
+    /// reciente...): si una entrada cambia de clase, la huella cambia.
+    fn add_fp(&self, class: u8, file_id: u128, a: u64, b: u64, links: u32) {
+        let (h1, h2) = entry_fingerprint(class, file_id, a, b, links);
+        self.fp_sum.fetch_add(h1, Ordering::Relaxed);
+        self.fp_xor.fetch_xor(h2, Ordering::Relaxed);
     }
     /// Copia de los valores.
     pub fn snapshot(&self) -> StatsSnapshot {
@@ -98,8 +113,46 @@ impl Stats {
             other_errors: Self::get(&self.other_errors),
             not_empty: Self::get(&self.not_empty),
             cloud: Self::get(&self.cloud),
+            gone: Self::get(&self.gone),
+            fp_sum: Self::get(&self.fp_sum),
+            fp_xor: Self::get(&self.fp_xor),
         }
     }
+}
+
+/// Mezcla de 64 bits (la de `splitmix64`): buena difusión con tres operaciones.
+fn mix64(mut z: u64) -> u64 {
+    z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// Los dos hashes de 64 bits de una entrada para la huella ([`Stats::fp_sum`], [`Stats::fp_xor`]): se encadenan todos los
+/// campos y se sacan dos valores con constantes distintas (la suma y el XOR de muchos hashes se estropean de formas
+/// distintas, y juntos son una huella de 128 bits).
+pub(crate) fn entry_fingerprint(
+    class: u8,
+    file_id: u128,
+    a: u64,
+    b: u64,
+    links: u32,
+) -> (u64, u64) {
+    let mut h = mix64(u64::from(class) ^ (u64::from(links) << 8));
+    for part in [file_id as u64, (file_id >> 64) as u64, a, b] {
+        h = mix64(h ^ part);
+    }
+    (h, mix64(h ^ 0xA076_1D64_78BD_642F))
+}
+
+// Cómo se trató una entrada (la clase de su huella): si cambia, la huella cambia.
+const FP_COUNTED: u8 = 1;
+const FP_PROTECTED: u8 = 2;
+const FP_REPARSE: u8 = 3;
+const FP_YOUNG: u8 = 4;
+
+fn fp_class(base: u8, is_dir: bool) -> u8 {
+    base | if is_dir { 0x80 } else { 0 }
 }
 
 /// Copia inmutable de [`Stats`].
@@ -121,9 +174,26 @@ pub struct StatsSnapshot {
     pub other_errors: u64,
     pub not_empty: u64,
     pub cloud: u64,
+    pub gone: u64,
+    /// Huella del contenido (ver [`Stats::fp_sum`]).
+    pub fp_sum: u64,
+    pub fp_xor: u64,
 }
 
 impl StatsSnapshot {
+    /// ¿Es COMPLETA una medida (modo `Measure`)? Solo si el recorrido vio TODO lo que había: ningún error al abrir o listar
+    /// (en uso, sin permiso, otros: una subcarpeta que no se pudo listar deja su contenido sin contar), ninguna entrada que
+    /// cambiara de identidad o de tipo durante el recorrido y ninguna que desapareciera entre el listado y la apertura. Una
+    /// medida incompleta no vale ni para repartir en la Papelera ni para decir que nada cambió.
+    pub fn is_complete(&self) -> bool {
+        self.in_use == 0
+            && self.denied == 0
+            && self.changed == 0
+            && self.other_errors == 0
+            && self.not_empty == 0
+            && self.gone == 0
+    }
+
     /// Suma de otra instantánea.
     pub fn merge(&mut self, o: &StatsSnapshot) {
         self.bytes += o.bytes;
@@ -142,6 +212,9 @@ impl StatsSnapshot {
         self.other_errors += o.other_errors;
         self.not_empty += o.not_empty;
         self.cloud += o.cloud;
+        self.gone += o.gone;
+        self.fp_sum = self.fp_sum.wrapping_add(o.fp_sum);
+        self.fp_xor ^= o.fp_xor;
     }
 }
 
@@ -441,7 +514,7 @@ fn count_error(unit: &Unit, code: Win32) -> Outcome {
 }
 
 /// Ejecuta las unidades con un pool de `threads` hilos y vuelve cuando todas terminaron (o se canceló).
-pub fn run(units: &[Arc<Unit>], threads: usize) {
+pub(crate) fn run(units: &[Arc<Unit>], threads: usize) {
     let threads = threads.clamp(1, 32);
     let workers: Vec<Worker<Task>> = (0..threads).map(|_| Worker::new_lifo()).collect();
     let shared = Shared {
@@ -902,6 +975,13 @@ fn entry_file(
         );
         return;
     }
+    unit.stats.add_fp(
+        fp_class(FP_COUNTED, false),
+        m.identity.file_id,
+        m.alloc,
+        m.logical,
+        m.links,
+    );
     if m.links > 1 {
         Stats::add(&unit.stats.shared_files, 1);
         Stats::add(&unit.stats.shared_bytes, m.alloc);
@@ -992,6 +1072,13 @@ fn process_child(
     if action == ChildAction::Skip || (action == ChildAction::Descend && !entry.is_dir()) {
         Stats::add(&unit.stats.protected, 1);
         Stats::add(&unit.stats.protected_bytes, entry.alloc);
+        unit.stats.add_fp(
+            fp_class(FP_PROTECTED, entry.is_dir()),
+            entry.file_id,
+            entry.alloc,
+            entry.logical,
+            0,
+        );
         parent.kept.store(true, Ordering::Release);
         emit(
             unit,
@@ -1006,6 +1093,13 @@ fn process_child(
     }
     if entry.is_reparse() {
         Stats::add(&unit.stats.reparse, 1);
+        unit.stats.add_fp(
+            fp_class(FP_REPARSE, entry.is_dir()),
+            entry.file_id,
+            entry.alloc,
+            entry.logical,
+            0,
+        );
         if sys::is_cloud_tag(entry.reparse_tag) {
             Stats::add(&unit.stats.cloud, 1);
         }
@@ -1029,7 +1123,10 @@ fn process_child(
         };
         let h = match opened {
             Ok(h) => h,
-            Err(c) if is_gone(c) => return true,
+            Err(c) if is_gone(c) => {
+                Stats::add(&unit.stats.gone, 1);
+                return true;
+            }
             Err(c) => {
                 let o = count_error(unit, c);
                 parent.kept.store(true, Ordering::Release);
@@ -1064,6 +1161,8 @@ fn process_child(
             );
             return true;
         }
+        unit.stats
+            .add_fp(fp_class(FP_COUNTED, true), entry.file_id, 0, 0, m.links);
         let old_enough = env.min_age_ft == 0 || env.now_ft - m.newest_filetime >= env.min_age_ft;
         let node = Arc::new(DirNode {
             unit: unit.clone(),
@@ -1086,6 +1185,13 @@ fn process_child(
     let young = |newest: i64| env.min_age_ft > 0 && env.now_ft - newest < env.min_age_ft;
     if young(entry.newest_filetime) {
         Stats::add(&unit.stats.young, 1);
+        unit.stats.add_fp(
+            fp_class(FP_YOUNG, false),
+            entry.file_id,
+            entry.alloc,
+            entry.logical,
+            0,
+        );
         parent.kept.store(true, Ordering::Release);
         emit(
             unit,
@@ -1105,7 +1211,10 @@ fn process_child(
     };
     let h = match opened {
         Ok(h) => h,
-        Err(c) if is_gone(c) => return true,
+        Err(c) if is_gone(c) => {
+            Stats::add(&unit.stats.gone, 1);
+            return true;
+        }
         Err(c) => {
             let o = count_error(unit, c);
             parent.kept.store(true, Ordering::Release);
@@ -1143,6 +1252,13 @@ fn process_child(
     // La fecha puede haber cambiado entre el listado y la apertura (alguien escribió): se vuelve a mirar en el handle.
     if young(m.newest_filetime) {
         Stats::add(&unit.stats.young, 1);
+        unit.stats.add_fp(
+            fp_class(FP_YOUNG, false),
+            m.identity.file_id,
+            m.alloc,
+            m.logical,
+            m.links,
+        );
         parent.kept.store(true, Ordering::Release);
         emit(
             unit,
@@ -1156,6 +1272,13 @@ fn process_child(
         return true;
     }
     let account = |stats: &Stats| {
+        stats.add_fp(
+            fp_class(FP_COUNTED, false),
+            m.identity.file_id,
+            m.alloc,
+            m.logical,
+            m.links,
+        );
         if m.links > 1 {
             Stats::add(&stats.shared_files, 1);
             Stats::add(&stats.shared_bytes, m.alloc);

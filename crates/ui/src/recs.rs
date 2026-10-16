@@ -1,6 +1,6 @@
 //! Recomendaciones (PLAN.md §2.6): qué se puede limpiar, con riesgo y destino, calculado sobre el árbol escaneado (a
 //! través del overlay de limpieza) y las raíces de las categorías que da el `cleaner`. La pantalla de Recomendaciones y
-//! el titular "Puedes liberar X sin riesgo" salen de aquí.
+//! el titular "Hasta X en candidatos de bajo riesgo" salen de aquí.
 //!
 //! Los tamaños son una ESTIMACIÓN del árbol ("hasta"): la cifra definitiva la mide el `cleaner` al confirmar (con la
 //! antigüedad real de cada archivo, las protecciones y los enlaces duros).

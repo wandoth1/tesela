@@ -88,6 +88,8 @@ pub(crate) enum Note {
     NoLog,
     /// Lo que cabe en la Papelera cambió desde la confirmación: hay que revisar y confirmar otra vez.
     Reconfirm,
+    /// La aplicación se ejecuta como administrador: la limpieza real no se hace (E1). No se ha tocado nada.
+    Elevated,
 }
 
 impl Drop for CleanFlow {
@@ -224,6 +226,7 @@ impl CleanFlow {
             // El error no se traga: se enseña con el mismo aviso que en el flujo normal (H6.7).
             Err(ExecError::LogRequired) => self.note = Some(Note::NoLog),
             Err(ExecError::NeedsReconfirm(_)) => self.note = Some(Note::Reconfirm),
+            Err(ExecError::Elevated) => self.note = Some(Note::Elevated),
         }
     }
 
@@ -294,6 +297,11 @@ impl CleanFlow {
                     // El ejecutor exige un registro utilizable: no se ha tocado nada.
                     self.stage = Stage::Idle;
                     self.note = Some(Note::NoLog);
+                }
+                Ok(Err(ExecError::Elevated)) => {
+                    // Elevado: no se ha tocado nada (el `cleaner` lo rechaza antes de empezar).
+                    self.stage = Stage::Idle;
+                    self.note = Some(Note::Elevated);
                 }
                 Ok(Err(ExecError::NeedsReconfirm(_))) => {
                     // Lo que cabe en la Papelera cambió desde la confirmación: se vuelve a aprobar y a confirmar.
@@ -381,6 +389,8 @@ impl CleanFlow {
                 // Más larga: explica por qué no pasó nada.
                 Note::NoLog => ("confirm-no-log", 12.0),
                 Note::Reconfirm => ("confirm-reconfirm", 8.0),
+                // Larga: dice qué hacer.
+                Note::Elevated => ("confirm-elevated", 12.0),
             };
             let msg = env.tr.t(key);
             toast(ctx, &msg);
@@ -408,6 +418,12 @@ impl CleanFlow {
             && let Stage::Confirm(c) = &self.stage
         {
             let plan = c.plan.clone();
+            // E1: elevado no se limpia (también lo rechaza el `cleaner`; aquí se avisa antes de crear el registro).
+            if blocked_by_elevation(backend.is_elevated(), dry, backend.is_demo()) {
+                self.note = Some(Note::Elevated);
+                ctx.request_repaint();
+                return;
+            }
             // SIN REGISTRO NO HAY ACCIÓN DESTRUCTIVA (M4): si el registro local no se puede crear, no se ejecuta nada y se
             // dice por qué. La simulación (y la demostración, que nunca toca el disco) puede seguir sin él.
             let log = backend
@@ -451,6 +467,12 @@ impl CleanFlow {
 /// (que no toca nada) y la demostración (que nunca toca el disco) pueden seguir sin él.
 fn abort_without_log(has_log: bool, dry: bool, is_demo: bool) -> bool {
     !has_log && !dry && !is_demo
+}
+
+/// ¿Hay que negarse a limpiar porque el proceso está elevado (E1)? Solo la limpieza REAL: la simulación y la demostración
+/// (que nunca toca el disco) siguen, y el análisis no pasa por aquí.
+fn blocked_by_elevation(elevated: bool, dry: bool, is_demo: bool) -> bool {
+    elevated && !dry && !is_demo
 }
 
 fn toast(ctx: &egui::Context, msg: &str) {
@@ -864,6 +886,10 @@ fn confirm_groups(ui: &mut Ui, env: &mut Env, c: &mut Confirm, plan: &Plan) {
         if c.show_all {
             for r in plan.rejected.iter().take(30) {
                 let why = match r.reason {
+                    RejectReason::Incomplete(k) => env.tr.ta(
+                        "reject-incomplete",
+                        args!["n" => k, "count" => env.tr.int(k)],
+                    ),
                     RejectReason::Missing => env.tr.t("reject-missing"),
                     RejectReason::AccessDenied => env.tr.t("reject-denied"),
                     RejectReason::NoIdentity => env.tr.t("reject-identity"),
@@ -1066,8 +1092,11 @@ fn summary_lines(env: &Env, s: &Summary) -> Vec<(String, bool)> {
     if r.unverified > 0 {
         v.push((n("sum-unverified", r.unverified), true));
     }
-    if r.not_recycled > 0 {
-        v.push((n("sum-not-recycled", r.not_recycled), true));
+    // `not_recycled` también cuenta los que no tuvieron sitio y los del corte de seguridad (que ya tienen su línea): aquí
+    // solo el resto, los que Windows no movió y se comprobó que siguen intactos en su sitio.
+    let checked_in_place = r.not_recycled.saturating_sub(r.no_room + r.stopped_items);
+    if checked_in_place > 0 {
+        v.push((n("sum-not-recycled", checked_in_place), true));
     }
     if r.skipped_unfit > 0 {
         v.push((n("sum-skipped-unfit", r.skipped_unfit), false));
@@ -1100,11 +1129,12 @@ fn summary_lines(env: &Env, s: &Summary) -> Vec<(String, bool)> {
         if b.unverifiable > 0 {
             v.push((n("sum-bin-unverifiable", b.unverifiable), true));
         }
-        if b.still_there > b.changed + b.unverifiable {
-            v.push((
-                n("sum-bin-failed", b.still_there - b.changed - b.unverifiable),
-                true,
-            ));
+        if b.replaced > 0 {
+            v.push((n("sum-bin-replaced", b.replaced), true));
+        }
+        let explained = b.changed + b.unverifiable + b.replaced;
+        if b.still_there > explained {
+            v.push((n("sum-bin-failed", b.still_there - explained), true));
         }
     }
     // Si "liberado ahora" y "eliminado" divergen, se dice por qué en una línea.
@@ -1151,6 +1181,15 @@ fn summary_ui(ui: &mut Ui, env: &mut Env, s: &Summary) -> Option<SummaryClick> {
                     ui.add_space(6.0);
                     let head = env.tr.t(if r.dry_run { "sum-dry" } else { "sum-freed" });
                     ui.label(RichText::new(&head).size(15.0).color(pal.text_muted));
+                    // "Liberado ahora" es el CAMBIO medido del espacio libre: otros programas que escriban a la vez también
+                    // lo mueven. Se dice, y los totales eliminado / a la Papelera se cuentan aparte.
+                    if !r.dry_run {
+                        ui.label(
+                            RichText::new(env.tr.t("sum-freed-hint"))
+                                .size(12.0)
+                                .color(pal.text_muted),
+                        );
+                    }
                     let big = if r.dry_run {
                         r.permanent_bytes + r.bin.map_or(0, |b| b.bytes_hint)
                     } else {
@@ -1325,6 +1364,16 @@ mod log_gate_tests {
         assert!(!has_capacity_unknown(std::iter::empty()));
     }
 
+    /// E1: elevado, solo la limpieza REAL se niega; la simulación y la demostración siguen.
+    #[test]
+    fn elevado_solo_se_niega_la_limpieza_real() {
+        use super::blocked_by_elevation;
+        assert!(blocked_by_elevation(true, false, false));
+        assert!(!blocked_by_elevation(true, true, false), "simulación");
+        assert!(!blocked_by_elevation(true, false, true), "demostración");
+        assert!(!blocked_by_elevation(false, false, false), "sin elevar");
+    }
+
     /// M4: sin registro, una ejecución REAL se aborta; la simulación y la demostración siguen.
     #[test]
     fn sin_registro_solo_la_simulacion_y_la_demostracion_siguen() {
@@ -1333,5 +1382,220 @@ mod log_gate_tests {
         assert!(!abort_without_log(false, false, true), "demostración");
         assert!(!abort_without_log(true, false, false), "con registro");
         assert!(!abort_without_log(true, true, true));
+    }
+}
+
+#[cfg(test)]
+mod summary_tests {
+    //! m-5: las líneas del resumen que dependen de contadores del informe (el doble conteo de "no movidos", los sustituidos al
+    //! vaciar y lo que explican los demás contadores de la Papelera).
+    use super::{Summary, VolumeCtx, summary_lines};
+    use crate::app::{Action, Env, Settings};
+    use crate::args;
+    use crate::i18n::{Lang, Tr};
+    use crate::icons::IconCache;
+    use crate::theme::Palette;
+    use tesela_cleaner::Report;
+    use tesela_cleaner::exec::BinReport;
+
+    fn lines(lang: Lang, report: Report) -> (Tr, Vec<(String, bool)>) {
+        let tr = Tr::new(lang);
+        let mut icons = IconCache::default();
+        let backend: std::sync::Arc<dyn tesela_cleaner::Backend> = std::sync::Arc::new(
+            crate::demo_backend::DemoBackend::new(std::time::Duration::ZERO),
+        );
+        let mut actions: Vec<Action> = Vec::new();
+        let env = Env {
+            tr: &tr,
+            pal: Palette::of(false),
+            icons: &mut icons,
+            demo: false,
+            animate: false,
+            drives: &[],
+            drives_loading: false,
+            settings: Settings::default(),
+            backend: &backend,
+            dry_run: false,
+            history: &[],
+            modal_open: false,
+            actions: &mut actions,
+        };
+        let s = Summary {
+            report,
+            vol: VolumeCtx::default(),
+            blocked: Vec::new(),
+        };
+        let v = summary_lines(&env, &s);
+        (tr, v)
+    }
+
+    fn text(tr: &Tr, key: &str, n: u64) -> String {
+        tr.ta(key, args!["n" => n, "count" => tr.int(n)])
+    }
+
+    fn has(v: &[(String, bool)], t: &str) -> bool {
+        v.iter().any(|(x, _)| x == t)
+    }
+
+    /// T1: ningún texto promete lo que no se puede cumplir: ni un mínimo garantizado ("al menos"), ni ausencia de riesgo, ni
+    /// "liberado ahora" a secas (es el cambio medido del espacio libre).
+    #[test]
+    fn ningun_texto_promete_un_minimo_ni_ausencia_de_riesgo() {
+        let es = include_str!("../i18n/es.ftl");
+        let en = include_str!("../i18n/en.ftl");
+        for (name, text, banned) in [
+            (
+                "es",
+                es,
+                &[
+                    "sin riesgo",
+                    "sin miedo",
+                    "al menos { $size }",
+                    "Liberados ahora",
+                ][..],
+            ),
+            (
+                "en",
+                en,
+                &["with no risk", "without risk", "free at least", "Freed now"][..],
+            ),
+        ] {
+            for b in banned {
+                assert!(!text.contains(b), "{name}: no debe decir `{b}`");
+            }
+        }
+        // R-3: los botones de la confirmación tampoco prometen la cifra exacta: es una estimación ("hasta").
+        for (key, es_txt, en_txt) in [
+            (
+                "confirm-go-free",
+                "Liberar hasta { $free }",
+                "Free up to { $free }",
+            ),
+            (
+                "confirm-go-both",
+                "Liberar hasta { $free } y mover",
+                "Free up to { $free } and move",
+            ),
+        ] {
+            assert!(es.contains(&format!("{key} = {es_txt}")), "{key}");
+            assert!(en.contains(&format!("{key} = {en_txt}")), "{key}");
+        }
+        // Y lo que sí dicen: un tope y que se comprueba al limpiar; el cambio medido con su aviso.
+        for key in ["scan-known-sum", "recs-title-safe"] {
+            assert!(es.contains(&format!("{key} = Hasta {{ $size }}")), "{key}");
+            assert!(en.contains(&format!("{key} = Up to {{ $size }}")), "{key}");
+        }
+        assert!(es.contains("sum-freed = Cambio medido del espacio libre"));
+        assert!(en.contains("sum-freed = Measured change in free space"));
+        assert!(es.contains("sum-freed-hint =") && en.contains("sum-freed-hint ="));
+    }
+
+    /// E3: la nota de `hiberfil.sys` dice lo que hay que saber antes de tocarlo: que hace falta un símbolo del sistema como
+    /// administrador, que desactivar la hibernación quita también la suspensión híbrida y el inicio rápido, la alternativa
+    /// menos drástica (`/type reduced`) y que Tesela no ejecuta nada (es/en en paridad).
+    #[test]
+    fn la_nota_de_hiberfil_dice_lo_necesario_antes_de_tocarlo() {
+        let line = |text: &'static str| {
+            text.lines()
+                .find(|l| l.starts_with("info-hiberfil ="))
+                .expect("la clave existe")
+        };
+        let es = line(include_str!("../i18n/es.ftl"));
+        let en = line(include_str!("../i18n/en.ftl"));
+        for needle in [
+            "como administrador",
+            "powercfg /h /type reduced",
+            "powercfg /h off",
+            "suspensión híbrida",
+            "inicio rápido",
+            "Tesela no ejecuta nada",
+        ] {
+            assert!(es.contains(needle), "es: falta `{needle}`");
+        }
+        for needle in [
+            "as administrator",
+            "powercfg /h /type reduced",
+            "powercfg /h off",
+            "hybrid sleep",
+            "fast startup",
+            "Tesela runs nothing",
+        ] {
+            assert!(en.contains(needle), "en: falta `{needle}`");
+        }
+    }
+
+    #[test]
+    fn los_no_movidos_no_cuentan_dos_veces_los_que_no_tuvieron_sitio_ni_los_del_corte() {
+        for lang in [Lang::Es, Lang::En] {
+            // 5 sin mover: 1 sin sitio, 1 del corte de seguridad y 3 de Windows (en uso, sin permiso...).
+            let (tr, v) = lines(
+                lang,
+                Report {
+                    not_recycled: 5,
+                    no_room: 1,
+                    stopped_items: 1,
+                    ..Report::default()
+                },
+            );
+            assert!(has(&v, &text(&tr, "sum-not-recycled", 3)), "{v:?}");
+            assert!(!has(&v, &text(&tr, "sum-not-recycled", 5)), "{v:?}");
+            assert!(has(&v, &text(&tr, "sum-no-room", 1)), "{v:?}");
+            // Solo sin sitio y del corte: no hay línea de "no movidos".
+            let (tr, v) = lines(
+                lang,
+                Report {
+                    not_recycled: 3,
+                    no_room: 2,
+                    stopped_items: 1,
+                    ..Report::default()
+                },
+            );
+            for n in 1..=3 {
+                assert!(!has(&v, &text(&tr, "sum-not-recycled", n)), "{n}: {v:?}");
+            }
+            // Los contadores nunca se salen de rango (resta saturada).
+            let (tr, v) = lines(
+                lang,
+                Report {
+                    not_recycled: 1,
+                    no_room: 2,
+                    stopped_items: 2,
+                    ..Report::default()
+                },
+            );
+            assert!(!has(&v, &text(&tr, "sum-not-recycled", 1)), "{v:?}");
+        }
+    }
+
+    #[test]
+    fn los_sustituidos_al_vaciar_tienen_su_linea_y_explican_lo_que_queda() {
+        for lang in [Lang::Es, Lang::En] {
+            let bin = |still_there, changed, unverifiable, replaced| Report {
+                bin: Some(BinReport {
+                    requested: 10,
+                    still_there,
+                    changed,
+                    unverifiable,
+                    replaced,
+                    ..BinReport::default()
+                }),
+                ..Report::default()
+            };
+            // 6 siguen: 1 cambiado, 1 sin verificar y 2 sustituidos explican 4; quedan 2 "no se pudo vaciar".
+            let (tr, v) = lines(lang, bin(6, 1, 1, 2));
+            assert!(has(&v, &text(&tr, "sum-bin-replaced", 2)), "{v:?}");
+            assert!(has(&v, &text(&tr, "sum-bin-changed", 1)), "{v:?}");
+            assert!(has(&v, &text(&tr, "sum-bin-unverifiable", 1)), "{v:?}");
+            assert!(has(&v, &text(&tr, "sum-bin-failed", 2)), "{v:?}");
+            // Si lo explican todo, no hay línea de "no se pudo vaciar del todo".
+            let (tr, v) = lines(lang, bin(4, 1, 1, 2));
+            assert!(has(&v, &text(&tr, "sum-bin-replaced", 2)), "{v:?}");
+            for n in 1..=4 {
+                assert!(!has(&v, &text(&tr, "sum-bin-failed", n)), "{n}: {v:?}");
+            }
+            // Sin sustituidos no hay línea de sustituidos.
+            let (tr, v) = lines(lang, bin(0, 0, 0, 0));
+            assert!(!has(&v, &text(&tr, "sum-bin-replaced", 1)), "{v:?}");
+        }
     }
 }

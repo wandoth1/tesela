@@ -696,3 +696,190 @@ fn los_nombres_con_unidades_sueltas_se_protegen_y_se_borran_por_separado() {
     assert!(!sb.path("R").join(&b).exists(), "el otro se borra");
     assert_eq!(r.stats().protected, 1);
 }
+
+// ---- A-M1: la huella del contenido ----------------------------------------------------------------------------------
+
+/// La huella no depende del ORDEN ni del número de hilos (la suma y el XOR son conmutativos), y es la misma entre dos
+/// recorridos del mismo árbol.
+#[test]
+fn la_huella_no_depende_del_orden_ni_de_los_hilos() {
+    let sb = Sandbox::new();
+    for i in 0..60 {
+        sb.write(&format!("R/d{}/f{i:02}.bin", i % 7), 100 + i * 37);
+    }
+    sb.write("R/raiz.bin", 4_000);
+    let fp = |threads: usize| {
+        let s = run_contents(&sb, "R", Mode::Measure, 0, no_protection(), threads).stats();
+        (s.fp_sum, s.fp_xor)
+    };
+    let base = fp(1);
+    assert_ne!(base, (0, 0));
+    for t in [2, 4, 8, 8] {
+        assert_eq!(fp(t), base, "{t} hilos");
+    }
+}
+
+/// Quitar un hijo y poner otro del MISMO nombre y tamaño deja los totales iguales y cambia la huella (otro `FileId`); también
+/// la cambia el número de enlaces de un archivo y que una entrada pase a estar protegida.
+#[test]
+fn la_huella_cambia_si_se_sustituye_un_hijo_por_otro_del_mismo_tamano() {
+    let sb = Sandbox::new();
+    sb.write("R/a.bin", 3_000);
+    sb.write("R/b.bin", 3_000);
+    let measure = |prot: Arc<Protection>| run_contents(&sb, "R", Mode::Measure, 0, prot, 2).stats();
+    let before = measure(no_protection());
+    fs::remove_file(sb.path("R/a.bin")).unwrap();
+    sb.write("R/a.bin", 3_000);
+    let after = measure(no_protection());
+    assert_eq!(
+        (before.bytes, before.logical, before.files, before.dirs),
+        (after.bytes, after.logical, after.files, after.dirs),
+        "los totales no lo delatan"
+    );
+    assert_ne!((before.fp_sum, before.fp_xor), (after.fp_sum, after.fp_xor));
+    // Un enlace duro más al mismo archivo: otros `links`.
+    let b0 = measure(no_protection());
+    sb.hard_link("R/b.bin", "R/b2.bin");
+    let b1 = measure(no_protection());
+    assert_ne!((b0.fp_sum, b0.fp_xor), (b1.fp_sum, b1.fp_xor));
+    fs::remove_file(sb.path("R/b2.bin")).unwrap();
+    assert_eq!(
+        {
+            let s = measure(no_protection());
+            (s.fp_sum, s.fp_xor)
+        },
+        (b0.fp_sum, b0.fp_xor),
+        "vuelta al principio: la misma huella"
+    );
+    // La misma entrada tratada de otra forma (aquí, protegida) también cambia la huella.
+    let prot = measure(protection(&sb, &["R/a.bin"], &[]));
+    assert_ne!((prot.fp_sum, prot.fp_xor), (b0.fp_sum, b0.fp_xor));
+}
+
+#[test]
+fn el_hash_de_una_entrada_depende_de_todos_sus_campos() {
+    let base = entry_fingerprint(1, 7, 10, 20, 1);
+    assert_eq!(base, entry_fingerprint(1, 7, 10, 20, 1));
+    for other in [
+        entry_fingerprint(2, 7, 10, 20, 1),
+        entry_fingerprint(1, 8, 10, 20, 1),
+        entry_fingerprint(1, 7 | (1u128 << 100), 10, 20, 1),
+        entry_fingerprint(1, 7, 11, 20, 1),
+        entry_fingerprint(1, 7, 10, 21, 1),
+        entry_fingerprint(1, 7, 10, 20, 2),
+    ] {
+        assert_ne!(other, base);
+    }
+}
+
+/// A-M3: MEDICIÓN (no es una prueba: `cargo test -p tesela-cleaner medicion_a_m3 -- --ignored --nocapture`). El borrado por
+/// handle de 100 000 archivos propios (vacíos, en una carpeta temporal `tesela-test-<uuid>`) con el registro local como receptor.
+#[test]
+#[ignore = "medición A-M3"]
+fn medicion_a_m3_borrado_de_100000_archivos_con_registro() {
+    let sb = Sandbox::new();
+    for d in 0..100 {
+        sb.mkdir(&format!("R/d{d:03}"));
+        for f in 0..1_000 {
+            fs::File::create(sb.path(&format!("R/d{d:03}/f{f:04}.tmp"))).unwrap();
+        }
+    }
+    for threads in [1usize, 4] {
+        if threads == 4 {
+            // Un segundo árbol (el primero ya se borró).
+            for d in 0..100 {
+                sb.mkdir(&format!("R/d{d:03}"));
+                for f in 0..1_000 {
+                    fs::File::create(sb.path(&format!("R/d{d:03}/f{f:04}.tmp"))).unwrap();
+                }
+            }
+        }
+        let log = Arc::new(crate::log::LogWriter::create(&sb.path("Tesela"), false).unwrap());
+        let env = Arc::new(Env {
+            protection: no_protection(),
+            mode: Mode::Delete,
+            min_age_ft: 0,
+            now_ft: now_filetime(),
+            cancel: Arc::new(AtomicBool::new(false)),
+            sink: Some(log.sink()),
+            progress: Arc::new(AtomicU64::new(0)),
+        });
+        let path = sb.long("R");
+        let unit = Unit::new(
+            0,
+            UnitSpec::Contents {
+                approved: identity_of(&path),
+                path,
+            },
+            env,
+        );
+        let t = std::time::Instant::now();
+        run(std::slice::from_ref(&unit), threads);
+        log.flush();
+        let dt = t.elapsed();
+        let s = unit.stats.snapshot();
+        eprintln!(
+            "MEDICION e2e ({threads} hilos): {} archivos y {} carpetas borrados en {:.3} s, registro de {} bytes",
+            s.files,
+            s.dirs,
+            dt.as_secs_f64(),
+            fs::metadata(log.path()).unwrap().len()
+        );
+        assert_eq!(s.files, 100_000);
+    }
+}
+
+/// m-1: una medida solo es COMPLETA con cero errores: cada campo de error a 1 (y todos los demás a 0) la invalida, y lo que
+/// no es un error (reciente, protegido, reparse, nube, compartidos, tamaños, huella) no. Sin tocar el sistema de archivos.
+#[test]
+fn una_medida_solo_es_completa_con_cero_errores() {
+    assert!(StatsSnapshot::default().is_complete());
+    type Set = fn(&mut StatsSnapshot);
+    let errors: [(&str, Set); 6] = [
+        ("in_use", |s| s.in_use = 1),
+        ("denied", |s| s.denied = 1),
+        ("changed", |s| s.changed = 1),
+        ("other_errors", |s| s.other_errors = 1),
+        ("not_empty", |s| s.not_empty = 1),
+        ("gone", |s| s.gone = 1),
+    ];
+    for (name, set) in errors {
+        let mut s = StatsSnapshot::default();
+        set(&mut s);
+        assert!(!s.is_complete(), "{name} debe invalidar la medida");
+    }
+    let fine: [(&str, Set); 9] = [
+        ("young", |s| s.young = 1),
+        ("protected", |s| s.protected = 1),
+        ("reparse", |s| s.reparse = 1),
+        ("cloud", |s| s.cloud = 1),
+        ("shared_files", |s| s.shared_files = 1),
+        ("bytes", |s| s.bytes = 1),
+        ("files", |s| s.files = 1),
+        ("fp_sum", |s| s.fp_sum = 1),
+        ("fp_xor", |s| s.fp_xor = 1),
+    ];
+    for (name, set) in fine {
+        let mut s = StatsSnapshot::default();
+        set(&mut s);
+        assert!(s.is_complete(), "{name} no es un error");
+    }
+}
+
+/// s-3: sustituir una entrada por otra del mismo tamaño cambia `fp_sum` Y `fp_xor`, cada uno POR SEPARADO (con que solo
+/// cambiara una de las dos mitades de la huella, un mutante que anulara la otra pasaría desapercibido).
+#[test]
+fn la_suma_y_el_xor_de_la_huella_cambian_cada_uno_por_separado() {
+    let sb = Sandbox::new();
+    sb.write("R/a.bin", 3_000);
+    sb.write("R/b.bin", 3_000);
+    let measure = || run_contents(&sb, "R", Mode::Measure, 0, no_protection(), 2).stats();
+    let before = measure();
+    fs::remove_file(sb.path("R/a.bin")).unwrap();
+    sb.write("R/a.bin", 3_000);
+    let after = measure();
+    assert_ne!(before.fp_sum, after.fp_sum, "la suma cambia");
+    assert_ne!(before.fp_xor, after.fp_xor, "el xor cambia");
+    assert_ne!(before.fp_sum, 0);
+    assert_ne!(before.fp_xor, 0);
+}

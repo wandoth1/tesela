@@ -79,6 +79,10 @@ pub enum RejectReason {
     NotLocal,
     /// Protegida: denegada, intocable o carpeta conocida.
     Protected(Verdict),
+    /// Se iba a la Papelera pero la medida de la carpeta no se pudo hacer ENTERA (subcarpetas sin permiso o en uso, entradas
+    /// que cambiaron durante el recorrido...): con el tamaño real desconocido no se puede repartir ni comprobar que cabe, y
+    /// al ejecutar fallaría siempre. Lleva cuántas entradas no se pudieron leer. No se ofrece.
+    Incomplete(u64),
     /// Cualquier otro error del sistema.
     Other(u32),
 }
@@ -234,6 +238,8 @@ pub struct Cleaner {
     pub(crate) data_dir: Option<PathBuf>,
     /// La shell para enviar a la Papelera (la real; las pruebas ponen una simulada).
     pub(crate) shell: Arc<dyn crate::exec::RecycleShell>,
+    /// ¿Está elevado el proceso? (la real consulta el token; las pruebas inyectan el estado).
+    pub(crate) elevation: Arc<dyn crate::exec::Elevation>,
 }
 
 /// Filtro del alcance de "vaciar la Papelera".
@@ -268,7 +274,20 @@ impl Cleaner {
             bin_filter: None,
             data_dir,
             shell: Arc::new(crate::exec::RealShell),
+            elevation: Arc::new(crate::exec::RealElevation),
         }
+    }
+
+    /// ¿Se ejecuta el proceso elevado? En ese caso la limpieza real no se hace ([`crate::ExecError::Elevated`]).
+    pub fn is_elevated(&self) -> bool {
+        self.elevation.is_elevated()
+    }
+
+    /// SOLO PARA PRUEBAS: inyecta el estado de elevación.
+    #[cfg(test)]
+    pub(crate) fn with_elevation(mut self, e: Arc<dyn crate::exec::Elevation>) -> Cleaner {
+        self.elevation = e;
+        self
     }
 
     /// SOLO PARA PRUEBAS: otra shell para enviar a la Papelera (reparto en operaciones y corte de seguridad).
@@ -396,6 +415,16 @@ impl Cleaner {
             let est = u.stats.snapshot();
             let id = plan.items.len();
             let dest = c.destination;
+            // m-4: lo que va a la Papelera exige una medida COMPLETA (ver `StatsSnapshot::is_complete`).
+            if dest == Destination::Recycle && !est.is_complete() {
+                plan.rejected.push(Rejected {
+                    path: c.canon,
+                    reason: RejectReason::Incomplete(
+                        est.in_use + est.denied + est.other_errors + est.changed + est.gone,
+                    ),
+                });
+                continue;
+            }
             let size = est.bytes.max(est.logical).max(est.shared_bytes);
             let fit = if dest == Destination::Recycle {
                 self.shell.fit(&c.canon, size)

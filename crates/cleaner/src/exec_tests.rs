@@ -13,7 +13,7 @@ use crate::protect::{ProtectionRoots, Verdict};
 use crate::recycle::bintest::{BinGuard, bin_usable, ids, is_mine, real_recycle_enabled};
 use crate::roots::Roots;
 use crate::rules::{CategoryId, Risk};
-use crate::testutil::{Sandbox, bin_lock};
+use crate::testutil::{RemoveOnDrop, Sandbox, bin_lock};
 use std::fs;
 use std::sync::Mutex;
 use tesela_scanner::BrowserRoots;
@@ -101,8 +101,8 @@ fn approve(c: &Cleaner, b: &Basket) -> Plan {
 fn las_categorias_borran_sus_raices_con_su_regla_y_respetan_el_perfil() {
     let sb = Sandbox::new();
     let c = cleaner_for(&sb);
-    // Temporales: solo lo de más de 24 h.
-    sb.write_aged("Temp/viejo.tmp", 30_000, 72);
+    // Temporales: solo lo de más de 7 días (las fechas de la prueba son de hace 10 días).
+    sb.write_aged("Temp/viejo.tmp", 30_000, 240);
     sb.write("Temp/nuevo.tmp", 30_000);
     // Caché de Chrome: sin límite de antigüedad. El perfil (historial, cookies...) NO es caché.
     sb.write(
@@ -178,12 +178,32 @@ fn las_categorias_borran_sus_raices_con_su_regla_y_respetan_el_perfil() {
     );
 }
 
+/// E2: los temporales se limpian a partir de los 7 días (la referencia de `cleanmgr`: "no modificados en la última
+/// semana"), no a las 24 h: uno de hace 6 días se deja y se cuenta como reciente; uno de hace 8, se borra.
+#[test]
+fn los_temporales_de_menos_de_7_dias_se_dejan() {
+    let sb = Sandbox::new();
+    let c = cleaner_for(&sb);
+    sb.write_aged("Temp/de-6-dias.tmp", 10_000, 6 * 24);
+    sb.write_aged("Temp/de-8-dias.tmp", 10_000, 8 * 24);
+    sb.write_aged("Temp/de-1-dia.tmp", 10_000, 25);
+    let mut b = Basket::new();
+    b.set_category(CategoryId::UserTemp, true);
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items[0].estimate.files, 1, "solo el de 8 días");
+    assert_eq!(plan.items[0].estimate.young, 2);
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    assert!(!sb.path("Temp/de-8-dias.tmp").exists());
+    assert!(sb.path("Temp/de-6-dias.tmp").exists() && sb.path("Temp/de-1-dia.tmp").exists());
+    assert_eq!(rep.totals.young, 2);
+}
+
 #[test]
 fn dry_run_no_toca_nada_y_registra_las_identidades_aprobadas() {
     let sb = Sandbox::new();
     let c = cleaner_for(&sb);
-    sb.write_aged("Temp/a.tmp", 10_000, 72);
-    sb.write_aged("Temp/sub/b.tmp", 10_000, 72);
+    sb.write_aged("Temp/a.tmp", 10_000, 240);
+    sb.write_aged("Temp/sub/b.tmp", 10_000, 240);
     sb.write("Docs/mio.doc", 5_000);
     let mut b = Basket::new();
     b.set_category(CategoryId::UserTemp, true);
@@ -477,6 +497,145 @@ fn vaciar_salta_el_elemento_cuya_identidad_cambio_y_lo_deja_en_el_registro() {
         .collect();
     assert_eq!(left.len(), 1, "{left:?}");
     assert_eq!(left[0].original_path(), skipped_name);
+    recycle::purge_items(&left, &AtomicBool::new(false)).unwrap();
+    assert_eq!(ids(), before);
+}
+
+/// A-M4 con la Papelera real (solo elementos propios): si el `$R` del PRIMER elemento se sustituye justo antes de que la shell
+/// lo borre (la ventana entre la verificación y el borrado), el receptor lo veta. El informe lo cuenta como "cambiado desde
+/// la confirmación" (no se purgó nada: la shell no sigue con el resto del lote tras el veto), el registro lleva una línea
+/// `vetoed` y una `not-processed` por cada uno de los demás, y el sustituto sigue ahí.
+#[test]
+fn vaciar_con_un_r_sustituido_al_final_consta_como_vetado_y_no_se_purga_nada_mas() {
+    let _lock = bin_lock();
+    if !bin_usable() {
+        return;
+    }
+    let before = ids();
+    let sb = Sandbox::new();
+    let _guard = BinGuard { uuid: sb.uuid() };
+    let c = cleaner_for(&sb);
+    for n in ["uno.txt", "dos.txt", "tres.txt"] {
+        sb.write(&format!("Docs/{n}"), 2_000);
+    }
+    let mut b = Basket::new();
+    for n in ["uno.txt", "dos.txt", "tres.txt"] {
+        b.add_path(sb.long(&format!("Docs/{n}")), c.protection());
+    }
+    exec(&c, &approve(&c, &b), false, false, None).unwrap();
+    let mut v = Basket::new();
+    v.set_empty_bin(true);
+    let plan = c.approve(&v, &ApproveOptions::default(), &cancel());
+    let items = plan.bin.as_ref().unwrap().items.clone();
+    assert_eq!(items.len(), 3);
+    // El primero en el orden en que la shell los procesa.
+    let victim = PathBuf::from(&items[0].id);
+    let _apartado = RemoveOnDrop(victim.with_extension("apartado"));
+    let hook = crate::engine::test_hooks::install_before_shell(victim.clone(), {
+        let victim = victim.clone();
+        move |_| {
+            fs::rename(&victim, victim.with_extension("apartado")).unwrap();
+            fs::write(&victim, b"sustituto").unwrap();
+        }
+    });
+    let log = Arc::new(LogWriter::create(&sb.path("Tesela"), false).unwrap());
+    let rep = exec(&c, &plan, false, false, Some(log.clone())).unwrap();
+    let bin = rep.bin.unwrap();
+    eprintln!("vaciar con veto: {bin:?}");
+    assert_eq!((bin.requested, bin.purged, bin.still_there), (3, 0, 3));
+    assert_eq!(bin.changed, 1, "el vetado cuenta como cambiado");
+    assert_eq!((bin.replaced, bin.unverifiable), (0, 0));
+    assert!(!bin.failed, "el E_ABORT propio no es un fallo de la shell");
+    assert_eq!(fs::read(&victim).unwrap(), b"sustituto");
+    let text = fs::read_to_string(log.path()).unwrap();
+    let outs: Vec<String> = text
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|v| v["t"] == "bin-item")
+        .map(|v| v["out"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(outs.iter().filter(|o| *o == "vetoed").count(), 1, "{text}");
+    assert_eq!(
+        outs.iter().filter(|o| *o == "not-processed").count(),
+        2,
+        "{text}"
+    );
+    assert!(!outs.iter().any(|o| o == "purged"), "{text}");
+    drop(hook);
+    let left: Vec<BinItem> = recycle::list_bin()
+        .unwrap()
+        .into_iter()
+        .filter(|i| is_mine(i, &sb.uuid()))
+        .collect();
+    recycle::purge_items(&left, &AtomicBool::new(false)).unwrap();
+    assert_eq!(ids(), before);
+}
+
+/// M-2 con la Papelera real (solo elementos propios): el veto de una CARPETA de la Papelera sustituida (la shell consulta
+/// primero la carpeta y luego sus hijos) consta como "cambiado desde la confirmación" y el registro lleva `vetoed` de ESE
+/// elemento, no `error-0x...`/`not-processed`. (Que un veto sobre un HIJO se atribuya a su carpeta lo prueba la prueba sin COM
+/// `el_veto_de_un_hijo_se_atribuye_al_r_de_su_carpeta`: con la shell real no se puede forzar el cambio entre la consulta de
+/// la carpeta y la de sus hijos.)
+#[test]
+fn vaciar_con_un_hijo_vetado_de_una_carpeta_consta_como_cambiado_y_vetado() {
+    let _lock = bin_lock();
+    if !bin_usable() {
+        return;
+    }
+    let before = ids();
+    let sb = Sandbox::new();
+    let _guard = BinGuard { uuid: sb.uuid() };
+    let c = cleaner_for(&sb);
+    sb.write("Docs/carpeta/sub/hijo.txt", 2_000);
+    sb.write("Docs/otro.txt", 2_000);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/carpeta"), c.protection());
+    b.add_path(sb.long("Docs/otro.txt"), c.protection());
+    exec(&c, &approve(&c, &b), false, false, None).unwrap();
+    let mut v = Basket::new();
+    v.set_empty_bin(true);
+    let plan = c.approve(&v, &ApproveOptions::default(), &cancel());
+    let items = plan.bin.as_ref().unwrap().items.clone();
+    assert_eq!(items.len(), 2);
+    let folder = items.iter().find(|i| i.name == "carpeta").unwrap().clone();
+    let victim = PathBuf::from(&folder.id);
+    let _apartado = RemoveOnDrop(victim.with_extension("apartado"));
+    let hook = crate::engine::test_hooks::install_before_shell(victim.clone(), {
+        let victim = victim.clone();
+        move |_| {
+            // Con la guarda abierta (comparte `DELETE`) la carpeta se aparta y se pone otra con su nombre y un hijo.
+            fs::rename(&victim, victim.with_extension("apartado")).unwrap();
+            fs::create_dir_all(victim.join("sub")).unwrap();
+            fs::write(victim.join("sub/hijo.txt"), b"sustituto").unwrap();
+        }
+    });
+    let log = Arc::new(LogWriter::create(&sb.path("Tesela"), false).unwrap());
+    let rep = exec(&c, &plan, false, false, Some(log.clone())).unwrap();
+    let bin = rep.bin.unwrap();
+    eprintln!("vaciar con un hijo vetado: {bin:?}");
+    assert_eq!(bin.changed, 1, "el elemento carpeta cuenta como cambiado");
+    assert!(!bin.failed);
+    let text = fs::read_to_string(log.path()).unwrap();
+    let vetoed: Vec<serde_json::Value> = text
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|v| v["t"] == "bin-item" && v["out"] == "vetoed")
+        .collect();
+    assert_eq!(vetoed.len(), 1, "{text}");
+    assert_eq!(
+        vetoed[0]["id"].as_str().unwrap(),
+        folder.id.to_string_lossy()
+    );
+    assert!(
+        !text.contains("error-0x"),
+        "el vetado no consta como error de la shell: {text}"
+    );
+    drop(hook);
+    let left: Vec<BinItem> = recycle::list_bin()
+        .unwrap()
+        .into_iter()
+        .filter(|i| is_mine(i, &sb.uuid()))
+        .collect();
     recycle::purge_items(&left, &AtomicBool::new(false)).unwrap();
     assert_eq!(ids(), before);
 }
@@ -932,7 +1091,7 @@ fn contenido_de_una_carpeta_conocida_son_sus_hijos_y_no_ella() {
 fn cancelar_antes_de_empezar_no_toca_nada() {
     let sb = Sandbox::new();
     let c = cleaner_for(&sb);
-    sb.write_aged("Temp/a.tmp", 10_000, 72);
+    sb.write_aged("Temp/a.tmp", 10_000, 240);
     sb.write("Docs/b.txt", 1_000);
     let mut b = Basket::new();
     b.set_category(CategoryId::UserTemp, true);
@@ -974,7 +1133,7 @@ fn las_rutas_de_red_a_un_disco_local_no_esquivan_la_proteccion() {
     let sb = Sandbox::new();
     let c = cleaner_for(&sb);
     let f = sb.write("Docs/privado.txt", 2_000);
-    sb.write_aged("Temp/viejo.tmp", 3_000, 72);
+    sb.write_aged("Temp/viejo.tmp", 3_000, 240);
     for host in ["localhost", "127.0.0.1"] {
         // Ya al AÑADIR a la cesta: rechazada con su motivo (no solo al aprobar).
         let net = via_share(host, &sb.long("Docs/privado.txt"));
@@ -1044,11 +1203,11 @@ fn la_propia_aplicacion_dentro_del_temporal_nunca_se_borra() {
         },
     };
     let c = Cleaner::new(roots).with_threads(4);
-    sb.write_aged("Temp/app/tesela.exe", 5_000, 72);
-    sb.write_aged("Temp/app/datos/config.toml", 1_000, 72);
-    sb.write_aged("Temp/viejo.tmp", 3_000, 72);
-    sb.write_aged("Temp/otra/x.tmp", 3_000, 72);
-    sb.set_age(&sb.path("Temp/otra"), 72);
+    sb.write_aged("Temp/app/tesela.exe", 5_000, 240);
+    sb.write_aged("Temp/app/datos/config.toml", 1_000, 240);
+    sb.write_aged("Temp/viejo.tmp", 3_000, 240);
+    sb.write_aged("Temp/otra/x.tmp", 3_000, 240);
+    sb.set_age(&sb.path("Temp/otra"), 240);
     let mut b = Basket::new();
     b.set_category(CategoryId::UserTemp, true);
     let plan = approve(&c, &b);
@@ -1094,10 +1253,10 @@ fn roots_with_raw(sb: &Sandbox, local: PathBuf, user_temp: Option<PathBuf>) -> R
 #[test]
 fn un_junction_por_encima_de_user_data_no_vuelve_borrable_lo_protegido() {
     let mut sb = Sandbox::new();
-    sb.write_aged("Prot/UD/ShaderCache/s.bin", 4_000, 72);
-    sb.write_aged("Prot/UD/GrShaderCache/g.bin", 3_000, 72);
-    sb.write_aged("Prot/UD/Default/Cache/c.bin", 2_000, 72);
-    sb.write_aged("Prot/UD/Cookies", 100, 72);
+    sb.write_aged("Prot/UD/ShaderCache/s.bin", 4_000, 240);
+    sb.write_aged("Prot/UD/GrShaderCache/g.bin", 3_000, 240);
+    sb.write_aged("Prot/UD/Default/Cache/c.bin", 2_000, 240);
+    sb.write_aged("Prot/UD/Cookies", 100, 240);
     sb.mkdir("Local/Google/Chrome");
     sb.junction("Local/Google/Chrome/User Data", "Prot/UD");
     let roots = roots_with_raw(&sb, sb.path("Local"), None);
@@ -1164,7 +1323,7 @@ fn un_junction_por_encima_de_user_data_no_vuelve_borrable_lo_protegido() {
 #[test]
 fn una_raiz_descartada_deja_su_motivo_visible_y_en_el_registro() {
     let mut sb = Sandbox::new();
-    sb.write_aged("Prot/UD/ShaderCache/s.bin", 4_000, 72);
+    sb.write_aged("Prot/UD/ShaderCache/s.bin", 4_000, 240);
     sb.mkdir("Local/Google/Chrome");
     sb.junction("Local/Google/Chrome/User Data", "Prot/UD");
     let mut roots = roots_with_raw(&sb, sb.path("Local"), None);
@@ -1226,7 +1385,7 @@ fn una_raiz_descartada_deja_su_motivo_visible_y_en_el_registro() {
 #[test]
 fn la_exencion_de_una_cache_no_levanta_una_denegacion_ajena() {
     let sb = Sandbox::new();
-    sb.write_aged("Prot/UD/ShaderCache/s.bin", 4_000, 72);
+    sb.write_aged("Prot/UD/ShaderCache/s.bin", 4_000, 240);
     sb.mkdir("Local/Google/Chrome");
     let local = sb.long("Local");
     let user_data = local.join(r"Google\Chrome\User Data");
@@ -1252,8 +1411,8 @@ fn la_exencion_de_una_cache_no_levanta_una_denegacion_ajena() {
 #[test]
 fn un_junction_por_encima_de_temp_no_vuelve_borrable_lo_protegido() {
     let mut sb = Sandbox::new();
-    sb.write_aged("Prot/T/Temp/x.tmp", 3_000, 72);
-    sb.write_aged("Prot/T/Temp/sub/y.tmp", 3_000, 72);
+    sb.write_aged("Prot/T/Temp/x.tmp", 3_000, 240);
+    sb.write_aged("Prot/T/Temp/sub/y.tmp", 3_000, 240);
     sb.junction("Enlace", "Prot/T");
     // (1) La ruta como la daría `GetTempPath`: pasa por el junction.
     let c = Cleaner::new(roots_with_raw(
@@ -1293,8 +1452,8 @@ fn un_junction_por_encima_de_temp_no_vuelve_borrable_lo_protegido() {
 #[test]
 fn un_ancestro_cambiado_entre_la_cadena_y_la_apertura_se_rechaza() {
     let mut sb = Sandbox::new();
-    sb.write_aged("Anc/Temp/bueno.tmp", 1_000, 72);
-    sb.write_aged("Otra/Temp/ajeno.tmp", 1_000, 72);
+    sb.write_aged("Anc/Temp/bueno.tmp", 1_000, 240);
+    sb.write_aged("Otra/Temp/ajeno.tmp", 1_000, 240);
     let roots = roots_with_raw(&sb, sb.long("Local"), Some(sb.path("Anc/Temp")));
     let c = Cleaner::new(roots);
     // Justo antes de que la aprobación abra la raíz: `Anc` pasa a ser un junction hacia `Otra`.
@@ -1748,7 +1907,7 @@ fn sin_registro_no_hay_ninguna_accion_destructiva() {
     let sb = Sandbox::new();
     let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
     let c = cleaner_for(&sb).with_shell(fake.clone());
-    sb.write_aged("Temp/viejo.tmp", 10_000, 72);
+    sb.write_aged("Temp/viejo.tmp", 10_000, 240);
     sb.write("Docs/b.txt", 1_000);
     let mut b = Basket::new();
     b.set_category(CategoryId::UserTemp, true);
@@ -1837,7 +1996,7 @@ fn un_registro_truncado_se_propaga_al_informe() {
     let sb = Sandbox::new();
     let c = cleaner_for(&sb);
     for i in 0..60 {
-        sb.write_aged(&format!("Temp/t{i:02}.tmp"), 100, 72);
+        sb.write_aged(&format!("Temp/t{i:02}.tmp"), 100, 240);
     }
     let mut b = Basket::new();
     b.set_category(CategoryId::UserTemp, true);
@@ -1858,7 +2017,7 @@ fn un_registro_truncado_se_propaga_al_informe() {
     // Un registro normal no se marca.
     let sb2 = Sandbox::new();
     let c2 = cleaner_for(&sb2);
-    sb2.write_aged("Temp/a.tmp", 100, 72);
+    sb2.write_aged("Temp/a.tmp", 100, 240);
     let plan2 = approve(&c2, &b);
     let rep2 = exec(&c2, &plan2, false, false, None).unwrap();
     assert!(!rep2.log_truncated);
@@ -1870,7 +2029,7 @@ fn un_registro_truncado_se_propaga_al_informe() {
 fn la_cancelacion_del_usuario_no_se_oculta_si_ademas_falla_el_registro() {
     let sb = Sandbox::new();
     let c = cleaner_for(&sb);
-    sb.write_aged("Temp/a.tmp", 10_000, 72);
+    sb.write_aged("Temp/a.tmp", 10_000, 240);
     let mut b = Basket::new();
     b.set_category(CategoryId::UserTemp, true);
     let plan = approve(&c, &b);
@@ -1893,7 +2052,7 @@ fn la_cancelacion_del_usuario_no_se_oculta_si_ademas_falla_el_registro() {
     // Solo falla el registro: no es una cancelación del usuario.
     let sb2 = Sandbox::new();
     let c2 = cleaner_for(&sb2);
-    sb2.write_aged("Temp/a.tmp", 10_000, 72);
+    sb2.write_aged("Temp/a.tmp", 10_000, 240);
     let plan2 = approve(&c2, &b);
     let log2 = Arc::new(LogWriter::create_failing_after(&sb2.path("L2"), false, 80).unwrap());
     let rep2 = exec(&c2, &plan2, false, false, Some(log2)).unwrap();
@@ -1915,7 +2074,7 @@ fn cancelar_siempre_anota_que_lo_pidio_el_usuario() {
 fn los_rechazados_del_plan_se_anotan_con_tope() {
     let sb = Sandbox::new();
     let c = cleaner_for(&sb);
-    sb.write_aged("Temp/a.tmp", 100, 72);
+    sb.write_aged("Temp/a.tmp", 100, 240);
     let mut b = Basket::new();
     b.set_category(CategoryId::UserTemp, true);
     let mut plan = approve(&c, &b);
@@ -1951,7 +2110,7 @@ fn el_registro_lleva_la_intencion_de_cada_operacion_antes_de_sus_resultados() {
     let sb = Sandbox::new();
     let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
     let c = cleaner_for(&sb).with_shell(fake.clone());
-    sb.write_aged("Temp/viejo.tmp", 10_000, 72);
+    sb.write_aged("Temp/viejo.tmp", 10_000, 240);
     let mut plan = plan_de(&sb, &c, &[("a.txt", 100, 100), ("b.txt", 100, 100)]);
     // Más un elemento definitivo (la categoría de temporales).
     let mut b = Basket::new();
@@ -2000,7 +2159,7 @@ fn un_error_de_escritura_del_registro_detiene_la_limpieza() {
     let sb = Sandbox::new();
     let c = cleaner_for(&sb);
     for i in 0..30 {
-        sb.write_aged(&format!("Temp/f{i:02}.tmp"), 1_000, 72);
+        sb.write_aged(&format!("Temp/f{i:02}.tmp"), 1_000, 240);
     }
     let mut b = Basket::new();
     b.set_category(CategoryId::UserTemp, true);
@@ -2021,7 +2180,7 @@ fn un_error_de_escritura_del_registro_detiene_la_limpieza() {
     let sb2 = Sandbox::new();
     let c2 = cleaner_for(&sb2).with_threads(2);
     for i in 0..400 {
-        sb2.write_aged(&format!("Temp/g{i:03}.tmp"), 100, 72);
+        sb2.write_aged(&format!("Temp/g{i:03}.tmp"), 100, 240);
     }
     let mut b2 = Basket::new();
     b2.set_category(CategoryId::UserTemp, true);
@@ -2196,6 +2355,7 @@ impl RecycleShell for FakeShell {
                 .map(|m| m.identity);
             if now.ok() != Some(items[i].identity) {
                 vetoed.push(recycle::Veto {
+                    owner: None,
                     item: p.clone().into_os_string(),
                     kind: recycle::VetoKind::IdentityMismatch,
                 });
@@ -2209,6 +2369,7 @@ impl RecycleShell for FakeShell {
             let intact = p
                 .file_name()
                 .is_some_and(|n| n.to_string_lossy().contains("intacto"));
+            let mut hr = 0;
             let state = if nuke {
                 // La shell borra con la semántica clásica: con el handle de guarda abierto, el nombre queda "pendiente de
                 // borrar" hasta soltarlo (R1). `fs::remove_file` usa semántica POSIX y no lo reproduciría.
@@ -2221,6 +2382,28 @@ impl RecycleShell for FakeShell {
                 // R6: la shell elimina definitivamente UN hijo y notifica "eliminado" de la carpeta, que sigue en su sitio.
                 let child = fs::read_dir(p).unwrap().flatten().next().unwrap().path();
                 sys::delete_legacy_for_test(&child).unwrap();
+                BinState::Deleted
+            } else if p.is_dir()
+                && p.file_name()
+                    .is_some_and(|n| n.to_string_lossy().contains("falla"))
+            {
+                // A-M1 (caso 1): la shell elimina definitivamente UN hijo y DESPUÉS falla con acceso denegado: el resultado es
+                // un error, pero la carpeta ya perdió algo. Con un fallo el receptor no corta el lote (solo corta con éxito).
+                let child = fs::read_dir(p).unwrap().flatten().next().unwrap().path();
+                sys::delete_legacy_for_test(&child).unwrap();
+                hr = 0x8007_0005u32 as i32;
+                BinState::Deleted
+            } else if p.is_dir()
+                && p.file_name()
+                    .is_some_and(|n| n.to_string_lossy().contains("sustituye"))
+            {
+                // A-M1 (caso 2): la shell elimina un hijo y deja otro NUEVO del mismo nombre y tamaño (otro objeto): totales
+                // idénticos, contenido distinto. Notifica "eliminado" con éxito sin enviar nada.
+                let child = fs::read_dir(p).unwrap().flatten().next().unwrap().path();
+                let len = fs::metadata(&child).unwrap().len() as usize;
+                sys::delete_legacy_for_test(&child).unwrap();
+                // Mismo nombre, mismo tamaño, OTRO objeto (otro `FileId`).
+                fs::write(&child, vec![9u8; len]).unwrap();
                 BinState::Deleted
             } else if intact {
                 // La shell notifica "eliminado" (nulo, con éxito) SIN haber tocado nada (medido con un archivo disperso).
@@ -2239,10 +2422,12 @@ impl RecycleShell for FakeShell {
                     BinState::InBin(dest)
                 }
             };
-            let unsafe_outcome = matches!(state, BinState::Deleted | BinState::InBinUnknownPath);
+            // El receptor real solo corta tras un EXITO sin Papelera verificable (`post_delete_aborts`).
+            let unsafe_outcome =
+                hr >= 0 && matches!(state, BinState::Deleted | BinState::InBinUnknownPath);
             events.push(DeleteEvent {
                 item: p.clone().into_os_string(),
-                hr: 0,
+                hr,
                 state,
             });
             // El receptor registra el evento y DESPUÉS devuelve E_ABORT: la shell no procesa el resto.
@@ -2282,8 +2467,10 @@ impl RecycleShell for FakeShell {
     }
 }
 
-/// Un plan de elementos de `Docs/<nombre>` con el tamaño dado: el archivo real mide `len` bytes y la ESTIMACIÓN que se
-/// reparte es `est` (así se prueba el reparto sin archivos enormes).
+/// Un plan de elementos de `Docs/<nombre>` con el tamaño dado: el archivo real mide `len` bytes y la ESTIMACIÓN aprobada es
+/// `est` (nunca por debajo de lo que de verdad ocupa). Desde A-B1 lo que se reparte es lo que mide el handle de guarda justo
+/// antes de la operación, no la estimación: `est` debe corresponderse con lo que ocupa el archivo (sin archivos enormes: los
+/// umbrales se escalan con la capacidad simulada).
 fn plan_de(sb: &Sandbox, c: &Cleaner, items: &[(&str, usize, u64)]) -> Plan {
     let mut b = Basket::new();
     for (name, len, _) in items {
@@ -2293,9 +2480,11 @@ fn plan_de(sb: &Sandbox, c: &Cleaner, items: &[(&str, usize, u64)]) -> Plan {
     let mut plan = approve(c, &b);
     assert_eq!(plan.items.len(), items.len(), "{:?}", plan.rejected);
     for (it, (_, _, est)) in plan.items.iter_mut().zip(items) {
-        it.estimate.bytes = *est;
-        it.estimate.logical = *est;
-        it.fit = c.fit(&it.path, *est);
+        // Nunca por debajo de lo que de verdad ocupa el archivo (A-B1: lo que crece frente a lo aprobado no se envía).
+        it.estimate.bytes = (*est).max(it.estimate.bytes);
+        it.estimate.logical = (*est).max(it.estimate.logical);
+        let size = it.estimate.bytes.max(it.estimate.logical);
+        it.fit = c.fit(&it.path, size);
         assert_eq!(it.fit, Fit::Fits);
     }
     plan
@@ -2312,7 +2501,7 @@ fn un_elemento_que_no_cabe_entre_otros_pequenos_nunca_arrastra_a_los_demas_y_cor
         &c,
         &[
             ("a.txt", 100, 100),
-            ("enorme.bin", 100, 5_000),
+            ("enorme.bin", 5_000, 5_000),
             ("c.txt", 100, 100),
             ("d.txt", 100, 100),
         ],
@@ -2481,6 +2670,86 @@ fn una_carpeta_que_pierde_hijos_no_es_shell_declined() {
             assert_eq!(sb.count_entries("Docs/intacto"), 2);
         }
     }
+}
+
+/// A-M1 (caso 1): la shell pierde un hijo de una carpeta y DESPUÉS falla con `E_ACCESSDENIED`. Antes, un resultado de fallo
+/// se devolvía tal cual (`NotRecycled`), sin mirar los efectos: `deleted_unexpectedly` quedaba a 0 y el elemento siguiente se
+/// enviaba igualmente. Ahora un fallo se juzga como un borrado (objeto intacto y, en una carpeta, contenido intacto): consta
+/// la pérdida parcial y el envío se detiene.
+#[test]
+fn un_fallo_de_la_shell_tras_perder_un_hijo_es_un_borrado_parcial_y_corta_el_envio() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(10_000), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    sb.write("Docs/pierde-y-falla/a.bin", 3_000);
+    sb.write("Docs/pierde-y-falla/b.bin", 3_000);
+    sb.write("Docs/otro.txt", 100);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/pierde-y-falla"), c.protection());
+    b.add_path(sb.long("Docs/otro.txt"), c.protection());
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 2, "{:?}", plan.rejected);
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    let st = |n: &str| {
+        rep.items
+            .iter()
+            .find(|i| i.path.ends_with(n))
+            .unwrap()
+            .status
+    };
+    assert_eq!(st("pierde-y-falla"), ItemStatus::DeletedUnexpectedly);
+    assert_eq!(
+        st("otro.txt"),
+        ItemStatus::NotRecycled(RecycleFail::Stopped)
+    );
+    assert_eq!(rep.deleted_unexpectedly, 1);
+    assert!(rep.recycle_stopped);
+    assert_eq!(rep.stop_reason, Some(StopReason::DeletedUnexpectedly));
+    assert_eq!(
+        fake.names(),
+        vec![vec!["pierde-y-falla"]],
+        "no se envió nada más"
+    );
+    assert!(sb.path("Docs/otro.txt").exists());
+    assert_eq!(sb.count_entries("Docs/pierde-y-falla"), 1, "perdió un hijo");
+}
+
+/// A-M1 (caso 2): la shell elimina un hijo y deja otro del mismo nombre y del mismo tamaño. Los totales (tamaño y número de
+/// entradas) son idénticos, así que antes se daba por "la shell no tocó nada" (`ShellDeclined`). Ahora la HUELLA del contenido
+/// (identidad, tamaño y enlaces de cada entrada) lo distingue: es un borrado parcial.
+#[test]
+fn quitar_un_hijo_y_poner_otro_del_mismo_tamano_no_pasa_por_intacto() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    sb.write("Docs/sustituye/a.bin", 3_000);
+    sb.write("Docs/sustituye/b.bin", 3_000);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/sustituye"), c.protection());
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 1, "{:?}", plan.rejected);
+    let before = plan.items[0].estimate;
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    assert_eq!(rep.items[0].status, ItemStatus::DeletedUnexpectedly);
+    assert_eq!(rep.stop_reason, Some(StopReason::DeletedUnexpectedly));
+    assert_eq!(rep.deleted_unexpectedly, 1);
+    // Y de verdad los totales no habrían delatado nada: misma cantidad, mismos bytes.
+    let after = {
+        let it = &plan.items[0];
+        let Remeasure::Now(s) = c.remeasure(it, &cancel()) else {
+            panic!("la medida debía ser completa");
+        };
+        s
+    };
+    assert_eq!(
+        (before.bytes, before.logical, before.files, before.dirs),
+        (after.bytes, after.logical, after.files, after.dirs)
+    );
+    assert_ne!(
+        (before.fp_sum, before.fp_xor),
+        (after.fp_sum, after.fp_xor),
+        "la huella sí cambia"
+    );
 }
 
 /// R6 con la shell REAL (solo cosas propias, tras `TESELA_REAL_RECYCLE_TESTS=1`): una carpeta con un disperso enorme (que no
@@ -2692,7 +2961,7 @@ fn los_pequenos_se_agrupan_hasta_el_presupuesto_y_nunca_pasan_del_90_por_ciento_
             ("a", 400, 400),
             ("b", 400, 400),
             ("c", 400, 400),
-            ("grande", 400, 2_000),
+            ("grande", 2_000, 2_000),
             ("d", 400, 400),
         ],
     );
@@ -2805,7 +3074,7 @@ fn la_capacidad_del_reparto_es_solo_la_configurada() {
         &[
             ("a", 100, 100),
             ("b", 100, 100),
-            ("grande", 100, 2_000),
+            ("grande", 2_000, 2_000),
             ("c", 100, 100),
         ],
     );
@@ -2874,14 +3143,11 @@ fn el_directorio_se_mide_justo_antes_de_su_operacion_no_al_preparar_el_trozo() {
     let mut b = Basket::new();
     b.add_path(sb.long("Docs/a.bin"), c.protection());
     b.add_path(sb.long("Docs/crece"), c.protection());
-    let mut plan = approve(&c, &b);
+    let plan = approve(&c, &b);
     assert_eq!(plan.items.len(), 2);
-    // Estimaciones coherentes con la capacidad simulada (cada uno > 10 % de 10 000 y cabe).
-    for it in &mut plan.items {
-        it.estimate.bytes = 5_000;
-        it.estimate.logical = 5_000;
-        it.fit = c.fit(&it.path, 5_000);
-        assert_eq!(it.fit, Fit::Fits);
+    // Las estimaciones son las reales (~8 KiB cada uno: más del 10 % de 10 000 y caben).
+    for it in &plan.items {
+        assert!(it.estimate.bytes > 1_000 && it.fit == Fit::Fits);
     }
     // El directorio crece cuando se va a entregar `a.bin` (después de preparar el trozo, antes de su propia operación).
     // Con una medida hecha al preparar, el directorio se habría repartido con el tamaño viejo.
@@ -2912,6 +3178,80 @@ fn el_directorio_se_mide_justo_antes_de_su_operacion_no_al_preparar_el_trozo() {
     );
 }
 
+/// A-B1 / M-1: un SEGUNDO directorio de la misma operación que crece mientras se mide el primero no se envía. (Antes de esta
+/// prueba, que los candidatos no primeros no se volvieran a medir —`let skip = true`— sobrevivía a todas las demás.)
+#[test]
+fn un_segundo_directorio_de_la_misma_operacion_que_crece_no_se_envia() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    sb.write("Docs/d1/x1.bin", 1_000);
+    sb.write("Docs/d2/y1.bin", 1_000);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/d1"), c.protection());
+    b.add_path(sb.long("Docs/d2"), c.protection());
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 2, "{:?}", plan.rejected);
+    let grow = sb.path("Docs/d2/crece.bin");
+    // Mientras se mide d1 (el primero), d2 crece.
+    let _hook = crate::engine::test_hooks::install(sb.long("Docs"), move |q| {
+        if q.ends_with("x1.bin") {
+            fs::write(&grow, vec![1u8; 1 << 20]).unwrap();
+        }
+    });
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    let st = |n: &str| {
+        rep.items
+            .iter()
+            .find(|i| i.path.ends_with(n))
+            .unwrap()
+            .status
+    };
+    assert_eq!(st("d1"), ItemStatus::Recycled);
+    assert_eq!(
+        st("d2"),
+        ItemStatus::Root(crate::engine::RootStatus::Changed)
+    );
+    assert_eq!(fake.names(), vec![vec!["d1"]]);
+}
+
+/// s-1: el PRIMER directorio de una operación se vuelve a medir el último, justo antes de entregarla: si crece mientras se
+/// miden los demás, no se envía (antes se detectaba solo DESPUÉS de la shell, contra la instantánea de la primera medida).
+#[test]
+fn el_primer_directorio_de_la_operacion_que_crece_mientras_se_miden_los_demas_no_se_envia() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    sb.write("Docs/d1/x1.bin", 1_000);
+    sb.write("Docs/d2/y1.bin", 1_000);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/d1"), c.protection());
+    b.add_path(sb.long("Docs/d2"), c.protection());
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 2, "{:?}", plan.rejected);
+    let grow = sb.path("Docs/d1/crece.bin");
+    // Mientras se mide d2 (después del primero), d1 crece.
+    let _hook = crate::engine::test_hooks::install(sb.long("Docs"), move |q| {
+        if q.ends_with("y1.bin") {
+            fs::write(&grow, vec![1u8; 1 << 20]).unwrap();
+        }
+    });
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    let st = |n: &str| {
+        rep.items
+            .iter()
+            .find(|i| i.path.ends_with(n))
+            .unwrap()
+            .status
+    };
+    assert_eq!(
+        st("d1"),
+        ItemStatus::Root(crate::engine::RootStatus::Changed)
+    );
+    assert_eq!(st("d2"), ItemStatus::Recycled);
+    assert_eq!(fake.names(), vec![vec!["d2"]]);
+}
+
 /// B2: un directorio que ENCOGIÓ se reparte con su tamaño nuevo (no con el aprobado). El aprobado (estimación falseada
 /// a 8 500 con 2 000 ya ocupados de una capacidad de 10 000: presupuesto 7 000) no cabría; el real, mucho menor, sí.
 #[test]
@@ -2939,6 +3279,484 @@ fn un_directorio_que_encogio_se_reparte_con_su_tamano_nuevo() {
         rep.items[0]
     );
     assert_eq!(fake.names(), vec![vec!["encoge"]]);
+}
+
+/// A-B1 (blocker): un ARCHIVO también se vuelve a medir justo antes de la operación que lo incluye. Dos archivos de unos 20 KB
+/// con una Papelera simulada de 100 000 (cada uno pasa del 10 % y va en su propia operación): mientras la shell trabaja con el
+/// primero, el segundo crece a 1 MiB. Antes se entregaba a la shell con el tamaño de cuando se preparó el trozo
+/// (`measured: true` y `fresh_size` no lo miraba). Ahora no se envía: "cambió desde la confirmación".
+#[test]
+fn un_archivo_que_crece_mientras_espera_su_turno_no_se_envia() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(100_000), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    let plan = plan_de(
+        &sb,
+        &c,
+        &[("a.bin", 20_000, 20_480), ("b.bin", 20_000, 20_480)],
+    );
+    let grow = sb.path("Docs/b.bin");
+    let _hook = crate::engine::test_hooks::install_before_shell(sb.long("Docs"), move |p| {
+        if p.ends_with("a.bin") {
+            fs::write(&grow, vec![1u8; 1 << 20]).unwrap();
+        }
+    });
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    let st = |n: &str| {
+        rep.items
+            .iter()
+            .find(|i| i.path.ends_with(n))
+            .unwrap()
+            .status
+    };
+    assert_eq!(st("a.bin"), ItemStatus::Recycled);
+    assert_eq!(
+        st("b.bin"),
+        ItemStatus::Root(crate::engine::RootStatus::Changed)
+    );
+    assert_eq!(
+        fake.names(),
+        vec![vec!["a.bin"]],
+        "el que creció no llegó a la shell"
+    );
+    assert!(sb.path("Docs/b.bin").exists(), "sigue en su sitio");
+    assert!(rep.totals.changed >= 1);
+    assert!(!rep.recycle_stopped, "es un cambio, no un corte");
+}
+
+/// A-B1: lo contrario. Si lo que se mide ahora es MENOS que lo medido antes, manda el tamaño nuevo y se actualiza la última
+/// medida. (NTFS no libera la asignación de un archivo truncado mientras haya handles abiertos —la guarda lo está—, así que
+/// con la guarda abierta solo se ve encoger el tamaño lógico: la comprobación se hace sobre `fresh_size` directamente.)
+#[test]
+fn un_archivo_que_encoge_se_mide_con_su_tamano_nuevo() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(100_000), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake);
+    let plan = plan_de(&sb, &c, &[("a.bin", 20_000, 20_480)]);
+    let it = &plan.items[0];
+    let mut st = StatsSnapshot::default();
+    let Prepared::Ready(mut p) = c.prepare_recycle(it, &mut st) else {
+        panic!("debía prepararse");
+    };
+    let real = p.last.expect("un archivo se mide al preparar");
+    assert_eq!(real, 20_480);
+    // Se simula una medida anterior mayor (el archivo era de 50 000 y se truncó).
+    p.size = 50_000;
+    p.last = Some(50_000);
+    c.fresh_size(it, &mut p, &mut st, &cancel()).unwrap();
+    assert_eq!((p.size, p.last), (real, Some(real)));
+    // Si crece por encima de lo APROBADO (aunque no pase de la última medida, que aquí se finge enorme): no se envía.
+    fs::write(sb.path("Docs/a.bin"), vec![1u8; 30_000]).unwrap();
+    p.last = Some(u64::MAX);
+    let err = c.fresh_size(it, &mut p, &mut st, &cancel()).unwrap_err();
+    assert_eq!(err.0, ItemStatus::Root(crate::engine::RootStatus::Changed));
+    assert_eq!(st.changed, 1);
+    // Y si pasa de la última medida sin pasar de lo aprobado (se finge una aprobación enorme): tampoco.
+    let mut big = plan.items[0].clone();
+    big.estimate.bytes = 1 << 30;
+    p.last = Some(20_480);
+    let err = c.fresh_size(&big, &mut p, &mut st, &cancel()).unwrap_err();
+    assert_eq!(err.0, ItemStatus::Root(crate::engine::RootStatus::Changed));
+    assert_eq!(st.changed, 2);
+}
+
+/// Una shell simulada cuya ocupación de la Papelera cambia entre una lectura y la siguiente (otra aplicación llenándola):
+/// la primera lectura decide el grupo, y la comprobación de DESPUÉS de volver a medir (A-B1) ve otra cosa.
+struct FlakyRoom {
+    inner: Arc<FakeShell>,
+    calls: std::sync::atomic::AtomicUsize,
+    used: Vec<u64>,
+}
+
+impl RecycleShell for FlakyRoom {
+    fn recycle(&self, items: &[recycle::SendItem]) -> recycle::BatchOutcome {
+        self.inner.recycle(items)
+    }
+    fn bin_room(&self, _: &Path) -> BinRoom {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        BinRoom {
+            max: self.inner.max,
+            used: Some(self.used[n.min(self.used.len() - 1)]),
+        }
+    }
+    fn fit(&self, p: &Path, b: u64) -> Fit {
+        self.inner.fit(p, b)
+    }
+    fn is_bin_path(&self, p: &Path) -> bool {
+        self.inner.is_bin_path(p)
+    }
+}
+
+/// A-B1: tras volver a medir se comprueba otra vez el presupuesto con la ocupación de AHORA. Si ya no cabe todo el grupo, lo que
+/// sobra vuelve al principio de la cola (y se envía en la operación siguiente); si ya no cabe ni el primero, no se envía.
+#[test]
+fn tras_volver_a_medir_se_vuelve_a_comprobar_el_presupuesto() {
+    // Capacidad 10 000 (presupuesto 9 000). Lecturas de la ocupación: 1.ª = 0 (decide un grupo de 3), 2.ª = 8 790 (solo caben
+    // 210 de presupuesto: caben dos de ~104) y las demás, 0.
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(10_000), 0, "nunca");
+    let flaky = Arc::new(FlakyRoom {
+        inner: fake.clone(),
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        used: vec![0, 8_790, 0],
+    });
+    let c = cleaner_for(&sb).with_shell(flaky.clone());
+    let plan = plan_de(
+        &sb,
+        &c,
+        &[("a", 100, 104), ("b", 100, 104), ("c", 100, 104)],
+    );
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    for it in &rep.items {
+        assert_eq!(it.status, ItemStatus::Recycled, "{:?}", it.path);
+    }
+    assert_eq!(fake.names(), vec![vec!["a", "b"], vec!["c"]]);
+
+    // Si la 2.ª lectura ya no deja sitio ni para el primero (presupuesto 50 < 104): ese no se envía (`NoRoom`) y los demás
+    // siguen su camino en la operación siguiente.
+    let sb2 = Sandbox::new();
+    let fake2 = FakeShell::new(&sb2, Some(10_000), 0, "nunca");
+    let flaky2 = Arc::new(FlakyRoom {
+        inner: fake2.clone(),
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        used: vec![0, 8_950, 0],
+    });
+    let c2 = cleaner_for(&sb2).with_shell(flaky2);
+    let plan2 = plan_de(
+        &sb2,
+        &c2,
+        &[("a", 100, 104), ("b", 100, 104), ("c", 100, 104)],
+    );
+    let rep2 = exec(&c2, &plan2, false, false, None).unwrap();
+    let st = |n: &str| {
+        rep2.items
+            .iter()
+            .find(|i| i.path.ends_with(n))
+            .unwrap()
+            .status
+    };
+    assert_eq!(st("a"), ItemStatus::NotRecycled(RecycleFail::NoRoom));
+    assert_eq!(st("b"), ItemStatus::Recycled);
+    assert_eq!(st("c"), ItemStatus::Recycled);
+    assert_eq!(fake2.names(), vec![vec!["b", "c"]]);
+    assert!(sb2.path("Docs/a").exists());
+    assert_eq!(rep2.no_room, 1);
+}
+
+/// Abre `dir` con `dwShareMode = 0`: mientras viva, abrirla para listarla falla (`ERROR_SHARING_VIOLATION`). Es la forma de
+/// tener una subcarpeta que no se puede listar sin tocar permisos (nada que limpiar después).
+fn lock_dir(dir: &Path) -> fs::File {
+    use std::os::windows::fs::OpenOptionsExt;
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS)
+        .open(dir)
+        .expect("abre la carpeta en exclusiva")
+}
+
+/// A-B2 (blocker): una medida INCOMPLETA no vale. Una subcarpeta que no se puede listar durante la nueva medida deja su
+/// contenido sin contar; antes `remeasure` aceptaba `Done` sin más y la carpeta se entregaba a la shell con un tamaño que no era
+/// el real. Ahora no se envía: "cambió desde la confirmación". Sin el bloqueo (control), se envía.
+#[test]
+fn una_subcarpeta_que_no_se_puede_listar_al_volver_a_medir_impide_el_envio() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    sb.write("Docs/carpeta/f0.bin", 5_000);
+    sb.write("Docs/carpeta/sub/dentro.bin", 5_000);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/carpeta"), c.protection());
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 1, "{:?}", plan.rejected);
+    let lock = lock_dir(&sb.path("Docs/carpeta/sub"));
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    assert_eq!(
+        rep.items[0].status,
+        ItemStatus::Root(crate::engine::RootStatus::Changed)
+    );
+    assert!(rep.items[0].removed.is_empty());
+    assert!(fake.names().is_empty(), "no llegó a la shell");
+    assert!(sb.path("Docs/carpeta/sub/dentro.bin").exists());
+    assert!(rep.totals.changed >= 1);
+    // También en simulación (que mide lo mismo que el envío real).
+    let dry = exec(&c, &plan, true, false, None).unwrap();
+    assert_eq!(
+        dry.items[0].status,
+        ItemStatus::Root(crate::engine::RootStatus::Changed)
+    );
+    // Control: sin el bloqueo, el mismo plan se envía.
+    drop(lock);
+    let rep2 = exec(&c, &plan, false, false, None).unwrap();
+    assert_eq!(rep2.items[0].status, ItemStatus::Recycled);
+    assert_eq!(fake.names(), vec![vec!["carpeta"]]);
+}
+
+/// m-2: una cancelación a MITAD de la nueva medida (no solo ya activa al empezar) no es una medida: `remeasure` devuelve
+/// `Cancelled` aunque el recorrido terminara con la raíz abierta y sin errores contados.
+#[test]
+fn una_cancelacion_a_mitad_de_la_nueva_medida_no_es_una_medida() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake);
+    for i in 0..6 {
+        sb.write(&format!("Docs/carpeta/f{i}.bin"), 1_000);
+    }
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/carpeta"), c.protection());
+    let plan = approve(&c, &b);
+    let it = &plan.items[0];
+    let flag = cancel();
+    let flag2 = flag.clone();
+    let _hook = crate::engine::test_hooks::install(sb.long("Docs"), move |q| {
+        if q.ends_with("f2.bin") {
+            flag2.store(true, Ordering::SeqCst);
+        }
+    });
+    assert!(matches!(c.remeasure(it, &flag), Remeasure::Cancelled));
+    assert!(flag.load(Ordering::SeqCst));
+}
+
+/// m-4: una carpeta de la que ya al APROBAR no se puede leer algo (una subcarpeta bloqueada) con destino Papelera se rechaza
+/// con su propio motivo ("no se pudo leer entera"), en vez de aprobarse con una estimación corta y fallar SIEMPRE al
+/// ejecutar con "cambió desde la confirmación". Lo que va a borrado definitivo por reglas no se ve afectado.
+#[test]
+fn una_carpeta_que_no_se_puede_leer_entera_no_se_aprueba_para_la_papelera() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    sb.write("Docs/carpeta/f0.bin", 5_000);
+    sb.write("Docs/carpeta/sub/dentro.bin", 5_000);
+    let basket = || {
+        let mut b = Basket::new();
+        b.add_path(sb.long("Docs/carpeta"), c.protection());
+        b
+    };
+    let lock = lock_dir(&sb.path("Docs/carpeta/sub"));
+    let plan = approve(&c, &basket());
+    assert!(plan.items.is_empty(), "no se aprueba");
+    assert_eq!(plan.rejected.len(), 1, "{:?}", plan.rejected);
+    assert!(matches!(
+        plan.rejected[0].reason,
+        RejectReason::Incomplete(n) if n >= 1
+    ));
+    assert!(plan.rejected[0].path.ends_with("carpeta"));
+    // Sin el bloqueo, se aprueba y se envía con normalidad.
+    drop(lock);
+    let plan = approve(&c, &basket());
+    assert_eq!(plan.items.len(), 1, "{:?}", plan.rejected);
+    assert_eq!(
+        exec(&c, &plan, false, false, None).unwrap().items[0].status,
+        ItemStatus::Recycled
+    );
+}
+
+/// R-4: `BinReport.changed` cuenta los elementos a los que se atribuye un veto por su DUEÑO (el `$R` de su carpeta), no por
+/// la ruta vetada, que con la shell real puede ser la de un hijo; un elemento con varios vetos cuenta una vez, y lo que no es
+/// de la lista no cuenta.
+#[test]
+fn los_cambiados_de_la_papelera_cuentan_el_dueno_del_veto_y_no_la_ruta() {
+    let id = |n: &str| OsString::from(format!("C:\\$Recycle.Bin\\S-x\\{n}"));
+    let (a, b, ajeno) = (id("$RAAAA"), id("$RBBBB"), id("$RZZZZ"));
+    let wanted: HashSet<&OsString> = [&a, &b].into_iter().collect();
+    let veto = |item: OsString, owner: Option<OsString>| recycle::Veto {
+        item,
+        owner,
+        kind: recycle::VetoKind::IdentityMismatch,
+    };
+    let child = |parent: &OsString| {
+        let mut p = parent.clone();
+        p.push("\\sub\\hijo.txt");
+        p
+    };
+    // Un veto de un HIJO de `a`: cuenta `a` (con la ruta del hijo no estaría en la lista).
+    assert_eq!(
+        bin_changed(0, &[veto(child(&a), Some(a.clone()))], &wanted),
+        1
+    );
+    // Dos vetos del mismo elemento y uno de otro: 2; sumados a los que no cuadraban al enumerar.
+    let vetoes = [
+        veto(child(&a), Some(a.clone())),
+        veto(a.clone(), Some(a.clone())),
+        veto(b.clone(), None),
+    ];
+    assert_eq!(bin_changed(0, &vetoes, &wanted), 2);
+    assert_eq!(bin_changed(3, &vetoes, &wanted), 5);
+    // Un veto de algo que no es de la lista no cuenta.
+    assert_eq!(bin_changed(0, &[veto(ajeno.clone(), None)], &wanted), 0);
+    assert_eq!(bin_changed(1, &[], &wanted), 1);
+}
+
+/// E1: una elevación inyectada para probar las dos ramas (el CI no se puede elevar).
+struct FakeElevation(bool);
+
+impl Elevation for FakeElevation {
+    fn is_elevated(&self) -> bool {
+        self.0
+    }
+}
+
+/// E1: ELEVADO no se limpia. La limpieza real (definitivo y Papelera) devuelve `ExecError::Elevated` sin tocar nada y sin
+/// dejar registro; el análisis (aprobar) y la simulación siguen permitidos. Sin elevar, el mismo plan se ejecuta.
+#[test]
+fn elevado_no_se_limpia_pero_si_se_analiza_y_se_simula() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = cleaner_for(&sb)
+        .with_shell(fake.clone())
+        .with_elevation(Arc::new(FakeElevation(true)));
+    assert!(c.is_elevated());
+    sb.write_aged("Temp/viejo.tmp", 10_000, 240);
+    sb.write("Docs/b.txt", 1_000);
+    let mut b = Basket::new();
+    b.set_category(CategoryId::UserTemp, true);
+    b.add_path(sb.long("Docs/b.txt"), c.protection());
+    // El análisis (aprobar) se permite elevado.
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 2, "{:?}", plan.rejected);
+    // La simulación también.
+    let dry = exec(&c, &plan, true, false, None).unwrap();
+    assert!(dry.dry_run);
+    // La limpieza real, no: error tipado, nada tocado, el registro de la ejecución descartado.
+    let log = Arc::new(LogWriter::create(&sb.path("Tesela"), false).unwrap());
+    let log_path = log.path().to_path_buf();
+    let r = c.execute(
+        &plan,
+        &ExecOptions {
+            log: Some(log),
+            ..ExecOptions::default()
+        },
+        &Progress::new(),
+    );
+    assert_eq!(r.err(), Some(ExecError::Elevated));
+    assert!(sb.path("Temp/viejo.tmp").exists() && sb.path("Docs/b.txt").exists());
+    assert!(fake.names().is_empty(), "la shell no vio nada");
+    assert!(
+        !log_path.exists(),
+        "una ejecución rechazada no deja registro"
+    );
+    // También con el helper de las pruebas (que añade su propio registro).
+    assert_eq!(
+        exec(&c, &plan, false, false, None).err(),
+        Some(ExecError::Elevated)
+    );
+    assert!(sb.path("Docs/b.txt").exists());
+    // Sin elevar, el mismo plan se ejecuta.
+    let c2 = cleaner_for(&sb)
+        .with_shell(fake.clone())
+        .with_elevation(Arc::new(FakeElevation(false)));
+    assert!(!c2.is_elevated());
+    let rep = exec(&c2, &plan, false, false, None).unwrap();
+    assert!(
+        rep.items
+            .iter()
+            .all(|i| matches!(i.status, ItemStatus::Done | ItemStatus::Recycled)),
+        "{:?}",
+        rep.items
+    );
+    assert!(!sb.path("Temp/viejo.tmp").exists() && !sb.path("Docs/b.txt").exists());
+}
+
+/// E1: vaciar la Papelera tampoco se hace elevado, ni por `execute` (rechazo completo) ni llamando directamente a `empty_bin`
+/// (segunda línea de defensa): no se purga nada y consta como fallo.
+#[test]
+fn elevado_no_se_vacia_la_papelera() {
+    let sb = Sandbox::new();
+    let c = cleaner_for(&sb).with_elevation(Arc::new(FakeElevation(true)));
+    let item = BinItem {
+        id: OsString::from("no-existe-en-ninguna-parte"),
+        name: OsString::from("x.txt"),
+        original_parent: sb.long("origen"),
+        time_deleted: 0,
+        size: 1,
+        data_id: None,
+        meta_id: None,
+        no_identity: false,
+    };
+    let cancel = Arc::new(AtomicBool::new(false));
+    let rep = c.empty_bin(std::slice::from_ref(&item), 1, false, &cancel, None, None);
+    assert_eq!((rep.requested, rep.purged, rep.still_there), (1, 0, 1));
+    assert!(rep.failed, "elevado: no se pudo vaciar");
+    // La simulación (dry) sigue contando lo que se purgaría.
+    let dry = c.empty_bin(std::slice::from_ref(&item), 1, true, &cancel, None, None);
+    assert_eq!((dry.purged, dry.failed), (1, false));
+    // Y `execute` con un plan que SOLO vacía la Papelera: rechazado entero.
+    let mut plan = Plan::default();
+    plan.bin = Some(crate::plan::BinPlan {
+        items: vec![item],
+        bytes_hint: 1,
+    });
+    assert_eq!(
+        exec(&c, &plan, false, false, None).err(),
+        Some(ExecError::Elevated)
+    );
+}
+
+/// E1: la consulta REAL del token da `false` en un proceso normal (el CI y esta máquina no están elevados); si lo estuviera,
+/// la prueba se salta con un mensaje (no se puede asegurar nada). Nunca es `None` en un proceso normal.
+#[test]
+fn el_proceso_de_pruebas_no_esta_elevado_segun_el_token() {
+    let state = crate::sys::process_elevation();
+    assert!(state.is_some(), "el token del proceso se puede consultar");
+    if state == Some(true) {
+        eprintln!("el proceso de pruebas está ELEVADO: la prueba se salta");
+        return;
+    }
+    assert_eq!(state, Some(false));
+    // Falla cerrado: sin poder consultar el token, elevado.
+    assert!(elevated_from(None));
+    assert!(elevated_from(Some(true)) && !elevated_from(Some(false)));
+    assert!(!RealElevation.is_elevated());
+    assert!(!Cleaner::new(Roots::default()).is_elevated());
+}
+
+/// A-B2: una medida incompleta es siempre "NO intacto" en el juicio R6 (`dir_untouched`), y `remeasure` la distingue de una
+/// completa por cualquiera de sus causas: una subcarpeta que no se puede listar, un hijo que desaparece entre el listado y la
+/// apertura, o la cancelación a mitad del recorrido.
+#[test]
+fn una_medida_incompleta_nunca_demuestra_que_nada_cambio() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake);
+    sb.write("Docs/carpeta/f0.bin", 5_000);
+    sb.write("Docs/carpeta/f1.bin", 5_000);
+    sb.write("Docs/carpeta/sub/dentro.bin", 5_000);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/carpeta"), c.protection());
+    let plan = approve(&c, &b);
+    let it = &plan.items[0];
+    let mut st = StatsSnapshot::default();
+    let Prepared::Ready(mut p) = c.prepare_recycle(it, &mut st) else {
+        panic!("debía prepararse");
+    };
+    c.fresh_size(it, &mut p, &mut st, &cancel()).unwrap();
+    assert!(p.snapshot.is_some());
+    assert!(c.dir_untouched(it, &p, &cancel()), "sin cambios: intacto");
+    // (1) Una subcarpeta que no se puede listar.
+    {
+        let _lock = lock_dir(&sb.path("Docs/carpeta/sub"));
+        assert!(matches!(c.remeasure(it, &cancel()), Remeasure::Incomplete));
+        assert!(!c.dir_untouched(it, &p, &cancel()));
+    }
+    assert!(
+        c.dir_untouched(it, &p, &cancel()),
+        "soltada, vuelve a valer"
+    );
+    // (2) Un hijo que desaparece justo antes de abrirlo (ya listado).
+    {
+        let victim = sb.path("Docs/carpeta/f1.bin");
+        let _hook = crate::engine::test_hooks::install(sb.long("Docs"), move |q| {
+            if q.ends_with("f1.bin") {
+                let _ = fs::remove_file(&victim);
+            }
+        });
+        assert!(matches!(c.remeasure(it, &cancel()), Remeasure::Incomplete));
+    }
+    // (3) Cancelada a mitad: no se acepta como medida.
+    let cancelled = Arc::new(AtomicBool::new(true));
+    assert!(matches!(c.remeasure(it, &cancelled), Remeasure::Cancelled));
+    assert!(!c.dir_untouched(it, &p, &cancelled));
 }
 
 /// Un error de la shell o de COM al enviar consta en el registro local (con su HRESULT) y en el informe (para el resumen);
@@ -3020,9 +3838,9 @@ fn take_op_es_una_funcion_pura_con_las_reglas_del_reparto() {
 }
 
 /// M-C con la shell REAL, de forma segura: un archivo disperso de miles de GiB lógicos (no ocupa nada) entre dos pequeños.
-/// Lo que ocupa de verdad (su tamaño lógico) manda sobre la estimación: no se envía (`NoRoom`) y los pequeños llegan
-/// bien a la Papelera, cada uno en su operación. La shell real nunca ve el enorme, así que no puede eliminarlo ni
-/// expulsar nada ajeno.
+/// Lo que ocupa de verdad (su tamaño lógico) manda sobre la estimación: como pasa de lo aprobado no se envía ("cambió desde la
+/// confirmación", A-B1; antes `NoRoom`: ambas lo dejan sin tocar) y los pequeños llegan bien a la Papelera, cada uno en su
+/// operación. La shell real nunca ve el enorme, así que no puede eliminarlo ni expulsar nada ajeno.
 #[test]
 fn con_la_shell_real_un_disperso_enorme_no_se_envia_y_los_pequenos_llegan_bien() {
     let _lock = bin_lock();
@@ -3077,7 +3895,7 @@ fn con_la_shell_real_un_disperso_enorme_no_se_envia_y_los_pequenos_llegan_bien()
     assert_eq!(st("tres.txt"), ItemStatus::Recycled);
     assert_eq!(
         st("enorme.bin"),
-        ItemStatus::NotRecycled(RecycleFail::NoRoom)
+        ItemStatus::Root(crate::engine::RootStatus::Changed)
     );
     assert!(sb.path("Docs/enorme.bin").exists(), "el enorme no se tocó");
     assert!(!rep.recycle_stopped && rep.deleted_unexpectedly == 0);
@@ -3100,7 +3918,7 @@ fn pending(identity: FileIdentity, path: &Path, held_path: &Path) -> Pending {
         links: 1,
         held: sys::open_path_for_rename(held_path).unwrap(),
         size: 0,
-        measured: true,
+        last: None,
         snapshot: None,
     }
 }
@@ -3231,11 +4049,13 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
         judge(&p, Some(&nada), shell, false, false).0,
         ItemStatus::Unverified
     );
-    // Errores: en uso, sin permiso y otros, con su HRESULT.
+    // Errores: en uso, sin permiso y otros, con su HRESULT. A-M1: un fallo solo es "no se envió" si el objeto aprobado sigue
+    // intacto en su sitio (aquí lo está: la guarda y el nombre son el mismo archivo).
+    let fallo = pending(id, &bin_file, &bin_file);
     let hr_win32 = |c: u32| (0x8007_0000u32 | c) as i32;
     assert_eq!(
         judge(
-            &p,
+            &fallo,
             Some(&ev(hr_win32(32), BinState::Deleted)),
             shell,
             false,
@@ -3246,7 +4066,7 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
     );
     assert_eq!(
         judge(
-            &p,
+            &fallo,
             Some(&ev(hr_win32(5), BinState::Deleted)),
             shell,
             false,
@@ -3257,7 +4077,7 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
     );
     assert_eq!(
         judge(
-            &p,
+            &fallo,
             Some(&ev(0x8000_4005u32 as i32, BinState::Deleted)),
             shell,
             false,
@@ -3270,7 +4090,7 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
     // de uso compartido.
     assert_eq!(
         judge(
-            &p,
+            &fallo,
             Some(&ev(0x8027_0021u32 as i32, BinState::Deleted)),
             shell,
             false,
@@ -3281,7 +4101,7 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
     );
     assert_eq!(
         judge(
-            &p,
+            &fallo,
             Some(&ev(0x8027_0027u32 as i32, BinState::Deleted)),
             shell,
             false,
@@ -3289,6 +4109,56 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
         )
         .0,
         ItemStatus::NotRecycled(RecycleFail::InUse)
+    );
+    // A-M1: un fallo con el objeto YA eliminado (guarda pendiente de borrar) no es "no se envió": es un borrado. Y si ni
+    // siquiera se puede decir dónde está el objeto, no se afirma nada.
+    let borrado_con_fallo = {
+        let f = sb.write("Docs/borrado-con-fallo.bin", 100);
+        let fid = sys::meta(&sys::open_for_query(&f).unwrap())
+            .unwrap()
+            .identity;
+        let pf = pending(fid, &f, &f);
+        sys::delete_legacy_for_test(&f).unwrap();
+        pf
+    };
+    assert_eq!(
+        judge(
+            &borrado_con_fallo,
+            Some(&ev(hr_win32(5), BinState::Deleted)),
+            shell,
+            false,
+            false
+        )
+        .0,
+        ItemStatus::DeletedUnexpectedly
+    );
+    assert_eq!(
+        judge(
+            &borrado_con_fallo,
+            Some(&ev(0, BinState::Deleted)),
+            shell,
+            false,
+            false
+        )
+        .0,
+        ItemStatus::DeletedUnexpectedly
+    );
+    assert_eq!(
+        judge(&borrado_con_fallo, None, shell, false, true).0,
+        ItemStatus::DeletedUnexpectedly,
+        "sin aviso pero la guarda dice que se eliminó"
+    );
+    assert_eq!(
+        judge(
+            &p,
+            Some(&ev(hr_win32(5), BinState::Deleted)),
+            shell,
+            false,
+            false
+        )
+        .0,
+        ItemStatus::Unverified,
+        "el nombre aprobado no existe y la guarda no está pendiente: no se puede afirmar nada"
     );
     // Sin aviso: sigue en su sitio -> no procesado (o abortado, si la shell dijo que abortó); ya no está -> no verificado.
     let here = pending(id, &bin_file, &bin_file);
@@ -3315,13 +4185,13 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
 fn el_informe_dice_que_desaparecio_de_verdad_para_actualizar_el_arbol() {
     let sb = Sandbox::new();
     let c = cleaner_for(&sb);
-    sb.write_aged("Temp/viejo.tmp", 20_000, 72);
-    sb.write_aged("Temp/dir-entero/a.tmp", 10_000, 72);
-    sb.set_age(&sb.path("Temp/dir-entero"), 72);
+    sb.write_aged("Temp/viejo.tmp", 20_000, 240);
+    sb.write_aged("Temp/dir-entero/a.tmp", 10_000, 240);
+    sb.set_age(&sb.path("Temp/dir-entero"), 240);
     // Una carpeta vieja con un archivo viejo y otro nuevo: se queda y solo encoge.
-    sb.write_aged("Temp/dir-parcial/viejo.tmp", 30_000, 72);
+    sb.write_aged("Temp/dir-parcial/viejo.tmp", 30_000, 240);
     sb.write("Temp/dir-parcial/nuevo.tmp", 5_000);
-    sb.set_age(&sb.path("Temp/dir-parcial"), 72);
+    sb.set_age(&sb.path("Temp/dir-parcial"), 240);
     let mut b = Basket::new();
     b.set_category(CategoryId::UserTemp, true);
     let plan = approve(&c, &b);
@@ -3343,10 +4213,144 @@ fn el_informe_dice_que_desaparecio_de_verdad_para_actualizar_el_arbol() {
     // Y en simulación no se anota nada (no desapareció nada).
     let sb2 = Sandbox::new();
     let c2 = cleaner_for(&sb2);
-    sb2.write_aged("Temp/x.tmp", 1_000, 72);
+    sb2.write_aged("Temp/x.tmp", 1_000, 240);
     let mut b2 = Basket::new();
     b2.set_category(CategoryId::UserTemp, true);
     let rep2 = exec(&c2, &approve(&c2, &b2), true, false, None).unwrap();
     assert!(rep2.items[0].removed.is_empty());
     assert!(sb2.path("Temp/x.tmp").exists());
+}
+
+// ---- El flujo REAL de la Papelera con el endurecimiento de DLL del ejecutable --------------------------------------------
+
+/// PROCESO HIJO de `con_la_shell_real_el_flujo_funciona_con_el_endurecimiento_de_dlls_activo` (solo actúa con su variable;
+/// el resto del tiempo es una prueba ignorada que no hace nada). Hace, con el endurecimiento ACTIVO desde antes de tocar COM:
+/// enviar a la Papelera un archivo y una carpeta con hijos (propios, uuid en el nombre) por el camino de producción
+/// (`Cleaner::execute`: guarda, receptor, verificación por identidad), comprobar `Recycled`, y vaciarlos por el camino real de
+/// "vaciar" (con el alcance limitado a lo propio), comprobando que ya no están. Cualquier fallo es un pánico: código de salida
+/// distinto de 0.
+#[test]
+#[ignore = "proceso hijo de la prueba del endurecimiento de DLL"]
+fn hijo_endurecimiento_dll() {
+    let Ok(uuid) = std::env::var("TESELA_HARDEN_CHILD_UUID") else {
+        return;
+    };
+    // 1. El endurecimiento, ANTES de tocar COM.
+    assert!(
+        crate::testutil::restrict_dll_search_to_system32(),
+        "SetDefaultDllDirectories falló"
+    );
+    eprintln!("ENDURECIDO: SetDefaultDllDirectories(SYSTEM32) activo");
+
+    let sb = Sandbox::with_uuid(&uuid);
+    let c = cleaner_for(&sb);
+    sb.write("Docs/archivo.txt", 5_000);
+    sb.write("Docs/carpeta/a.txt", 3_000);
+    sb.write("Docs/carpeta/sub/b.txt", 3_000);
+    // 2. A la Papelera, por el camino de producción.
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/archivo.txt"), c.protection());
+    b.add_path(sb.long("Docs/carpeta"), c.protection());
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 2, "{:?}", plan.rejected);
+    let rep = exec(&c, &plan, false, false, None).expect("la ejecución real");
+    for it in &rep.items {
+        eprintln!(
+            "ENDURECIDO: {:?} -> {:?}",
+            it.path.file_name().unwrap(),
+            it.status
+        );
+        assert_eq!(it.status, ItemStatus::Recycled, "{:?}", it.path);
+    }
+    assert_eq!(
+        (
+            rep.deleted_unexpectedly,
+            rep.recycled_other,
+            rep.unverified,
+            rep.not_recycled
+        ),
+        (0, 0, 0, 0)
+    );
+    assert!(rep.shell_error.is_none(), "{:?}", rep.shell_error);
+    assert!(!sb.path("Docs/archivo.txt").exists() && !sb.path("Docs/carpeta").exists());
+    let mine = || -> Vec<BinItem> {
+        recycle::list_bin()
+            .expect("lista la Papelera")
+            .into_iter()
+            .filter(|i| is_mine(i, &sb.uuid()))
+            .collect()
+    };
+    assert_eq!(mine().len(), 2, "llegaron a la Papelera: {:?}", mine());
+    // 3. Vaciar (solo lo propio), por el camino real.
+    let mut v = Basket::new();
+    v.set_empty_bin(true);
+    let plan = c.approve(&v, &ApproveOptions::default(), &cancel());
+    assert_eq!(plan.bin.as_ref().expect("plan de vaciar").items.len(), 2);
+    let rep = exec(&c, &plan, false, false, None).expect("vaciar de verdad");
+    let bin = rep.bin.expect("informe de la Papelera");
+    eprintln!("ENDURECIDO: vaciar -> {bin:?}");
+    assert_eq!((bin.requested, bin.purged, bin.still_there), (2, 2, 0));
+    assert_eq!((bin.changed, bin.replaced, bin.unverifiable), (0, 0, 0));
+    assert!(!bin.failed);
+    assert!(mine().is_empty(), "ya no queda nada propio en la Papelera");
+    eprintln!("ENDURECIDO: todo coincide");
+}
+
+/// El flujo REAL de la Papelera (COM, `IFileOperation`, el receptor, la guarda y la purga con su receptor) funciona con
+/// `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)` activo, que es lo que hace `tesela.exe` al arrancar: se lanza un
+/// proceso hijo (el patrón de la prueba de `FOF_WANTNUKEWARNING`) que lo activa antes de tocar COM y hace el recorrido con
+/// elementos propios. El padre comprueba el código de salida (con plazo) y que la Papelera del usuario es la de antes; su
+/// `BinGuard` limpia lo del hijo si algo falla.
+#[test]
+fn con_la_shell_real_el_flujo_funciona_con_el_endurecimiento_de_dlls_activo() {
+    use std::io::Read;
+    let _lock = bin_lock();
+    if !bin_usable() {
+        return;
+    }
+    let before = ids();
+    let uuid = uuid::Uuid::new_v4().to_string();
+    let _guard = BinGuard { uuid: uuid.clone() };
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "exec::tests::hijo_endurecimiento_dll",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env("TESELA_HARDEN_CHILD_UUID", &uuid)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("lanza el proceso hijo de la prueba");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+    let status = loop {
+        if let Some(st) = child.try_wait().unwrap() {
+            break Some(st);
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    let (mut out, mut err) = (String::new(), String::new());
+    if let Some(mut o) = child.stdout.take() {
+        let _ = o.read_to_string(&mut out);
+    }
+    if let Some(mut e) = child.stderr.take() {
+        let _ = e.read_to_string(&mut err);
+    }
+    for l in err
+        .lines()
+        .chain(out.lines())
+        .filter(|l| l.starts_with("ENDURECIDO"))
+    {
+        eprintln!("hijo: {l}");
+    }
+    let st = status.expect("el hijo no terminó en 90 s (se colgó)");
+    assert!(st.success(), "el hijo falló ({st:?}):\n{err}\n{out}");
+    assert_eq!(ids(), before, "la Papelera del usuario es la de antes");
 }
