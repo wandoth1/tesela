@@ -245,6 +245,19 @@ pub struct Cleaner {
 /// Filtro del alcance de "vaciar la Papelera".
 pub type BinFilter = Arc<dyn Fn(&BinItem) -> bool + Send + Sync>;
 
+/// La elevación por defecto: la consulta real al token del proceso (y, en las pruebas, "no elevado": ver
+/// `exec::NotElevated`).
+fn default_elevation() -> Arc<dyn crate::exec::Elevation> {
+    #[cfg(test)]
+    {
+        Arc::new(crate::exec::NotElevated)
+    }
+    #[cfg(not(test))]
+    {
+        Arc::new(crate::exec::RealElevation)
+    }
+}
+
 /// Hilos del pool de borrado por defecto: `min(8, 2 × núcleos)` (el borrado es sobre todo E/S del sistema de archivos).
 pub fn default_threads() -> usize {
     let cores = std::thread::available_parallelism().map_or(2, std::num::NonZero::get);
@@ -274,7 +287,7 @@ impl Cleaner {
             bin_filter: None,
             data_dir,
             shell: Arc::new(crate::exec::RealShell),
-            elevation: Arc::new(crate::exec::RealElevation),
+            elevation: default_elevation(),
         }
     }
 
