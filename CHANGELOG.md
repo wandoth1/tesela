@@ -4,6 +4,27 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). L
 (`major.minor.patch`, sin sufijos: un MSI no admite `-rc1`). `release.yml` copia la sección de la versión de la etiqueta a las
 notas de la GitHub Release, así que cada versión necesita su sección aquí.
 
+## [0.1.3] - 2026-10-16
+
+Tercera ronda de correcciones de la limpieza, tras una nueva auditoría externa de la 0.1.2. **Actualiza si usas la
+limpieza.** El análisis del disco no cambia. Sigue **sin firmar**: Windows SmartScreen puede avisar.
+
+### Seguridad
+
+- Cada carpeta se envía a la Papelera **sola**, medida y comprobada contra el espacio disponible justo antes. Los
+  archivos se siguen enviando juntos, pero Windows vuelve a comprobar el tamaño de cada uno en el último momento y, si
+  creció, no se envía.
+- Si Windows devuelve un error en mitad de un envío, el resto de ese lote ya no se procesa.
+- El registro de una limpieza en curso ya no se puede borrar mientras está abierto (por ejemplo, desde otra limpieza
+  simultánea).
+- Cuando Tesela no puede comprobar qué pasó con una carpeta, lo dice así ("no se pudo comprobar") en lugar de darla por
+  eliminada; y cuando una carpeta cambió mientras Windows la procesaba, dice que se eliminó o cambió, sin afirmar más
+  de lo que sabe. En los dos casos el envío se detiene.
+
+### Cambiado
+
+- Una cesta con muchas carpetas tarda algo más en enviarse a la Papelera (cada carpeta va en su propia operación).
+
 ## [0.1.2] - 2026-10-16
 
 Segunda ronda de correcciones tras dos auditorías externas de la 0.1.1 (una de la limpieza y otra del resto).

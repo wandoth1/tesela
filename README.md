@@ -5,7 +5,7 @@ Analizador visual de espacio en disco para Windows, escrito en Rust: rápido, li
 
 [Instalación](#instalación) · [Code signing policy](CODE_SIGNING.md) · [Seguridad](SECURITY.md) · [Cambios](CHANGELOG.md)
 
-> 🚧 **Estado: MVP v0.1 publicado (v0.1.2).** Hechos el modelo, el escáner, la interfaz (mapa, lista, detalles, escaneo con progreso real, es/en, claro/oscuro) y **la limpieza**: Recomendaciones, cesta, confirmación y resumen, con borrado seguro por handle y envío a la Papelera. **Esta versión borra de verdad** (solo lo que apruebas en la confirmación): pruébala primero con `--dry-run` o con `--demo`. Instalador MSI por usuario en [Releases](https://github.com/wandoth1/tesela/releases) (ver [Instalación](#instalación)); usa la **v0.1.2** o posterior: la 0.1.0 y la 0.1.1 tenían fallos en la limpieza. Conclusiones de la fase 0 en [docs/fase-0-conclusiones.md](docs/fase-0-conclusiones.md); el plan completo está en [docs/PLAN.md](docs/PLAN.md).
+> 🚧 **Estado: MVP v0.1 publicado (v0.1.3).** Hechos el modelo, el escáner, la interfaz (mapa, lista, detalles, escaneo con progreso real, es/en, claro/oscuro) y **la limpieza**: Recomendaciones, cesta, confirmación y resumen, con borrado seguro por handle y envío a la Papelera. **Esta versión borra de verdad** (solo lo que apruebas en la confirmación): pruébala primero con `--dry-run` o con `--demo`. Instalador MSI por usuario en [Releases](https://github.com/wandoth1/tesela/releases) (ver [Instalación](#instalación)); usa la **v0.1.3** o posterior: las versiones anteriores tenían fallos en la limpieza. Conclusiones de la fase 0 en [docs/fase-0-conclusiones.md](docs/fase-0-conclusiones.md); el plan completo está en [docs/PLAN.md](docs/PLAN.md).
 
 ## Qué será
 
