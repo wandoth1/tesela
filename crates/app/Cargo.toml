@@ -37,5 +37,9 @@ winresource.workspace = true
 [dev-dependencies]
 uuid.workspace = true
 
+[dev-dependencies.windows-sys]
+workspace = true
+features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging"]
+
 [lints]
 workspace = true

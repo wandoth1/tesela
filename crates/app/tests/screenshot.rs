@@ -21,9 +21,13 @@ impl Drop for Temp {
 }
 
 fn run(args: &[&Path]) -> (i32, Vec<u8>) {
+    // Defensa en profundidad: el perfil del proceso apunta a una carpeta temporal propia, nunca al del usuario.
+    let profile = Temp::new();
     let out = Command::new(env!("CARGO_BIN_EXE_tesela"))
         .args(["--demo", "--screenshot"])
         .args(args)
+        .env("APPDATA", &profile.0)
+        .env("LOCALAPPDATA", &profile.0)
         .output()
         .expect("lanza tesela");
     (out.status.code().unwrap_or(-1), out.stdout)
