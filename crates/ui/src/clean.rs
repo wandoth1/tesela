@@ -864,6 +864,10 @@ fn confirm_groups(ui: &mut Ui, env: &mut Env, c: &mut Confirm, plan: &Plan) {
         if c.show_all {
             for r in plan.rejected.iter().take(30) {
                 let why = match r.reason {
+                    RejectReason::Incomplete(k) => env.tr.ta(
+                        "reject-incomplete",
+                        args!["n" => k, "count" => env.tr.int(k)],
+                    ),
                     RejectReason::Missing => env.tr.t("reject-missing"),
                     RejectReason::AccessDenied => env.tr.t("reject-denied"),
                     RejectReason::NoIdentity => env.tr.t("reject-identity"),
@@ -1337,5 +1341,133 @@ mod log_gate_tests {
         assert!(!abort_without_log(false, false, true), "demostración");
         assert!(!abort_without_log(true, false, false), "con registro");
         assert!(!abort_without_log(true, true, true));
+    }
+}
+
+#[cfg(test)]
+mod summary_tests {
+    //! m-5: las líneas del resumen que dependen de contadores del informe (el doble conteo de "no movidos", los sustituidos al
+    //! vaciar y lo que explican los demás contadores de la Papelera).
+    use super::{Summary, VolumeCtx, summary_lines};
+    use crate::app::{Action, Env, Settings};
+    use crate::args;
+    use crate::i18n::{Lang, Tr};
+    use crate::icons::IconCache;
+    use crate::theme::Palette;
+    use tesela_cleaner::Report;
+    use tesela_cleaner::exec::BinReport;
+
+    fn lines(lang: Lang, report: Report) -> (Tr, Vec<(String, bool)>) {
+        let tr = Tr::new(lang);
+        let mut icons = IconCache::default();
+        let backend: std::sync::Arc<dyn tesela_cleaner::Backend> = std::sync::Arc::new(
+            crate::demo_backend::DemoBackend::new(std::time::Duration::ZERO),
+        );
+        let mut actions: Vec<Action> = Vec::new();
+        let env = Env {
+            tr: &tr,
+            pal: Palette::of(false),
+            icons: &mut icons,
+            demo: false,
+            animate: false,
+            drives: &[],
+            drives_loading: false,
+            settings: Settings::default(),
+            backend: &backend,
+            dry_run: false,
+            history: &[],
+            modal_open: false,
+            actions: &mut actions,
+        };
+        let s = Summary {
+            report,
+            vol: VolumeCtx::default(),
+            blocked: Vec::new(),
+        };
+        let v = summary_lines(&env, &s);
+        (tr, v)
+    }
+
+    fn text(tr: &Tr, key: &str, n: u64) -> String {
+        tr.ta(key, args!["n" => n, "count" => tr.int(n)])
+    }
+
+    fn has(v: &[(String, bool)], t: &str) -> bool {
+        v.iter().any(|(x, _)| x == t)
+    }
+
+    #[test]
+    fn los_no_movidos_no_cuentan_dos_veces_los_que_no_tuvieron_sitio_ni_los_del_corte() {
+        for lang in [Lang::Es, Lang::En] {
+            // 5 sin mover: 1 sin sitio, 1 del corte de seguridad y 3 de Windows (en uso, sin permiso...).
+            let (tr, v) = lines(
+                lang,
+                Report {
+                    not_recycled: 5,
+                    no_room: 1,
+                    stopped_items: 1,
+                    ..Report::default()
+                },
+            );
+            assert!(has(&v, &text(&tr, "sum-not-recycled", 3)), "{v:?}");
+            assert!(!has(&v, &text(&tr, "sum-not-recycled", 5)), "{v:?}");
+            assert!(has(&v, &text(&tr, "sum-no-room", 1)), "{v:?}");
+            // Solo sin sitio y del corte: no hay línea de "no movidos".
+            let (tr, v) = lines(
+                lang,
+                Report {
+                    not_recycled: 3,
+                    no_room: 2,
+                    stopped_items: 1,
+                    ..Report::default()
+                },
+            );
+            for n in 1..=3 {
+                assert!(!has(&v, &text(&tr, "sum-not-recycled", n)), "{n}: {v:?}");
+            }
+            // Los contadores nunca se salen de rango (resta saturada).
+            let (tr, v) = lines(
+                lang,
+                Report {
+                    not_recycled: 1,
+                    no_room: 2,
+                    stopped_items: 2,
+                    ..Report::default()
+                },
+            );
+            assert!(!has(&v, &text(&tr, "sum-not-recycled", 1)), "{v:?}");
+        }
+    }
+
+    #[test]
+    fn los_sustituidos_al_vaciar_tienen_su_linea_y_explican_lo_que_queda() {
+        for lang in [Lang::Es, Lang::En] {
+            let bin = |still_there, changed, unverifiable, replaced| Report {
+                bin: Some(BinReport {
+                    requested: 10,
+                    still_there,
+                    changed,
+                    unverifiable,
+                    replaced,
+                    ..BinReport::default()
+                }),
+                ..Report::default()
+            };
+            // 6 siguen: 1 cambiado, 1 sin verificar y 2 sustituidos explican 4; quedan 2 "no se pudo vaciar".
+            let (tr, v) = lines(lang, bin(6, 1, 1, 2));
+            assert!(has(&v, &text(&tr, "sum-bin-replaced", 2)), "{v:?}");
+            assert!(has(&v, &text(&tr, "sum-bin-changed", 1)), "{v:?}");
+            assert!(has(&v, &text(&tr, "sum-bin-unverifiable", 1)), "{v:?}");
+            assert!(has(&v, &text(&tr, "sum-bin-failed", 2)), "{v:?}");
+            // Si lo explican todo, no hay línea de "no se pudo vaciar del todo".
+            let (tr, v) = lines(lang, bin(4, 1, 1, 2));
+            assert!(has(&v, &text(&tr, "sum-bin-replaced", 2)), "{v:?}");
+            for n in 1..=4 {
+                assert!(!has(&v, &text(&tr, "sum-bin-failed", n)), "{n}: {v:?}");
+            }
+            // Sin sustituidos no hay línea de sustituidos.
+            let (tr, v) = lines(lang, bin(0, 0, 0, 0));
+            assert!(!has(&v, &text(&tr, "sum-bin-replaced", 1)), "{v:?}");
+        }
     }
 }

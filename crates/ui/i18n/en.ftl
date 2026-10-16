@@ -331,6 +331,11 @@ reject-reparse-ancestor = a link on its path
 reject-outside-local = the temporary folder is redirected outside the user's local data
 reject-protected = protected
 reject-untouchable = cannot be deleted as a whole
+reject-incomplete =
+    { $n ->
+        [one] could not be read in full: { $count } item without access
+       *[other] could not be read in full: { $count } items without access
+    }
 reject-other = system error
 reject-not-local = not a local drive
 confirm-see-all = See the full list
@@ -454,8 +459,8 @@ sum-unverified =
     }
 sum-not-recycled =
     { $n ->
-        [one] { $count } item was not moved to the Recycle Bin (in use, no permission or another Windows reason) and was checked to be still intact in place.
-       *[other] { $count } items were not moved to the Recycle Bin (in use, no permission or another Windows reason) and were checked to be still intact in place.
+        [one] { $count } item was not moved to the Recycle Bin (in use, no permission or another Windows reason): it was not touched.
+       *[other] { $count } items were not moved to the Recycle Bin (in use, no permission or another Windows reason): they were not touched.
     }
 sum-skipped-unfit =
     { $n ->

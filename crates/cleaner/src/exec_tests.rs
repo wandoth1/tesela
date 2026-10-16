@@ -3473,6 +3473,65 @@ fn una_subcarpeta_que_no_se_puede_listar_al_volver_a_medir_impide_el_envio() {
     assert_eq!(fake.names(), vec![vec!["carpeta"]]);
 }
 
+/// m-2: una cancelación a MITAD de la nueva medida (no solo ya activa al empezar) no es una medida: `remeasure` devuelve
+/// `Cancelled` aunque el recorrido terminara con la raíz abierta y sin errores contados.
+#[test]
+fn una_cancelacion_a_mitad_de_la_nueva_medida_no_es_una_medida() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake);
+    for i in 0..6 {
+        sb.write(&format!("Docs/carpeta/f{i}.bin"), 1_000);
+    }
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/carpeta"), c.protection());
+    let plan = approve(&c, &b);
+    let it = &plan.items[0];
+    let flag = cancel();
+    let flag2 = flag.clone();
+    let _hook = crate::engine::test_hooks::install(sb.long("Docs"), move |q| {
+        if q.ends_with("f2.bin") {
+            flag2.store(true, Ordering::SeqCst);
+        }
+    });
+    assert!(matches!(c.remeasure(it, &flag), Remeasure::Cancelled));
+    assert!(flag.load(Ordering::SeqCst));
+}
+
+/// m-4: una carpeta de la que ya al APROBAR no se puede leer algo (una subcarpeta bloqueada) con destino Papelera se rechaza
+/// con su propio motivo ("no se pudo leer entera"), en vez de aprobarse con una estimación corta y fallar SIEMPRE al
+/// ejecutar con "cambió desde la confirmación". Lo que va a borrado definitivo por reglas no se ve afectado.
+#[test]
+fn una_carpeta_que_no_se_puede_leer_entera_no_se_aprueba_para_la_papelera() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    sb.write("Docs/carpeta/f0.bin", 5_000);
+    sb.write("Docs/carpeta/sub/dentro.bin", 5_000);
+    let basket = || {
+        let mut b = Basket::new();
+        b.add_path(sb.long("Docs/carpeta"), c.protection());
+        b
+    };
+    let lock = lock_dir(&sb.path("Docs/carpeta/sub"));
+    let plan = approve(&c, &basket());
+    assert!(plan.items.is_empty(), "no se aprueba");
+    assert_eq!(plan.rejected.len(), 1, "{:?}", plan.rejected);
+    assert!(matches!(
+        plan.rejected[0].reason,
+        RejectReason::Incomplete(n) if n >= 1
+    ));
+    assert!(plan.rejected[0].path.ends_with("carpeta"));
+    // Sin el bloqueo, se aprueba y se envía con normalidad.
+    drop(lock);
+    let plan = approve(&c, &basket());
+    assert_eq!(plan.items.len(), 1, "{:?}", plan.rejected);
+    assert_eq!(
+        exec(&c, &plan, false, false, None).unwrap().items[0].status,
+        ItemStatus::Recycled
+    );
+}
+
 /// A-B2: una medida incompleta es siempre "NO intacto" en el juicio R6 (`dir_untouched`), y `remeasure` la distingue de una
 /// completa por cualquiera de sus causas: una subcarpeta que no se puede listar, un hijo que desaparece entre el listado y la
 /// apertura, o la cancelación a mitad del recorrido.

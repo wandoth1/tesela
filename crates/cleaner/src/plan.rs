@@ -79,6 +79,10 @@ pub enum RejectReason {
     NotLocal,
     /// Protegida: denegada, intocable o carpeta conocida.
     Protected(Verdict),
+    /// Se iba a la Papelera pero la medida de la carpeta no se pudo hacer ENTERA (subcarpetas sin permiso o en uso, entradas
+    /// que cambiaron durante el recorrido...): con el tamaño real desconocido no se puede repartir ni comprobar que cabe, y
+    /// al ejecutar fallaría siempre. Lleva cuántas entradas no se pudieron leer. No se ofrece.
+    Incomplete(u64),
     /// Cualquier otro error del sistema.
     Other(u32),
 }
@@ -396,6 +400,16 @@ impl Cleaner {
             let est = u.stats.snapshot();
             let id = plan.items.len();
             let dest = c.destination;
+            // m-4: lo que va a la Papelera exige una medida COMPLETA (ver `StatsSnapshot::is_complete`).
+            if dest == Destination::Recycle && !est.is_complete() {
+                plan.rejected.push(Rejected {
+                    path: c.canon,
+                    reason: RejectReason::Incomplete(
+                        est.in_use + est.denied + est.other_errors + est.changed + est.gone,
+                    ),
+                });
+                continue;
+            }
             let size = est.bytes.max(est.logical).max(est.shared_bytes);
             let fit = if dest == Destination::Recycle {
                 self.shell.fit(&c.canon, size)

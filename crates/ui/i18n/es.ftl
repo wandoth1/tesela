@@ -332,6 +332,11 @@ reject-reparse-ancestor = un enlace en su ruta
 reject-outside-local = la carpeta temporal está redirigida fuera de los datos locales del usuario
 reject-protected = protegido
 reject-untouchable = no se puede borrar entero
+reject-incomplete =
+    { $n ->
+        [one] no se pudo leer entera: { $count } elemento sin acceso
+       *[other] no se pudo leer entera: { $count } elementos sin acceso
+    }
 reject-other = error del sistema
 reject-not-local = no es una unidad local
 confirm-see-all = Ver la lista completa
@@ -455,8 +460,8 @@ sum-unverified =
     }
 sum-not-recycled =
     { $n ->
-        [one] { $count } elemento no se movió a la Papelera (en uso, sin permiso u otro motivo de Windows) y se comprobó que sigue intacto en su sitio.
-       *[other] { $count } elementos no se movieron a la Papelera (en uso, sin permiso u otro motivo de Windows) y se comprobó que siguen intactos en su sitio.
+        [one] { $count } elemento no se movió a la Papelera (en uso, sin permiso u otro motivo de Windows): no se tocó.
+       *[other] { $count } elementos no se movieron a la Papelera (en uso, sin permiso u otro motivo de Windows): no se tocaron.
     }
 sum-skipped-unfit =
     { $n ->
