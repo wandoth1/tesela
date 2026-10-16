@@ -328,6 +328,16 @@ impl ScanScreen {
             .clamp(0.0, 1.0)
     }
 
+    /// ¿Se está ejecutando una limpieza lanzada desde esta pantalla ("Limpiar lo seguro")?
+    pub(crate) fn clean_running(&self) -> bool {
+        self.flow.is_running()
+    }
+
+    /// Anota que se intentó cerrar la ventana durante la ejecución (la ventana de progreso lo explica).
+    pub(crate) fn block_close(&mut self) {
+        self.flow.block_close();
+    }
+
     /// Avanza el escaneo: si terminó, devuelve el resultado.
     pub fn poll(&mut self, ctx: &egui::Context) -> Option<ScanOutcome> {
         let started = self.started;

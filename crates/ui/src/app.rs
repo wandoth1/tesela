@@ -558,6 +558,11 @@ impl TeselaUi {
                 e.flow.block_close();
                 true
             }
+            // "Limpiar lo seguro" también se lanza desde la pantalla de escaneo.
+            Screen::Scan(s) if s.clean_running() => {
+                s.block_close();
+                true
+            }
             _ => false,
         }
     }

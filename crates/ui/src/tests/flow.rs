@@ -409,3 +409,37 @@ fn cerrar_la_ventana_durante_la_ejecucion_se_bloquea_y_lo_explica() {
     // Cancelar sigue disponible.
     assert!(!h.get_by_label("Cancelar").accesskit_node().is_disabled());
 }
+
+/// M-B: "Limpiar lo seguro" también se ejecuta desde la pantalla de escaneo: cerrar la ventana se bloquea igual.
+#[test]
+fn cerrar_la_ventana_durante_la_ejecucion_desde_el_escaneo_tambien_se_bloquea() {
+    let be = std::sync::Arc::new(crate::demo_backend::DemoBackend::new(
+        std::time::Duration::from_millis(1500),
+    ));
+    let mut o = opts(StartScreen::Scan(1.0));
+    o.backend = Some(crate::app::BackendRef(be));
+    let mut h = harness(o);
+    assert_eq!(h.state().ui().screen_name(), "scan");
+    // Sin ejecutar nada el cierre pasa.
+    assert!(!h.state_mut().ui_mut().guard_close(true));
+    assert!(
+        wait_contains(&mut h, "Limpiar lo seguro"),
+        "falta el botón en el escaneo"
+    );
+    h.get_by_label_contains("Limpiar lo seguro").click();
+    assert!(wait_contains(&mut h, "Revisa antes de limpiar"));
+    assert!(
+        !h.state_mut().ui_mut().guard_close(true),
+        "con la confirmación abierta aún no se ejecuta nada"
+    );
+    h.get_by_label_contains("Liberar ").click();
+    assert!(wait_contains(&mut h, "Limpiando"));
+    assert_eq!(h.state().ui().screen_name(), "scan");
+    assert!(h.state_mut().ui_mut().guard_close(true));
+    h.run_steps(3);
+    assert!(
+        h.query_all_by_label_contains("Espera a que termine o cancela")
+            .count()
+            >= 1
+    );
+}
