@@ -171,8 +171,9 @@ for ($i = 0; $i -lt $tries; $i++) {
     if ((ZLeaks $bytes 'USERNAME') -ge 1) { $hits++ }
 }
 Check "UTF-16 con vecinos al azar: $hits de $tries" ($hits -ge ($tries * 0.95))
-# Un valor ASCII pegado a una letra latina acentuada sigue sin contar en UTF-8 y UTF-16. (En un binario Latin-1 SI cuenta: la
-# decodificacion UTF-8 de ese byte suelto es U+FFFD, que no es letra; falso positivo del lado seguro.)
+# Un valor ASCII con una letra latina acentuada DETRAS no cuenta en las decodificaciones nativas UTF-8 y UTF-16. Es lo unico que
+# garantiza el limite: con la acentuada delante, o detras en Latin-1, SIGUE contando (falso positivo del lado seguro; ver el
+# comentario de leak-scan.ps1), y por eso aqui solo se prueba UTF-8 y UTF-16.
 $zAcc = 'Zorbaq' + $eAcute
 foreach ($pair in @(@('UTF-8', (Pad ($utf8nb.GetBytes($zAcc)))), @('UTF-16', (Pad ([System.Text.Encoding]::Unicode.GetBytes($zAcc)))))) {
     Check "ASCII pegado a una letra acentuada no cuenta ($($pair[0]))" ((ZLeaks $pair[1] 'USERNAME') -eq 0)

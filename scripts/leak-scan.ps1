@@ -51,9 +51,13 @@ function Find-LocalValueLeaks {
             # la division), NO \p{L}\p{N}: los mismos limites se aplican a las decodificaciones UTF-16 de binarios, donde el
             # vecino de una cadena es un par de bytes cualquiera, y casi cualquier par es una letra Unicode (CJK, hangul...):
             # con \p{L} se perdia casi toda la deteccion en UTF-16 (99,9 % antes frente a 5,9 %, medido con vecinos al azar).
-            # Con esta clase, un valor ASCII con una letra latina acentuada pegada ("Ren" en "Renee" con acento, en Latin-1 o
-            # UTF-8) deja de ser una fuga falsa. Coste aceptado y del lado seguro: un valor pegado a una letra cirilica, griega o CJK
-            # SI cuenta como fuga (falso positivo), y los limites no ayudan en los NUL, los signos ni U+FFFD.
+            # Lo que garantiza: un valor ASCII al que sigue una letra latina acentuada (p. ej. "Ren" seguido de una e acentuada) NO es una
+            # fuga falsa en las decodificaciones UTF-8 y UTF-16 NATIVAS del texto. Todo lo demas sigue siendo un falso positivo,
+            # del lado seguro (ya lo era antes): la letra acentuada ANTES del valor en Latin-1 y en UTF-8, la acentuada DESPUES
+            # del valor en Latin-1 (la decodificacion UTF-8 de ese byte suelto es U+FFFD, que no es letra), y en general
+            # cualquier valor que la decodificacion Latin-1 de un UTF-8 valido deja junto a un byte de continuacion (como el
+            # segundo byte de una e acentuada en UTF-8, que en Latin-1 es un signo). Tambien cuentan como fuga un valor pegado
+            # a una letra cirilica, griega o CJK y los vecinos que son NUL, signos o U+FFFD.
             $pattern = if ($k -eq 'USERNAME' -or $k -eq 'COMPUTERNAME') { '(?<![0-9A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u024F])' + [regex]::Escape($form) + '(?![0-9A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u024F])' } else { [regex]::Escape($form) }
             # CultureInvariant: la comparacion sin distinguir mayusculas no puede depender de la cultura del usuario (la
             # i turca, p. ej.).
