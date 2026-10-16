@@ -16,7 +16,7 @@ spec.loader.exec_module(extract_ico)
 SECTION_RVA = 0x1000
 
 
-def make_rsrc(resources):
+def make_rsrc(resources, cycle_type=None):
     """Sección .rsrc con `resources` = {tipo: {id: bytes}} (un solo idioma). Devuelve los bytes de la sección."""
     buf = bytearray()
     patches = []  # (posición del campo RVA de la entrada de datos, posición del blob)
@@ -32,17 +32,22 @@ def make_rsrc(resources):
         struct.pack_into("<I", buf, dir_off + 16 + 8 * index + 4, target)
 
     blobs = []
+    cycle_dirs = []
     root = new_dir([(t, None) for t in sorted(resources)])
     for ti, t in enumerate(sorted(resources)):
         tdir = new_dir([(i, None) for i in sorted(resources[t])])
         set_entry(root, ti, 0x80000000 | tdir)
         for ni, n in enumerate(sorted(resources[t])):
             ndir = new_dir([(1033, None)])
+            if t == cycle_type:
+                cycle_dirs.append(ndir)
             set_entry(tdir, ni, 0x80000000 | ndir)
             data_entry = len(buf)
             buf.extend(struct.pack("<IIII", 0, len(resources[t][n]), 0, 0))
             set_entry(ndir, 0, data_entry)
             blobs.append((data_entry, resources[t][n]))
+    for ndir in cycle_dirs:
+        set_entry(ndir, 0, 0x80000000 | ndir)  # ciclo: el directorio de idioma se apunta a si mismo
     for data_entry, blob in blobs:
         struct.pack_into("<I", buf, data_entry, SECTION_RVA + len(buf))
         buf.extend(blob)
@@ -50,8 +55,8 @@ def make_rsrc(resources):
     return bytes(buf)
 
 
-def make_pe(resources, pe32=False):
-    sec = make_rsrc(resources) if resources is not None else b"\0" * 16
+def make_pe(resources, pe32=False, cycle_type=None):
+    sec = make_rsrc(resources, cycle_type) if resources is not None else b"\0" * 16
     sec = sec.ljust(0x200 * ((len(sec) + 0x1FF) // 0x200), b"\0")
     dd_off = 96 if pe32 else 112
     opt_size = dd_off + 16 * 8
@@ -110,6 +115,23 @@ class ExtractIcoTests(unittest.TestCase):
         pe = make_pe({3: {1: a}, 14: {1: group_icon([(16, 16, 1, a), (32, 32, 2, a)])}})
         with self.assertRaises(extract_ico.PeError):
             extract_ico.extract(pe)
+
+    def test_un_arbol_de_recursos_con_un_ciclo_falla_sin_colgarse(self):
+        a = b"x" * 8
+        for cycle in (14, 3):
+            pe = make_pe({3: {1: a}, 14: {1: group_icon([(16, 16, 1, a)])}}, cycle_type=cycle)
+            with self.assertRaises(extract_ico.PeError):
+                extract_ico.extract(pe)
+
+    def test_un_pe_truncado_solo_da_pe_error(self):
+        a = b"y" * 40
+        pe = make_pe({3: {1: a}, 14: {1: group_icon([(16, 16, 1, a)])}})
+        self.assertTrue(extract_ico.extract(pe))
+        # Hasta el ultimo byte de datos (lo que sigue es relleno de alineacion de la seccion).
+        end = 0x400 + len(make_rsrc({3: {1: a}, 14: {1: group_icon([(16, 16, 1, a)])}})) - 4
+        for cut in list(range(0, end, 17)) + [end - 1]:
+            with self.assertRaises(extract_ico.PeError, msg=f"corte en {cut}"):
+                extract_ico.extract(pe[:cut])
 
     def test_no_es_un_pe(self):
         with self.assertRaises(extract_ico.PeError):

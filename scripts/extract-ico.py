@@ -19,6 +19,8 @@ import sys
 
 RT_ICON = 3
 RT_GROUP_ICON = 14
+# Un arbol de recursos real tiene 3 niveles (tipo, nombre, idioma): mas de 4 es un PE manipulado (o con un ciclo).
+MAX_DEPTH = 4
 
 
 class PeError(Exception):
@@ -31,7 +33,18 @@ def _check(data, off, n):
 
 
 def extract(data):
-    """Devuelve los bytes de un .ico con el primer grupo de iconos de los recursos del PE `data`."""
+    """Devuelve los bytes de un .ico con el primer grupo de iconos de los recursos del PE `data`.
+
+    Un PE truncado o manipulado (lecturas fuera de rango, ciclos en el arbol de recursos) da `PeError`, nunca un bucle
+    infinito ni otra excepcion.
+    """
+    try:
+        return _extract(data)
+    except struct.error as e:
+        raise PeError(f"PE truncado o no valido: {e}") from e
+
+
+def _extract(data):
     if len(data) < 0x40 or data[:2] != b"MZ":
         raise PeError("no es un PE (falta la firma MZ)")
     pe = struct.unpack_from("<I", data, 0x3C)[0]
@@ -82,8 +95,15 @@ def extract(data):
 
     def leaf(target):
         """Baja por los directorios (nombre, idioma) hasta los bytes del primer recurso."""
+        seen = set()
+        depth = 1  # el directorio raiz (tipos) ya es el nivel 1
         while target & 0x80000000:
-            sub = entries(base + (target & 0x7FFFFFFF))
+            off = target & 0x7FFFFFFF
+            depth += 1
+            if off in seen or depth > MAX_DEPTH or off >= res_size:
+                raise PeError("arbol de recursos con un ciclo o demasiado profundo")
+            seen.add(off)
+            sub = entries(base + off)
             if not sub:
                 raise PeError("directorio de recursos vacio")
             target = sub[0][1]
@@ -98,6 +118,8 @@ def extract(data):
         raise PeError("el ejecutable no lleva icono (RT_GROUP_ICON / RT_ICON)")
     group = leaf(types[RT_GROUP_ICON])
     icons = {}
+    if not types[RT_ICON] & 0x80000000 or not types[RT_GROUP_ICON] & 0x80000000:
+        raise PeError("los recursos de icono no son directorios")
     for ident, target in entries(base + (types[RT_ICON] & 0x7FFFFFFF)):
         icons[ident] = leaf(target)
     reserved, kind, count = struct.unpack_from("<HHH", group, 0)
