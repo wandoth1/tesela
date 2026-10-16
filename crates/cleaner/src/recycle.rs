@@ -753,10 +753,32 @@ pub(crate) mod bintest {
         }
     }
 
-    /// ¿Se puede probar la Papelera en este equipo? Hace falta que la shell la liste y que el volumen del `%TEMP%` la tenga
-    /// activada (en un runner de CI sin Papelera, o con "no mover los archivos a la Papelera", las pruebas que envían a
-    /// ella se saltan en vez de fallar por algo del entorno).
+    /// Variable de entorno que activa las pruebas con la Papelera REAL del usuario (`TESELA_REAL_RECYCLE_TESTS=1`).
+    pub const REAL_RECYCLE_VAR: &str = "TESELA_REAL_RECYCLE_TESTS";
+
+    /// ¿Están activadas las pruebas con la Papelera real? Solo con `TESELA_REAL_RECYCLE_TESTS=1`. El CI de GitHub
+    /// (`windows-latest`, Windows Server sin sesión interactiva) no tiene una Papelera de usuario fiable: la shell la
+    /// lista pero no devuelve lo que se envía a ella, y esas pruebas fallaban allí por el entorno, no por el código. En
+    /// un equipo de escritorio la suite completa se lanza con la variable (ver el README). Sin ella, estas pruebas se
+    /// saltan con un mensaje; las aserciones NO se han debilitado.
+    pub fn real_recycle_enabled() -> bool {
+        if std::env::var(REAL_RECYCLE_VAR).is_ok_and(|v| v == "1") {
+            return true;
+        }
+        eprintln!(
+            "Papelera real desactivada: defina {REAL_RECYCLE_VAR}=1 para ejecutar esta prueba"
+        );
+        false
+    }
+
+    /// ¿Se puede probar la Papelera en este equipo? Hace falta que estén activadas las pruebas con la Papelera real
+    /// ([`real_recycle_enabled`]), que la shell la liste y que el volumen del `%TEMP%` la tenga activada (en un equipo
+    /// sin Papelera, o con "no mover los archivos a la Papelera", las pruebas que envían a ella se saltan en vez de
+    /// fallar por algo del entorno).
     pub fn bin_usable() -> bool {
+        if !real_recycle_enabled() {
+            return false;
+        }
         if list_bin().is_err() {
             eprintln!("Papelera no disponible en este equipo: la prueba se salta");
             return false;

@@ -10,7 +10,7 @@ use super::*;
 use crate::basket::Basket;
 use crate::plan::{ApproveOptions, Cleaner, Fit, RejectReason, UnfitReason};
 use crate::protect::{ProtectionRoots, Verdict};
-use crate::recycle::bintest::{BinGuard, bin_usable, ids, is_mine};
+use crate::recycle::bintest::{BinGuard, bin_usable, ids, is_mine, real_recycle_enabled};
 use crate::roots::Roots;
 use crate::rules::{CategoryId, Risk};
 use crate::testutil::{Sandbox, bin_lock};
@@ -166,7 +166,9 @@ fn dry_run_no_toca_nada_y_registra_las_identidades_aprobadas() {
     let logdir = sb.path("logs");
     let log = Arc::new(LogWriter::create(&logdir, true).unwrap());
     let before = (sb.count_entries("Temp"), sb.count_entries("Docs"));
-    let ids_before = ids();
+    // Lo único que depende de la Papelera real es "ni la Papelera": va detrás de TESELA_REAL_RECYCLE_TESTS=1. Todo lo
+    // demás de la prueba corre siempre.
+    let ids_before = real_recycle_enabled().then(ids);
     let rep = exec(&c, &plan, true, false, Some(log.clone())).unwrap();
     assert!(rep.dry_run);
     assert_eq!(
@@ -174,7 +176,9 @@ fn dry_run_no_toca_nada_y_registra_las_identidades_aprobadas() {
         before,
         "--dry-run no toca nada"
     );
-    assert_eq!(ids(), ids_before, "ni la Papelera");
+    if let Some(ids_before) = ids_before {
+        assert_eq!(ids(), ids_before, "ni la Papelera");
+    }
     assert!(
         rep.freed_now.is_none(),
         "en simulación no se mide liberación"

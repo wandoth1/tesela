@@ -78,6 +78,7 @@ handle y Papelera), la interfaz (`tesela-ui`) y el ejecutable (`tesela-app`, bin
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace            # los tests solo tocan carpetas de prueba en %TEMP%\tesela-test-<uuid> (y, para la Papelera, solo elementos propios)
+$env:TESELA_REAL_RECYCLE_TESTS = '1'; cargo test --workspace   # la suite COMPLETA: añade las pruebas con la Papelera REAL (ver abajo)
 cargo deny check
 cargo run --release -p tesela-scan -- <ruta> --top 20   # solo lectura; opciones en la cabecera de crates/tesela-scan/src/main.rs
 cargo run -p tesela-app -- --demo                        # la interfaz con datos sintéticos
@@ -90,6 +91,12 @@ Capturas del README (solo del modo `--demo`; ver [docs/img/README.md](docs/img/R
 `cargo run -p tesela-app --features capture -- --demo --size 1280x800 --screenshot salida.png` (no pisa un archivo que ya exista: `--overwrite` lo reemplaza). La feature `capture` no forma
 parte del ejecutable que se publica. `--bench-hover <segundos>` mueve un puntero sintético sobre el mapa e imprime el coste de
 CPU por frame y `--idle-memory <segundos>` deja la ventana en reposo e imprime el private working set del proceso (sin PowerShell, CIM ni WMI); los resultados de cualquier medición se quedan fuera del repositorio.
+
+**Pruebas con la Papelera real.** Las pruebas del `cleaner` que envían elementos a la Papelera del usuario (y comprueban que
+Windows los entrega con su identidad) solo corren con `TESELA_REAL_RECYCLE_TESTS=1`; sin ella se saltan con un mensaje. El CI de
+GitHub (un Windows Server sin sesión interactiva) no tiene una Papelera de usuario fiable y fallaban allí por el entorno, no por
+el código. Lanza la suite completa con la variable en tu equipo antes de tocar `crates/cleaner`. Solo usan elementos propios
+(filtrados por el uuid de la prueba) y no vacían la Papelera.
 
 El release enlaza el runtime de C de forma estática (`.cargo/config.toml`, repetido en `build-release.ps1` porque
 `CARGO_ENCODED_RUSTFLAGS` tiene prioridad sobre el config): el `.exe` no importa `VCRUNTIME*.dll`, `MSVCP*.dll` ni
