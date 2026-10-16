@@ -828,3 +828,58 @@ fn medicion_a_m3_borrado_de_100000_archivos_con_registro() {
         assert_eq!(s.files, 100_000);
     }
 }
+
+/// m-1: una medida solo es COMPLETA con cero errores: cada campo de error a 1 (y todos los demás a 0) la invalida, y lo que
+/// no es un error (reciente, protegido, reparse, nube, compartidos, tamaños, huella) no. Sin tocar el sistema de archivos.
+#[test]
+fn una_medida_solo_es_completa_con_cero_errores() {
+    assert!(StatsSnapshot::default().is_complete());
+    type Set = fn(&mut StatsSnapshot);
+    let errors: [(&str, Set); 6] = [
+        ("in_use", |s| s.in_use = 1),
+        ("denied", |s| s.denied = 1),
+        ("changed", |s| s.changed = 1),
+        ("other_errors", |s| s.other_errors = 1),
+        ("not_empty", |s| s.not_empty = 1),
+        ("gone", |s| s.gone = 1),
+    ];
+    for (name, set) in errors {
+        let mut s = StatsSnapshot::default();
+        set(&mut s);
+        assert!(!s.is_complete(), "{name} debe invalidar la medida");
+    }
+    let fine: [(&str, Set); 9] = [
+        ("young", |s| s.young = 1),
+        ("protected", |s| s.protected = 1),
+        ("reparse", |s| s.reparse = 1),
+        ("cloud", |s| s.cloud = 1),
+        ("shared_files", |s| s.shared_files = 1),
+        ("bytes", |s| s.bytes = 1),
+        ("files", |s| s.files = 1),
+        ("fp_sum", |s| s.fp_sum = 1),
+        ("fp_xor", |s| s.fp_xor = 1),
+    ];
+    for (name, set) in fine {
+        let mut s = StatsSnapshot::default();
+        set(&mut s);
+        assert!(s.is_complete(), "{name} no es un error");
+    }
+}
+
+/// s-3: sustituir una entrada por otra del mismo tamaño cambia `fp_sum` Y `fp_xor`, cada uno POR SEPARADO (con que solo
+/// cambiara una de las dos mitades de la huella, un mutante que anulara la otra pasaría desapercibido).
+#[test]
+fn la_suma_y_el_xor_de_la_huella_cambian_cada_uno_por_separado() {
+    let sb = Sandbox::new();
+    sb.write("R/a.bin", 3_000);
+    sb.write("R/b.bin", 3_000);
+    let measure = || run_contents(&sb, "R", Mode::Measure, 0, no_protection(), 2).stats();
+    let before = measure();
+    fs::remove_file(sb.path("R/a.bin")).unwrap();
+    sb.write("R/a.bin", 3_000);
+    let after = measure();
+    assert_ne!(before.fp_sum, after.fp_sum, "la suma cambia");
+    assert_ne!(before.fp_xor, after.fp_xor, "el xor cambia");
+    assert_ne!(before.fp_sum, 0);
+    assert_ne!(before.fp_xor, 0);
+}

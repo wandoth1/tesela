@@ -2347,6 +2347,30 @@ mod tests {
         assert_eq!(ids(), before);
     }
 
+    /// m-6: `remove_orphan_meta_at` no toca el `$I` de un elemento cuyo `$R` sigue existiendo (un SUSTITUIDO: la shell dio la
+    /// purga por buena pero el objeto aprobado no se eliminó) ni mientras el `$R` esté solo "pendiente de borrar" (la guarda
+    /// abierta): solo con el `$R` realmente inexistente. (El bucle de la purga tampoco la llama para los sustituidos.)
+    #[test]
+    fn el_i_de_un_sustituido_no_se_toca_mientras_su_r_exista() {
+        let sb = Sandbox::new();
+        let a = synthetic_bin_item(&sb, "AAAA01", b"datos a");
+        let data = PathBuf::from(&a.id);
+        let meta = meta_sibling(&data).unwrap();
+        assert!(!remove_orphan_meta_at(&a, &data, &meta), "el `$R` existe");
+        assert!(meta.exists());
+        // Con la guarda abierta y el `$R` borrado por la shell, el nombre sigue visible como pendiente de borrar: tampoco.
+        let guard = open_bin_guard(&a).unwrap();
+        crate::sys::delete_legacy_for_test(&data).unwrap();
+        assert!(
+            data.exists(),
+            "pendiente de borrar: el nombre sigue visible"
+        );
+        assert!(!remove_orphan_meta_at(&a, &data, &meta));
+        assert!(meta.exists(), "el `$I` sigue ahí");
+        drop(guard);
+        assert!(!data.exists(), "soltada la guarda desaparece de verdad");
+    }
+
     /// A-M4 (sin COM): un elemento que es una CARPETA llega a `PreDeleteItem` hijo a hijo (medido con la shell real). Los hijos
     /// de un `$R` aprobado pasan por la identidad de su `$R` y de su `$I`; si el `$R` se sustituye, también se vetan. Al
     /// ENVIAR no vale: solo la ruta exacta.

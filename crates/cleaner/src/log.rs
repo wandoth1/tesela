@@ -87,6 +87,15 @@ fn unix_now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+#[cfg(test)]
+type AfterPrune = std::cell::RefCell<Option<Box<dyn Fn(&Path)>>>;
+
+#[cfg(test)]
+thread_local! {
+    /// SOLO PRUEBAS (s-4): se ejecuta en `create_at` tras podar y antes de comprobar que el registro existe.
+    static TEST_AFTER_PRUNE: AfterPrune = const { std::cell::RefCell::new(None) };
+}
+
 /// El archivo del registro. En las pruebas puede fallar a propósito después de `left` bytes.
 enum LogFile {
     Real(File),
@@ -266,6 +275,13 @@ impl LogWriter {
             if dry_run { KEEP_SIM_LOGS } else { KEEP_LOGS },
             Some(&w.path),
         );
+        // SOLO PRUEBAS: la ventana entre la poda y la comprobación (un gancho puede borrar el registro justo aquí).
+        #[cfg(test)]
+        TEST_AFTER_PRUNE.with(|h| {
+            if let Some(f) = &*h.borrow() {
+                f(&w.path);
+            }
+        });
         // Y se comprueba: un registro que no existe no es un registro, y sin registro no se limpia.
         if !w.path.is_file() {
             return Err(std::io::Error::other(
@@ -506,22 +522,19 @@ fn log_key(name: &str) -> (u64, u64, u64, String) {
         let rest = name.strip_prefix("limpieza-")?;
         let (date, rest) = rest.split_once('-')?;
         let time = rest.get(..6)?;
-        let rest = &rest[6..];
+        let rest = rest[6..].strip_suffix(".jsonl").unwrap_or(&rest[6..]);
         if date.len() != 8
             || !date.bytes().all(|b| b.is_ascii_digit())
             || !time.bytes().all(|b| b.is_ascii_digit())
         {
             return None;
         }
+        // Lo que sigue a la hora son trozos separados por `-`: la secuencia (solo cifras) y `simulacion`, en cualquier orden
+        // (los nombres de la v0.1.1 son `...-simulacion-1`, los nuevos `...-001-simulacion`).
         let seq = rest
-            .strip_prefix('-')
-            .map(|r| {
-                r.bytes()
-                    .take_while(u8::is_ascii_digit)
-                    .collect::<Vec<u8>>()
-            })
-            .filter(|d| !d.is_empty())
-            .and_then(|d| String::from_utf8(d).ok()?.parse::<u64>().ok())
+            .split('-')
+            .find(|t| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit()))
+            .and_then(|t| t.parse::<u64>().ok())
             .unwrap_or(0);
         Some((date.parse::<u64>().ok()?, time.parse::<u64>().ok()?, seq))
     })();
@@ -920,6 +933,75 @@ mod tests {
         for kept in (6..=34).map(|n| format!("limpieza-{stamp}-{n}.jsonl")) {
             assert!(dir.join(&kept).exists(), "{kept} es de los más recientes");
         }
+    }
+
+    /// s-2: los nombres de SIMULACIÓN de la versión anterior con colisión (`...-simulacion-1.jsonl`) se leen con su secuencia y
+    /// ordenan después del base y por su orden numérico, y se podan así.
+    #[test]
+    fn los_nombres_de_simulacion_de_la_version_anterior_ordenan_por_su_secuencia() {
+        let k = |n: &str| log_key(n);
+        let ordered = [
+            "limpieza-20260101-120000-simulacion.jsonl",
+            "limpieza-20260101-120000-simulacion-1.jsonl",
+            "limpieza-20260101-120000-simulacion-2.jsonl",
+            "limpieza-20260101-120000-simulacion-10.jsonl",
+            "limpieza-20260101-120000-011-simulacion.jsonl",
+            "limpieza-20260101-120001-001-simulacion.jsonl",
+        ];
+        for w in ordered.windows(2) {
+            assert!(k(w[0]) < k(w[1]), "{} < {}", w[0], w[1]);
+        }
+        assert_eq!(k("limpieza-20260101-120000-simulacion-10.jsonl").2, 10);
+        assert_eq!(k("limpieza-20260101-120000-011-simulacion.jsonl").2, 11);
+        assert_eq!(k("limpieza-20260101-120000-simulacion.jsonl").2, 0);
+        // Podadas: 15 simulaciones antiguas del mismo segundo (base, -1... -14) y una nueva; sobreviven las más recientes.
+        let sb = Sandbox::new();
+        let dir = sb.mkdir("Tesela");
+        const NOW: u64 = 1_767_268_800;
+        fs::write(dir.join("limpieza-20260101-120000-simulacion.jsonl"), b"{}").unwrap();
+        for n in 1..=14 {
+            fs::write(
+                dir.join(format!("limpieza-20260101-120000-simulacion-{n}.jsonl")),
+                b"{}",
+            )
+            .unwrap();
+        }
+        let w = LogWriter::create_at(&dir, true, LogFile::Real, NOW).unwrap();
+        assert!(w.path().is_file());
+        let sims: Vec<String> = fs::read_dir(&dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(sims.len(), KEEP_SIM_LOGS, "{sims:?}");
+        // Se conservan -6 ... -14 (9) y el nuevo; el base y -1 ... -5 son los más antiguos.
+        for gone in std::iter::once("limpieza-20260101-120000-simulacion.jsonl".to_string())
+            .chain((1..=5).map(|n| format!("limpieza-20260101-120000-simulacion-{n}.jsonl")))
+        {
+            assert!(!dir.join(&gone).exists(), "{gone}");
+        }
+        assert!(
+            dir.join("limpieza-20260101-120000-simulacion-14.jsonl")
+                .exists()
+        );
+    }
+
+    /// s-4: si el registro recién creado desaparece entre la poda y la comprobación, `create` falla (sin registro no se
+    /// limpia) en vez de devolver un escritor desvinculado con `ok()` a `true`.
+    #[test]
+    fn un_registro_que_desaparece_tras_crearlo_es_un_error() {
+        let sb = Sandbox::new();
+        let dir = sb.mkdir("Tesela");
+        TEST_AFTER_PRUNE.with(|h| {
+            *h.borrow_mut() = Some(Box::new(|p: &Path| {
+                let _ = fs::remove_file(p);
+            }));
+        });
+        let r = LogWriter::create(&dir, false);
+        TEST_AFTER_PRUNE.with(|h| *h.borrow_mut() = None);
+        assert!(r.is_err(), "sin registro no se limpia");
+        // Sin el gancho, el mismo `create` funciona.
+        assert!(LogWriter::create(&dir, false).unwrap().path().is_file());
     }
 
     /// A-M2: `prune` nunca borra el registro activo, aunque ordene el primero, y le reserva una plaza.

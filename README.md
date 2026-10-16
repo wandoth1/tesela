@@ -82,7 +82,7 @@ el acceso del menú Inicio, la entrada de Aplicaciones instaladas y los valores 
 **No se borran tus datos** (el instalador no los conoce; son tuyos):
 
 - `%APPDATA%\Tesela\config.toml`: tus ajustes (tema e idioma).
-- `%LOCALAPPDATA%\Tesela`: `history.jsonl` (resúmenes de limpiezas) y los registros `limpieza-<fecha>.jsonl` (ruta e identidad
+- `%LOCALAPPDATA%\Tesela`: `history.jsonl` (resúmenes de limpiezas) y los registros `limpieza-<fecha>-<hora>-<n>.jsonl` (ruta e identidad
   de cada elemento limpiado).
 
 Para borrarlos a mano tras desinstalar (o antes, con *Ajustes > Borrar el historial*, que quita el historial y los registros):
@@ -93,7 +93,7 @@ Remove-Item -Recurse -Force "$env:APPDATA\Tesela", "$env:LOCALAPPDATA\Tesela"
 
 ## Uso
 
-Windows 10 22H2 y Windows 11. La aplicación **solo borra o mueve lo que aprobaste en la confirmación** (nunca al escanear, ni en `--demo`). Guarda sus ajustes en `%APPDATA%\Tesela\config.toml` y en `%LOCALAPPDATA%\Tesela` un registro de cada limpieza (`limpieza-<fecha>.jsonl`: ruta, identidad y resultado de cada elemento; solo en tu equipo, se conservan los últimos 30 y se vuelca a disco tras cada elemento) y `history.jsonl` con resúmenes (fecha, unidad y cifras, sin rutas). "Borrar el historial", en Ajustes, borra ambos.
+Windows 10 22H2 y Windows 11. La aplicación **solo borra o mueve lo que aprobaste en la confirmación** (nunca al escanear, ni en `--demo`). Guarda sus ajustes en `%APPDATA%\Tesela\config.toml` y en `%LOCALAPPDATA%\Tesela` un registro de cada limpieza (`limpieza-<fecha>-<hora>-<n>.jsonl`: ruta, identidad y resultado de cada elemento; solo en tu equipo, se conservan los últimos 30 y se vuelca al sistema tras cada resultado) y `history.jsonl` con resúmenes (fecha, unidad y cifras, sin rutas). "Borrar el historial", en Ajustes, borra ambos.
 
 ```powershell
 tesela                      # pantalla de inicio: elige una unidad o "Analizar una carpeta…"
