@@ -71,7 +71,7 @@ scan-stop = Stop and view what we have
 scan-progress-label = Scan progress: { $pct }%
 scan-known-title = Places where temporary files usually pile up
 scan-known-sum = Up to { $size } in low-risk candidates (checked when cleaning)
-scan-known-note = This is an estimate, not a guaranteed minimum, and it only counts low-risk items: temporary files older than a day and browser caches. We show you what is deleted and what goes to the Recycle Bin before cleaning, and the real figure is measured when cleaning.
+scan-known-note = This is an estimate, not a guaranteed minimum, and it only counts low-risk items: temporary files older than 7 days and browser caches. We show you what is deleted and what goes to the Recycle Bin before cleaning, and the real figure is measured when cleaning.
 scan-known-excluded = Downloads and the Recycle Bin are your own data: they are shown, but not counted in the figure above.
 risk-review-tag = Review
 scan-clean-safe = Clean the safe stuff
@@ -256,8 +256,8 @@ recs-view = View
 recs-empty-bin = Empty
 rule-browsers-name = Browser caches
 rule-browsers-why = Copies of web pages that the browser downloads again. Your passwords, history and sessions are not touched.
-rule-user-temp-why = Temporary files older than a day. Recent ones are left in case an installer is using them.
-rule-windows-temp-why = Windows temporary files older than a day. Recent ones are left in case an installer is using them.
+rule-user-temp-why = Temporary files not modified in the last week (older than 7 days). Recent ones are left in case an installer is using them.
+rule-windows-temp-why = Windows temporary files not modified in the last week (older than 7 days). Recent ones are left in case an installer is using them.
 rule-downloads-why = Your own files: look at them and choose. Nothing here is checked automatically.
 rule-recycle-bin-why = Emptying it is permanent. Only what is in it when you confirm is emptied; what arrives later is not touched.
 
@@ -406,8 +406,8 @@ sum-reparse =
     }
 sum-young =
     { $n ->
-        [one] { $count } recent file was left alone (less than a day old).
-       *[other] { $count } recent files were left alone (less than a day old).
+        [one] { $count } recent file was left alone (less than 7 days old).
+       *[other] { $count } recent files were left alone (less than 7 days old).
     }
 sum-shared =
     { $n ->

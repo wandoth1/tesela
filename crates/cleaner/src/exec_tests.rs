@@ -101,8 +101,8 @@ fn approve(c: &Cleaner, b: &Basket) -> Plan {
 fn las_categorias_borran_sus_raices_con_su_regla_y_respetan_el_perfil() {
     let sb = Sandbox::new();
     let c = cleaner_for(&sb);
-    // Temporales: solo lo de más de 24 h.
-    sb.write_aged("Temp/viejo.tmp", 30_000, 72);
+    // Temporales: solo lo de más de 7 días (las fechas de la prueba son de hace 10 días).
+    sb.write_aged("Temp/viejo.tmp", 30_000, 240);
     sb.write("Temp/nuevo.tmp", 30_000);
     // Caché de Chrome: sin límite de antigüedad. El perfil (historial, cookies...) NO es caché.
     sb.write(
@@ -178,12 +178,32 @@ fn las_categorias_borran_sus_raices_con_su_regla_y_respetan_el_perfil() {
     );
 }
 
+/// E2: los temporales se limpian a partir de los 7 días (la referencia de `cleanmgr`: "no modificados en la última
+/// semana"), no a las 24 h: uno de hace 6 días se deja y se cuenta como reciente; uno de hace 8, se borra.
+#[test]
+fn los_temporales_de_menos_de_7_dias_se_dejan() {
+    let sb = Sandbox::new();
+    let c = cleaner_for(&sb);
+    sb.write_aged("Temp/de-6-dias.tmp", 10_000, 6 * 24);
+    sb.write_aged("Temp/de-8-dias.tmp", 10_000, 8 * 24);
+    sb.write_aged("Temp/de-1-dia.tmp", 10_000, 25);
+    let mut b = Basket::new();
+    b.set_category(CategoryId::UserTemp, true);
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items[0].estimate.files, 1, "solo el de 8 días");
+    assert_eq!(plan.items[0].estimate.young, 2);
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    assert!(!sb.path("Temp/de-8-dias.tmp").exists());
+    assert!(sb.path("Temp/de-6-dias.tmp").exists() && sb.path("Temp/de-1-dia.tmp").exists());
+    assert_eq!(rep.totals.young, 2);
+}
+
 #[test]
 fn dry_run_no_toca_nada_y_registra_las_identidades_aprobadas() {
     let sb = Sandbox::new();
     let c = cleaner_for(&sb);
-    sb.write_aged("Temp/a.tmp", 10_000, 72);
-    sb.write_aged("Temp/sub/b.tmp", 10_000, 72);
+    sb.write_aged("Temp/a.tmp", 10_000, 240);
+    sb.write_aged("Temp/sub/b.tmp", 10_000, 240);
     sb.write("Docs/mio.doc", 5_000);
     let mut b = Basket::new();
     b.set_category(CategoryId::UserTemp, true);
@@ -1071,7 +1091,7 @@ fn contenido_de_una_carpeta_conocida_son_sus_hijos_y_no_ella() {
 fn cancelar_antes_de_empezar_no_toca_nada() {
     let sb = Sandbox::new();
     let c = cleaner_for(&sb);
-    sb.write_aged("Temp/a.tmp", 10_000, 72);
+    sb.write_aged("Temp/a.tmp", 10_000, 240);
     sb.write("Docs/b.txt", 1_000);
     let mut b = Basket::new();
     b.set_category(CategoryId::UserTemp, true);
@@ -1113,7 +1133,7 @@ fn las_rutas_de_red_a_un_disco_local_no_esquivan_la_proteccion() {
     let sb = Sandbox::new();
     let c = cleaner_for(&sb);
     let f = sb.write("Docs/privado.txt", 2_000);
-    sb.write_aged("Temp/viejo.tmp", 3_000, 72);
+    sb.write_aged("Temp/viejo.tmp", 3_000, 240);
     for host in ["localhost", "127.0.0.1"] {
         // Ya al AÑADIR a la cesta: rechazada con su motivo (no solo al aprobar).
         let net = via_share(host, &sb.long("Docs/privado.txt"));
@@ -1183,11 +1203,11 @@ fn la_propia_aplicacion_dentro_del_temporal_nunca_se_borra() {
         },
     };
     let c = Cleaner::new(roots).with_threads(4);
-    sb.write_aged("Temp/app/tesela.exe", 5_000, 72);
-    sb.write_aged("Temp/app/datos/config.toml", 1_000, 72);
-    sb.write_aged("Temp/viejo.tmp", 3_000, 72);
-    sb.write_aged("Temp/otra/x.tmp", 3_000, 72);
-    sb.set_age(&sb.path("Temp/otra"), 72);
+    sb.write_aged("Temp/app/tesela.exe", 5_000, 240);
+    sb.write_aged("Temp/app/datos/config.toml", 1_000, 240);
+    sb.write_aged("Temp/viejo.tmp", 3_000, 240);
+    sb.write_aged("Temp/otra/x.tmp", 3_000, 240);
+    sb.set_age(&sb.path("Temp/otra"), 240);
     let mut b = Basket::new();
     b.set_category(CategoryId::UserTemp, true);
     let plan = approve(&c, &b);
@@ -1233,10 +1253,10 @@ fn roots_with_raw(sb: &Sandbox, local: PathBuf, user_temp: Option<PathBuf>) -> R
 #[test]
 fn un_junction_por_encima_de_user_data_no_vuelve_borrable_lo_protegido() {
     let mut sb = Sandbox::new();
-    sb.write_aged("Prot/UD/ShaderCache/s.bin", 4_000, 72);
-    sb.write_aged("Prot/UD/GrShaderCache/g.bin", 3_000, 72);
-    sb.write_aged("Prot/UD/Default/Cache/c.bin", 2_000, 72);
-    sb.write_aged("Prot/UD/Cookies", 100, 72);
+    sb.write_aged("Prot/UD/ShaderCache/s.bin", 4_000, 240);
+    sb.write_aged("Prot/UD/GrShaderCache/g.bin", 3_000, 240);
+    sb.write_aged("Prot/UD/Default/Cache/c.bin", 2_000, 240);
+    sb.write_aged("Prot/UD/Cookies", 100, 240);
     sb.mkdir("Local/Google/Chrome");
     sb.junction("Local/Google/Chrome/User Data", "Prot/UD");
     let roots = roots_with_raw(&sb, sb.path("Local"), None);
@@ -1303,7 +1323,7 @@ fn un_junction_por_encima_de_user_data_no_vuelve_borrable_lo_protegido() {
 #[test]
 fn una_raiz_descartada_deja_su_motivo_visible_y_en_el_registro() {
     let mut sb = Sandbox::new();
-    sb.write_aged("Prot/UD/ShaderCache/s.bin", 4_000, 72);
+    sb.write_aged("Prot/UD/ShaderCache/s.bin", 4_000, 240);
     sb.mkdir("Local/Google/Chrome");
     sb.junction("Local/Google/Chrome/User Data", "Prot/UD");
     let mut roots = roots_with_raw(&sb, sb.path("Local"), None);
@@ -1365,7 +1385,7 @@ fn una_raiz_descartada_deja_su_motivo_visible_y_en_el_registro() {
 #[test]
 fn la_exencion_de_una_cache_no_levanta_una_denegacion_ajena() {
     let sb = Sandbox::new();
-    sb.write_aged("Prot/UD/ShaderCache/s.bin", 4_000, 72);
+    sb.write_aged("Prot/UD/ShaderCache/s.bin", 4_000, 240);
     sb.mkdir("Local/Google/Chrome");
     let local = sb.long("Local");
     let user_data = local.join(r"Google\Chrome\User Data");
@@ -1391,8 +1411,8 @@ fn la_exencion_de_una_cache_no_levanta_una_denegacion_ajena() {
 #[test]
 fn un_junction_por_encima_de_temp_no_vuelve_borrable_lo_protegido() {
     let mut sb = Sandbox::new();
-    sb.write_aged("Prot/T/Temp/x.tmp", 3_000, 72);
-    sb.write_aged("Prot/T/Temp/sub/y.tmp", 3_000, 72);
+    sb.write_aged("Prot/T/Temp/x.tmp", 3_000, 240);
+    sb.write_aged("Prot/T/Temp/sub/y.tmp", 3_000, 240);
     sb.junction("Enlace", "Prot/T");
     // (1) La ruta como la daría `GetTempPath`: pasa por el junction.
     let c = Cleaner::new(roots_with_raw(
@@ -1432,8 +1452,8 @@ fn un_junction_por_encima_de_temp_no_vuelve_borrable_lo_protegido() {
 #[test]
 fn un_ancestro_cambiado_entre_la_cadena_y_la_apertura_se_rechaza() {
     let mut sb = Sandbox::new();
-    sb.write_aged("Anc/Temp/bueno.tmp", 1_000, 72);
-    sb.write_aged("Otra/Temp/ajeno.tmp", 1_000, 72);
+    sb.write_aged("Anc/Temp/bueno.tmp", 1_000, 240);
+    sb.write_aged("Otra/Temp/ajeno.tmp", 1_000, 240);
     let roots = roots_with_raw(&sb, sb.long("Local"), Some(sb.path("Anc/Temp")));
     let c = Cleaner::new(roots);
     // Justo antes de que la aprobación abra la raíz: `Anc` pasa a ser un junction hacia `Otra`.
@@ -1887,7 +1907,7 @@ fn sin_registro_no_hay_ninguna_accion_destructiva() {
     let sb = Sandbox::new();
     let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
     let c = cleaner_for(&sb).with_shell(fake.clone());
-    sb.write_aged("Temp/viejo.tmp", 10_000, 72);
+    sb.write_aged("Temp/viejo.tmp", 10_000, 240);
     sb.write("Docs/b.txt", 1_000);
     let mut b = Basket::new();
     b.set_category(CategoryId::UserTemp, true);
@@ -1976,7 +1996,7 @@ fn un_registro_truncado_se_propaga_al_informe() {
     let sb = Sandbox::new();
     let c = cleaner_for(&sb);
     for i in 0..60 {
-        sb.write_aged(&format!("Temp/t{i:02}.tmp"), 100, 72);
+        sb.write_aged(&format!("Temp/t{i:02}.tmp"), 100, 240);
     }
     let mut b = Basket::new();
     b.set_category(CategoryId::UserTemp, true);
@@ -1997,7 +2017,7 @@ fn un_registro_truncado_se_propaga_al_informe() {
     // Un registro normal no se marca.
     let sb2 = Sandbox::new();
     let c2 = cleaner_for(&sb2);
-    sb2.write_aged("Temp/a.tmp", 100, 72);
+    sb2.write_aged("Temp/a.tmp", 100, 240);
     let plan2 = approve(&c2, &b);
     let rep2 = exec(&c2, &plan2, false, false, None).unwrap();
     assert!(!rep2.log_truncated);
@@ -2009,7 +2029,7 @@ fn un_registro_truncado_se_propaga_al_informe() {
 fn la_cancelacion_del_usuario_no_se_oculta_si_ademas_falla_el_registro() {
     let sb = Sandbox::new();
     let c = cleaner_for(&sb);
-    sb.write_aged("Temp/a.tmp", 10_000, 72);
+    sb.write_aged("Temp/a.tmp", 10_000, 240);
     let mut b = Basket::new();
     b.set_category(CategoryId::UserTemp, true);
     let plan = approve(&c, &b);
@@ -2032,7 +2052,7 @@ fn la_cancelacion_del_usuario_no_se_oculta_si_ademas_falla_el_registro() {
     // Solo falla el registro: no es una cancelación del usuario.
     let sb2 = Sandbox::new();
     let c2 = cleaner_for(&sb2);
-    sb2.write_aged("Temp/a.tmp", 10_000, 72);
+    sb2.write_aged("Temp/a.tmp", 10_000, 240);
     let plan2 = approve(&c2, &b);
     let log2 = Arc::new(LogWriter::create_failing_after(&sb2.path("L2"), false, 80).unwrap());
     let rep2 = exec(&c2, &plan2, false, false, Some(log2)).unwrap();
@@ -2054,7 +2074,7 @@ fn cancelar_siempre_anota_que_lo_pidio_el_usuario() {
 fn los_rechazados_del_plan_se_anotan_con_tope() {
     let sb = Sandbox::new();
     let c = cleaner_for(&sb);
-    sb.write_aged("Temp/a.tmp", 100, 72);
+    sb.write_aged("Temp/a.tmp", 100, 240);
     let mut b = Basket::new();
     b.set_category(CategoryId::UserTemp, true);
     let mut plan = approve(&c, &b);
@@ -2090,7 +2110,7 @@ fn el_registro_lleva_la_intencion_de_cada_operacion_antes_de_sus_resultados() {
     let sb = Sandbox::new();
     let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
     let c = cleaner_for(&sb).with_shell(fake.clone());
-    sb.write_aged("Temp/viejo.tmp", 10_000, 72);
+    sb.write_aged("Temp/viejo.tmp", 10_000, 240);
     let mut plan = plan_de(&sb, &c, &[("a.txt", 100, 100), ("b.txt", 100, 100)]);
     // Más un elemento definitivo (la categoría de temporales).
     let mut b = Basket::new();
@@ -2139,7 +2159,7 @@ fn un_error_de_escritura_del_registro_detiene_la_limpieza() {
     let sb = Sandbox::new();
     let c = cleaner_for(&sb);
     for i in 0..30 {
-        sb.write_aged(&format!("Temp/f{i:02}.tmp"), 1_000, 72);
+        sb.write_aged(&format!("Temp/f{i:02}.tmp"), 1_000, 240);
     }
     let mut b = Basket::new();
     b.set_category(CategoryId::UserTemp, true);
@@ -2160,7 +2180,7 @@ fn un_error_de_escritura_del_registro_detiene_la_limpieza() {
     let sb2 = Sandbox::new();
     let c2 = cleaner_for(&sb2).with_threads(2);
     for i in 0..400 {
-        sb2.write_aged(&format!("Temp/g{i:03}.tmp"), 100, 72);
+        sb2.write_aged(&format!("Temp/g{i:03}.tmp"), 100, 240);
     }
     let mut b2 = Basket::new();
     b2.set_category(CategoryId::UserTemp, true);
@@ -3587,7 +3607,7 @@ fn elevado_no_se_limpia_pero_si_se_analiza_y_se_simula() {
         .with_shell(fake.clone())
         .with_elevation(Arc::new(FakeElevation(true)));
     assert!(c.is_elevated());
-    sb.write_aged("Temp/viejo.tmp", 10_000, 72);
+    sb.write_aged("Temp/viejo.tmp", 10_000, 240);
     sb.write("Docs/b.txt", 1_000);
     let mut b = Basket::new();
     b.set_category(CategoryId::UserTemp, true);
@@ -4165,13 +4185,13 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
 fn el_informe_dice_que_desaparecio_de_verdad_para_actualizar_el_arbol() {
     let sb = Sandbox::new();
     let c = cleaner_for(&sb);
-    sb.write_aged("Temp/viejo.tmp", 20_000, 72);
-    sb.write_aged("Temp/dir-entero/a.tmp", 10_000, 72);
-    sb.set_age(&sb.path("Temp/dir-entero"), 72);
+    sb.write_aged("Temp/viejo.tmp", 20_000, 240);
+    sb.write_aged("Temp/dir-entero/a.tmp", 10_000, 240);
+    sb.set_age(&sb.path("Temp/dir-entero"), 240);
     // Una carpeta vieja con un archivo viejo y otro nuevo: se queda y solo encoge.
-    sb.write_aged("Temp/dir-parcial/viejo.tmp", 30_000, 72);
+    sb.write_aged("Temp/dir-parcial/viejo.tmp", 30_000, 240);
     sb.write("Temp/dir-parcial/nuevo.tmp", 5_000);
-    sb.set_age(&sb.path("Temp/dir-parcial"), 72);
+    sb.set_age(&sb.path("Temp/dir-parcial"), 240);
     let mut b = Basket::new();
     b.set_category(CategoryId::UserTemp, true);
     let plan = approve(&c, &b);
@@ -4193,7 +4213,7 @@ fn el_informe_dice_que_desaparecio_de_verdad_para_actualizar_el_arbol() {
     // Y en simulación no se anota nada (no desapareció nada).
     let sb2 = Sandbox::new();
     let c2 = cleaner_for(&sb2);
-    sb2.write_aged("Temp/x.tmp", 1_000, 72);
+    sb2.write_aged("Temp/x.tmp", 1_000, 240);
     let mut b2 = Basket::new();
     b2.set_category(CategoryId::UserTemp, true);
     let rep2 = exec(&c2, &approve(&c2, &b2), true, false, None).unwrap();

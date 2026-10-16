@@ -72,7 +72,7 @@ scan-stop = Parar y ver lo que hay
 scan-progress-label = Progreso del análisis: { $pct } %
 scan-known-title = Sitios donde suele haber archivos temporales
 scan-known-sum = Hasta { $size } en candidatos de bajo riesgo (se comprueba al limpiar)
-scan-known-note = Es una estimación, no un mínimo garantizado, y solo cuenta lo de bajo riesgo: temporales de más de un día y cachés de navegador. Qué se borra y qué va a la Papelera te lo enseñamos antes de limpiar, y la cifra real se mide al limpiar.
+scan-known-note = Es una estimación, no un mínimo garantizado, y solo cuenta lo de bajo riesgo: temporales de más de 7 días y cachés de navegador. Qué se borra y qué va a la Papelera te lo enseñamos antes de limpiar, y la cifra real se mide al limpiar.
 scan-known-excluded = Descargas y la Papelera son datos tuyos: se muestran, pero no cuentan en la cifra de arriba.
 risk-review-tag = Revisar
 scan-clean-safe = Limpiar lo seguro
@@ -257,8 +257,8 @@ recs-view = Ver
 recs-empty-bin = Vaciar
 rule-browsers-name = Caché de navegadores
 rule-browsers-why = Copias de webs que el navegador vuelve a descargar. Tus contraseñas, historial y sesiones no se tocan.
-rule-user-temp-why = Archivos temporales de hace más de un día. Los recientes se dejan por si un instalador los está usando.
-rule-windows-temp-why = Archivos temporales de Windows de hace más de un día. Los recientes se dejan por si un instalador los está usando.
+rule-user-temp-why = Archivos temporales sin modificar en la última semana (más de 7 días). Los recientes se dejan por si un instalador los está usando.
+rule-windows-temp-why = Archivos temporales de Windows sin modificar en la última semana (más de 7 días). Los recientes se dejan por si un instalador los está usando.
 rule-downloads-why = Archivos tuyos: míralos y elige. Nada de aquí se marca solo.
 rule-recycle-bin-why = Vaciarla es definitivo. Solo se vacía lo que hay al confirmar; lo que entre después no se toca.
 
@@ -407,8 +407,8 @@ sum-reparse =
     }
 sum-young =
     { $n ->
-        [one] { $count } archivo reciente se dejó (menos de un día).
-       *[other] { $count } archivos recientes se dejaron (menos de un día).
+        [one] { $count } archivo reciente se dejó (menos de 7 días).
+       *[other] { $count } archivos recientes se dejaron (menos de 7 días).
     }
 sum-shared =
     { $n ->

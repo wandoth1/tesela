@@ -246,15 +246,15 @@ mod tests {
     }
 
     #[test]
-    fn temporales_solo_los_de_mas_de_24_h_y_cachas_sin_limite() {
+    fn temporales_solo_los_de_mas_de_7_dias_y_cachas_sin_limite() {
         let r = rules();
         assert_eq!(
             r.get(CategoryId::UserTemp).min_age,
-            Duration::from_secs(24 * 3600)
+            Duration::from_secs(7 * 24 * 3600)
         );
         assert_eq!(
             r.get(CategoryId::WindowsTemp).min_age,
-            Duration::from_secs(24 * 3600)
+            Duration::from_secs(7 * 24 * 3600)
         );
         assert_eq!(r.get(CategoryId::ChromeCache).min_age, Duration::ZERO);
     }

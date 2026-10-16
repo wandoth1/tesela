@@ -17,7 +17,7 @@ id = "user-temp"
 risk = "safe"
 destination = "permanent"
 action = "contents"
-min_age_hours = 24
+min_age_hours = 168
 selectable = true
 
 [[rule]]
@@ -25,7 +25,7 @@ id = "windows-temp"
 risk = "safe"
 destination = "permanent"
 action = "contents"
-min_age_hours = 24
+min_age_hours = 168
 selectable = true
 
 [[rule]]
