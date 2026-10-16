@@ -295,6 +295,7 @@ unfit-too-big = supera el tamaño de la Papelera
 unfit-path-long = la ruta es demasiado larga para la Papelera
 unfit-policy = una directiva del sistema impide usar la Papelera
 unfit-unknown = no se pudo comprobar si cabe en la Papelera
+unfit-capacity-unknown = la Papelera de la unidad no tiene un tamaño máximo configurado: no hay garantía de que quepa
 confirm-hardlink =
     { $n ->
         [one] { $count } archivo está compartido con otro nombre: no liberará espacio ({ $size })

@@ -1533,6 +1533,15 @@ impl RecycleShell for FakeShell {
     fn is_bin_path(&self, p: &Path) -> bool {
         crate::paths::PathKey::new(p).is_same_or_under(&crate::paths::PathKey::new(&self.bin))
     }
+    /// El encaje no depende del equipo (registro, directivas): cabe salvo que pase del 90 % de la capacidad simulada.
+    fn fit(&self, _path: &Path, bytes: u64) -> Fit {
+        match self.max {
+            Some(max) if (bytes as u128) * 100 > (max as u128) * 90 => {
+                Fit::Unfit(UnfitReason::TooBig)
+            }
+            _ => Fit::Fits,
+        }
+    }
 }
 
 /// Un plan de elementos de `Docs/<nombre>` con el tamaño dado: el archivo real mide `len` bytes y la ESTIMACIÓN que se
@@ -1548,7 +1557,7 @@ fn plan_de(sb: &Sandbox, c: &Cleaner, items: &[(&str, usize, u64)]) -> Plan {
     for (it, (_, _, est)) in plan.items.iter_mut().zip(items) {
         it.estimate.bytes = *est;
         it.estimate.logical = *est;
-        it.fit = crate::plan::fit_for(&it.path, *est);
+        it.fit = c.fit(&it.path, *est);
         assert_eq!(it.fit, Fit::Fits);
     }
     plan
@@ -1730,8 +1739,10 @@ fn los_pequenos_se_agrupan_hasta_el_presupuesto_y_nunca_pasan_del_90_por_ciento_
     assert!(!rep2.recycle_stopped);
 }
 
+/// B2: sin capacidad conocida de la Papelera no se puede garantizar que quepa (y la shell, si no cabe, elimina de verdad):
+/// NINGÚN elemento se envía (`NoRoom`), ni siquiera los pequeños. Antes iba cada uno solo.
 #[test]
-fn sin_capacidad_conocida_cada_elemento_va_en_su_propia_operacion() {
+fn sin_capacidad_conocida_no_se_envia_nada_a_la_papelera() {
     let sb = Sandbox::new();
     let fake = FakeShell::new(&sb, None, 0, "nunca");
     let c = cleaner_for(&sb).with_shell(fake.clone());
@@ -1741,36 +1752,47 @@ fn sin_capacidad_conocida_cada_elemento_va_en_su_propia_operacion() {
         &[("a", 100, 100), ("b", 100, 100), ("c", 100, 100)],
     );
     let rep = exec(&c, &plan, false, false, None).unwrap();
-    assert!(rep.items.iter().all(|i| i.status == ItemStatus::Recycled));
-    assert_eq!(fake.names(), vec![vec!["a"], vec!["b"], vec!["c"]]);
+    for it in &rep.items {
+        assert_eq!(
+            it.status,
+            ItemStatus::NotRecycled(RecycleFail::NoRoom),
+            "{:?}",
+            it.path
+        );
+    }
+    assert!(fake.names().is_empty(), "la shell no vio ninguna operación");
+    for n in ["a", "b", "c"] {
+        assert!(sb.path(&format!("Docs/{n}")).exists());
+    }
+    assert_eq!(rep.no_room, 3);
+    assert!(!rep.recycle_stopped);
 }
 
-/// Sin `MaxCapacity` en el registro se usa la misma capacidad estimada que `fit_decide` (el 5 % del volumen): el
-/// presupuesto y `NoRoom` actúan también entonces (antes cada elemento iba solo y sin comprobar su tamaño).
+/// B2: la capacidad del reparto es SOLO la configurada (`MaxCapacity`); sin ella (`Unknown`) y en cualquier otro caso
+/// (sin Papelera, desactivada, indeterminada) no hay capacidad: `max = None` y el reparto falla cerrado. Ya no se asume un
+/// porcentaje del volumen.
 #[test]
-fn sin_max_capacity_se_usa_la_capacidad_estimada_y_actua_no_room() {
+fn la_capacidad_del_reparto_es_solo_la_configurada() {
     use crate::volume::BinLimit;
-    // La capacidad estimada: el 5 % del volumen.
-    assert_eq!(
-        room_from(BinLimit::Unknown, Some(200_000), Some(0)).max,
-        Some(10_000)
-    );
-    assert_eq!(
-        room_from(BinLimit::Max(777), Some(200_000), None).max,
-        Some(777)
-    );
+    assert_eq!(room_from(BinLimit::Max(777), None).max, Some(777));
+    assert_eq!(room_from(BinLimit::Max(777), Some(5)).used, Some(5));
     for l in [
+        BinLimit::Unknown,
         BinLimit::NoBin,
         BinLimit::NukeOnDelete,
         BinLimit::Indeterminate,
     ] {
-        assert_eq!(room_from(l, Some(200_000), Some(0)).max, None, "{l:?}");
+        assert_eq!(room_from(l, Some(0)).max, None, "{l:?}");
+        assert_eq!(take_op(&[1], room_from(l, Some(0))), Take::NoRoom, "{l:?}");
     }
-    assert_eq!(room_from(BinLimit::Unknown, None, Some(0)).max, None);
-    assert_eq!(room_from(BinLimit::Unknown, Some(0), Some(0)).max, None);
-    // Con esa capacidad, la shell simulada reparte y rechaza como con una configurada.
+    // Capacidad configurada pero ocupación desconocida: tampoco se envía.
+    assert_eq!(
+        take_op(&[1], room_from(BinLimit::Max(10_000), None)),
+        Take::NoRoom
+    );
+    // Con una capacidad configurada, la shell simulada reparte y rechaza como siempre.
     let sb = Sandbox::new();
-    let room = room_from(BinLimit::Unknown, Some(200_000), Some(0));
+    let room = room_from(BinLimit::Max(10_000), Some(0));
     let fake = FakeShell::new(&sb, room.max, 0, "enorme");
     let c = cleaner_for(&sb).with_shell(fake.clone());
     // Capacidad 10 000: lo que pase de 9 000 no cabe ni solo; un "grande" (> 1 000) va solo; los pequeños, juntos.
@@ -1780,29 +1802,89 @@ fn sin_max_capacity_se_usa_la_capacidad_estimada_y_actua_no_room() {
         &[
             ("a", 100, 100),
             ("b", 100, 100),
-            ("gigante", 100, 9_500),
             ("grande", 100, 2_000),
             ("c", 100, 100),
         ],
     );
     let rep = exec(&c, &plan, false, false, None).unwrap();
-    let st = |n: &str| {
-        rep.items
-            .iter()
-            .find(|i| i.path.ends_with(n))
-            .unwrap()
-            .status
-    };
-    assert_eq!(st("gigante"), ItemStatus::NotRecycled(RecycleFail::NoRoom));
-    assert!(sb.path("Docs/gigante").exists(), "no se envió ni se tocó");
-    for n in ["a", "b", "grande", "c"] {
-        assert_eq!(st(n), ItemStatus::Recycled, "{n}");
+    for it in &rep.items {
+        assert_eq!(it.status, ItemStatus::Recycled, "{:?}", it.path);
     }
     assert_eq!(
         fake.names(),
         vec![vec!["a", "b"], vec!["grande"], vec!["c"]]
     );
-    assert_eq!(rep.no_room, 1);
+}
+
+/// Un directorio de `Docs/<nombre>` con un archivo de `len` bytes, aprobado con su medida real.
+fn plan_dir(sb: &Sandbox, c: &Cleaner, name: &str, len: usize) -> Plan {
+    sb.write(&format!("Docs/{name}/f0.bin"), len);
+    let mut b = Basket::new();
+    b.add_path(sb.long(&format!("Docs/{name}")), c.protection());
+    let plan = approve(c, &b);
+    assert_eq!(plan.items.len(), 1, "{:?}", plan.rejected);
+    assert!(plan.items[0].is_dir());
+    plan
+}
+
+/// B2: un directorio que CRECIÓ 1 MiB después de aprobarlo no se envía: el reparto se basaba en un tamaño que ya no es
+/// cierto. Queda en su sitio con el estado "cambió desde la confirmación" (contador `changed` del resumen).
+#[test]
+fn un_directorio_que_crecio_tras_la_aprobacion_no_se_envia() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    let plan = plan_dir(&sb, &c, "crece", 5_000);
+    // Después de aprobar: 1 MiB más dentro.
+    sb.write("Docs/crece/nuevo.bin", 1 << 20);
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    assert_eq!(
+        rep.items[0].status,
+        ItemStatus::Root(crate::engine::RootStatus::Changed)
+    );
+    assert!(rep.items[0].removed.is_empty());
+    assert!(sb.path("Docs/crece/f0.bin").exists() && sb.path("Docs/crece/nuevo.bin").exists());
+    assert!(fake.names().is_empty(), "no llegó a la shell");
+    assert!(
+        rep.totals.changed >= 1,
+        "consta como cambiado en el resumen"
+    );
+    // Sin cambios, el mismo directorio sí se envía (control).
+    let sb2 = Sandbox::new();
+    let fake2 = FakeShell::new(&sb2, Some(1 << 40), 0, "nunca");
+    let c2 = cleaner_for(&sb2).with_shell(fake2.clone());
+    let plan2 = plan_dir(&sb2, &c2, "igual", 5_000);
+    let rep2 = exec(&c2, &plan2, false, false, None).unwrap();
+    assert_eq!(rep2.items[0].status, ItemStatus::Recycled);
+}
+
+/// B2: un directorio que ENCOGIÓ se reparte con su tamaño nuevo (no con el aprobado). El aprobado (estimación falseada
+/// a 8 500 con 2 000 ya ocupados de una capacidad de 10 000: presupuesto 7 000) no cabría; el real, mucho menor, sí.
+#[test]
+fn un_directorio_que_encogio_se_reparte_con_su_tamano_nuevo() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(10_000), 2_000, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    let mut plan = plan_dir(&sb, &c, "encoge", 1_000);
+    // La estimación al aprobar era enorme (el directorio contenía mucho más).
+    plan.items[0].estimate.bytes = 8_500;
+    plan.items[0].estimate.logical = 8_500;
+    plan.items[0].fit = c.fit(&plan.items[0].path, 8_500);
+    assert_eq!(plan.items[0].fit, Fit::Fits);
+    // Con la estimación vieja, `take_op` diría NoRoom (8 500 > 7 000): la medida nueva manda.
+    let room = BinRoom {
+        max: Some(10_000),
+        used: Some(2_000),
+    };
+    assert_eq!(take_op(&[8_500], room), Take::NoRoom);
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    assert_eq!(
+        rep.items[0].status,
+        ItemStatus::Recycled,
+        "{:?}",
+        rep.items[0]
+    );
+    assert_eq!(fake.names(), vec![vec!["encoge"]]);
 }
 
 /// Un error de la shell o de COM al enviar consta en el registro local (con su HRESULT) y en el informe (para el resumen);
@@ -1851,8 +1933,13 @@ fn take_op_es_una_funcion_pura_con_las_reglas_del_reparto() {
         max: Some(max),
         used: Some(used),
     };
-    // Sin capacidad conocida: solo.
-    assert_eq!(take_op(&[10, 10], BinRoom::UNKNOWN), Take::Send(1));
+    // Sin capacidad ni ocupación conocidas: nunca se envía (B2).
+    assert_eq!(take_op(&[10, 10], BinRoom::UNKNOWN), Take::NoRoom);
+    let sin_max = BinRoom {
+        max: None,
+        used: Some(0),
+    };
+    assert_eq!(take_op(&[1], sin_max), Take::NoRoom);
     // Todo lo pequeño junto mientras quepa en el presupuesto (90 % de 10 000 menos lo ocupado).
     assert_eq!(take_op(&[300, 300, 300], room(10_000, 0)), Take::Send(3));
     assert_eq!(
@@ -1866,13 +1953,16 @@ fn take_op_es_una_funcion_pura_con_las_reglas_del_reparto() {
     assert_eq!(take_op(&[600, 10], room(10_000, 8_700)), Take::NoRoom);
     assert_eq!(take_op(&[9_000], room(10_000, 0)), Take::Send(1));
     assert_eq!(take_op(&[9_001], room(10_000, 0)), Take::NoRoom);
-    // Sin ocupación conocida: solo, y solo si cabría en una Papelera vacía.
+    // Sin ocupación conocida: no se envía (antes iba solo si cabía en una Papelera vacía).
     let sin_uso = BinRoom {
         max: Some(10_000),
         used: None,
     };
-    assert_eq!(take_op(&[800, 800], sin_uso), Take::Send(1));
+    assert_eq!(take_op(&[800, 800], sin_uso), Take::NoRoom);
+    assert_eq!(take_op(&[1], sin_uso), Take::NoRoom);
     assert_eq!(take_op(&[9_500], sin_uso), Take::NoRoom);
+    // Una lista vacía no envía nada.
+    assert_eq!(take_op(&[], BinRoom::UNKNOWN), Take::Send(0));
 }
 
 /// M-C con la shell REAL, de forma segura: un archivo disperso de miles de GiB lógicos (no ocupa nada) entre dos pequeños.
@@ -1985,6 +2075,9 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
             }
             fn bin_room(&self, _: &Path) -> BinRoom {
                 BinRoom::UNKNOWN
+            }
+            fn fit(&self, _: &Path, _: u64) -> Fit {
+                Fit::Fits
             }
             fn is_bin_path(&self, p: &Path) -> bool {
                 crate::paths::PathKey::new(p).is_same_or_under(&crate::paths::PathKey::new(&self.0))

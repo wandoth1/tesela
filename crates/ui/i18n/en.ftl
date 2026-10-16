@@ -294,6 +294,7 @@ unfit-too-big = it exceeds the size of the Recycle Bin
 unfit-path-long = the path is too long for the Recycle Bin
 unfit-policy = a system policy prevents using the Recycle Bin
 unfit-unknown = it could not be checked whether it fits in the Recycle Bin
+unfit-capacity-unknown = the drive's Recycle Bin has no maximum size configured: there is no guarantee it fits
 confirm-hardlink =
     { $n ->
         [one] { $count } file is shared with another name: it will not free space ({ $size })

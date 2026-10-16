@@ -41,8 +41,11 @@ pub enum UnfitReason {
     PathTooLong,
     /// Una directiva del sistema ("No mover los archivos eliminados a la Papelera") hace que la shell elimine de verdad.
     Policy,
-    /// No se pudo averiguar si cabe (volumen, límite o tamaño del volumen desconocidos): se trata como "no cabe".
+    /// No se pudo averiguar si cabe (volumen o límite indeterminados): se trata como "no cabe".
     Unknown,
+    /// La Papelera de ese volumen NO tiene un tamaño máximo configurado (`MaxCapacity` ausente en el registro): la shell
+    /// usa un porcentaje por defecto que no está documentado, así que no hay garantía de que quepa (B2: falla cerrado).
+    CapacityUnknown,
 }
 
 /// Si un elemento con destino Papelera cabe en ella.
@@ -323,7 +326,7 @@ impl Cleaner {
     /// ¿Cabe `bytes` (el mayor entre el tamaño en disco y el lógico) de un elemento cuya ruta es `path` en la Papelera
     /// de su volumen? Se calcula AL APROBAR y se vuelve a calcular AL EJECUTAR.
     pub fn fit(&self, path: &Path, bytes: u64) -> Fit {
-        fit_for(path, bytes)
+        self.shell.fit(path, bytes)
     }
 
     /// Aprueba la cesta: captura identidades, re-valida la protección, mide y decide el encaje en la Papelera.
@@ -392,7 +395,7 @@ impl Cleaner {
             let dest = c.destination;
             let size = est.bytes.max(est.logical).max(est.shared_bytes);
             let fit = if dest == Destination::Recycle {
-                fit_for(&c.canon, size)
+                self.shell.fit(&c.canon, size)
             } else {
                 Fit::Fits
             };
@@ -748,15 +751,7 @@ pub(crate) struct BinFacts {
     /// Directiva `NoRecycleFiles`.
     pub policy_no_recycle: bool,
     pub limit: BinLimit,
-    /// Tamaño del volumen (`None` si falló la consulta).
-    pub volume_total: Option<u64>,
 }
-
-/// Porcentaje del volumen que se ASUME como tamaño máximo de la Papelera cuando el registro no tiene `MaxCapacity`.
-/// Microsoft no documenta el valor por defecto de la shell: lo medido en los volúmenes con valor fue ≈ el 10 %. Se usa la
-/// MITAD (5 %) a propósito: es conservador (lo dudoso se trata como "no cabe" y pide confirmación expresa) y ya no tiene
-/// que ser exacto, porque el receptor de eventos dice la verdad después (`psiNewlyCreated` nulo = eliminado).
-pub(crate) const DEFAULT_BIN_PERCENT_ASSUMED: u64 = 5;
 
 /// La decisión (ver [`fit_for`]): ante CUALQUIER duda, `Unfit`.
 pub(crate) fn fit_decide(bytes: u64, f: &BinFacts) -> Fit {
@@ -777,16 +772,9 @@ pub(crate) fn fit_decide(bytes: u64, f: &BinFacts) -> Fit {
         BinLimit::Indeterminate => Fit::Unfit(UnfitReason::Unknown),
         BinLimit::Max(max) if too_big(max) => Fit::Unfit(UnfitReason::TooBig),
         BinLimit::Max(_) => Fit::Fits,
-        BinLimit::Unknown => match f.volume_total {
-            Some(total) if total > 0 => {
-                if too_big(total / 100 * DEFAULT_BIN_PERCENT_ASSUMED) {
-                    Fit::Unfit(UnfitReason::TooBig)
-                } else {
-                    Fit::Fits
-                }
-            }
-            _ => Fit::Unfit(UnfitReason::Unknown),
-        },
+        // Sin `MaxCapacity` no hay capacidad que garantizar: se acabó el "se asume el 5 %". Planificar y ejecutar
+        // coinciden (el reparto de `exec::take_op` también falla cerrado sin capacidad conocida).
+        BinLimit::Unknown => Fit::Unfit(UnfitReason::CapacityUnknown),
     }
 }
 
@@ -798,15 +786,9 @@ pub(crate) fn fit_for(path: &Path, bytes: u64) -> Fit {
     let root = volume::is_local_path(path)
         .then(|| volume::volume_root(path))
         .flatten();
-    let (limit, volume_total) = match &root {
-        Some(r) => (
-            volume::bin_limit(r),
-            tesela_scanner::volume_space(r)
-                .ok()
-                .filter(|v| v.volume_scope)
-                .map(|v| v.total),
-        ),
-        None => (BinLimit::Indeterminate, None),
+    let limit = match &root {
+        Some(r) => volume::bin_limit(r),
+        None => BinLimit::Indeterminate,
     };
     fit_decide(
         bytes,
@@ -815,7 +797,6 @@ pub(crate) fn fit_for(path: &Path, bytes: u64) -> Fit {
             volume_known: root.is_some(),
             policy_no_recycle: volume::recycle_policy_disabled(),
             limit,
-            volume_total,
         },
     )
 }
@@ -830,7 +811,6 @@ mod fit_tests {
             volume_known: true,
             policy_no_recycle: false,
             limit,
-            volume_total: Some(1_000_000_000_000),
         }
     }
 
@@ -848,7 +828,7 @@ mod fit_tests {
 
     #[test]
     fn ante_cualquier_duda_no_cabe() {
-        // Volumen desconocido, límite indeterminado o tamaño del volumen que falló: Unfit(Unknown), nunca Fits.
+        // Volumen desconocido o límite indeterminado: Unfit(Unknown), nunca Fits.
         let mut f = facts(BinLimit::Max(1 << 40));
         f.volume_known = false;
         assert_eq!(fit_decide(1, &f), Fit::Unfit(UnfitReason::Unknown));
@@ -856,11 +836,6 @@ mod fit_tests {
             fit_decide(1, &facts(BinLimit::Indeterminate)),
             Fit::Unfit(UnfitReason::Unknown)
         );
-        let mut g = facts(BinLimit::Unknown);
-        g.volume_total = None;
-        assert_eq!(fit_decide(1, &g), Fit::Unfit(UnfitReason::Unknown));
-        g.volume_total = Some(0);
-        assert_eq!(fit_decide(1, &g), Fit::Unfit(UnfitReason::Unknown));
         // Sin Papelera o con la Papelera desactivada.
         assert_eq!(
             fit_decide(1, &facts(BinLimit::NoBin)),
@@ -880,20 +855,24 @@ mod fit_tests {
         assert_eq!(fit_decide(1, &f), Fit::Unfit(UnfitReason::Policy));
     }
 
+    /// B2: sin `MaxCapacity` en el registro no hay capacidad que garantizar: no cabe, con su propio motivo, sea cual sea
+    /// el tamaño (ya no se asume el 5 % del volumen).
     #[test]
-    fn sin_valor_en_el_registro_se_asume_un_5_por_ciento_conservador() {
-        // 1 TB de volumen: el 5 % son 50 GB; con el margen del 90 %, hasta 45 GB.
+    fn sin_capacidad_configurada_no_cabe_nada_con_su_propio_motivo() {
         let f = facts(BinLimit::Unknown);
-        assert_eq!(fit_decide(44_000_000_000, &f), Fit::Fits);
+        for bytes in [0, 1, 1_000, 44_000_000_000, u64::MAX / 2] {
+            assert_eq!(
+                fit_decide(bytes, &f),
+                Fit::Unfit(UnfitReason::CapacityUnknown),
+                "{bytes}"
+            );
+        }
+        // Con límite configurado sí cabe lo pequeño; el motivo nuevo es distinto del de "no se pudo comprobar".
         assert_eq!(
-            fit_decide(46_000_000_000, &f),
-            Fit::Unfit(UnfitReason::TooBig)
+            fit_decide(1_000, &facts(BinLimit::Max(100_000_000_000))),
+            Fit::Fits
         );
-        // Con el 10 % de la shell (si es el real) esto cabría: se pide confirmación de más, nunca de menos.
-        assert_eq!(
-            fit_decide(80_000_000_000, &f),
-            Fit::Unfit(UnfitReason::TooBig)
-        );
+        assert_ne!(UnfitReason::CapacityUnknown, UnfitReason::Unknown);
     }
 
     #[test]

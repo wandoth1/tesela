@@ -19,7 +19,7 @@
 use crate::engine::{self, Event, Mode, Outcome, RootStatus, StatsSnapshot, Unit, UnitSpec};
 use crate::log::LogWriter;
 use crate::paths::PathKey;
-use crate::plan::{Cleaner, Plan, PlanItem, fit_for};
+use crate::plan::{Cleaner, Fit, Plan, PlanItem, fit_for};
 use crate::protect::Verdict;
 use crate::recycle::{self, BinItem, RecycleMode};
 use crate::rules::{CategoryId, Destination};
@@ -282,7 +282,7 @@ impl Cleaner {
                     .bytes
                     .max(i.estimate.logical)
                     .max(i.estimate.shared_bytes);
-                fit_for(&i.path, size) != i.fit
+                self.fit(&i.path, size) != i.fit
             })
             .map(|i| i.id)
             .collect();
@@ -631,7 +631,7 @@ impl Cleaner {
             for &it in chunk {
                 let mut st = StatsSnapshot::default();
                 progress.entries.fetch_add(1, Ordering::Relaxed);
-                match self.prepare_recycle(it, &mut st) {
+                match self.prepare_recycle(it, &mut st, cancel) {
                     Prepared::Ready(p) if opts.dry_run => {
                         emit(it, Some(p.identity), p.links, Outcome::WouldRecycle);
                         st.bytes = it.estimate.bytes;
@@ -831,7 +831,12 @@ impl Cleaner {
     ///   el padre ni el abuelo del elemento (error 5): no se puede cambiar un ancestro por un junction a otra carpeta en
     ///   la ventana entre esta comprobación y que la shell abra el elemento. La shell recicla igual (el handle comparte
     ///   `DELETE`). Además permite comprobar al final que el objeto aprobado es el que acabó en la Papelera.
-    fn prepare_recycle(&self, it: &PlanItem, st: &mut StatsSnapshot) -> Prepared {
+    fn prepare_recycle(
+        &self,
+        it: &PlanItem,
+        st: &mut StatsSnapshot,
+        cancel: &Arc<AtomicBool>,
+    ) -> Prepared {
         let UnitSpec::Entry {
             path,
             approved,
@@ -895,15 +900,46 @@ impl Cleaner {
             }
             g
         };
-        // Lo que ocupa de verdad ahora (si es un archivo) frente a lo medido al aprobar: el mayor manda.
+        // Lo que ocupa de verdad ahora frente a lo medido al aprobar (B2).
         let estimate = it
             .estimate
             .bytes
             .max(it.estimate.logical)
             .max(it.estimate.shared_bytes);
         let size = if m.is_dir {
-            estimate
+            // Un directorio pudo CRECER desde la aprobación: se vuelve a medir con el mismo recorrido (relativo, sin entrar
+            // en reparse points). Si creció, no se envía (el reparto se basa en un tamaño que ya no es cierto); si
+            // encogió, manda el tamaño nuevo.
+            match self.remeasure(it, cancel) {
+                Remeasure::Now(fresh) => {
+                    let grew = fresh.bytes > it.estimate.bytes
+                        || fresh.logical > it.estimate.logical
+                        || fresh.shared_bytes > it.estimate.shared_bytes;
+                    if grew {
+                        st.changed += 1;
+                        return Prepared::Rejected(
+                            ItemStatus::Root(RootStatus::Changed),
+                            Outcome::Changed,
+                        );
+                    }
+                    fresh.bytes.max(fresh.logical).max(fresh.shared_bytes)
+                }
+                Remeasure::Cancelled => {
+                    return Prepared::Rejected(
+                        ItemStatus::Root(RootStatus::Cancelled),
+                        Outcome::NotRecycled,
+                    );
+                }
+                Remeasure::Failed => {
+                    st.changed += 1;
+                    return Prepared::Rejected(
+                        ItemStatus::Root(RootStatus::Changed),
+                        Outcome::Changed,
+                    );
+                }
+            }
         } else {
+            // Un archivo: lo que ocupa de verdad ahora frente a lo medido al aprobar, el mayor manda.
             estimate.max(m.alloc).max(m.logical)
         };
         Prepared::Ready(Pending {
@@ -913,6 +949,34 @@ impl Cleaner {
             held,
             size,
         })
+    }
+}
+
+/// Resultado de volver a medir un directorio justo antes de enviarlo.
+enum Remeasure {
+    Now(StatsSnapshot),
+    Cancelled,
+    /// No se pudo medir (cambió, ya no existe, protegido...): se trata como "cambió desde la confirmación".
+    Failed,
+}
+
+impl Cleaner {
+    /// Vuelve a medir el directorio aprobado de `it` con el mismo recorrido de la aprobación (modo `Measure`: apertura
+    /// relativa, identidad verificada y sin entrar en reparse points).
+    fn remeasure(&self, it: &PlanItem, cancel: &Arc<AtomicBool>) -> Remeasure {
+        let progress = Arc::new(AtomicU64::new(0));
+        let unit = Unit::new(
+            it.id,
+            it.spec.clone(),
+            self.env(Mode::Measure, it.min_age, cancel, &progress, None),
+        );
+        engine::run(std::slice::from_ref(&unit), self.threads);
+        match unit.status() {
+            Some(RootStatus::Done) => Remeasure::Now(unit.stats.snapshot()),
+            Some(RootStatus::Cancelled) => Remeasure::Cancelled,
+            _ if cancel.load(Ordering::Relaxed) => Remeasure::Cancelled,
+            _ => Remeasure::Failed,
+        }
     }
 }
 
@@ -954,6 +1018,10 @@ pub(crate) trait RecycleShell: Send + Sync {
     fn recycle(&self, paths: &[PathBuf]) -> recycle::BatchOutcome;
     /// Capacidad y ocupación de la Papelera del volumen cuya raíz es `root`.
     fn bin_room(&self, root: &Path) -> BinRoom;
+    /// ¿Cabe un elemento de `bytes` con ruta `path` en la Papelera de su volumen? Se decide al aprobar y se vuelve a
+    /// decidir al ejecutar (la real consulta el registro y las directivas; las pruebas con shell simulada no dependen del
+    /// equipo).
+    fn fit(&self, path: &Path, bytes: u64) -> Fit;
     /// ¿Está `p` dentro de una Papelera (`<unidad>:\$Recycle.Bin\...`)?
     fn is_bin_path(&self, p: &Path) -> bool;
 }
@@ -974,35 +1042,23 @@ impl RecycleShell for RealShell {
         }
     }
     fn bin_room(&self, root: &Path) -> BinRoom {
-        let total = tesela_scanner::volume_space(root)
-            .ok()
-            .filter(|v| v.volume_scope)
-            .map(|v| v.total);
-        room_from(
-            volume::bin_limit(root),
-            total,
-            recycle::bin_size_on(root).ok(),
-        )
+        room_from(volume::bin_limit(root), recycle::bin_size_on(root).ok())
+    }
+    fn fit(&self, path: &Path, bytes: u64) -> Fit {
+        fit_for(path, bytes)
     }
     fn is_bin_path(&self, p: &Path) -> bool {
         recycle::is_recycle_bin_path(p)
     }
 }
 
-/// La capacidad de la Papelera de un volumen a efectos del reparto: la configurada (`MaxCapacity`) o, si el registro no
-/// la da, la MISMA estimación conservadora que usa `fit_decide` (el [`DEFAULT_BIN_PERCENT_ASSUMED`] % del volumen), para
-/// que el presupuesto y la regla `NoRoom` actúen también entonces. Sin Papelera, desactivada, indeterminada o sin tamaño del
-/// volumen, no hay capacidad (y cada elemento va solo).
-pub(crate) fn room_from(
-    limit: volume::BinLimit,
-    volume_total: Option<u64>,
-    used: Option<u64>,
-) -> BinRoom {
+/// La capacidad de la Papelera de un volumen a efectos del reparto: SOLO la configurada (`MaxCapacity`). Sin Papelera,
+/// desactivada, indeterminada o sin valor en el registro (la shell usa un porcentaje por defecto que no está
+/// documentado) no hay capacidad que garantizar: `max = None` y [`take_op`] falla cerrado (`NoRoom`). Ya no se asume
+/// ningún porcentaje del volumen (B2).
+pub(crate) fn room_from(limit: volume::BinLimit, used: Option<u64>) -> BinRoom {
     let max = match limit {
         volume::BinLimit::Max(m) => Some(m),
-        volume::BinLimit::Unknown => volume_total
-            .filter(|t| *t > 0)
-            .map(|t| t / 100 * crate::plan::DEFAULT_BIN_PERCENT_ASSUMED),
         _ => None,
     };
     BinRoom { max, used }
@@ -1018,8 +1074,8 @@ pub(crate) enum Take {
 }
 
 /// Reparte en operaciones: cada operación, como mucho, al 90 % de la capacidad de la Papelera MENOS lo que ya ocupa.
-/// * Sin capacidad conocida (`max` desconocido): el elemento va SOLO (la shell decide por operación y no se puede
-///   prever).
+/// * FALLA CERRADO (B2): sin capacidad conocida (`max`) o sin ocupación conocida (`used`) no se puede garantizar que
+///   quepa y la shell, si no cabe, elimina de verdad: `NoRoom`, nunca `Send`.
 /// * Un elemento que por sí solo pasa de un 10 % de la capacidad va SOLO.
 /// * Si el primero no cabe ni solo en el espacio que queda, `NoRoom`: enviarlo haría que la shell lo elimine o expulse
 ///   elementos que ya estaban en la Papelera.
@@ -1027,18 +1083,10 @@ pub(crate) fn take_op(sizes: &[u64], room: BinRoom) -> Take {
     let Some(&first) = sizes.first() else {
         return Take::Send(0);
     };
-    let Some(max) = room.max else {
-        return Take::Send(1);
+    let (Some(max), Some(used)) = (room.max, room.used) else {
+        return Take::NoRoom;
     };
     let cap = max / 10 * 9;
-    let Some(used) = room.used else {
-        // Sin ocupación conocida no se puede repartir: solo, y solo si cabe en una Papelera vacía.
-        return if first <= cap {
-            Take::Send(1)
-        } else {
-            Take::NoRoom
-        };
-    };
     let budget = cap.saturating_sub(used);
     if first > budget {
         return Take::NoRoom;

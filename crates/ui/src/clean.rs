@@ -461,6 +461,7 @@ fn unfit_reason_key(r: UnfitReason) -> &'static str {
         UnfitReason::PathTooLong => "unfit-path-long",
         UnfitReason::Policy => "unfit-policy",
         UnfitReason::Unknown => "unfit-unknown",
+        UnfitReason::CapacityUnknown => "unfit-capacity-unknown",
     }
 }
 
