@@ -551,6 +551,75 @@ fn vaciar_con_un_r_sustituido_al_final_consta_como_vetado_y_no_se_purga_nada_mas
     assert_eq!(ids(), before);
 }
 
+/// M-2 con la Papelera real (solo elementos propios): el veto de una CARPETA de la Papelera sustituida (la shell consulta
+/// primero la carpeta y luego sus hijos) consta como "cambiado desde la confirmación" y el registro lleva `vetoed` de ESE
+/// elemento, no `error-0x...`/`not-processed`. (Que un veto sobre un HIJO se atribuya a su carpeta lo prueba la prueba sin COM
+/// `el_veto_de_un_hijo_se_atribuye_al_r_de_su_carpeta`: con la shell real no se puede forzar el cambio entre la consulta de
+/// la carpeta y la de sus hijos.)
+#[test]
+fn vaciar_con_un_hijo_vetado_de_una_carpeta_consta_como_cambiado_y_vetado() {
+    let _lock = bin_lock();
+    if !bin_usable() {
+        return;
+    }
+    let before = ids();
+    let sb = Sandbox::new();
+    let _guard = BinGuard { uuid: sb.uuid() };
+    let c = cleaner_for(&sb);
+    sb.write("Docs/carpeta/sub/hijo.txt", 2_000);
+    sb.write("Docs/otro.txt", 2_000);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/carpeta"), c.protection());
+    b.add_path(sb.long("Docs/otro.txt"), c.protection());
+    exec(&c, &approve(&c, &b), false, false, None).unwrap();
+    let mut v = Basket::new();
+    v.set_empty_bin(true);
+    let plan = c.approve(&v, &ApproveOptions::default(), &cancel());
+    let items = plan.bin.as_ref().unwrap().items.clone();
+    assert_eq!(items.len(), 2);
+    let folder = items.iter().find(|i| i.name == "carpeta").unwrap().clone();
+    let victim = PathBuf::from(&folder.id);
+    let _apartado = RemoveOnDrop(victim.with_extension("apartado"));
+    let hook = crate::engine::test_hooks::install_before_shell(victim.clone(), {
+        let victim = victim.clone();
+        move |_| {
+            // Con la guarda abierta (comparte `DELETE`) la carpeta se aparta y se pone otra con su nombre y un hijo.
+            fs::rename(&victim, victim.with_extension("apartado")).unwrap();
+            fs::create_dir_all(victim.join("sub")).unwrap();
+            fs::write(victim.join("sub/hijo.txt"), b"sustituto").unwrap();
+        }
+    });
+    let log = Arc::new(LogWriter::create(&sb.path("Tesela"), false).unwrap());
+    let rep = exec(&c, &plan, false, false, Some(log.clone())).unwrap();
+    let bin = rep.bin.unwrap();
+    eprintln!("vaciar con un hijo vetado: {bin:?}");
+    assert_eq!(bin.changed, 1, "el elemento carpeta cuenta como cambiado");
+    assert!(!bin.failed);
+    let text = fs::read_to_string(log.path()).unwrap();
+    let vetoed: Vec<serde_json::Value> = text
+        .lines()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .filter(|v| v["t"] == "bin-item" && v["out"] == "vetoed")
+        .collect();
+    assert_eq!(vetoed.len(), 1, "{text}");
+    assert_eq!(
+        vetoed[0]["id"].as_str().unwrap(),
+        folder.id.to_string_lossy()
+    );
+    assert!(
+        !text.contains("error-0x"),
+        "el vetado no consta como error de la shell: {text}"
+    );
+    drop(hook);
+    let left: Vec<BinItem> = recycle::list_bin()
+        .unwrap()
+        .into_iter()
+        .filter(|i| is_mine(i, &sb.uuid()))
+        .collect();
+    recycle::purge_items(&left, &AtomicBool::new(false)).unwrap();
+    assert_eq!(ids(), before);
+}
+
 /// M4 con la Papelera real (solo un elemento propio): si no se puede escribir la intención `bin-begin` del trozo, la shell NO
 /// llega a ver ese trozo: nada se purga (`purged = 0`), el elemento sigue en la Papelera y el informe dice `log_failed`.
 #[test]
@@ -2266,6 +2335,7 @@ impl RecycleShell for FakeShell {
                 .map(|m| m.identity);
             if now.ok() != Some(items[i].identity) {
                 vetoed.push(recycle::Veto {
+                    owner: None,
                     item: p.clone().into_os_string(),
                     kind: recycle::VetoKind::IdentityMismatch,
                 });

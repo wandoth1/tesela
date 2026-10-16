@@ -692,7 +692,7 @@ impl Cleaner {
                     + out
                         .vetoed
                         .iter()
-                        .filter(|v| wanted.contains(&v.item))
+                        .filter(|v| wanted.contains(v.id()))
                         .count()) as u64;
                 rep.unverifiable = out.unverifiable_bin.len() as u64;
                 // El `E_ABORT` que provoca el propio receptor al vetar no es un fallo de la shell.
@@ -992,7 +992,7 @@ impl Cleaner {
                     let vetoed: HashSet<PathKey> = outcome
                         .vetoed
                         .iter()
-                        .map(|v| PathKey::new(Path::new(&v.item)))
+                        .map(|v| PathKey::new(Path::new(v.id())))
                         .collect();
                     // 3. Juzgar cada elemento por lo que notificó la shell (con el handle de guarda aún abierto).
                     for (it, p) in &entries {
