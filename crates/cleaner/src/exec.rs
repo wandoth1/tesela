@@ -307,8 +307,10 @@ pub enum StopReason {
     DeletedUnexpectedly,
     /// No se pudo comprobar qué pasó con un elemento (la shell no dijo dónde quedó, o no se pudo abrir).
     Unverified,
-    /// La shell dijo que "eliminó" el elemento sin enviarlo a la Papelera (no cabía) pero NO lo tocó: sigue en su sitio. Se
-    /// detiene el envío igual (la shell se comporta de forma inesperada), pero no se afirma que se haya borrado nada.
+    /// La shell dijo que "eliminó" el elemento sin enviarlo a la Papelera (no cabía) pero NO lo tocó: sigue en su sitio, o
+    /// falló con un error, se comprobó que lo dejó intacto y el receptor canceló con ello lo que quedaba de su lote
+    /// (A2-M1). Se detiene el envío igual (la shell se comporta de forma inesperada), pero no se afirma que se haya borrado
+    /// nada.
     ShellDeclined,
     /// Lo que había en la ruta justo antes de que la shell actuara no era lo aprobado (`PreDeleteItem` lo vetó): se detuvo
     /// el envío y no se mandó nada más.
@@ -1073,6 +1075,10 @@ impl Cleaner {
                             && e.hresult == windows::Win32::Foundation::E_ABORT.0;
                         if !own_abort {
                             report.shell_error.get_or_insert(e.hresult);
+                        } else if let Some(f) = outcome.events.iter().find(|ev| !ev.succeeded()) {
+                            // A2-M1: el receptor corta tras un resultado de FALLO y el `E_ABORT` es suyo; el error de la
+                            // shell es el de ese resultado, y no se pierde.
+                            report.shell_error.get_or_insert(f.hr);
                         }
                         if let Some(l) = &opts.log {
                             l.write_note(
@@ -1171,9 +1177,24 @@ impl Cleaner {
                     }
                     // Un veto (o cualquier otro corte del receptor) detiene también lo que queda por enviar.
                     if outcome.sink_aborted && !report.recycle_stopped {
-                        stopped = true;
-                        report.recycle_stopped = true;
-                        report.stop_reason.get_or_insert(StopReason::Changed);
+                        // A2-M1: si el corte lo causó solo el FALLO de un resultado (ni veto ni pérdida: esos ya pararon el
+                        // envío arriba), cancela lo pendiente del MISMO lote (queda como `Stopped`, intacto y comprobado) y
+                        // solo entonces se detiene todo lo demás. Si el fallo fue lo último del lote (siempre, para un
+                        // directorio, que va solo) no había nada pendiente y las operaciones siguientes siguen.
+                        let failure_only = outcome.vetoed.is_empty()
+                            && outcome.events.iter().any(|e| !e.succeeded());
+                        let cancelled_pending = entries
+                            .iter()
+                            .any(|(_, p)| !events.contains_key(&PathKey::new(&p.path)));
+                        if !failure_only || cancelled_pending {
+                            stopped = true;
+                            report.recycle_stopped = true;
+                            report.stop_reason.get_or_insert(if failure_only {
+                                StopReason::ShellDeclined
+                            } else {
+                                StopReason::Changed
+                            });
+                        }
                     }
                     // Aquí se sueltan los handles de guarda de la operación.
                     drop(entries);

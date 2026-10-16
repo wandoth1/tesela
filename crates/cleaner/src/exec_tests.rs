@@ -2398,6 +2398,14 @@ impl RecycleShell for FakeShell {
                 // Mismo nombre, mismo tamaño, OTRO objeto (otro `FileId`).
                 fs::write(&child, vec![9u8; len]).unwrap();
                 BinState::Deleted
+            } else if p
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().contains("deniega"))
+            {
+                // La shell falla con acceso denegado SIN tocar nada (archivo o carpeta): el resultado es un FALLO, sin
+                // elemento nuevo.
+                hr = 0x8007_0005u32 as i32;
+                BinState::Deleted
             } else if intact {
                 // La shell notifica "eliminado" (nulo, con éxito) SIN haber tocado nada (medido con un archivo disperso).
                 BinState::Deleted
@@ -2736,6 +2744,115 @@ fn quitar_un_hijo_y_poner_otro_del_mismo_tamano_no_pasa_por_intacto() {
         (after.fp_sum, after.fp_xor),
         "la huella sí cambia"
     );
+}
+
+/// A2-M1 (la repetición de Astra, a nivel de la operación de la shell): DOS carpetas pequeñas en la misma operación, la
+/// shell pierde un hijo de cada una y devuelve un error. Antes el receptor devolvía éxito tras un fallo, el siguiente
+/// `PreDeleteItem` pasaba y acababan en DOS pérdidas inesperadas. Ahora el fallo de la primera corta el lote: la segunda no
+/// se procesa y conserva todos sus hijos. (La shell simulada usa el receptor real, `SinkCore`.)
+#[test]
+fn con_dos_carpetas_en_la_misma_operacion_un_fallo_con_perdida_parcial_corta_antes_de_la_segunda() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(100_000), 0, "nunca");
+    for d in ["falla1", "falla2"] {
+        sb.write(&format!("Docs/{d}/a.bin"), 100);
+        sb.write(&format!("Docs/{d}/b.bin"), 100);
+    }
+    let items = [
+        recycle::SendItem::capture(&sb.long("Docs/falla1")),
+        recycle::SendItem::capture(&sb.long("Docs/falla2")),
+    ];
+    let out = fake.recycle(&items);
+    assert!(out.sink_aborted, "el fallo cortó el lote");
+    assert_eq!(
+        out.events.len(),
+        1,
+        "la segunda no se procesó: {:?}",
+        out.events
+    );
+    assert_eq!(out.events[0].hr, 0x8007_0005u32 as i32);
+    assert!(out.vetoed.is_empty(), "no es un veto");
+    // La primera perdió un hijo; la segunda, intacta.
+    assert_eq!(sb.count_entries("Docs/falla1"), 1);
+    assert_eq!(sb.count_entries("Docs/falla2"), 2);
+}
+
+/// A2-M1 en el ejecutor: tres archivos pequeños en UNA operación y la shell falla con el segundo (acceso denegado, sin tocar
+/// nada). El receptor corta el lote: el segundo se juzga por lo que es (`Denied`, intacto), el tercero queda sin procesar
+/// (`Stopped`, en su sitio) y el envío se detiene con el motivo "Windows no pudo enviar un elemento y lo dejó intacto". El
+/// error de la shell consta aunque el `E_ABORT` sea del receptor.
+#[test]
+fn un_fallo_a_mitad_de_un_lote_de_archivos_cancela_lo_pendiente_y_detiene_el_envio() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(100_000), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    let plan = plan_de(
+        &sb,
+        &c,
+        &[
+            ("a.bin", 100, 4_096),
+            ("deniega.bin", 100, 4_096),
+            ("c.bin", 100, 4_096),
+        ],
+    );
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    let st = |n: &str| {
+        rep.items
+            .iter()
+            .find(|i| i.path.ends_with(n))
+            .unwrap()
+            .status
+    };
+    assert_eq!(st("a.bin"), ItemStatus::Recycled);
+    assert_eq!(
+        st("deniega.bin"),
+        ItemStatus::NotRecycled(RecycleFail::Denied)
+    );
+    assert_eq!(st("c.bin"), ItemStatus::NotRecycled(RecycleFail::Stopped));
+    assert_eq!(fake.names().len(), 1, "una sola operación");
+    assert!(sb.path("Docs/deniega.bin").exists() && sb.path("Docs/c.bin").exists());
+    assert!(rep.recycle_stopped);
+    assert_eq!(rep.stop_reason, Some(StopReason::ShellDeclined));
+    assert_eq!((rep.deleted_unexpectedly, rep.stopped_items), (0, 1));
+    assert_eq!(
+        rep.shell_error,
+        Some(0x8007_0005u32 as i32),
+        "el error de la shell no se pierde tras el E_ABORT del receptor"
+    );
+}
+
+/// A2-M1: lo contrario. Si el fallo es lo ÚLTIMO de su operación (siempre para una carpeta, que va sola) el corte no cancela
+/// nada pendiente y las operaciones siguientes siguen: una carpeta con acceso denegado (intacta, comprobada) no impide enviar
+/// la que viene después.
+#[test]
+fn un_fallo_de_una_carpeta_que_va_sola_no_detiene_las_operaciones_siguientes() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(100_000), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    sb.write("Docs/deniega-d1/x.bin", 100);
+    sb.write("Docs/d2/y.bin", 100);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/deniega-d1"), c.protection());
+    b.add_path(sb.long("Docs/d2"), c.protection());
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 2, "{:?}", plan.rejected);
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    let st = |n: &str| {
+        rep.items
+            .iter()
+            .find(|i| i.path.ends_with(n))
+            .unwrap()
+            .status
+    };
+    assert_eq!(
+        st("deniega-d1"),
+        ItemStatus::NotRecycled(RecycleFail::Denied)
+    );
+    assert_eq!(st("d2"), ItemStatus::Recycled);
+    assert!(!rep.recycle_stopped);
+    assert_eq!(rep.shell_error, Some(0x8007_0005u32 as i32));
+    assert_eq!(fake.names(), vec![vec!["deniega-d1"], vec!["d2"]]);
+    assert_eq!(sb.count_entries("Docs/deniega-d1"), 1, "intacta");
 }
 
 /// R6 con la shell REAL (solo cosas propias, tras `TESELA_REAL_RECYCLE_TESTS=1`): una carpeta con un disperso enorme (que no

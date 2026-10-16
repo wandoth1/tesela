@@ -41,8 +41,10 @@
 //!   directorio nunca viaja con otros: va solo y se mide justo antes de entregarlo. RESIDUAL: lo que crece mientras la propia
 //!   operación de la shell está en marcha (entre ese `PreDeleteItem` y el movimiento real).
 //! * `PostDeleteItem` (M2) registra el evento PRIMERO y, si la shell eliminó definitivamente (`psiNewlyCreated` nulo) o no
-//!   dijo dónde quedó, devuelve `E_ABORT`: el primer borrado inesperado ya no arrastra al resto del lote.
-//!   Solo al ENVIAR; al purgar la Papelera el borrado definitivo es lo esperado y no corta.
+//!   dijo dónde quedó, devuelve `E_ABORT`: el primer borrado inesperado ya no arrastra al resto del lote. (A2-M1) Un
+//!   resultado de FALLO (`hrDelete < 0`) corta igual: puede haber una pérdida parcial detrás y no se puede garantizar que lo
+//!   siguiente no sufra lo mismo. Solo al ENVIAR; al purgar la Papelera el borrado definitivo es lo esperado, cada elemento
+//!   es independiente y un fallo no corta (no se cambió: la purga no tiene "pérdida parcial" que evitar).
 //!
 //! # La purga de la Papelera (A-M4)
 //! Los elementos de la lista se verifican por identidad (`$R` y `$I`) al enumerar y la shell actúa después. Para cerrar esa
@@ -669,10 +671,16 @@ fn bin_state(newly_created: Option<Option<PathBuf>>) -> BinState {
 }
 
 /// ¿Debe el receptor cortar el lote tras este `PostDeleteItem`? Solo al ENVIAR (`sending`: al purgar el borrado
-/// definitivo es lo esperado) y solo si la shell dijo que fue bien pero el elemento no está verificablemente en la
-/// Papelera: eliminado definitivamente (`Deleted`) o sin ruta (`InBinUnknownPath`). Pura.
+/// definitivo es lo esperado y cada elemento es independiente) y en dos casos:
+/// * la shell dijo que fue bien pero el elemento no está verificablemente en la Papelera: eliminado definitivamente
+///   (`Deleted`) o sin ruta (`InBinUnknownPath`);
+/// * (A2-M1) el resultado es un FALLO (`hrdelete < 0`): un fallo no prueba que la shell no tocara nada (puede haber perdido
+///   un hijo de una carpeta antes de fallar) y no hay forma de garantizar que lo siguiente del lote no sufra lo mismo; se
+///   corta lo pendiente por precaución. El ejecutor juzga después el elemento fallido por su objeto y su contenido.
+///
+/// Pura.
 fn post_delete_aborts(sending: bool, hrdelete: i32, state: &BinState) -> bool {
-    sending && hrdelete >= 0 && matches!(state, BinState::Deleted | BinState::InBinUnknownPath)
+    sending && (hrdelete < 0 || matches!(state, BinState::Deleted | BinState::InBinUnknownPath))
 }
 
 /// La lógica del receptor SIN COM (así se prueba en cualquier equipo): `Recorder` solo traduce los argumentos de la shell
@@ -2884,12 +2892,23 @@ mod tests {
         assert!(post_delete_aborts(true, ok, &BinState::InBinUnknownPath));
         assert!(post_delete_aborts(true, 0x0027_0003, &BinState::Deleted));
         assert!(!post_delete_aborts(true, ok, &BinState::InBin(p)));
-        // Si la shell falló, no se corta por esto (el fallo ya consta como error del elemento).
-        assert!(!post_delete_aborts(true, fail, &BinState::Deleted));
-        assert!(!post_delete_aborts(true, fail, &BinState::InBinUnknownPath));
-        // Al PURGAR el borrado definitivo es lo esperado: nunca corta.
+        // A2-M1: un FALLO también corta al enviar, sea cual sea el estado: no prueba que la shell no tocara nada.
+        assert!(post_delete_aborts(true, fail, &BinState::Deleted));
+        assert!(post_delete_aborts(true, fail, &BinState::InBinUnknownPath));
+        let in_bin = |n: &str| BinState::InBin(PathBuf::from(format!(r"C:\$Recycle.Bin\S\{n}")));
+        assert!(post_delete_aborts(true, fail, &in_bin("$R2")));
+        assert!(post_delete_aborts(true, i32::MIN, &BinState::Deleted));
+        // Un código de ÉXITO con facilidad (positivo, como `0x00270003`) no es un fallo.
+        assert!(!post_delete_aborts(true, 0x0027_0008, &in_bin("$R3")));
+        // Al PURGAR el borrado definitivo y los fallos son lo esperado de cada elemento: nunca corta.
         assert!(!post_delete_aborts(false, ok, &BinState::Deleted));
         assert!(!post_delete_aborts(false, ok, &BinState::InBinUnknownPath));
+        assert!(!post_delete_aborts(false, fail, &BinState::Deleted));
+        assert!(!post_delete_aborts(
+            false,
+            fail,
+            &BinState::InBinUnknownPath
+        ));
     }
 
     /// El receptor de un ENVÍO con la guarda de estos elementos.
@@ -3004,6 +3023,42 @@ mod tests {
         sb.write("z/carpeta/hijo.txt", 1 << 20);
         let g3 = Guard::new(std::slice::from_ref(&dir));
         assert_eq!(g3.check(&os(&dir.path)), Ok(()));
+    }
+
+    /// A2-M1 (sin COM): un lote con DOS carpetas pequeñas. La shell pierde un hijo de la primera y notifica un fallo
+    /// (`E_ACCESSDENIED`, sin elemento nuevo): el receptor registra el evento, corta, y la segunda carpeta ya no recibe
+    /// `PreDeleteItem` (la shell no la procesa). Antes un fallo devolvía éxito: el siguiente pasaba y podía perder también un
+    /// hijo.
+    #[test]
+    fn un_fallo_en_la_primera_carpeta_del_lote_corta_antes_de_la_segunda() {
+        let sb = Sandbox::new();
+        sb.write("q/c1/a.bin", 100);
+        sb.write("q/c2/a.bin", 100);
+        let c1 = SendItem::capture(&sb.long("q/c1"));
+        let c2 = SendItem::capture(&sb.long("q/c2"));
+        let core = core_for(&[c1.clone(), c2.clone()]);
+        let os = |p: &Path| p.as_os_str().to_os_string();
+        assert!(core.pre_delete(os(&c1.path)));
+        let denied = 0x8007_0005u32 as i32;
+        assert!(
+            core.post_delete(os(&c1.path), denied, BinState::Deleted),
+            "el fallo corta el lote"
+        );
+        assert!(core.state.tripped.load(Ordering::SeqCst));
+        {
+            let ev = core.events.lock().unwrap();
+            assert_eq!(ev.len(), 1, "el evento consta antes de cortar");
+            assert_eq!(ev[0].hr, denied);
+        }
+        assert!(
+            !core.pre_delete(os(&c2.path)),
+            "la segunda carpeta no se procesa"
+        );
+        assert_eq!(core.events.lock().unwrap().len(), 1);
+        assert!(
+            core.state.vetoes.lock().unwrap().is_empty(),
+            "no es un veto"
+        );
     }
 
     /// A2-B1 (sin COM): el receptor veta al archivo que creció, corta el lote y lo anota con su motivo; los anteriores ya
@@ -3152,16 +3207,28 @@ mod tests {
             ev[0].state
         );
         assert_eq!(ev[1].state, BinState::Deleted);
-        // Con un FALLO de la shell (y nulo) no se corta, pero consta.
-        let (sink, events, state) = com_sink(Guard::new(std::slice::from_ref(&a)));
+        // A2-M1: con un FALLO de la shell (y nulo) SÍ se corta (antes devolvía éxito y dejaba pasar el siguiente
+        // `PreDeleteItem`), y consta. Es la repetición de Astra: `PostDeleteItem(E_ACCESSDENIED, NULL)`.
+        let (sink, events, state) = com_sink(Guard::new(&[a.clone(), b.clone()]));
         // SAFETY: igual que arriba.
         unsafe {
             let fail = HRESULT(0x8007_0005u32 as i32);
             let r = sink.PostDeleteItem(0, &shell_item(&a.path), fail, None::<&IShellItem>);
-            assert!(r.is_ok(), "un fallo no corta por esto");
-            assert!(!state.tripped.load(Ordering::SeqCst));
+            assert!(is_abort(r), "un fallo corta el lote con E_ABORT");
+            assert!(state.tripped.load(Ordering::SeqCst));
+            // Y lo siguiente del lote, que es lo aprobado, se niega.
+            assert!(is_abort(sink.PreDeleteItem(0, &shell_item(&b.path))));
         }
         assert_eq!(events.lock().unwrap()[0].hr, 0x8007_0005u32 as i32);
+        // Un fallo con elemento en la Papelera (hr < 0 pero `psiNewlyCreated` dado) corta igual.
+        let (sink, _events, state) = com_sink(Guard::new(std::slice::from_ref(&a)));
+        // SAFETY: igual que arriba.
+        unsafe {
+            let fail = HRESULT(0x8007_0020u32 as i32);
+            let r = sink.PostDeleteItem(0, &shell_item(&a.path), fail, &shell_item(&dest));
+            assert!(is_abort(r));
+            assert!(state.tripped.load(Ordering::SeqCst));
+        }
         // Al PURGAR, el borrado definitivo es lo esperado: se registra y no se corta.
         let pi = synthetic_bin_item(&sb, "PPPP05", b"x");
         let (sink, events, state) = com_sink(Guard::purge(&[&pi]));
