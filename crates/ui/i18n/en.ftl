@@ -53,6 +53,7 @@ error-scan-root-missing = the path does not exist or is not available
 error-scan-root-denied = you do not have permission to open that path
 error-scan-root = the path cannot be opened ({ $detail })
 error-scan-not-dir = the path is not a folder or a drive
+error-scan-root-link = the chosen folder is a link (junction or symlink); Tesela does not follow links. Choose the target folder
 error-scan-panicked = a scan thread failed unexpectedly
 error-scan-startup-lost = the start of the scan was interrupted
 error-scan-cancelled = the scan was cancelled

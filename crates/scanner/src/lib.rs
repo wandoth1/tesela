@@ -112,6 +112,9 @@ pub enum ScanError {
     Root(std::io::Error),
     /// La raíz no es un directorio.
     NotADirectory(PathBuf),
+    /// La raíz es un enlace (junction, symlink de carpeta o punto de montaje) y los enlaces no se siguen: hay que elegir la
+    /// carpeta de destino. Lleva la ruta del propio enlace.
+    RootIsLink(PathBuf),
     /// Algún hilo entró en pánico (es un error del programa).
     Panicked,
 }
@@ -121,6 +124,10 @@ impl std::fmt::Display for ScanError {
         match self {
             ScanError::Root(e) => write!(f, "cannot open the scan root: {e}"),
             ScanError::NotADirectory(_) => write!(f, "the scan root is not a directory"),
+            ScanError::RootIsLink(_) => write!(
+                f,
+                "the scan root is a link (junction, symbolic link or mount point) and links are not followed"
+            ),
             ScanError::Panicked => write!(f, "a scanner thread panicked"),
         }
     }
@@ -330,16 +337,11 @@ fn drive_of(p: &Path) -> Option<PathBuf> {
     }
 }
 
-/// Mensaje técnico de la raíz que es un enlace (junction, symlink de carpeta o punto de montaje). La biblioteca no
-/// escribe frases para el usuario: la interfaz la muestra como el detalle de "no se puede abrir la ruta".
-const ROOT_IS_LINK: &str = "the scan root is a link (junction, symbolic link or mount point) and links are not followed: choose the folder it points to";
-
 /// Arranca un escaneo. La preparación (abrir y listar la raíz, resolver las rutas prioritarias) es síncrona, así que
 /// los errores de la raíz se devuelven aquí; el resto corre en hilos y se sigue con [`ScanHandle`].
 ///
 /// La ruta que da el usuario se abre SIN seguir su reparse point final y se clasifica con `classify::root_plan` ANTES de
-/// resolver nada: una raíz que es un junction, un symlink de carpeta o un punto de montaje se RECHAZA (`ScanError::Root`
-/// con `ErrorKind::Unsupported`) en vez de recorrer su destino, igual que los enlaces que cuelgan de la raíz no se
+/// resolver nada: una raíz que es un junction, un symlink de carpeta o un punto de montaje se RECHAZA (`ScanError::RootIsLink`) en vez de recorrer su destino, igual que los enlaces que cuelgan de la raíz no se
 /// siguen. Solo después se calcula la ruta canónica, SOBRE ESE MISMO handle (sin una segunda apertura que siga el enlace
 /// y sin carrera entre comprobar y resolver). Las carpetas de la nube se recorren con su filtro, como siempre; los
 /// componentes intermedios que sean enlaces los resuelve el sistema (es una ruta, no un enlace elegido). Un volumen
@@ -356,10 +358,7 @@ pub fn start(opts: ScanOptions) -> Result<ScanHandle, ScanError> {
     }
     let plan = classify::root_plan(root_meta.attrs, root_meta.reparse_tag);
     if plan.zero_size {
-        return Err(ScanError::Root(std::io::Error::new(
-            std::io::ErrorKind::Unsupported,
-            ROOT_IS_LINK,
-        )));
+        return Err(ScanError::RootIsLink(root));
     }
     let root_w = sys::wide(&root);
     let display_root = dunce::simplified(&root).to_path_buf();

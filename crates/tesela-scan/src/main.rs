@@ -432,6 +432,10 @@ fn explain(e: &tesela_scanner::ScanError) -> String {
     match e {
         ScanError::Root(io) => format!("no se puede abrir la ruta a escanear: {io}"),
         ScanError::NotADirectory(_) => "la ruta a escanear no es un directorio".into(),
+        ScanError::RootIsLink(_) => {
+            "la ruta a escanear es un enlace (junction o symlink) y los enlaces no se siguen: elige la carpeta de destino"
+                .into()
+        }
         ScanError::Panicked => "un hilo del escáner entró en pánico".into(),
     }
 }

@@ -589,10 +589,10 @@ fn cancelar_durante_el_arranque_omite_la_resolucion_de_las_rutas_prioritarias() 
     assert!(r.summary.priority.is_empty());
 }
 
-/// El error de una raíz que es un enlace: `Root` con `ErrorKind::Unsupported` (no `NotFound`: la raíz se abrió, y se abrió
-/// ELLA, no su destino).
+/// El error de una raíz que es un enlace: `RootIsLink` (no `Root(NotFound)`: la raíz se abrió, y se abrió ELLA, no su
+/// destino).
 fn es_raiz_enlace<T>(r: &Result<T, tesela_scanner::ScanError>) -> bool {
-    matches!(r, Err(tesela_scanner::ScanError::Root(e)) if e.kind() == std::io::ErrorKind::Unsupported)
+    matches!(r, Err(tesela_scanner::ScanError::RootIsLink(_)))
 }
 
 #[test]
