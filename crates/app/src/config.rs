@@ -80,6 +80,38 @@ pub fn config_path() -> Option<PathBuf> {
     Some(PathBuf::from(appdata).join("Tesela").join("config.toml"))
 }
 
+/// Configuración de ESTA sesión y dónde se guarda.
+pub struct Session {
+    pub config: Config,
+    /// `None` = no se guarda en ningún sitio.
+    pub path: Option<PathBuf>,
+}
+
+impl Session {
+    /// Sesión AISLADA (la demostración y las herramientas de medición): valores por defecto en memoria; no lee ni escribe nada
+    /// bajo `%APPDATA%`. La sesión normal lee `config.toml` y lo guarda al cambiar un ajuste y al salir.
+    pub fn new(isolated: bool) -> Session {
+        Session::with_path(isolated, config_path())
+    }
+
+    /// Igual que [`Session::new`] con la ruta de `config.toml` inyectada (las pruebas no tocan el entorno del proceso).
+    pub fn with_path(isolated: bool, path: Option<PathBuf>) -> Session {
+        if isolated {
+            return Session {
+                config: Config::default(),
+                path: None,
+            };
+        }
+        let config = path.as_deref().map(Config::load).unwrap_or_default();
+        Session { config, path }
+    }
+
+    /// ¿Se guarda algo? Solo la sesión normal.
+    pub fn persists(&self) -> bool {
+        self.path.is_some()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -112,6 +144,28 @@ mod tests {
         let d = std::env::temp_dir().join(format!("tesela-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&d).unwrap();
         TempDir(d)
+    }
+
+    #[test]
+    fn la_sesion_aislada_ni_lee_ni_guarda() {
+        let dir = temp_dir();
+        let path = dir.join("Tesela").join("config.toml");
+        // Hay una configuración guardada: la sesión aislada la ignora (valores por defecto) y no tiene dónde guardar.
+        Config {
+            window_width: Some(1234.0),
+            ..Config::default()
+        }
+        .save(&path)
+        .unwrap();
+        let aislada = Session::with_path(true, Some(path.clone()));
+        assert_eq!(aislada.config, Config::default());
+        assert!(aislada.path.is_none() && !aislada.persists());
+        // La normal sí la lee y guarda en esa ruta.
+        let normal = Session::with_path(false, Some(path.clone()));
+        assert_eq!(normal.config.window_width, Some(1234.0));
+        assert_eq!(normal.path.as_deref(), Some(path.as_path()));
+        assert!(normal.persists());
+        assert!(!Session::with_path(false, None).persists());
     }
 
     #[test]
