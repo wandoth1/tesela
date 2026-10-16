@@ -13,9 +13,15 @@
     * version, UpgradeCode fijo, nombre y editor, propiedades de Aplicaciones instaladas;
     * por usuario: sin ALLUSERS (o ALLUSERS=2 con MSIINSTALLPERUSER=1) y bit "no hace falta elevar" del Summary Information;
     * exactamente los 5 archivos esperados y componentes solo en la carpeta de instalacion y el menu Inicio;
-    * registro solo en HKCU\Software\Tesela; carpetas solo del perfil del usuario; RemoveFile solo con las dos filas
-      esperadas y sin nombre de archivo; busqueda de registro de InstallFolder de tipo 18;
-    * un acceso directo del menu Inicio, un icono, MajorUpgrade y bloqueo de versiones anteriores.
+    * registro solo en HKCU\Software\Tesela; RemoveFile solo con las dos filas esperadas y sin nombre de archivo;
+      busqueda de registro de InstallFolder de tipo 18;
+    * el arbol de carpetas EXACTO ($MsiExpectedDirectories: cada Directory con su Directory_Parent y, donde se fija el
+      nombre, su DefaultDir) y los componentes solo en la carpeta de instalacion y el menu Inicio;
+    * un acceso directo del menu Inicio, un icono;
+    * MajorUpgrade y bloqueo de versiones anteriores, con valores exactos (ver $MsiExpectedUpgradeRows): las dos filas de la
+      tabla Upgrade (UpgradeCode, VersionMin/VersionMax, idioma, Attributes y ActionProperty), la LaunchCondition
+      `NOT WIX_DOWNGRADE_DETECTED` con su mensaje, FindRelatedProducts y LaunchConditions sin condicion en las dos
+      secuencias de instalacion y RemoveExistingProducts (sin condicion) en InstallExecuteSequence.
 
   El script es solo ASCII a proposito (Windows PowerShell 5.1 lee los .ps1 sin BOM como ANSI).
 #>
@@ -24,6 +30,38 @@
 # accidental en el .wxs rompa la validacion.
 $MsiExpectedUpgradeCode = '{7E8F4B67-A7D4-415B-9F8F-2E0B88AA88BB}'
 $MsiExpectedFiles = @('tesela.exe', 'tesela-scan.exe', 'LICENSE-MIT', 'LICENSE-APACHE', 'THIRD-PARTY-NOTICES.md')
+# Arbol de carpetas EXACTO de un MSI de Tesela (Directory -> Directory_Parent), tal como lo genera installer/Tesela.wxs
+# (StandardDirectory LocalAppDataFolder > Directory ProgramsFolder "Programs" > Directory INSTALLFOLDER "Tesela" y
+# StandardDirectory ProgramMenuFolder). Todo cuelga de TARGETDIR por el perfil del usuario: nada de ProgramFiles ni de otra
+# unidad. DefaultDir solo se fija donde el .wxs pone el nombre ($null = no se comprueba: son los nombres cortos que WiX da a
+# las carpetas estandar, `LocalApp`, `PMenu`, `SourceDir`, y no son decision de Tesela).
+$MsiExpectedDirectories = @(
+    @{ Id = 'TARGETDIR'; Parent = ''; DefaultDir = $null },
+    @{ Id = 'LocalAppDataFolder'; Parent = 'TARGETDIR'; DefaultDir = $null },
+    @{ Id = 'ProgramsFolder'; Parent = 'LocalAppDataFolder'; DefaultDir = 'Programs' },
+    @{ Id = 'INSTALLFOLDER'; Parent = 'ProgramsFolder'; DefaultDir = 'Tesela' },
+    @{ Id = 'ProgramMenuFolder'; Parent = 'TARGETDIR'; DefaultDir = $null }
+)
+
+# Filas EXACTAS de la tabla Upgrade que genera <MajorUpgrade AllowSameVersionUpgrades="yes"> de installer/Tesela.wxs. `V` es
+# la version del producto (ProductVersion del MSI), por eso VersionMin/VersionMax no son una cadena fija. Las dos filas llevan
+# UpgradeCode = $MsiExpectedUpgradeCode y Language = 1033 (el idioma del paquete: solo se detectan versiones en ese idioma).
+#   * Reemplazar (ActionProperty WIX_UPGRADE_DETECTED): VersionMin vacio y VersionMax = V, Attributes = 513 = 1 + 512:
+#       1   msidbUpgradeAttributesMigrateFeatures     conserva la seleccion de caracteristicas de la version vieja;
+#       512 msidbUpgradeAttributesVersionMaxInclusive el limite superior V cuenta (AllowSameVersionUpgrades: reinstalar la
+#           MISMA version tambien reemplaza; por eso build-msi.ps1 acepta el aviso ICE61).
+#     Es decir: toda version <= V se desinstala al instalar esta (RemoveExistingProducts).
+#   * Bloquear versiones posteriores (ActionProperty WIX_DOWNGRADE_DETECTED): VersionMin = V y VersionMax vacio, Attributes =
+#     2 = msidbUpgradeAttributesOnlyDetect (solo marca la propiedad, no desinstala NADA). Sin el bit 256
+#     (VersionMinInclusive) el limite inferior no cuenta: version > V estricta. La LaunchCondition `NOT WIX_DOWNGRADE_DETECTED`
+#     convierte esa deteccion en un error con mensaje.
+# Ninguna lleva Remove (que borraria caracteristicas concretas) ni el bit 1024 (idiomas excluyentes).
+$MsiExpectedUpgradeRows = @(
+    @{ Name = 'reemplazar versiones anteriores'; ActionProperty = 'WIX_UPGRADE_DETECTED'; Min = ''; MaxIsVersion = $true; Attributes = '513' },
+    @{ Name = 'bloquear versiones posteriores'; ActionProperty = 'WIX_DOWNGRADE_DETECTED'; Min = 'V'; MaxIsVersion = $false; Attributes = '2' }
+)
+$MsiExpectedLanguage = '1033'
+$MsiExpectedLaunchCondition = 'NOT WIX_DOWNGRADE_DETECTED'
 # Lista CERRADA de tablas de un MSI de Tesela. Una tabla que no esta aqui es un fallo, tenga o no filas.
 $MsiAllowedTables = @(
     '_Validation', 'AdminExecuteSequence', 'AdminUISequence', 'AdvtExecuteSequence', 'AppSearch', 'Component', 'Directory', 'Feature',
@@ -133,9 +171,19 @@ function Test-MsiPackage {
         }
         if ($reg.Count -eq 0) { $problems.Add('no hay valores de registro (los componentes por usuario los necesitan como KeyPath)') }
 
-        $allowedDirs = @('TARGETDIR', 'LocalAppDataFolder', 'ProgramsFolder', 'INSTALLFOLDER', 'ProgramMenuFolder')
-        foreach ($d in (Get-MsiRows $msi 'SELECT `Directory`, `Directory_Parent` FROM `Directory`' 2)) {
-            if ($allowedDirs -notcontains $d[0]) { $problems.Add("carpeta fuera del perfil del usuario: $($d[0])") }
+        # Carpetas: el arbol EXACTO (cada Directory con su Directory_Parent) y, donde el .wxs fija el nombre, su DefaultDir
+        # (que puede ser "corto|largo": el nombre largo es el ultimo trozo).
+        $dirs = @(Get-MsiRows $msi 'SELECT `Directory`, `Directory_Parent`, `DefaultDir` FROM `Directory`' 3)
+        $expectedIds = @($MsiExpectedDirectories | ForEach-Object { $_.Id })
+        foreach ($d in $dirs) {
+            if ($expectedIds -notcontains $d[0]) { $problems.Add("carpeta fuera del perfil del usuario: $($d[0])") }
+        }
+        foreach ($e in $MsiExpectedDirectories) {
+            $found = @($dirs | Where-Object { $_[0] -eq $e.Id })
+            if ($found.Count -ne 1) { $problems.Add("carpeta $($e.Id): hay $($found.Count) filas en la tabla Directory, se esperaba 1"); continue }
+            if ($found[0][1] -ne $e.Parent) { $problems.Add("carpeta $($e.Id): Directory_Parent = '$($found[0][1])', se esperaba '$($e.Parent)'") }
+            $leafName = ($found[0][2] -split '\|')[-1]
+            if ($null -ne $e.DefaultDir -and $leafName -ne $e.DefaultDir) { $problems.Add("carpeta $($e.Id): DefaultDir = '$($found[0][2])', se esperaba '$($e.DefaultDir)'") }
         }
         foreach ($c in (Get-MsiRows $msi 'SELECT `Component`, `Directory_` FROM `Component`' 2)) {
             if (@('INSTALLFOLDER', 'ProgramMenuFolder') -notcontains $c[1]) { $problems.Add("componente $($c[0]) en $($c[1])") }
@@ -148,10 +196,62 @@ function Test-MsiPackage {
         $icons = @(Get-MsiRows $msi 'SELECT `Name` FROM `Icon`' 1)
         if ($icons.Count -ne 1) { $problems.Add("se esperaba 1 icono en el MSI; hay $($icons.Count)") }
 
-        $up = @(Get-MsiRows $msi 'SELECT `UpgradeCode`, `VersionMin`, `VersionMax`, `Attributes`, `ActionProperty` FROM `Upgrade`' 5)
-        if (@($up | Where-Object { $_[0] -eq $MsiExpectedUpgradeCode }).Count -lt 2) { $problems.Add('falta MajorUpgrade (tabla Upgrade): una fila para las versiones anteriores y otra para detectar una anterior') }
+        # MajorUpgrade: las dos filas EXACTAS de la tabla Upgrade (ver $MsiExpectedUpgradeRows y su explicacion).
+        $up = @(Get-MsiRows $msi 'SELECT `UpgradeCode`, `VersionMin`, `VersionMax`, `Language`, `Attributes`, `Remove`, `ActionProperty` FROM `Upgrade`' 7)
+        if ($up.Count -ne $MsiExpectedUpgradeRows.Count) { $problems.Add("la tabla Upgrade tiene $($up.Count) filas, se esperaban $($MsiExpectedUpgradeRows.Count) (MajorUpgrade)") }
+        foreach ($e in $MsiExpectedUpgradeRows) {
+            $rows = @($up | Where-Object { $_[6] -eq $e.ActionProperty })
+            if ($rows.Count -ne 1) { $problems.Add("falta la fila de Upgrade para $($e.Name) (ActionProperty $($e.ActionProperty)): hay $($rows.Count)"); continue }
+            $r = $rows[0]
+            $min = if ($e.Min -eq 'V') { $ExpectedVersion } else { $e.Min }
+            $max = if ($e.MaxIsVersion) { $ExpectedVersion } else { '' }
+            if ($r[0] -ne $MsiExpectedUpgradeCode) { $problems.Add("Upgrade ($($e.Name)): UpgradeCode = '$($r[0])'") }
+            if ($r[1] -ne $min) { $problems.Add("Upgrade ($($e.Name)): VersionMin = '$($r[1])', se esperaba '$min'") }
+            if ($r[2] -ne $max) { $problems.Add("Upgrade ($($e.Name)): VersionMax = '$($r[2])', se esperaba '$max'") }
+            if ($r[3] -ne $MsiExpectedLanguage) { $problems.Add("Upgrade ($($e.Name)): Language = '$($r[3])', se esperaba '$MsiExpectedLanguage'") }
+            if ($r[4] -ne $e.Attributes) { $problems.Add("Upgrade ($($e.Name)): Attributes = '$($r[4])', se esperaba '$($e.Attributes)'") }
+            if ($r[5] -ne '') { $problems.Add("Upgrade ($($e.Name)): Remove = '$($r[5])', se esperaba vacio") }
+        }
+        # Bloqueo de versiones posteriores: UNA LaunchCondition exacta, con su mensaje.
         $lc = @(Get-MsiRows $msi 'SELECT `Condition`, `Description` FROM `LaunchCondition`' 2)
-        if (-not @($lc | Where-Object { $_[0] -like '*WIX_DOWNGRADE_DETECTED*' -and $_[1] })) { $problems.Add('falta el bloqueo de versiones anteriores con su mensaje (LaunchCondition)') }
+        if ($lc.Count -ne 1 -or $lc[0][0] -ne $MsiExpectedLaunchCondition) {
+            $problems.Add("se esperaba UNA LaunchCondition '$MsiExpectedLaunchCondition'; hay: " + (($lc | ForEach-Object { "'$($_[0])'" }) -join ', '))
+        } elseif ([string]::IsNullOrWhiteSpace($lc[0][1])) {
+            $problems.Add('la LaunchCondition de versiones posteriores no tiene mensaje')
+        }
+        # Para que lo anterior SURTA EFECTO: FindRelatedProducts (rellena las propiedades de la tabla Upgrade) y LaunchConditions
+        # (evalua la condicion) tienen que estar, sin condicion, en las dos secuencias de instalacion, y RemoveExistingProducts
+        # (la desinstalacion de la version anterior) sin condicion en la de ejecucion y entre InstallValidate e InstallInitialize
+        # (el programa "afterInstallValidate" de MajorUpgrade).
+        $seq = @{}
+        foreach ($t in 'InstallExecuteSequence', 'InstallUISequence') {
+            $seq[$t] = @{}
+            foreach ($r in (Get-MsiRows $msi ('SELECT `Action`, `Condition`, `Sequence` FROM `' + $t + '`') 3)) { $seq[$t][$r[0]] = $r }
+        }
+        foreach ($t in 'InstallExecuteSequence', 'InstallUISequence') {
+            foreach ($a in 'FindRelatedProducts', 'LaunchConditions') {
+                if (-not $seq[$t].ContainsKey($a)) { $problems.Add("falta $a en $t (sin el, el bloqueo o la deteccion de versiones no se evalua)") }
+                elseif ($seq[$t][$a][1] -ne '') { $problems.Add("$a en ${t} lleva la condicion '$($seq[$t][$a][1])' (tiene que ser incondicional)") }
+            }
+        }
+        $ies = $seq['InstallExecuteSequence']
+        if (-not $ies.ContainsKey('RemoveExistingProducts')) {
+            $problems.Add('falta RemoveExistingProducts en InstallExecuteSequence (MajorUpgrade no desinstalaria la version anterior)')
+        } else {
+            $rep = $ies['RemoveExistingProducts']
+            if ($rep[1] -ne '') { $problems.Add("RemoveExistingProducts lleva la condicion '$($rep[1])' (tiene que ser incondicional)") }
+            $lo = if ($ies.ContainsKey('InstallValidate')) { [int]$ies['InstallValidate'][2] } else { $null }
+            $hi = if ($ies.ContainsKey('InstallInitialize')) { [int]$ies['InstallInitialize'][2] } else { $null }
+            if ($null -eq $lo -or $null -eq $hi -or [int]$rep[2] -le $lo -or [int]$rep[2] -ge $hi) {
+                $problems.Add("RemoveExistingProducts (secuencia $($rep[2])) tiene que ir entre InstallValidate e InstallInitialize")
+            }
+        }
+        # Las dos propiedades que rellena la tabla Upgrade tienen que figurar en SecureCustomProperties (propiedades publicas
+        # restringidas: sin ello Windows Installer no las conserva al pasar de la fase de interfaz a la de ejecucion).
+        $secure = @(($props['SecureCustomProperties'] -split ';') | Where-Object { $_ })
+        foreach ($a in 'WIX_UPGRADE_DETECTED', 'WIX_DOWNGRADE_DETECTED') {
+            if ($secure -notcontains $a) { $problems.Add("SecureCustomProperties no incluye $a (tiene: '$($props['SecureCustomProperties'])')") }
+        }
 
         # RemoveFile: SOLO las dos filas esperadas (quitar INSTALLFOLDER y ProgramsFolder si quedan vacias), sin nombre de
         # archivo: una fila con FileName (p. ej. *.*) borraria archivos del usuario al desinstalar.
