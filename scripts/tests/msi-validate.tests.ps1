@@ -276,3 +276,6 @@ if ($failures.Count -gt 0) {
     exit 1
 }
 Write-Host "msi-validate.tests: OK ($total comprobaciones)"
+# Salida EXPLICITA: un comando externo anterior (dotnet, git, wix...) deja su codigo en $LASTEXITCODE y GitHub Actions (pwsh -command)
+# lo usa como codigo del paso aunque aqui todo haya ido bien.
+exit 0
