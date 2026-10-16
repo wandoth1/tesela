@@ -844,7 +844,6 @@ impl Cleaner {
                         break;
                     }
                     // El primero de la cola se mide ahora (justo antes de decidir su operación): si creció, no se envía.
-                    let mut first_measured = false;
                     if let Some((it, p)) = slots[first].as_mut() {
                         let mut st = StatsSnapshot::default();
                         if let Err((status, o)) = self.fresh_size(it, p, &mut st, cancel) {
@@ -854,7 +853,6 @@ impl Cleaner {
                             queue.pop_front();
                             continue;
                         }
-                        first_measured = true;
                     }
                     let sizes: Vec<u64> = queue
                         .iter()
@@ -883,22 +881,18 @@ impl Cleaner {
                         Take::Send(n) => n,
                     };
                     // A-B1: los candidatos de la operación se miden DE NUEVO ahora, justo antes de entregarla (archivos por
-                    // su handle de guarda; directorios con el recorrido, salvo el primero, que se midió hace un instante).
-                    // Lo que creció desde la última medida no se envía.
+                    // su handle de guarda; directorios con el recorrido). Lo que creció desde la última medida no se envía.
+                    // El PRIMERO se mide el ÚLTIMO (s-1): ya se midió arriba para decidir el grupo, pero mientras se medían los
+                    // demás pudo crecer; así queda el menor tiempo posible entre su medida y la entrega a la shell.
                     let mut staged: Vec<(usize, &PlanItem, Pending)> = Vec::new();
-                    let candidates: Vec<usize> = queue.drain(..n).collect();
+                    let mut candidates: Vec<usize> = queue.drain(..n).collect();
+                    candidates.sort_by_key(|&i| i == first);
                     for i in candidates {
                         let Some((it, mut p)) = slots[i].take() else {
                             continue;
                         };
                         let mut st = StatsSnapshot::default();
-                        let skip = first_measured && i == first && it.is_dir();
-                        let r = if skip {
-                            Ok(())
-                        } else {
-                            self.fresh_size(it, &mut p, &mut st, cancel)
-                        };
-                        match r {
+                        match self.fresh_size(it, &mut p, &mut st, cancel) {
                             Ok(()) => staged.push((i, it, p)),
                             Err((status, o)) => {
                                 emit(it, None, 0, o);
@@ -909,6 +903,8 @@ impl Cleaner {
                     if staged.is_empty() {
                         continue;
                     }
+                    // El orden de la operación es el de la cola.
+                    staged.sort_by_key(|s| s.0);
                     // ...y se vuelve a comprobar el presupuesto con los tamaños y la ocupación de AHORA: lo que ya no cabe
                     // en la operación vuelve al principio de la cola (se medirá otra vez cuando le toque).
                     let room_now = vol

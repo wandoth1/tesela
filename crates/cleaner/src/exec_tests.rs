@@ -3088,6 +3088,80 @@ fn el_directorio_se_mide_justo_antes_de_su_operacion_no_al_preparar_el_trozo() {
     );
 }
 
+/// A-B1 / M-1: un SEGUNDO directorio de la misma operación que crece mientras se mide el primero no se envía. (Antes de esta
+/// prueba, que los candidatos no primeros no se volvieran a medir —`let skip = true`— sobrevivía a todas las demás.)
+#[test]
+fn un_segundo_directorio_de_la_misma_operacion_que_crece_no_se_envia() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    sb.write("Docs/d1/x1.bin", 1_000);
+    sb.write("Docs/d2/y1.bin", 1_000);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/d1"), c.protection());
+    b.add_path(sb.long("Docs/d2"), c.protection());
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 2, "{:?}", plan.rejected);
+    let grow = sb.path("Docs/d2/crece.bin");
+    // Mientras se mide d1 (el primero), d2 crece.
+    let _hook = crate::engine::test_hooks::install(sb.long("Docs"), move |q| {
+        if q.ends_with("x1.bin") {
+            fs::write(&grow, vec![1u8; 1 << 20]).unwrap();
+        }
+    });
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    let st = |n: &str| {
+        rep.items
+            .iter()
+            .find(|i| i.path.ends_with(n))
+            .unwrap()
+            .status
+    };
+    assert_eq!(st("d1"), ItemStatus::Recycled);
+    assert_eq!(
+        st("d2"),
+        ItemStatus::Root(crate::engine::RootStatus::Changed)
+    );
+    assert_eq!(fake.names(), vec![vec!["d1"]]);
+}
+
+/// s-1: el PRIMER directorio de una operación se vuelve a medir el último, justo antes de entregarla: si crece mientras se
+/// miden los demás, no se envía (antes se detectaba solo DESPUÉS de la shell, contra la instantánea de la primera medida).
+#[test]
+fn el_primer_directorio_de_la_operacion_que_crece_mientras_se_miden_los_demas_no_se_envia() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    sb.write("Docs/d1/x1.bin", 1_000);
+    sb.write("Docs/d2/y1.bin", 1_000);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/d1"), c.protection());
+    b.add_path(sb.long("Docs/d2"), c.protection());
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 2, "{:?}", plan.rejected);
+    let grow = sb.path("Docs/d1/crece.bin");
+    // Mientras se mide d2 (después del primero), d1 crece.
+    let _hook = crate::engine::test_hooks::install(sb.long("Docs"), move |q| {
+        if q.ends_with("y1.bin") {
+            fs::write(&grow, vec![1u8; 1 << 20]).unwrap();
+        }
+    });
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    let st = |n: &str| {
+        rep.items
+            .iter()
+            .find(|i| i.path.ends_with(n))
+            .unwrap()
+            .status
+    };
+    assert_eq!(
+        st("d1"),
+        ItemStatus::Root(crate::engine::RootStatus::Changed)
+    );
+    assert_eq!(st("d2"), ItemStatus::Recycled);
+    assert_eq!(fake.names(), vec![vec!["d2"]]);
+}
+
 /// B2: un directorio que ENCOGIÓ se reparte con su tamaño nuevo (no con el aprobado). El aprobado (estimación falseada
 /// a 8 500 con 2 000 ya ocupados de una capacidad de 10 000: presupuesto 7 000) no cabría; el real, mucho menor, sí.
 #[test]
