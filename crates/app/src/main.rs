@@ -12,7 +12,7 @@ mod output;
 mod shell;
 
 use cli::Screen;
-use config::{Config, MIN_SIZE};
+use config::MIN_SIZE;
 use tesela_ui::{CleanStart, DemoOptions, MapStart, Options, StartScreen, TeselaUi};
 
 fn main() -> eframe::Result {
@@ -56,8 +56,17 @@ fn main() -> eframe::Result {
         std::process::exit(3);
     }
 
-    let config_path = config::config_path();
-    let config = config_path.as_deref().map(Config::load).unwrap_or_default();
+    // La demostración ("nada se lee de tu disco") y las herramientas de medición NO leen ni guardan la configuración: valores por
+    // defecto en memoria, nada bajo %APPDATA%.
+    let tool_mode =
+        cli.bench_hover.is_some() || cli.screenshot.is_some() || cli.idle_memory.is_some();
+    let isolated = cli.demo || tool_mode;
+    let session = config::Session::new(isolated);
+    let persist = session.persists();
+    let config::Session {
+        config,
+        path: config_path,
+    } = session;
     // Los argumentos de esta sesión mandan sobre lo guardado, pero no se guardan.
     let mut settings = config.settings();
     if let Some(t) = cli.theme {
@@ -66,8 +75,6 @@ fn main() -> eframe::Result {
     if let Some(l) = cli.lang {
         settings.language = l;
     }
-    let tool_mode =
-        cli.bench_hover.is_some() || cli.screenshot.is_some() || cli.idle_memory.is_some();
     let (w, h) = cli.size.unwrap_or_else(|| config.window_size());
     let normalize = cli.screenshot.is_some().then_some((w, h));
 
@@ -151,7 +158,6 @@ fn main() -> eframe::Result {
     }
     let screenshot = cli.screenshot.clone();
     let screenshot_overwrite = cli.overwrite;
-    let persist = !tool_mode;
     let persist_size = cli.size.is_none();
 
     let result = eframe::run_native(

@@ -55,9 +55,17 @@ fn archivos_con_nombre_de_dll_junto_al_exe_no_impiden_arrancar() {
 /// ¿Abre la ventana y pinta? `--demo --bench-hover 1` imprime los frames medidos; si no llega a pintar, no hay cifras. Se
 /// reintenta porque la medición es intermitente (ventana sin pintar al arrancar) también sin ninguna DLL falsa.
 fn paints(exe: &std::path::Path) -> bool {
+    // Defensa en profundidad: el perfil del proceso (APPDATA y LOCALAPPDATA) apunta a carpetas temporales propias; ninguna prueba
+    // puede tocar el perfil real del usuario.
+    let base = exe.parent().unwrap();
+    let (roaming, local) = (base.join("Roaming"), base.join("Local"));
+    std::fs::create_dir_all(&roaming).unwrap();
+    std::fs::create_dir_all(&local).unwrap();
     (0..3).any(|_| {
         let out = Command::new(exe)
             .args(["--demo", "--bench-hover", "1"])
+            .env("APPDATA", &roaming)
+            .env("LOCALAPPDATA", &local)
             .output()
             .unwrap();
         let text = String::from_utf8_lossy(&out.stderr).to_string()
