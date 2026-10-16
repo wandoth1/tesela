@@ -2282,8 +2282,9 @@ impl RecycleShell for FakeShell {
     }
 }
 
-/// Un plan de elementos de `Docs/<nombre>` con el tamaño dado: el archivo real mide `len` bytes y la ESTIMACIÓN que se
-/// reparte es `est` (así se prueba el reparto sin archivos enormes).
+/// Un plan de elementos de `Docs/<nombre>` con el tamaño dado: el archivo real mide `len` bytes y la ESTIMACIÓN aprobada es
+/// `est`. Desde A-B1 lo que se reparte es lo que mide el handle de guarda justo antes de la operación, no la estimación: `est`
+/// debe corresponderse con lo que ocupa el archivo (sin archivos enormes: los umbrales se escalan con la capacidad simulada).
 fn plan_de(sb: &Sandbox, c: &Cleaner, items: &[(&str, usize, u64)]) -> Plan {
     let mut b = Basket::new();
     for (name, len, _) in items {
@@ -2312,7 +2313,7 @@ fn un_elemento_que_no_cabe_entre_otros_pequenos_nunca_arrastra_a_los_demas_y_cor
         &c,
         &[
             ("a.txt", 100, 100),
-            ("enorme.bin", 100, 5_000),
+            ("enorme.bin", 5_000, 5_000),
             ("c.txt", 100, 100),
             ("d.txt", 100, 100),
         ],
@@ -2692,7 +2693,7 @@ fn los_pequenos_se_agrupan_hasta_el_presupuesto_y_nunca_pasan_del_90_por_ciento_
             ("a", 400, 400),
             ("b", 400, 400),
             ("c", 400, 400),
-            ("grande", 400, 2_000),
+            ("grande", 2_000, 2_000),
             ("d", 400, 400),
         ],
     );
@@ -2805,7 +2806,7 @@ fn la_capacidad_del_reparto_es_solo_la_configurada() {
         &[
             ("a", 100, 100),
             ("b", 100, 100),
-            ("grande", 100, 2_000),
+            ("grande", 2_000, 2_000),
             ("c", 100, 100),
         ],
     );
@@ -2939,6 +2940,160 @@ fn un_directorio_que_encogio_se_reparte_con_su_tamano_nuevo() {
         rep.items[0]
     );
     assert_eq!(fake.names(), vec![vec!["encoge"]]);
+}
+
+/// A-B1 (blocker): un ARCHIVO también se vuelve a medir justo antes de la operación que lo incluye. Dos archivos de unos 20 KB
+/// con una Papelera simulada de 100 000 (cada uno pasa del 10 % y va en su propia operación): mientras la shell trabaja con el
+/// primero, el segundo crece a 1 MiB. Antes se entregaba a la shell con el tamaño de cuando se preparó el trozo
+/// (`measured: true` y `fresh_size` no lo miraba). Ahora no se envía: "cambió desde la confirmación".
+#[test]
+fn un_archivo_que_crece_mientras_espera_su_turno_no_se_envia() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(100_000), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    let plan = plan_de(
+        &sb,
+        &c,
+        &[("a.bin", 20_000, 20_480), ("b.bin", 20_000, 20_480)],
+    );
+    let grow = sb.path("Docs/b.bin");
+    let _hook = crate::engine::test_hooks::install_before_shell(sb.long("Docs"), move |p| {
+        if p.ends_with("a.bin") {
+            fs::write(&grow, vec![1u8; 1 << 20]).unwrap();
+        }
+    });
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    let st = |n: &str| {
+        rep.items
+            .iter()
+            .find(|i| i.path.ends_with(n))
+            .unwrap()
+            .status
+    };
+    assert_eq!(st("a.bin"), ItemStatus::Recycled);
+    assert_eq!(
+        st("b.bin"),
+        ItemStatus::Root(crate::engine::RootStatus::Changed)
+    );
+    assert_eq!(
+        fake.names(),
+        vec![vec!["a.bin"]],
+        "el que creció no llegó a la shell"
+    );
+    assert!(sb.path("Docs/b.bin").exists(), "sigue en su sitio");
+    assert!(rep.totals.changed >= 1);
+    assert!(!rep.recycle_stopped, "es un cambio, no un corte");
+}
+
+/// A-B1: lo contrario. Si lo que se mide ahora es MENOS que lo medido antes, manda el tamaño nuevo y se actualiza la última
+/// medida. (NTFS no libera la asignación de un archivo truncado mientras haya handles abiertos —la guarda lo está—, así que
+/// con la guarda abierta solo se ve encoger el tamaño lógico: la comprobación se hace sobre `fresh_size` directamente.)
+#[test]
+fn un_archivo_que_encoge_se_mide_con_su_tamano_nuevo() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(100_000), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake);
+    let plan = plan_de(&sb, &c, &[("a.bin", 20_000, 20_480)]);
+    let it = &plan.items[0];
+    let mut st = StatsSnapshot::default();
+    let Prepared::Ready(mut p) = c.prepare_recycle(it, &mut st) else {
+        panic!("debía prepararse");
+    };
+    let real = p.last.expect("un archivo se mide al preparar");
+    assert_eq!(real, 20_480);
+    // Se simula una medida anterior mayor (el archivo era de 50 000 y se truncó).
+    p.size = 50_000;
+    p.last = Some(50_000);
+    c.fresh_size(it, &mut p, &mut st, &cancel()).unwrap();
+    assert_eq!((p.size, p.last), (real, Some(real)));
+    // Y si ahora crece un byte por encima de la última medida: ya no se envía.
+    fs::write(sb.path("Docs/a.bin"), vec![1u8; 30_000]).unwrap();
+    let err = c.fresh_size(it, &mut p, &mut st, &cancel()).unwrap_err();
+    assert_eq!(err.0, ItemStatus::Root(crate::engine::RootStatus::Changed));
+    assert_eq!(st.changed, 1);
+}
+
+/// Una shell simulada cuya ocupación de la Papelera cambia entre una lectura y la siguiente (otra aplicación llenándola):
+/// la primera lectura decide el grupo, y la comprobación de DESPUÉS de volver a medir (A-B1) ve otra cosa.
+struct FlakyRoom {
+    inner: Arc<FakeShell>,
+    calls: std::sync::atomic::AtomicUsize,
+    used: Vec<u64>,
+}
+
+impl RecycleShell for FlakyRoom {
+    fn recycle(&self, items: &[recycle::SendItem]) -> recycle::BatchOutcome {
+        self.inner.recycle(items)
+    }
+    fn bin_room(&self, _: &Path) -> BinRoom {
+        let n = self.calls.fetch_add(1, Ordering::SeqCst);
+        BinRoom {
+            max: self.inner.max,
+            used: Some(self.used[n.min(self.used.len() - 1)]),
+        }
+    }
+    fn fit(&self, p: &Path, b: u64) -> Fit {
+        self.inner.fit(p, b)
+    }
+    fn is_bin_path(&self, p: &Path) -> bool {
+        self.inner.is_bin_path(p)
+    }
+}
+
+/// A-B1: tras volver a medir se comprueba otra vez el presupuesto con la ocupación de AHORA. Si ya no cabe todo el grupo, lo que
+/// sobra vuelve al principio de la cola (y se envía en la operación siguiente); si ya no cabe ni el primero, no se envía.
+#[test]
+fn tras_volver_a_medir_se_vuelve_a_comprobar_el_presupuesto() {
+    // Capacidad 10 000 (presupuesto 9 000). Lecturas de la ocupación: 1.ª = 0 (decide un grupo de 3), 2.ª = 8 790 (solo caben
+    // 210 de presupuesto: caben dos de ~104) y las demás, 0.
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(10_000), 0, "nunca");
+    let flaky = Arc::new(FlakyRoom {
+        inner: fake.clone(),
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        used: vec![0, 8_790, 0],
+    });
+    let c = cleaner_for(&sb).with_shell(flaky.clone());
+    let plan = plan_de(
+        &sb,
+        &c,
+        &[("a", 100, 104), ("b", 100, 104), ("c", 100, 104)],
+    );
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    for it in &rep.items {
+        assert_eq!(it.status, ItemStatus::Recycled, "{:?}", it.path);
+    }
+    assert_eq!(fake.names(), vec![vec!["a", "b"], vec!["c"]]);
+
+    // Si la 2.ª lectura ya no deja sitio ni para el primero (presupuesto 50 < 104): ese no se envía (`NoRoom`) y los demás
+    // siguen su camino en la operación siguiente.
+    let sb2 = Sandbox::new();
+    let fake2 = FakeShell::new(&sb2, Some(10_000), 0, "nunca");
+    let flaky2 = Arc::new(FlakyRoom {
+        inner: fake2.clone(),
+        calls: std::sync::atomic::AtomicUsize::new(0),
+        used: vec![0, 8_950, 0],
+    });
+    let c2 = cleaner_for(&sb2).with_shell(flaky2);
+    let plan2 = plan_de(
+        &sb2,
+        &c2,
+        &[("a", 100, 104), ("b", 100, 104), ("c", 100, 104)],
+    );
+    let rep2 = exec(&c2, &plan2, false, false, None).unwrap();
+    let st = |n: &str| {
+        rep2.items
+            .iter()
+            .find(|i| i.path.ends_with(n))
+            .unwrap()
+            .status
+    };
+    assert_eq!(st("a"), ItemStatus::NotRecycled(RecycleFail::NoRoom));
+    assert_eq!(st("b"), ItemStatus::Recycled);
+    assert_eq!(st("c"), ItemStatus::Recycled);
+    assert_eq!(fake2.names(), vec![vec!["b", "c"]]);
+    assert!(sb2.path("Docs/a").exists());
+    assert_eq!(rep2.no_room, 1);
 }
 
 /// Un error de la shell o de COM al enviar consta en el registro local (con su HRESULT) y en el informe (para el resumen);
@@ -3100,7 +3255,7 @@ fn pending(identity: FileIdentity, path: &Path, held_path: &Path) -> Pending {
         links: 1,
         held: sys::open_path_for_rename(held_path).unwrap(),
         size: 0,
-        measured: true,
+        last: None,
         snapshot: None,
     }
 }

@@ -807,6 +807,7 @@ impl Cleaner {
                         break;
                     }
                     // El primero de la cola se mide ahora (justo antes de decidir su operación): si creció, no se envía.
+                    let mut first_measured = false;
                     if let Some((it, p)) = slots[first].as_mut() {
                         let mut st = StatsSnapshot::default();
                         if let Err((status, o)) = self.fresh_size(it, p, &mut st, cancel) {
@@ -816,6 +817,7 @@ impl Cleaner {
                             queue.pop_front();
                             continue;
                         }
+                        first_measured = true;
                     }
                     let sizes: Vec<u64> = queue
                         .iter()
@@ -843,18 +845,60 @@ impl Cleaner {
                         }
                         Take::Send(n) => n,
                     };
-                    let mut entries: Vec<(&PlanItem, Pending)> = Vec::new();
-                    // Los demás elementos de la operación se miden también ahora, justo antes de entregarla.
-                    for (it, mut p) in queue.drain(..n).filter_map(|i| slots[i].take()) {
+                    // A-B1: los candidatos de la operación se miden DE NUEVO ahora, justo antes de entregarla (archivos por
+                    // su handle de guarda; directorios con el recorrido, salvo el primero, que se midió hace un instante).
+                    // Lo que creció desde la última medida no se envía.
+                    let mut staged: Vec<(usize, &PlanItem, Pending)> = Vec::new();
+                    let candidates: Vec<usize> = queue.drain(..n).collect();
+                    for i in candidates {
+                        let Some((it, mut p)) = slots[i].take() else {
+                            continue;
+                        };
                         let mut st = StatsSnapshot::default();
-                        match self.fresh_size(it, &mut p, &mut st, cancel) {
-                            Ok(()) => entries.push((it, p)),
+                        let skip = first_measured && i == first && it.is_dir();
+                        let r = if skip {
+                            Ok(())
+                        } else {
+                            self.fresh_size(it, &mut p, &mut st, cancel)
+                        };
+                        match r {
+                            Ok(()) => staged.push((i, it, p)),
                             Err((status, o)) => {
                                 emit(it, None, 0, o);
                                 results.insert(it.id, (status, st));
                             }
                         }
                     }
+                    if staged.is_empty() {
+                        continue;
+                    }
+                    // ...y se vuelve a comprobar el presupuesto con los tamaños y la ocupación de AHORA: lo que ya no cabe
+                    // en la operación vuelve al principio de la cola (se medirá otra vez cuando le toque).
+                    let room_now = vol
+                        .as_deref()
+                        .map_or(BinRoom::UNKNOWN, |r| shell.bin_room(r));
+                    let fresh_sizes: Vec<u64> = staged.iter().map(|s| s.2.size).collect();
+                    let keep = match take_op(&fresh_sizes, room_now) {
+                        Take::NoRoom => {
+                            let (_, it, _guard) = staged.remove(0);
+                            emit(it, None, 0, Outcome::NotRecycled);
+                            results.insert(
+                                it.id,
+                                (
+                                    ItemStatus::NotRecycled(RecycleFail::NoRoom),
+                                    StatsSnapshot::default(),
+                                ),
+                            );
+                            0
+                        }
+                        Take::Send(k) => k.min(staged.len()),
+                    };
+                    for (i, it, p) in staged.drain(keep..).rev() {
+                        slots[i] = Some((it, p));
+                        queue.push_front(i);
+                    }
+                    let entries: Vec<(&PlanItem, Pending)> =
+                        staged.into_iter().map(|(_, it, p)| (it, p)).collect();
                     if entries.is_empty() {
                         continue;
                     }
@@ -1134,11 +1178,15 @@ impl Cleaner {
             .bytes
             .max(it.estimate.logical)
             .max(it.estimate.shared_bytes);
-        let size = if m.is_dir {
-            estimate
+        // Un archivo: lo que ocupa de verdad ahora frente a lo medido al aprobar, el mayor manda (provisional: se vuelve a
+        // medir por la guarda JUSTO ANTES de la operación, en `fresh_size`).
+        let (size, last) = if m.is_dir {
+            (estimate, None)
         } else {
-            // Un archivo: lo que ocupa de verdad ahora frente a lo medido al aprobar, el mayor manda.
-            estimate.max(m.alloc).max(m.logical)
+            (
+                estimate.max(m.alloc).max(m.logical),
+                Some(m.alloc.max(m.logical)),
+            )
         };
         Prepared::Ready(Pending {
             path: final_path,
@@ -1146,7 +1194,7 @@ impl Cleaner {
             links: m.links,
             held,
             size,
-            measured: !m.is_dir,
+            last,
             snapshot: None,
         })
     }
@@ -1160,10 +1208,17 @@ impl Cleaner {
         }
     }
 
-    /// B2 + H6.2: un directorio pudo CRECER desde la aprobación. Se vuelve a medir con el mismo recorrido (relativo, sin
-    /// entrar en reparse points) JUSTO ANTES de la operación de la shell que lo incluye (no al preparar el trozo entero).
-    /// Si creció, no se envía (el reparto se basa en un tamaño que ya no es cierto): `Err` con el estado "cambió desde la
-    /// confirmación"; si encogió, manda el tamaño nuevo. Los archivos ya se midieron al preparar.
+    /// B2 + H6.2 + A-B1: lo que ocupa un elemento pudo CRECER desde la aprobación, y también mientras esperaba su turno
+    /// (una operación de la shell puede tardar). Se vuelve a medir JUSTO ANTES de la operación que lo incluye, no al
+    /// preparar el trozo entero y no una sola vez:
+    /// * un ARCHIVO, por su handle de guarda (`FileStandardInfo`: tamaño en disco y lógico), sin volver a abrir la ruta, y
+    ///   comprobando de paso que sigue siendo el mismo objeto (identidad, enlaces, no pendiente de borrar);
+    /// * un DIRECTORIO, con el mismo recorrido (relativo, sin entrar en reparse points) y solo si la medida es COMPLETA
+    ///   (A-B2).
+    ///
+    /// Si creció (frente a lo aprobado o frente a la última medida), no se envía: el reparto se basa en un tamaño que ya no
+    /// es cierto y `Err` lleva el estado "cambió desde la confirmación"; si encogió, manda el tamaño nuevo. Quien llama
+    /// vuelve a comprobar el presupuesto de la Papelera (`take_op`) con estos tamaños nuevos.
     fn fresh_size(
         &self,
         it: &PlanItem,
@@ -1171,31 +1226,50 @@ impl Cleaner {
         st: &mut StatsSnapshot,
         cancel: &Arc<AtomicBool>,
     ) -> Result<(), (ItemStatus, Outcome)> {
-        if p.measured {
+        let changed = |st: &mut StatsSnapshot| {
+            st.changed += 1;
+            Err((ItemStatus::Root(RootStatus::Changed), Outcome::Changed))
+        };
+        if !it.is_dir() {
+            // Por el handle de guarda: el objeto que se aprobó, no lo que haya ahora en la ruta.
+            let Ok(m) = sys::meta(&p.held) else {
+                return changed(st);
+            };
+            if m.identity != p.identity || m.is_dir || m.delete_pending || m.links != p.links {
+                return changed(st);
+            }
+            let fresh = m.alloc.max(m.logical);
+            // Frente a la última medida real (la de `prepare_recycle`, tomada ya después de la aprobación, y las
+            // posteriores): lo que creció entre aquella medida y ahora no se envía. El crecimiento ENTRE la aprobación y
+            // `prepare_recycle` no se rechaza (el mayor manda): ese tamaño entra en el reparto y el presupuesto de la
+            // Papelera lo comprueba contra su capacidad.
+            if p.last.is_some_and(|l| fresh > l) {
+                return changed(st);
+            }
+            p.size = fresh;
+            p.last = Some(fresh);
             return Ok(());
         }
         match self.remeasure(it, cancel) {
             Remeasure::Now(fresh) => {
+                let size = fresh.bytes.max(fresh.logical).max(fresh.shared_bytes);
                 let grew = fresh.bytes > it.estimate.bytes
                     || fresh.logical > it.estimate.logical
-                    || fresh.shared_bytes > it.estimate.shared_bytes;
+                    || fresh.shared_bytes > it.estimate.shared_bytes
+                    || p.last.is_some_and(|l| size > l);
                 if grew {
-                    st.changed += 1;
-                    return Err((ItemStatus::Root(RootStatus::Changed), Outcome::Changed));
+                    return changed(st);
                 }
-                p.size = fresh.bytes.max(fresh.logical).max(fresh.shared_bytes);
+                p.size = size;
+                p.last = Some(size);
                 p.snapshot = Some(snap_of(&fresh));
-                p.measured = true;
                 Ok(())
             }
             Remeasure::Cancelled => Err((
                 ItemStatus::Root(RootStatus::Cancelled),
                 Outcome::NotRecycled,
             )),
-            Remeasure::Failed => {
-                st.changed += 1;
-                Err((ItemStatus::Root(RootStatus::Changed), Outcome::Changed))
-            }
+            Remeasure::Failed => changed(st),
         }
     }
 }
@@ -1238,10 +1312,12 @@ struct Pending {
     links: u32,
     /// Handle de guarda (ver `prepare_recycle`): abierto hasta después de juzgar el elemento.
     held: sys::Handle,
-    /// Lo que se cuenta para repartir en operaciones (el mayor entre lo aprobado y lo que ocupa ahora).
+    /// Lo que se cuenta para repartir en operaciones: provisional al preparar (el mayor entre lo aprobado y lo que ocupa
+    /// ahora) y, tras cada [`Cleaner::fresh_size`], lo que ocupa AHORA.
     size: u64,
-    /// ¿Ya se midió lo que ocupa AHORA? (Un archivo, al preparar; un directorio, justo antes de su operación.)
-    measured: bool,
+    /// La última medida real (un archivo, por su handle de guarda; un directorio, por el recorrido) o `None` si aún no
+    /// hay ninguna. Si lo que se mide ahora es MÁS que esto, el elemento creció mientras esperaba su turno: no se envía.
+    last: Option<u64>,
     /// La medida del directorio hecha justo antes de entregarlo a la shell (tamaño y número de entradas): lo que
     /// `dir_untouched` compara después si la shell dice "eliminado" sin dar elemento en la Papelera (R6).
     snapshot: Option<DirSnap>,
