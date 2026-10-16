@@ -9,7 +9,8 @@
 //! * **Raíces de carpetas conocidas** (`content_roots`: Documentos, Escritorio, Vídeos...): se añaden como
 //!   "Contenido de X", sin incluir la carpeta en sí.
 //! * **Excepciones** (`exempt`): las raíces de las categorías con regla (`Windows\Temp`, las cachés de navegador): lo que
-//!   cuelga de ellas no se deniega aunque esté dentro de una zona denegada.
+//!   cuelga de ellas no se deniega aunque esté dentro de UNA zona denegada concreta, la que cada excepción declara
+//!   ([`Exempt::zone`]). Una excepción nunca levanta "esa zona o cualquiera por encima": solo esa.
 //!
 //! La defensa real no es la interfaz: [`Protection::child_action`] se consulta en CADA hijo durante la recursión de
 //! borrado, no solo al aprobar la cesta.
@@ -24,7 +25,25 @@ pub struct ProtectionRoots {
     pub denied: Vec<PathBuf>,
     pub untouchable: Vec<PathBuf>,
     pub content_roots: Vec<PathBuf>,
-    pub exempt: Vec<PathBuf>,
+    pub exempt: Vec<Exempt>,
+}
+
+/// Una raíz de categoría exenta y la ÚNICA denegación que puede levantar.
+///
+/// `zone` es la ruta denegada exacta en cuyo interior vive la raíz (la carpeta `User Data` de Chrome o Edge, la de
+/// Firefox, `C:\Windows` para `Windows\Temp`). Una denegación que no sea esa zona (ni la propia raíz) sigue en pie: si una
+/// raíz "canónica" acabara dentro de otra zona denegada (por un enlace en un ancestro, por ejemplo), esa zona la niega.
+/// `None` = la raíz no está dentro de ninguna denegación declarada (solo se levanta una denegación exactamente sobre ella).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Exempt {
+    pub root: PathBuf,
+    pub zone: Option<PathBuf>,
+}
+
+impl Exempt {
+    pub fn new(root: PathBuf, zone: Option<PathBuf>) -> Exempt {
+        Exempt { root, zone }
+    }
 }
 
 /// Qué se puede hacer con una ruta como DESTINO (lo que el usuario añade a la cesta).
@@ -65,7 +84,8 @@ pub struct Protection {
     denied: HashSet<PathKey>,
     untouchable: HashSet<PathKey>,
     content_roots: HashSet<PathKey>,
-    exempt: Vec<PathKey>,
+    /// (raíz exenta, zona denegada que puede levantar).
+    exempt: Vec<(PathKey, Option<PathKey>)>,
     /// Ancestros propios de las rutas denegadas (intocables como destino).
     anc_denied: HashSet<PathKey>,
     /// Ancestros propios de las raíces intocables y de contenido (se recorren al borrar un contenedor, no se borran).
@@ -89,7 +109,11 @@ impl Protection {
         let denied = keys(&roots.denied);
         let untouchable = keys(&roots.untouchable);
         let content_roots = keys(&roots.content_roots);
-        let exempt: Vec<PathKey> = roots.exempt.iter().map(|p| PathKey::new(p)).collect();
+        let exempt: Vec<(PathKey, Option<PathKey>)> = roots
+            .exempt
+            .iter()
+            .map(|e| (PathKey::new(&e.root), e.zone.as_deref().map(PathKey::new)))
+            .collect();
         let anc_denied = ancestors_of(denied.iter());
         let mut anc_retain = ancestors_of(untouchable.iter().chain(content_roots.iter()));
         anc_retain.retain(|k| !anc_denied.contains(k));
@@ -104,13 +128,14 @@ impl Protection {
     }
 
     /// ¿Levanta alguna excepción la denegación que está en `zone` (un ancestro de `key` o él mismo)? Solo si `key` cuelga
-    /// de una raíz exenta `e` y `zone` está en `e` o POR ENCIMA de ella: una denegación entre la raíz exenta (exclusive) y
-    /// `key` sigue en pie. Así, por ejemplo, la carpeta de la propia aplicación nunca se borra aunque esté dentro de un
-    /// temporal exento.
+    /// de una raíz exenta `e` y `zone` es EXACTAMENTE la zona que esa excepción declara (o la propia raíz `e`): ni una
+    /// denegación entre la raíz exenta (exclusive) y `key`, ni cualquier otra zona por encima de `e`, que sigue en pie.
+    /// Así la carpeta de la propia aplicación nunca se borra aunque esté dentro de un temporal exento, y una raíz
+    /// "canónica" que un enlace haya llevado a otra zona denegada no se vuelve borrable.
     fn lifts(&self, key: &PathKey, zone: &PathKey) -> bool {
-        self.exempt
-            .iter()
-            .any(|e| key.is_same_or_under(e) && e.is_same_or_under(zone))
+        self.exempt.iter().any(|(root, declared)| {
+            key.is_same_or_under(root) && (zone == root || declared.as_ref() == Some(zone))
+        })
     }
 
     /// ¿Es una entrada de sistema de la raíz de un volumen (`$Recycle.Bin`, `$MFT`, `System Volume Information`,
@@ -215,10 +240,20 @@ mod tests {
                 r"C:\Users\<usuario>\Videos",
                 r"C:\Users\<usuario>\Downloads",
             ]),
-            exempt: pb(&[
-                r"C:\Windows\Temp",
-                r"C:\Users\<usuario>\AppData\Local\Google\Chrome\User Data\Default\Cache",
-            ]),
+            exempt: vec![
+                Exempt::new(
+                    PathBuf::from(r"C:\Windows\Temp"),
+                    Some(PathBuf::from(r"C:\Windows")),
+                ),
+                Exempt::new(
+                    PathBuf::from(
+                        r"C:\Users\<usuario>\AppData\Local\Google\Chrome\User Data\Default\Cache",
+                    ),
+                    Some(PathBuf::from(
+                        r"C:\Users\<usuario>\AppData\Local\Google\Chrome\User Data",
+                    )),
+                ),
+            ],
         })
     }
 
@@ -343,7 +378,10 @@ mod tests {
             ]),
             untouchable: pb(&[r"C:\Users\<usuario>\AppData\Local"]),
             content_roots: Vec::new(),
-            exempt: pb(&[r"C:\Users\<usuario>\AppData\Local\Temp"]),
+            exempt: vec![Exempt::new(
+                PathBuf::from(r"C:\Users\<usuario>\AppData\Local\Temp"),
+                None,
+            )],
         });
         let t = r"C:\Users\<usuario>\AppData\Local\Temp";
         for s in [
@@ -365,10 +403,13 @@ mod tests {
         }
         assert_eq!(p.target_verdict(&k(t)), Verdict::Untouchable);
         assert_eq!(p.child_action(&k(t)), ChildAction::Descend);
-        // Una denegación EXACTAMENTE sobre la raíz exenta sí se levanta (es el caso de `Windows\Temp` dentro de Windows).
+        // Una denegación EXACTAMENTE sobre la raíz exenta sí se levanta, y también la zona declarada (`Windows`).
         let w = Protection::new(&ProtectionRoots {
             denied: pb(&[r"C:\Windows", r"C:\Windows\Temp"]),
-            exempt: pb(&[r"C:\Windows\Temp"]),
+            exempt: vec![Exempt::new(
+                PathBuf::from(r"C:\Windows\Temp"),
+                Some(PathBuf::from(r"C:\Windows")),
+            )],
             ..ProtectionRoots::default()
         });
         assert_eq!(w.target_verdict(&k(r"C:\Windows\Temp\x")), Verdict::Allowed);
@@ -376,6 +417,48 @@ mod tests {
             w.target_verdict(&k(r"C:\Windows\System32")),
             Verdict::Denied
         );
+    }
+
+    #[test]
+    fn una_excepcion_solo_levanta_su_zona_declarada_no_cualquiera_por_encima() {
+        // B1: la raíz exenta declara su zona (`C:\Windows`). Una raíz "canónica" que un enlace llevó a OTRA zona denegada
+        // (`C:\Datos\Privado`) no se levanta: esa denegación no es la declarada, aunque esté por encima de la raíz.
+        let p = Protection::new(&ProtectionRoots {
+            denied: pb(&[r"C:\Windows", r"C:\Datos\Privado"]),
+            exempt: vec![
+                Exempt::new(
+                    PathBuf::from(r"C:\Windows\Temp"),
+                    Some(PathBuf::from(r"C:\Windows")),
+                ),
+                Exempt::new(
+                    PathBuf::from(r"C:\Datos\Privado\ShaderCache"),
+                    Some(PathBuf::from(
+                        r"C:\Users\<usuario>\AppData\Local\Google\Chrome\User Data",
+                    )),
+                ),
+            ],
+            ..ProtectionRoots::default()
+        });
+        // La zona declarada sí se levanta.
+        assert_eq!(p.target_verdict(&k(r"C:\Windows\Temp\x")), Verdict::Allowed);
+        // La raíz que cayó en otra zona denegada, no: su contenido sigue denegado.
+        for s in [
+            r"C:\Datos\Privado\ShaderCache",
+            r"C:\Datos\Privado\ShaderCache\x.bin",
+        ] {
+            assert_eq!(p.target_verdict(&k(s)), Verdict::Denied, "{s}");
+            assert_eq!(p.child_action(&k(s)), ChildAction::Skip, "{s}");
+        }
+        // Declarar otra zona no sirve para levantar `Windows`.
+        let q = Protection::new(&ProtectionRoots {
+            denied: pb(&[r"C:\Windows"]),
+            exempt: vec![Exempt::new(
+                PathBuf::from(r"C:\Windows\Temp"),
+                Some(PathBuf::from(r"C:\Otra")),
+            )],
+            ..ProtectionRoots::default()
+        });
+        assert_eq!(q.target_verdict(&k(r"C:\Windows\Temp\x")), Verdict::Denied);
     }
 
     #[test]

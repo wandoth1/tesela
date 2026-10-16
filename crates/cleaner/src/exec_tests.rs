@@ -910,6 +910,209 @@ fn la_propia_aplicacion_dentro_del_temporal_nunca_se_borra() {
     assert!(approve(&c, &b2).items.is_empty());
 }
 
+/// Roots de prueba con una carpeta "protegida" (`Prot`), SIN canonicalizar `Local`/`Temp` (un junction en sus ancestros
+/// se verá en la cadena tal como se escribió).
+fn roots_with_raw(sb: &Sandbox, local: PathBuf, user_temp: Option<PathBuf>) -> Roots {
+    sb.mkdir("Roaming");
+    Roots {
+        user_temp,
+        windows_temp: None,
+        browser: BrowserRoots {
+            local_appdata: Some(local.clone()),
+            roaming_appdata: Some(sb.long("Roaming")),
+        },
+        downloads: None,
+        protection: ProtectionRoots {
+            denied: vec![sb.long("Prot"), local.join(r"Google\Chrome\User Data")],
+            untouchable: vec![sb.long("Roaming")],
+            content_roots: vec![],
+            exempt: vec![],
+        },
+    }
+}
+
+/// B1 (v0.1.1): un junction ANCESTRO de la raíz de una categoría (`User Data` -> una carpeta protegida con un
+/// `ShaderCache`) no convierte lo protegido en caché borrable: la raíz se descarta (capa 1) y, aunque se aceptara, la
+/// exención solo levanta su zona declarada (capa 2). Nada de lo protegido se toca ni en simulación ni de verdad.
+#[test]
+fn un_junction_por_encima_de_user_data_no_vuelve_borrable_lo_protegido() {
+    let mut sb = Sandbox::new();
+    sb.write_aged("Prot/UD/ShaderCache/s.bin", 4_000, 72);
+    sb.write_aged("Prot/UD/GrShaderCache/g.bin", 3_000, 72);
+    sb.write_aged("Prot/UD/Default/Cache/c.bin", 2_000, 72);
+    sb.write_aged("Prot/UD/Cookies", 100, 72);
+    sb.mkdir("Local/Google/Chrome");
+    sb.junction("Local/Google/Chrome/User Data", "Prot/UD");
+    let roots = roots_with_raw(&sb, sb.path("Local"), None);
+    let c = Cleaner::new(roots);
+    // El escáner ve las cachés a través del enlace, pero ninguna pasa la cadena.
+    let checks = c.roots().category_root_checks(CategoryId::ChromeCache);
+    assert!(
+        !checks.is_empty(),
+        "el escáner las lista a través del junction"
+    );
+    for ck in &checks {
+        assert!(
+            matches!(
+                &ck.result,
+                Err(crate::roots::RootRejection::ReparseInChain { component })
+                    if component == "User Data"
+            ),
+            "{:?}",
+            ck.result
+        );
+    }
+    assert!(c.roots().category_roots(CategoryId::ChromeCache).is_empty());
+    // Lo protegido, por su ruta real, sigue denegado.
+    for rel in [
+        "Prot/UD/ShaderCache",
+        "Prot/UD/ShaderCache/s.bin",
+        "Prot/UD/Default/Cache",
+    ] {
+        assert_eq!(
+            c.protection()
+                .target_verdict(&crate::paths::PathKey::new(&sb.long(rel))),
+            Verdict::Denied,
+            "{rel}"
+        );
+    }
+    // Aprobar y ejecutar (simulación y real): no hay elementos, todo queda en su sitio.
+    let mut b = Basket::new();
+    b.set_category(CategoryId::ChromeCache, true);
+    let plan = approve(&c, &b);
+    assert!(plan.items.is_empty(), "{:?}", plan.items.len());
+    assert!(!plan.rejected.is_empty());
+    assert!(
+        plan.rejected
+            .iter()
+            .all(|r| r.reason == RejectReason::ReparseAncestor),
+        "{:?}",
+        plan.rejected
+    );
+    exec(&c, &plan, true, false, None).unwrap();
+    exec(&c, &plan, false, false, None).unwrap();
+    for rel in [
+        "Prot/UD/ShaderCache/s.bin",
+        "Prot/UD/GrShaderCache/g.bin",
+        "Prot/UD/Default/Cache/c.bin",
+        "Prot/UD/Cookies",
+    ] {
+        assert!(sb.path(rel).exists(), "{rel}");
+    }
+}
+
+/// B1 (capa 2, aislada): aunque una raíz "canónica" llegue a `Prot\UD\ShaderCache` por el camino que sea (aquí la capa 1
+/// no se ejecuta: se inyecta la ruta resuelta), la exención de Chrome declara SU zona (`...\User Data`), no `Prot`.
+#[test]
+fn la_exencion_de_una_cache_no_levanta_una_denegacion_ajena() {
+    let sb = Sandbox::new();
+    sb.write_aged("Prot/UD/ShaderCache/s.bin", 4_000, 72);
+    sb.mkdir("Local/Google/Chrome");
+    let local = sb.long("Local");
+    let user_data = local.join(r"Google\Chrome\User Data");
+    let prot = crate::protect::Protection::new(&ProtectionRoots {
+        denied: vec![sb.long("Prot"), user_data.clone()],
+        exempt: vec![crate::protect::Exempt::new(
+            sb.long("Prot/UD/ShaderCache"),
+            Some(user_data),
+        )],
+        ..ProtectionRoots::default()
+    });
+    assert_eq!(
+        prot.target_verdict(&crate::paths::PathKey::new(
+            &sb.long("Prot/UD/ShaderCache/s.bin")
+        )),
+        Verdict::Denied
+    );
+}
+
+/// B1 (v0.1.1), mismo agujero con `%TEMP%`: un ancestro de la raíz del temporal es un junction hacia una carpeta
+/// protegida. Con la ruta tal como se escribió se descarta (capa 1); con la ruta ya resuelta (lo que daba `canon`) la
+/// exención de `%TEMP%` no declara zona y la denegación de `Prot` sigue en pie (capa 2).
+#[test]
+fn un_junction_por_encima_de_temp_no_vuelve_borrable_lo_protegido() {
+    let mut sb = Sandbox::new();
+    sb.write_aged("Prot/T/Temp/x.tmp", 3_000, 72);
+    sb.write_aged("Prot/T/Temp/sub/y.tmp", 3_000, 72);
+    sb.junction("Enlace", "Prot/T");
+    // (1) La ruta como la daría `GetTempPath`: pasa por el junction.
+    let c = Cleaner::new(roots_with_raw(
+        &sb,
+        sb.long("Local"),
+        Some(sb.path("Enlace/Temp")),
+    ));
+    assert!(c.roots().category_roots(CategoryId::UserTemp).is_empty());
+    let mut b = Basket::new();
+    b.set_category(CategoryId::UserTemp, true);
+    let plan = approve(&c, &b);
+    assert!(plan.items.is_empty());
+    assert_eq!(plan.rejected.len(), 1);
+    assert_eq!(plan.rejected[0].reason, RejectReason::ReparseAncestor);
+    exec(&c, &plan, false, false, None).unwrap();
+    assert!(sb.path("Prot/T/Temp/x.tmp").exists());
+    // (2) Ya resuelta: la cadena está limpia, pero la raíz cae dentro de `Prot` (denegada) y nada la levanta.
+    let c2 = Cleaner::new(roots_with_raw(
+        &sb,
+        sb.long("Local"),
+        Some(sb.long("Prot/T/Temp")),
+    ));
+    let plan2 = approve(&c2, &b);
+    assert!(plan2.items.is_empty(), "{:?}", plan2.items.len());
+    assert_eq!(
+        plan2.rejected[0].reason,
+        RejectReason::Protected(Verdict::Denied)
+    );
+    exec(&c2, &plan2, false, false, None).unwrap();
+    assert!(sb.path("Prot/T/Temp/x.tmp").exists());
+    assert!(sb.path("Prot/T/Temp/sub/y.tmp").exists());
+}
+
+/// B1: el caso benigno: raíces reales, sin reparse points, siguen funcionando y llevan la zona declarada.
+#[test]
+fn las_raices_sin_reparse_points_siguen_siendo_categorias() {
+    let sb = Sandbox::new();
+    sb.mkdir("Temp");
+    sb.mkdir("Local/Google/Chrome/User Data/Default/Cache");
+    sb.mkdir("Local/Mozilla/Firefox/Profiles/p1/cache2");
+    let mut roots = roots_with_raw(&sb, sb.long("Local"), Some(sb.long("Temp")));
+    roots
+        .protection
+        .denied
+        .push(sb.long("Local/Mozilla/Firefox"));
+    let c = Cleaner::new(roots);
+    for id in [
+        CategoryId::UserTemp,
+        CategoryId::ChromeCache,
+        CategoryId::FirefoxCache,
+    ] {
+        let cks = c.roots().category_root_checks(id);
+        assert_eq!(cks.len(), 1, "{id:?}");
+        assert!(cks[0].result.is_ok(), "{id:?}: {:?}", cks[0].result);
+    }
+    let chrome = c.roots().category_root_checks(CategoryId::ChromeCache);
+    let v = chrome[0].result.as_ref().unwrap();
+    assert_eq!(
+        v.path,
+        sb.long("Local/Google/Chrome/User Data/Default/Cache")
+    );
+    assert_eq!(
+        v.zone.as_deref(),
+        Some(sb.long("Local/Google/Chrome/User Data").as_path())
+    );
+    assert_eq!(
+        c.protection()
+            .target_verdict(&crate::paths::PathKey::new(&v.path.join("f_000001"))),
+        Verdict::Allowed
+    );
+    let mut b = Basket::new();
+    b.set_category(CategoryId::ChromeCache, true);
+    b.set_category(CategoryId::FirefoxCache, true);
+    b.set_category(CategoryId::UserTemp, true);
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 3, "{:?}", plan.rejected);
+    assert!(plan.rejected.is_empty());
+}
+
 // ---- El receptor de eventos: identidad (no nombre), carreras tras soltar el handle, y el juicio por elemento ----------
 
 /// B1: `.lnk`, `.url` y extensiones conocidas (`.txt`, `.jpg`...): el elemento se reconoce en la Papelera por su

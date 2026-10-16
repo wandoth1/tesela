@@ -16,7 +16,7 @@ use tesela_cleaner::engine::{StatsSnapshot, UnitSpec};
 use tesela_cleaner::exec::BinReport;
 use tesela_cleaner::paths::PathKey;
 use tesela_cleaner::plan::BinPlan;
-use tesela_cleaner::protect::{ChildAction, ProtectionRoots};
+use tesela_cleaner::protect::{ChildAction, Exempt, ProtectionRoots};
 use tesela_cleaner::recycle::BinItem;
 use tesela_cleaner::sys::FileIdentity;
 use tesela_cleaner::{
@@ -69,18 +69,29 @@ impl DemoBackend {
                 .map(|n| p(&root, &format!("{me}\\{n}")))
                 .collect(),
             exempt: vec![
-                p(&root, "Windows\\Temp"),
-                p(
-                    &root,
-                    &format!("{local}\\Google\\Chrome\\User Data\\Default\\Cache"),
+                Exempt::new(p(&root, "Windows\\Temp"), Some(p(&root, "Windows"))),
+                Exempt::new(
+                    p(
+                        &root,
+                        &format!("{local}\\Google\\Chrome\\User Data\\Default\\Cache"),
+                    ),
+                    Some(p(&root, &format!("{local}\\Google\\Chrome\\User Data"))),
                 ),
-                p(
-                    &root,
-                    &format!("{local}\\Microsoft\\Edge\\User Data\\Default\\Cache"),
+                Exempt::new(
+                    p(
+                        &root,
+                        &format!("{local}\\Microsoft\\Edge\\User Data\\Default\\Cache"),
+                    ),
+                    Some(p(&root, &format!("{local}\\Microsoft\\Edge\\User Data"))),
                 ),
-                p(
-                    &root,
-                    &format!("{local}\\Mozilla\\Firefox\\Profiles\\demo.default-release\\cache2"),
+                Exempt::new(
+                    p(
+                        &root,
+                        &format!(
+                            "{local}\\Mozilla\\Firefox\\Profiles\\demo.default-release\\cache2"
+                        ),
+                    ),
+                    Some(p(&root, &format!("{local}\\Mozilla\\Firefox"))),
                 ),
             ],
         });

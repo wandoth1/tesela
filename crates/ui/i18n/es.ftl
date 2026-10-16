@@ -320,6 +320,7 @@ reject-missing = ya no existe
 reject-denied = sin permiso
 reject-identity = no se puede verificar
 reject-reparse = es un enlace
+reject-reparse-ancestor = un enlace en su ruta
 reject-protected = protegido
 reject-untouchable = no se puede borrar entero
 reject-other = error del sistema

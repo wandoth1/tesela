@@ -319,6 +319,7 @@ reject-missing = no longer exists
 reject-denied = no permission
 reject-identity = cannot be verified
 reject-reparse = is a link
+reject-reparse-ancestor = a link on its path
 reject-protected = protected
 reject-untouchable = cannot be deleted as a whole
 reject-other = system error

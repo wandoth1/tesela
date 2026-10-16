@@ -828,6 +828,7 @@ fn confirm_groups(ui: &mut Ui, env: &mut Env, c: &mut Confirm, plan: &Plan) {
                     RejectReason::AccessDenied => env.tr.t("reject-denied"),
                     RejectReason::NoIdentity => env.tr.t("reject-identity"),
                     RejectReason::Reparse => env.tr.t("reject-reparse"),
+                    RejectReason::ReparseAncestor => env.tr.t("reject-reparse-ancestor"),
                     RejectReason::Protected(Verdict::Denied) => env.tr.t("reject-protected"),
                     RejectReason::Protected(_) => env.tr.t("reject-untouchable"),
                     RejectReason::NotLocal => env.tr.t("reject-not-local"),

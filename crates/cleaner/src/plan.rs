@@ -17,7 +17,7 @@ use crate::engine::{self, Env, Mode, StatsSnapshot, Unit, UnitSpec};
 use crate::paths::PathKey;
 use crate::protect::{ChildAction, Protection, Verdict};
 use crate::recycle::BinItem;
-use crate::roots::Roots;
+use crate::roots::{RootRejection, Roots};
 use crate::rules::{Action, CategoryId, Destination, Risk, Rules, rules};
 use crate::sys;
 use crate::volume::{self, BinLimit};
@@ -63,6 +63,10 @@ pub enum RejectReason {
     NoIdentity,
     /// Es un enlace (junction, symlink, punto de montaje): no se sigue ni se borra.
     Reparse,
+    /// La raíz de una categoría tiene un enlace (junction, symlink, punto de montaje) en su cadena de ancestros, o la
+    /// ruta que se comprobó dejó de ser la misma: no se ofrece como categoría (un enlace por encima de `User Data` o de
+    /// `%TEMP%` podría llevarla a una carpeta protegida).
+    ReparseAncestor,
     /// La ruta resuelta no es de una unidad local con letra (UNC, también hacia un disco local por su compartición
     /// administrativa, o una unidad de red): el `cleaner` solo limpia unidades locales, porque la protección se define
     /// sobre rutas de unidad.
@@ -416,7 +420,25 @@ impl Cleaner {
             return;
         }
         let Some(dest) = rule.destination else { return };
-        for root in self.roots.category_roots(id) {
+        for check in self.roots.category_root_checks(id) {
+            let root = match check.result {
+                Ok(v) => v.path,
+                Err(RootRejection::Os(c)) => {
+                    plan.rejected.push(Rejected {
+                        path: check.raw,
+                        reason: reason_of(c),
+                    });
+                    continue;
+                }
+                // Capa 1 de B1: la cadena tiene un enlace (o cambió): la categoría no se ofrece para esta raíz.
+                Err(RootRejection::ReparseInChain { .. } | RootRejection::NotCanonical) => {
+                    plan.rejected.push(Rejected {
+                        path: check.raw,
+                        reason: RejectReason::ReparseAncestor,
+                    });
+                    continue;
+                }
+            };
             let h = match sys::open_dir_for_listing(&root) {
                 Ok(h) => h,
                 Err(c) => {
