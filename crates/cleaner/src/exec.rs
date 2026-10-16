@@ -35,6 +35,9 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 use windows::core::HRESULT;
 
+/// Cuántos rechazados del plan se anotan en el registro (el resto, en una sola línea).
+const MAX_REJECTED_NOTES: usize = 200;
+
 /// Opciones de la ejecución.
 #[derive(Clone, Default)]
 pub struct ExecOptions {
@@ -306,7 +309,8 @@ impl Cleaner {
         // M4: SIN REGISTRO UTILIZABLE NO HAY ACCIÓN DESTRUCTIVA. La simulación sí puede seguir sin él.
         if !opts.dry_run && opts.log.as_ref().is_none_or(|l| !l.ok()) {
             if let Some(l) = &opts.log {
-                l.discard();
+                // Si ya contiene operaciones no se borra (`discard` lo impide).
+                let _ = l.discard();
             }
             return Err(ExecError::LogRequired);
         }
@@ -314,10 +318,17 @@ impl Cleaner {
         if let Some(l) = &opts.log {
             l.cancel_on_error(progress.cancel.clone());
             // Lo que no llegó al plan consta en el registro con su motivo (una raíz descartada por un enlace, p. ej.).
-            for r in &plan.rejected {
-                l.write_note(
-                    "rejected",
-                    &format!("{} -> {:?}", r.path.display(), r.reason),
+            // Con tope: un plan con miles de rechazados no puede inflar el registro (R4).
+            for r in plan.rejected.iter().take(MAX_REJECTED_NOTES) {
+                l.write_rejected(&r.path, &format!("{:?}", r.reason));
+            }
+            if plan.rejected.len() > MAX_REJECTED_NOTES {
+                l.write_rejected(
+                    Path::new("..."),
+                    &format!(
+                        "{} más sin anotar",
+                        plan.rejected.len() - MAX_REJECTED_NOTES
+                    ),
                 );
             }
         }
@@ -339,7 +350,7 @@ impl Cleaner {
         if !changed.is_empty() {
             // Nada se ejecutó: el registro (solo la línea de arranque) no debe ocupar una plaza de la retención.
             if let Some(l) = &opts.log {
-                l.discard();
+                let _ = l.discard();
             }
             return Err(ExecError::NeedsReconfirm(changed));
         }

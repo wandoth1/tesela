@@ -139,6 +139,9 @@ pub struct LogWriter {
     /// Bandera de cancelación del ejecutor: un error de escritura la activa (la limpieza se detiene en el siguiente punto
     /// seguro).
     cancel_on_error: Mutex<Option<Arc<AtomicBool>>>,
+    /// ¿Se escribió ya algo de una OPERACIÓN (una intención, una entrada, un `bin-item`, un resultado)? Mientras no, el
+    /// registro solo tiene la línea de arranque y las notas `rejected`, y se puede descartar (R2).
+    operation_written: AtomicBool,
 }
 
 #[derive(Serialize)]
@@ -226,6 +229,7 @@ impl LogWriter {
             failed: AtomicBool::new(false),
             first_error: Mutex::new(None),
             cancel_on_error: Mutex::new(None),
+            operation_written: AtomicBool::new(false),
         };
         w.raw(&format!(
             "{{\"t\":\"start\",\"dry_run\":{dry_run},\"unix\":{}}}",
@@ -281,10 +285,19 @@ impl LogWriter {
         self.checked(r)
     }
 
-    /// Borra el archivo del registro: para una ejecución que se rechazó antes de tocar nada (ver el módulo). No hace falta
-    /// cerrar nada antes: Windows admite borrar un archivo abierto con compartición de borrado.
-    pub fn discard(&self) {
-        let _ = fs::remove_file(&self.path);
+    /// Borra el archivo del registro: para una ejecución que se rechazó antes de tocar nada (ver el módulo). SOLO si no se
+    /// escribió nada de una operación (intención, entrada, `bin-item`, resultado): con algo escrito NO se borra y devuelve
+    /// un error (R2). No hace falta cerrar nada antes: Windows admite borrar un archivo abierto con compartición de borrado.
+    pub(crate) fn discard(&self) -> std::io::Result<()> {
+        if self.operation_written.load(Ordering::SeqCst) {
+            return Err(std::io::Error::other(
+                "el registro ya contiene operaciones: no se descarta",
+            ));
+        }
+        match fs::remove_file(&self.path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        }
     }
 
     /// ¿Llegó el registro a su tope (líneas o bytes) y dejó de anotar? La limpieza sigue, pero lo posterior no consta.
@@ -340,12 +353,14 @@ impl LogWriter {
             .map(|p| p.to_string_lossy().into_owned())
             .collect();
         let v = serde_json::json!({ "t": kind, "paths": list });
+        self.operation_written.store(true, Ordering::SeqCst);
         self.raw(&v.to_string())?;
         self.flush_checked()
     }
 
     /// Un elemento de la Papelera purgado (o saltado), individualmente: ruta de origen, `id`, tamaño y resultado.
     pub fn write_bin_item(&self, original: &Path, id: &OsStr, size: u64, out: &str) {
+        self.operation_written.store(true, Ordering::SeqCst);
         let v = serde_json::json!({
             "t": "bin-item",
             "path": original.to_string_lossy(),
@@ -362,19 +377,39 @@ impl LogWriter {
         self.checked(r)
     }
 
-    /// Escribe una entrada procesada.
-    pub fn write_event(&self, ev: &Event) {
+    /// Cuenta una línea y dice si el registro ya pasó su tope (líneas o bytes): en ese caso deja UNA marca de truncado y ya
+    /// no se escribe más. Lo comparten las entradas y las notas `rejected`, para que ninguna se salte el tope (R4).
+    fn over_cap(&self) -> Option<u64> {
         let n = self.lines.fetch_add(1, Ordering::Relaxed);
         if n > MAX_LINES
             || self.bytes.load(Ordering::Relaxed) > self.max_bytes.load(Ordering::Relaxed)
         {
-            // Una sola marca de truncado; después no se escribe más (el tope en líneas y en bytes).
             if !self.truncated.swap(true, Ordering::Relaxed) {
                 let _ = self.raw("{\"t\":\"truncated\"}");
                 self.flush();
             }
+            return None;
+        }
+        Some(n)
+    }
+
+    /// Una nota de algo que NO llegó al plan (`rejected`), con el mismo tope y el mismo truncado que las entradas. No cuenta
+    /// como operación escrita (R2).
+    pub fn write_rejected(&self, path: &Path, reason: &str) {
+        if self.over_cap().is_none() {
             return;
         }
+        let v =
+            serde_json::json!({ "t": "rejected", "path": path.to_string_lossy(), "text": reason });
+        let _ = self.raw(&v.to_string());
+    }
+
+    /// Escribe una entrada procesada.
+    pub fn write_event(&self, ev: &Event) {
+        self.operation_written.store(true, Ordering::SeqCst);
+        let Some(n) = self.over_cap() else {
+            return;
+        };
         if n % FLUSH_EVERY == FLUSH_EVERY - 1 {
             self.flush();
         }
@@ -396,6 +431,7 @@ impl LogWriter {
 
     /// Una línea de texto libre del propio registro (resumen, avisos).
     pub fn write_note(&self, kind: &str, text: &str) {
+        self.operation_written.store(true, Ordering::SeqCst);
         let v = serde_json::json!({ "t": kind, "text": text });
         let _ = self.raw(&v.to_string());
     }
@@ -655,8 +691,46 @@ mod tests {
         let log = LogWriter::create(&dir, false).unwrap();
         let path = log.path().to_path_buf();
         assert!(path.exists());
-        log.discard();
+        // Las notas `rejected` no son una operación: se puede descartar.
+        log.write_rejected(Path::new("x"), "ReparseAncestor");
+        assert!(log.discard().is_ok());
         assert!(!path.exists());
+        // R2: con una operación escrita (intención, entrada, `bin-item` o resultado) NO se borra y devuelve un error.
+        for i in 0..4 {
+            let log = LogWriter::create(&dir, false).unwrap();
+            let path = log.path().to_path_buf();
+            match i {
+                0 => log
+                    .write_intent("delete-begin", &[PathBuf::from("a")])
+                    .unwrap(),
+                1 => log.write_event(&event(0, 5)),
+                2 => log.write_bin_item(Path::new("a"), OsStr::new("id"), 1, "purged"),
+                _ => log.write_note("recycle", "resultado"),
+            }
+            assert!(log.discard().is_err(), "{i}");
+            assert!(
+                path.exists(),
+                "{i}: no se borra un registro con operaciones"
+            );
+        }
+    }
+
+    /// R4: las notas `rejected` respetan el mismo tope y el mismo truncado que las entradas.
+    #[test]
+    fn las_notas_rejected_respetan_el_tope_del_registro() {
+        let sb = Sandbox::new();
+        let dir = sb.mkdir("Tesela");
+        let log = LogWriter::create(&dir, false).unwrap();
+        log.set_max_bytes_for_test(2_000);
+        for i in 0..500 {
+            log.write_rejected(Path::new(&format!("C:\\carpeta\\{i}")), "ReparseAncestor");
+        }
+        log.flush();
+        let text = fs::read_to_string(log.path()).unwrap();
+        assert!(log.truncated());
+        assert!(text.len() < 2_000 + 500, "{}", text.len());
+        assert_eq!(text.matches("\"truncated\"").count(), 1);
+        assert!(text.matches("\"rejected\"").count() < 50);
     }
 
     #[test]

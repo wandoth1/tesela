@@ -1807,12 +1807,13 @@ fn una_ejecucion_rechazada_no_deja_registro() {
     let plan2 = plan_de(&sb, &c, &[("b.txt", 100, 100)]);
     let bad = Arc::new(LogWriter::create_failing_after(&sb.path("Tesela2"), false, 400).unwrap());
     for i in 0..60 {
-        bad.write_note(
-            "x",
+        bad.write_rejected(
+            Path::new("x"),
             &format!("relleno largo para agotar el presupuesto {i}"),
         );
     }
     bad.flush();
+    assert!(!bad.ok());
     let bad_path = bad.path().to_path_buf();
     let r2 = exec(&c, &plan2, false, false, Some(bad));
     assert_eq!(r2.err(), Some(ExecError::LogRequired));
@@ -1886,6 +1887,29 @@ fn la_cancelacion_del_usuario_no_se_oculta_si_ademas_falla_el_registro() {
     let log2 = Arc::new(LogWriter::create_failing_after(&sb2.path("L2"), false, 80).unwrap());
     let rep2 = exec(&c2, &plan2, false, false, Some(log2)).unwrap();
     assert!(rep2.log_failed && !rep2.cancelled);
+}
+
+/// R4: un plan con muchos rechazados no infla el registro (tope de notas con una línea final con el resto).
+#[test]
+fn los_rechazados_del_plan_se_anotan_con_tope() {
+    let sb = Sandbox::new();
+    let c = cleaner_for(&sb);
+    sb.write_aged("Temp/a.tmp", 100, 72);
+    let mut b = Basket::new();
+    b.set_category(CategoryId::UserTemp, true);
+    let mut plan = approve(&c, &b);
+    for i in 0..500 {
+        plan.rejected.push(crate::plan::Rejected {
+            path: PathBuf::from(format!("C:/falso/{i}")),
+            reason: RejectReason::Missing,
+        });
+    }
+    let log = Arc::new(LogWriter::create(&sb.path("Tesela"), false).unwrap());
+    exec(&c, &plan, false, false, Some(log.clone())).unwrap();
+    let text = fs::read_to_string(log.path()).unwrap();
+    let n = text.lines().filter(|l| l.contains("\"rejected\"")).count();
+    assert_eq!(n, 201, "200 notas y una línea con el resto");
+    assert!(text.contains("300 más sin anotar"));
 }
 
 /// M4: un registro que no se puede crear es un error (la interfaz no ejecuta nada): aquí, la carpeta de datos es un archivo.
