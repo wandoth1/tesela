@@ -1417,19 +1417,122 @@ pub(crate) mod bintest {
             .collect()
     }
 
-    /// Al soltarla (también en un pánico) purga SOLO los elementos propios de la prueba.
+    /// ¿Es un elemento de ALGUNA prueba (de cualquier ejecución)? Su carpeta de origen es hija directa de `%TEMP%` y se llama
+    /// `tesela-test-<uuid>`, o cuelga de ella; nunca coincide con elementos del usuario.
+    pub fn is_any_test_item(item: &BinItem) -> bool {
+        let temp = dunce::canonicalize(std::env::temp_dir()).unwrap();
+        let key = |p: &Path| p.to_string_lossy().to_lowercase().replace('/', "\\");
+        let parent = key(&crate::sys::strip_verbatim(item.original_parent.clone()));
+        let t = key(&temp);
+        let t = t.trim_end_matches('\\');
+        match parent.strip_prefix(&format!("{t}\\")) {
+            Some(rest) => rest
+                .split('\\')
+                .next()
+                .unwrap_or("")
+                .starts_with("tesela-test-"),
+            None => {
+                parent == t
+                    && item
+                        .name
+                        .to_string_lossy()
+                        .to_lowercase()
+                        .starts_with("tesela-test-")
+            }
+        }
+    }
+
+    /// Borra POR RUTA, sin el código bajo prueba, el `$R` y el `$I` de un elemento propio que quedó en la Papelera. Solo si
+    /// ambos cuelgan de `<unidad>:\$Recycle.Bin\<SID del usuario actual>\` y ninguno es un reparse point. `true` si quedó
+    /// sin `$R`.
+    pub fn remove_by_path(item: &BinItem) -> bool {
+        let data = PathBuf::from(&item.id);
+        let sid = tesela_scanner::current_user_sid().unwrap_or_default();
+        let under_own_bin = |p: &Path| {
+            let sid_dir = p.parent();
+            let bin_dir = sid_dir.and_then(Path::parent);
+            let drive = bin_dir.and_then(Path::parent);
+            sid_dir
+                .and_then(Path::file_name)
+                .is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(&sid))
+                && !sid.is_empty()
+                && bin_dir
+                    .and_then(Path::file_name)
+                    .is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case("$Recycle.Bin"))
+                && drive.is_some_and(|d| PathKey::new(d).is_drive_root())
+        };
+        let safe = |p: &Path| {
+            under_own_bin(p)
+                && sys::open_for_query(p)
+                    .and_then(|h| sys::meta(&h))
+                    .map_or(true, |m| !m.is_reparse())
+        };
+        if let Some(meta) = meta_sibling(&data)
+            && safe(&meta)
+        {
+            let _ = std::fs::remove_file(&meta);
+        }
+        if safe(&data) {
+            match std::fs::symlink_metadata(&data) {
+                Ok(m) if m.is_dir() => {
+                    let _ = std::fs::remove_dir_all(&data);
+                }
+                Ok(_) => {
+                    let _ = std::fs::remove_file(&data);
+                }
+                Err(_) => {}
+            }
+        }
+        !data.exists()
+    }
+
+    /// Purga lo que quede de las pruebas que cumplen `which`: hasta 3 intentos con `list_bin` + `purge_items` y, si aún queda
+    /// algo, borrado por ruta (ver [`remove_by_path`]). Devuelve cuántos elementos quedaron.
+    fn clean_own(which: &dyn Fn(&BinItem) -> bool) -> usize {
+        for _ in 0..3 {
+            let Ok(items) = list_bin() else { break };
+            let mine: Vec<BinItem> = items.into_iter().filter(|i| which(i)).collect();
+            if mine.is_empty() {
+                return 0;
+            }
+            let _ = purge_items(&mine, &AtomicBool::new(false));
+        }
+        let left: Vec<BinItem> = list_bin()
+            .map(|v| v.into_iter().filter(|i| which(i)).collect())
+            .unwrap_or_default();
+        for it in &left {
+            remove_by_path(it);
+        }
+        list_bin().map_or(0, |v| v.into_iter().filter(|i| which(i)).count())
+    }
+
+    /// Barre los restos de ejecuciones ANTERIORES (origen bajo `tesela-test-*`, borrados hace más de 2 minutos: nunca lo de
+    /// una prueba que corra a la vez en otro proceso). Solo se llama con las pruebas reales activadas y con `bin_lock()`.
+    pub fn sweep_leftovers() {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| d.as_secs() as i64);
+        let n = clean_own(&|i| is_any_test_item(i) && now - i.time_deleted > 120);
+        if n > 0 {
+            eprintln!("BARRIDO: quedan {n} restos de pruebas anteriores en la Papelera");
+        }
+    }
+
+    /// Al soltarla (también en un pánico) purga SOLO los elementos propios de la prueba: hasta 3 intentos con el código y,
+    /// si algo queda, borrado por ruta SIN el código bajo prueba (ver [`remove_by_path`]). Dice cuántos quedaron y, si no
+    /// es 0, hace `panic!` (salvo que ya se esté en un pánico): una fuga no puede pasar desapercibida.
     pub struct BinGuard {
         pub uuid: String,
     }
 
     impl Drop for BinGuard {
         fn drop(&mut self) {
-            if let Ok(items) = list_bin() {
-                let mine: Vec<BinItem> = items
-                    .into_iter()
-                    .filter(|i| is_mine(i, &self.uuid))
-                    .collect();
-                let _ = purge_items(&mine, &AtomicBool::new(false));
+            let left = clean_own(&|i| is_mine(i, &self.uuid));
+            if left > 0 {
+                eprintln!("BinGuard: quedan {left} elementos propios en la Papelera");
+                if !std::thread::panicking() {
+                    panic!("BinGuard: quedan {left} elementos propios en la Papelera");
+                }
             }
         }
     }
@@ -1440,7 +1543,7 @@ mod tests {
     use super::bintest::*;
     use super::*;
     use crate::paths::PathKey;
-    use crate::testutil::{Sandbox, bin_lock, sparse_file};
+    use crate::testutil::{RemoveOnDrop, Sandbox, bin_lock, sparse_file};
     use std::collections::HashSet;
 
     /// Los elementos a enviar con la identidad que tienen ahora (lo "aprobado").
@@ -1932,18 +2035,11 @@ mod tests {
         assert_eq!(ids(), before);
     }
 
-    /// Borra un archivo al soltarse (el `$R` apartado de una prueba, que no es de ningún elemento de la lista).
-    struct RemoveOnDrop(PathBuf);
-
-    impl Drop for RemoveOnDrop {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.0);
-        }
-    }
-
     /// Un elemento sintético de la Papelera (`$R` y `$I` en una carpeta del sandbox) con las identidades capturadas ahora.
     fn synthetic_bin_item(sb: &Sandbox, token: &str, data: &[u8]) -> BinItem {
-        let dir = sb.mkdir("bin/S-synthetic");
+        sb.mkdir("bin/S-synthetic");
+        // Forma larga (ver `send_item`): el `id` de un elemento real es la ruta larga que da la shell.
+        let dir = sb.long("bin/S-synthetic");
         let (d, m) = (
             dir.join(format!("$R{token}.txt")),
             dir.join(format!("$I{token}.txt")),
@@ -2135,6 +2231,62 @@ mod tests {
         assert_eq!(ids(), before);
     }
 
+    /// Incidente de la Papelera (limpieza de las pruebas): el borrado POR RUTA que usa `BinGuard` cuando el código bajo prueba no
+    /// consigue purgar solo toca lo que cuelga de `<unidad>:\$Recycle.Bin\<SID propio>\`: un elemento sintético (en el sandbox)
+    /// no se toca aunque se lo pidan. Sin la variable.
+    #[test]
+    fn el_borrado_por_ruta_de_la_limpieza_no_toca_lo_que_no_esta_en_la_papelera_propia() {
+        let sb = Sandbox::new();
+        let a = synthetic_bin_item(&sb, "AAAA01", b"datos a");
+        assert!(
+            !remove_by_path(&a),
+            "no es de la Papelera propia: no se borra"
+        );
+        assert!(PathBuf::from(&a.id).exists());
+        assert!(meta_sibling(Path::new(&a.id)).unwrap().exists());
+        // Y tampoco una carpeta del sandbox con la forma `$Recycle.Bin\<otro SID>`.
+        let dir = sb.long("fake/$Recycle.Bin/S-synthetic-otro");
+        std::fs::create_dir_all(&dir).unwrap();
+        let (d, m) = (dir.join("$RBBBB02.txt"), dir.join("$IBBBB02.txt"));
+        std::fs::write(&d, b"x").unwrap();
+        std::fs::write(&m, b"y").unwrap();
+        let b = BinItem {
+            id: d.clone().into_os_string(),
+            ..a.clone()
+        };
+        assert!(!remove_by_path(&b));
+        assert!(d.exists() && m.exists());
+    }
+
+    /// Con la shell REAL (propios): el borrado por ruta de la limpieza quita el `$R` (también una carpeta) y su `$I` de un
+    /// elemento propio y deja la Papelera como estaba.
+    #[test]
+    fn con_la_shell_real_el_borrado_por_ruta_quita_un_elemento_propio_entero() {
+        let _lock = bin_lock();
+        if !bin_usable() {
+            return;
+        }
+        let before = ids();
+        let sb = Sandbox::new();
+        let _guard = BinGuard { uuid: sb.uuid() };
+        sb.write("r/a.txt", 700);
+        sb.write("r/carpeta/x.txt", 300);
+        let paths = vec![sb.long("r/a.txt"), sb.long("r/carpeta")];
+        recycle_paths(&send_items(&paths), RecycleMode::Normal).unwrap();
+        let mine: Vec<BinItem> = list_bin()
+            .unwrap()
+            .into_iter()
+            .filter(|i| is_mine(i, &sb.uuid()))
+            .collect();
+        assert_eq!(mine.len(), 2, "{mine:?}");
+        for it in &mine {
+            assert!(remove_by_path(it), "{it:?}");
+            assert!(!PathBuf::from(&it.id).exists());
+            assert!(!meta_sibling(Path::new(&it.id)).unwrap().exists());
+        }
+        assert_eq!(ids(), before);
+    }
+
     /// A-M4 (sin COM): un elemento que es una CARPETA llega a `PreDeleteItem` hijo a hijo (medido con la shell real). Los hijos
     /// de un `$R` aprobado pasan por la identidad de su `$R` y de su `$I`; si el `$R` se sustituye, también se vetan. Al
     /// ENVIAR no vale: solo la ruta exacta.
@@ -2278,8 +2430,11 @@ mod tests {
         assert_eq!(ids(), before);
     }
 
+    /// Un elemento a enviar con la forma LARGA de la ruta: `PreDeleteItem` recibe de la shell
+    /// `SIGDN_DESKTOPABSOLUTEPARSING`, que es siempre larga, y `PathKey` no resuelve nombres 8.3 (en el CI `%TEMP%` es 8.3).
     fn send_item(sb: &Sandbox, rel: &str, size: usize) -> SendItem {
-        SendItem::capture(&sb.write(rel, size))
+        sb.write(rel, size);
+        SendItem::capture(&sb.long(rel))
     }
 
     /// H3 (sin COM): la comprobación de `PreDeleteItem` por ruta. Misma identidad pasa; otra identidad, un archivo que ya no
@@ -2486,7 +2641,8 @@ mod tests {
         let sb = Sandbox::new();
         let a = send_item(&sb, "d/a.txt", 100);
         let b = send_item(&sb, "d/b.txt", 100);
-        let dest = sb.write("d/bin/R1.txt", 10);
+        sb.write("d/bin/R1.txt", 10);
+        let dest = sb.long("d/bin/R1.txt");
         let (sink, events, state) = com_sink(Some(Guard::new(&[a.clone(), b.clone()])));
         // SAFETY: interfaz COM viva y en su hilo; `IShellItem` vivos.
         unsafe {

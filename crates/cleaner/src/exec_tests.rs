@@ -13,7 +13,7 @@ use crate::protect::{ProtectionRoots, Verdict};
 use crate::recycle::bintest::{BinGuard, bin_usable, ids, is_mine, real_recycle_enabled};
 use crate::roots::Roots;
 use crate::rules::{CategoryId, Risk};
-use crate::testutil::{Sandbox, bin_lock};
+use crate::testutil::{RemoveOnDrop, Sandbox, bin_lock};
 use std::fs;
 use std::sync::Mutex;
 use tesela_scanner::BrowserRoots;
@@ -487,12 +487,6 @@ fn vaciar_salta_el_elemento_cuya_identidad_cambio_y_lo_deja_en_el_registro() {
 /// `vetoed` y una `not-processed` por cada uno de los demás, y el sustituto sigue ahí.
 #[test]
 fn vaciar_con_un_r_sustituido_al_final_consta_como_vetado_y_no_se_purga_nada_mas() {
-    struct RemoveOnDrop(PathBuf);
-    impl Drop for RemoveOnDrop {
-        fn drop(&mut self) {
-            let _ = fs::remove_file(&self.0);
-        }
-    }
     let _lock = bin_lock();
     if !bin_usable() {
         return;

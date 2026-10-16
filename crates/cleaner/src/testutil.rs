@@ -182,9 +182,32 @@ impl Drop for Sandbox {
 /// Serializa las pruebas que tocan la Papelera real (comparan el conjunto de ids antes y después).
 pub static BIN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Bloquea [`BIN_LOCK`] aunque otra prueba haya entrado en pánico con él cogido.
+/// Bloquea [`BIN_LOCK`] aunque otra prueba haya entrado en pánico con él cogido. Con las pruebas de la Papelera real
+/// activadas, antes barre los restos de ejecuciones anteriores (SOLO elementos cuyo origen está bajo `tesela-test-*`).
 pub fn bin_lock() -> std::sync::MutexGuard<'static, ()> {
-    BIN_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    let g = BIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    if crate::recycle::bintest::real_recycle_requested() {
+        crate::recycle::bintest::sweep_leftovers();
+    }
+    g
+}
+
+/// Borra al soltarse un archivo o una carpeta propios de una prueba (p. ej. el `$R` apartado dentro de la Papelera). Una
+/// carpeta se borra entera, pero nunca se sigue un enlace.
+pub struct RemoveOnDrop(pub PathBuf);
+
+impl Drop for RemoveOnDrop {
+    fn drop(&mut self) {
+        match fs::symlink_metadata(&self.0) {
+            Ok(m) if m.is_dir() => {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+            Ok(_) => {
+                let _ = fs::remove_file(&self.0);
+            }
+            Err(_) => {}
+        }
+    }
 }
 
 /// Crea un archivo DISPERSO de `len` bytes lógicos (no ocupa espacio en disco), para probar elementos "demasiado
