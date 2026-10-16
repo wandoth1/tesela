@@ -126,13 +126,17 @@ fn una_sesion_de_demostracion_no_deja_nada_en_appdata() {
 }
 
 /// Las herramientas de medición (`--idle-memory`, `--bench-hover`) tampoco guardan nada, ni siquiera con `--demo` y sin ventana
-/// que cerrar a mano: terminan solas.
+/// que cerrar a mano: terminan solas. Y `--idle-memory` también SIN `--demo` (X1: el aislamiento de las herramientas de
+/// medición no depende de la demostración; con `APPDATA`/`LOCALAPPDATA` redirigidas no queda nada ni de la configuración ni
+/// del historial).
 #[test]
 fn las_herramientas_de_medicion_no_dejan_nada_en_appdata() {
-    for args in [
-        ["--demo", "--idle-memory", "1"],
-        ["--demo", "--bench-hover", "1"],
-    ] {
+    let casos: [&[&str]; 3] = [
+        &["--demo", "--idle-memory", "1"],
+        &["--demo", "--bench-hover", "1"],
+        &["--idle-memory", "1"],
+    ];
+    for args in casos {
         let dir = Tmp(std::env::temp_dir().join(format!("tesela-test-{}", uuid::Uuid::new_v4())));
         let (roaming, local) = (dir.0.join("Roaming"), dir.0.join("Local"));
         std::fs::create_dir_all(&roaming).unwrap();
@@ -143,8 +147,14 @@ fn las_herramientas_de_medicion_no_dejan_nada_en_appdata() {
             .env("LOCALAPPDATA", &local)
             .output()
             .unwrap();
-        // Si no hay escritorio la herramienta puede fallar; lo que no puede es dejar archivos.
-        let _ = out;
+        // Si no hay escritorio la herramienta puede fallar; lo que no puede es dejar archivos. Si termina bien, tiene que haber
+        // llegado a medir (que el aislamiento se pruebe con la herramienta funcionando, no con un error de argumentos).
+        if args.contains(&"--idle-memory") && out.status.success() {
+            assert!(
+                String::from_utf8_lossy(&out.stderr).contains("idle-memory:"),
+                "{args:?}: no midió"
+            );
+        }
         assert_eq!(
             count_entries(&roaming),
             0,
