@@ -1210,6 +1210,8 @@ struct FakeShell {
     used: Mutex<u64>,
     nuke: &'static str,
     ops: Mutex<Vec<Vec<PathBuf>>>,
+    /// Si es `Some`, la shell "falla": sin eventos y con este error (como un fallo de COM o de `PerformOperations`).
+    fail: Option<i32>,
 }
 
 impl FakeShell {
@@ -1221,6 +1223,18 @@ impl FakeShell {
             used: Mutex::new(used),
             nuke,
             ops: Mutex::new(Vec::new()),
+            fail: None,
+        })
+    }
+    fn failing(sb: &Sandbox, hresult: i32) -> Arc<FakeShell> {
+        sb.mkdir("FakeBin");
+        Arc::new(FakeShell {
+            bin: sb.long("FakeBin"),
+            max: Some(10_000),
+            used: Mutex::new(0),
+            nuke: "nunca",
+            ops: Mutex::new(Vec::new()),
+            fail: Some(hresult),
         })
     }
     fn names(&self) -> Vec<Vec<String>> {
@@ -1241,6 +1255,15 @@ impl RecycleShell for FakeShell {
     fn recycle(&self, paths: &[PathBuf]) -> recycle::BatchOutcome {
         use crate::recycle::{BinState, DeleteEvent};
         self.ops.lock().unwrap().push(paths.to_vec());
+        if let Some(hresult) = self.fail {
+            return recycle::BatchOutcome {
+                error: Some(crate::recycle::ShellError {
+                    hresult,
+                    detail: "fallo simulado".into(),
+                }),
+                ..recycle::BatchOutcome::default()
+            };
+        }
         let nuke = paths.iter().any(|p| {
             p.file_name()
                 .is_some_and(|n| n.to_string_lossy().contains(self.nuke))
@@ -1414,6 +1437,106 @@ fn sin_capacidad_conocida_cada_elemento_va_en_su_propia_operacion() {
     let rep = exec(&c, &plan, false, false, None).unwrap();
     assert!(rep.items.iter().all(|i| i.status == ItemStatus::Recycled));
     assert_eq!(fake.names(), vec![vec!["a"], vec!["b"], vec!["c"]]);
+}
+
+/// Sin `MaxCapacity` en el registro se usa la misma capacidad estimada que `fit_decide` (el 5 % del volumen): el
+/// presupuesto y `NoRoom` actúan también entonces (antes cada elemento iba solo y sin comprobar su tamaño).
+#[test]
+fn sin_max_capacity_se_usa_la_capacidad_estimada_y_actua_no_room() {
+    use crate::volume::BinLimit;
+    // La capacidad estimada: el 5 % del volumen.
+    assert_eq!(
+        room_from(BinLimit::Unknown, Some(200_000), Some(0)).max,
+        Some(10_000)
+    );
+    assert_eq!(
+        room_from(BinLimit::Max(777), Some(200_000), None).max,
+        Some(777)
+    );
+    for l in [
+        BinLimit::NoBin,
+        BinLimit::NukeOnDelete,
+        BinLimit::Indeterminate,
+    ] {
+        assert_eq!(room_from(l, Some(200_000), Some(0)).max, None, "{l:?}");
+    }
+    assert_eq!(room_from(BinLimit::Unknown, None, Some(0)).max, None);
+    assert_eq!(room_from(BinLimit::Unknown, Some(0), Some(0)).max, None);
+    // Con esa capacidad, la shell simulada reparte y rechaza como con una configurada.
+    let sb = Sandbox::new();
+    let room = room_from(BinLimit::Unknown, Some(200_000), Some(0));
+    let fake = FakeShell::new(&sb, room.max, 0, "enorme");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    // Capacidad 10 000: lo que pase de 9 000 no cabe ni solo; un "grande" (> 1 000) va solo; los pequeños, juntos.
+    let plan = plan_de(
+        &sb,
+        &c,
+        &[
+            ("a", 100, 100),
+            ("b", 100, 100),
+            ("gigante", 100, 9_500),
+            ("grande", 100, 2_000),
+            ("c", 100, 100),
+        ],
+    );
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    let st = |n: &str| {
+        rep.items
+            .iter()
+            .find(|i| i.path.ends_with(n))
+            .unwrap()
+            .status
+    };
+    assert_eq!(st("gigante"), ItemStatus::NotRecycled(RecycleFail::NoRoom));
+    assert!(sb.path("Docs/gigante").exists(), "no se envió ni se tocó");
+    for n in ["a", "b", "grande", "c"] {
+        assert_eq!(st(n), ItemStatus::Recycled, "{n}");
+    }
+    assert_eq!(
+        fake.names(),
+        vec![vec!["a", "b"], vec!["grande"], vec!["c"]]
+    );
+    assert_eq!(rep.no_room, 1);
+}
+
+/// Un error de la shell o de COM al enviar consta en el registro local (con su HRESULT) y en el informe (para el resumen);
+/// los elementos quedan sin tocar.
+#[test]
+fn un_error_de_la_shell_consta_en_el_registro_y_en_el_informe() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::failing(&sb, 0x8000_4005u32 as i32);
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    let plan = plan_de(&sb, &c, &[("a.txt", 100, 100), ("b.txt", 100, 100)]);
+    let log = Arc::new(LogWriter::create(&sb.path("Tesela"), false).unwrap());
+    let rep = exec(&c, &plan, false, false, Some(log.clone())).unwrap();
+    assert_eq!(rep.shell_error, Some(0x8000_4005u32 as i32));
+    // Sin eventos: nada se movió y los elementos siguen en su sitio, como no procesados.
+    for n in ["a.txt", "b.txt"] {
+        let it = rep.items.iter().find(|i| i.path.ends_with(n)).unwrap();
+        assert_eq!(
+            it.status,
+            ItemStatus::NotRecycled(RecycleFail::NotProcessed)
+        );
+        assert!(sb.path(&format!("Docs/{n}")).exists());
+    }
+    let text = fs::read_to_string(log.path()).unwrap();
+    let line = text
+        .lines()
+        .find(|l| l.contains("recycle-error"))
+        .expect("falta la nota del error");
+    assert!(
+        line.contains("80004005") && line.contains("fallo simulado"),
+        "{line}"
+    );
+    // Un envío sin errores no deja `shell_error`.
+    let sb2 = Sandbox::new();
+    let ok = FakeShell::new(&sb2, Some(10_000), 0, "nunca");
+    let c2 = cleaner_for(&sb2).with_shell(ok);
+    let plan2 = plan_de(&sb2, &c2, &[("a.txt", 100, 100)]);
+    assert_eq!(
+        exec(&c2, &plan2, false, false, None).unwrap().shell_error,
+        None
+    );
 }
 
 #[test]

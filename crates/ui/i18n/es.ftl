@@ -403,6 +403,7 @@ sum-unexpected =
         [one] { $count } elemento no cabía en la Papelera y se eliminó definitivamente.
        *[other] { $count } elementos no cabían en la Papelera y se eliminaron definitivamente.
     }
+sum-shell-error = La Papelera de Windows devolvió un error (0x{ $code }). Lo que no se pudo enviar sigue donde estaba.
 sum-recycle-stopped =
     { $n ->
         [0] Se detuvo el envío a la Papelera: Windows eliminó definitivamente un elemento que no cabía. Por precaución no se tocó nada más.

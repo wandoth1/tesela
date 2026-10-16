@@ -221,6 +221,9 @@ pub struct Report {
     pub recycled_other: u64,
     /// Elementos de los que no se pudo comprobar qué pasó.
     pub unverified: u64,
+    /// El primer error (`HRESULT`) que devolvió la shell o COM al enviar a la Papelera, si hubo alguno. Lo que no se pudo
+    /// enviar queda como no procesado y sigue donde estaba.
+    pub shell_error: Option<i32>,
     /// El envío a la Papelera se DETUVO porque la shell eliminó definitivamente un elemento (corte de seguridad): los que
     /// quedaban no se tocaron.
     pub recycle_stopped: bool,
@@ -695,6 +698,17 @@ impl Cleaner {
                         l.flush();
                     }
                     let outcome = shell.recycle(&paths);
+                    // Un error de la shell o de COM no se pierde: consta en el registro local y en el resumen.
+                    if let Some(e) = &outcome.error {
+                        report.shell_error.get_or_insert(e.hresult);
+                        if let Some(l) = &opts.log {
+                            l.write_note(
+                                "recycle-error",
+                                &format!("hresult 0x{:08X}: {}", e.hresult as u32, e.detail),
+                            );
+                            l.flush();
+                        }
+                    }
                     let events: HashMap<PathKey, &recycle::DeleteEvent> = outcome
                         .events
                         .iter()
@@ -929,17 +943,38 @@ impl RecycleShell for RealShell {
         }
     }
     fn bin_room(&self, root: &Path) -> BinRoom {
-        BinRoom {
-            max: match volume::bin_limit(root) {
-                volume::BinLimit::Max(m) => Some(m),
-                _ => None,
-            },
-            used: recycle::bin_size_on(root).ok(),
-        }
+        let total = tesela_scanner::volume_space(root)
+            .ok()
+            .filter(|v| v.volume_scope)
+            .map(|v| v.total);
+        room_from(
+            volume::bin_limit(root),
+            total,
+            recycle::bin_size_on(root).ok(),
+        )
     }
     fn is_bin_path(&self, p: &Path) -> bool {
         recycle::is_recycle_bin_path(p)
     }
+}
+
+/// La capacidad de la Papelera de un volumen a efectos del reparto: la configurada (`MaxCapacity`) o, si el registro no
+/// la da, la MISMA estimación conservadora que usa `fit_decide` (el [`DEFAULT_BIN_PERCENT_ASSUMED`] % del volumen), para
+/// que el presupuesto y la regla `NoRoom` actúen también entonces. Sin Papelera, desactivada, indeterminada o sin tamaño del
+/// volumen, no hay capacidad (y cada elemento va solo).
+pub(crate) fn room_from(
+    limit: volume::BinLimit,
+    volume_total: Option<u64>,
+    used: Option<u64>,
+) -> BinRoom {
+    let max = match limit {
+        volume::BinLimit::Max(m) => Some(m),
+        volume::BinLimit::Unknown => volume_total
+            .filter(|t| *t > 0)
+            .map(|t| t / 100 * crate::plan::DEFAULT_BIN_PERCENT_ASSUMED),
+        _ => None,
+    };
+    BinRoom { max, used }
 }
 
 /// Qué hacer con el principio de la cola de un volumen.

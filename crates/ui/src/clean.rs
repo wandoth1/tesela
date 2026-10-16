@@ -989,6 +989,15 @@ fn summary_lines(env: &Env, s: &Summary) -> Vec<(String, bool)> {
     if r.deleted_unexpectedly > 0 {
         v.push((n("sum-unexpected", r.deleted_unexpectedly), true));
     }
+    if let Some(code) = r.shell_error {
+        v.push((
+            tr.ta(
+                "sum-shell-error",
+                args!["code" => format!("{:08X}", code as u32)],
+            ),
+            true,
+        ));
+    }
     if r.recycle_stopped {
         v.push((n("sum-recycle-stopped", r.stopped_items), true));
     }

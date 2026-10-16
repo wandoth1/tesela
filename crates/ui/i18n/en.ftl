@@ -402,6 +402,7 @@ sum-unexpected =
         [one] { $count } item did not fit in the Recycle Bin and was deleted permanently.
        *[other] { $count } items did not fit in the Recycle Bin and were deleted permanently.
     }
+sum-shell-error = The Windows Recycle Bin returned an error (0x{ $code }). Whatever could not be sent is still where it was.
 sum-recycle-stopped =
     { $n ->
         [0] Sending to the Recycle Bin was stopped: Windows permanently deleted an item that did not fit. As a precaution nothing else was touched.
