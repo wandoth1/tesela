@@ -1181,6 +1181,15 @@ fn summary_ui(ui: &mut Ui, env: &mut Env, s: &Summary) -> Option<SummaryClick> {
                     ui.add_space(6.0);
                     let head = env.tr.t(if r.dry_run { "sum-dry" } else { "sum-freed" });
                     ui.label(RichText::new(&head).size(15.0).color(pal.text_muted));
+                    // "Liberado ahora" es el CAMBIO medido del espacio libre: otros programas que escriban a la vez también
+                    // lo mueven. Se dice, y los totales eliminado / a la Papelera se cuentan aparte.
+                    if !r.dry_run {
+                        ui.label(
+                            RichText::new(env.tr.t("sum-freed-hint"))
+                                .size(12.0)
+                                .color(pal.text_muted),
+                        );
+                    }
                     let big = if r.dry_run {
                         r.permanent_bytes + r.bin.map_or(0, |b| b.bytes_hint)
                     } else {
@@ -1426,6 +1435,43 @@ mod summary_tests {
 
     fn has(v: &[(String, bool)], t: &str) -> bool {
         v.iter().any(|(x, _)| x == t)
+    }
+
+    /// T1: ningún texto promete lo que no se puede cumplir: ni un mínimo garantizado ("al menos"), ni ausencia de riesgo, ni
+    /// "liberado ahora" a secas (es el cambio medido del espacio libre).
+    #[test]
+    fn ningun_texto_promete_un_minimo_ni_ausencia_de_riesgo() {
+        let es = include_str!("../i18n/es.ftl");
+        let en = include_str!("../i18n/en.ftl");
+        for (name, text, banned) in [
+            (
+                "es",
+                es,
+                &[
+                    "sin riesgo",
+                    "sin miedo",
+                    "al menos { $size }",
+                    "Liberados ahora",
+                ][..],
+            ),
+            (
+                "en",
+                en,
+                &["with no risk", "without risk", "free at least", "Freed now"][..],
+            ),
+        ] {
+            for b in banned {
+                assert!(!text.contains(b), "{name}: no debe decir `{b}`");
+            }
+        }
+        // Y lo que sí dicen: un tope y que se comprueba al limpiar; el cambio medido con su aviso.
+        for key in ["scan-known-sum", "recs-title-safe"] {
+            assert!(es.contains(&format!("{key} = Hasta {{ $size }}")), "{key}");
+            assert!(en.contains(&format!("{key} = Up to {{ $size }}")), "{key}");
+        }
+        assert!(es.contains("sum-freed = Cambio medido del espacio libre"));
+        assert!(en.contains("sum-freed = Measured change in free space"));
+        assert!(es.contains("sum-freed-hint =") && en.contains("sum-freed-hint ="));
     }
 
     #[test]

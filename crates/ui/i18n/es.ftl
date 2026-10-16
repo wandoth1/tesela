@@ -71,8 +71,8 @@ scan-counts-of = { $files } archivos · { $size } de { $total } · { $time }
 scan-stop = Parar y ver lo que hay
 scan-progress-label = Progreso del análisis: { $pct } %
 scan-known-title = Sitios donde suele haber archivos temporales
-scan-known-sum = Puedes liberar al menos { $size }
-scan-known-note = Solo cuenta lo seguro: temporales de más de un día y cachés de navegador. Qué se borra y qué va a la Papelera te lo enseñamos antes de limpiar.
+scan-known-sum = Hasta { $size } en candidatos de bajo riesgo (se comprueba al limpiar)
+scan-known-note = Es una estimación, no un mínimo garantizado, y solo cuenta lo de bajo riesgo: temporales de más de un día y cachés de navegador. Qué se borra y qué va a la Papelera te lo enseñamos antes de limpiar, y la cifra real se mide al limpiar.
 scan-known-excluded = Descargas y la Papelera son datos tuyos: se muestran, pero no cuentan en la cifra de arriba.
 risk-review-tag = Revisar
 scan-clean-safe = Limpiar lo seguro
@@ -234,7 +234,7 @@ dest-permanent = Se borra · se vuelve a crear solo
 
 # Recomendaciones
 risk-safe-tag = Seguro
-recs-title-safe = Puedes liberar { $size } sin riesgo
+recs-title-safe = Hasta { $size } en candidatos de bajo riesgo (se comprueba al limpiar)
 recs-title-none = No hay nada seguro que limpiar ahora
 recs-subtitle-review = Y hay { $size } más que conviene que mires tú.
 recs-clean-safe = Limpiar lo seguro ({ $size })
@@ -359,8 +359,9 @@ run-phase-verify = Comprobando cada elemento…
 run-progress = { $done } de { $total } elementos · { $count } entradas revisadas
 run-close-blocked = Espera a que termine o cancela: cerrar ahora dejaría la limpieza a medias.
 run-cancelling = Cancelando: termina lo que ya empezó y no toca nada más.
-sum-freed = Liberados ahora
-sum-dry = Simulación: esto es lo que se habría liberado
+sum-freed = Cambio medido del espacio libre
+sum-freed-hint = Es lo que cambió el espacio libre de la unidad durante la limpieza: otros programas que escriban o borren a la vez también lo modifican. Lo eliminado y lo enviado a la Papelera se cuentan aparte.
+sum-dry = Simulación: esto es lo que se habría eliminado (estimación)
 sum-permanent = Eliminado definitivamente
 sum-recycled = Movido a la Papelera
 sum-bin-purged = Papelera vaciada
@@ -492,7 +493,7 @@ sum-bin-unverifiable =
        *[other] { $count } elementos de la Papelera están en una unidad cuyo sistema de archivos no permite verificarlos (FAT o exFAT) y no se tocaron.
     }
 sum-cancelled = Cancelaste la limpieza: lo que ya estaba hecho se queda.
-sum-diverge = "Eliminado definitivamente" y "liberado ahora" no coinciden: puede ser por enlaces duros, archivos que otro programa tenía abiertos o cambios del propio Windows.
+sum-diverge = "Eliminado definitivamente" y el cambio medido del espacio libre no coinciden: puede ser por enlaces duros, archivos que otro programa tenía abiertos, escrituras de otros programas o cambios del propio Windows.
 
 ago-days =
     { $n ->
@@ -500,4 +501,4 @@ ago-days =
        *[other] hace { $count } días
     }
 settings-clear-history = Borrar el historial y los registros de limpieza
-home-last-clean = Última limpieza: { $ago } · liberaste { $size }
+home-last-clean = Última limpieza: { $ago } · cambio medido del espacio libre: { $size }

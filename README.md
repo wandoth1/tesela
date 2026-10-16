@@ -1,6 +1,6 @@
 # Tesela
 
-**Mira qué ocupa tu disco y libera espacio sin miedo.**
+**Mira qué ocupa tu disco y decide qué liberar, sabiendo qué se borra y comprobando lo que se libera.**
 Analizador visual de espacio en disco para Windows, escrito en Rust: rápido, ligero y claro.
 
 [Instalación](#instalación) · [Code signing policy](CODE_SIGNING.md) · [Seguridad](SECURITY.md) · [Cambios](CHANGELOG.md)
@@ -10,10 +10,10 @@ Analizador visual de espacio en disco para Windows, escrito en Rust: rápido, li
 ## Qué será
 
 - **Mapa del disco (treemap) + lista.** Cada carpeta es un bloque proporcional a lo que ocupa, coloreado por tipo de archivo, antigüedad o riesgo.
-- **Respuesta en segundos.** Mientras analiza ya te dice "puedes liberar al menos X GB", porque empieza por los sitios típicos de basura (temporales, cachés, Papelera).
+- **Respuesta en segundos.** Mientras analiza ya te dice "hasta X GB en candidatos de bajo riesgo" (una estimación, que se comprueba al limpiar), porque empieza por los sitios típicos de basura (temporales, cachés, Papelera).
 - **Asistente de limpieza con riesgo visible.** Cada sugerencia va marcada como 🟢 Seguro, 🟠 Revisar o 🔺 Solo informar, y explica en una frase por qué.
 - **Nada se borra a ciegas.** Todo pasa por una cesta de revisión. Lo regenerable (temporales, cachés) se borra; tus archivos van a la Papelera. Las carpetas del sistema están protegidas.
-- **Honesto con los números.** Solo cuenta como liberado lo que realmente se ha liberado, y enseña qué parte del disco no ha podido medir.
+- **Honesto con los números.** Lo que se libera se mide (el cambio real del espacio libre) y se cuenta aparte de lo eliminado y lo enviado a la Papelera, y enseña qué parte del disco no ha podido medir.
 - **Ligero.** Binario único, sin Electron ni WebView, sin telemetría ni cuentas. Funciona sin permisos de administrador y tiene un modo rápido opcional que lee directamente la tabla de archivos (MFT) de NTFS.
 
 ## Instalación
@@ -109,7 +109,7 @@ El modo `--demo` es el único con el que se hacen capturas y pruebas: todo lo qu
 ![Mapa de una unidad en el modo demostración, tema oscuro](docs/img/mapa-oscuro.png)
 ![Recomendaciones en el modo demostración: lo seguro ya marcado, lo que conviene revisar y lo que solo se explica](docs/img/recomendaciones.png)
 ![Confirmación antes de limpiar, con lo que se borra y lo que va a la Papelera](docs/img/confirmacion.png)
-![Resumen de una limpieza: lo liberado ahora, lo eliminado y lo movido a la Papelera](docs/img/resumen.png)
+![Resumen de una limpieza: el cambio medido del espacio libre, lo eliminado y lo movido a la Papelera](docs/img/resumen.png)
 
 - **Mapa:** un bloque por carpeta o archivo, proporcional a lo que ocupa **en disco**, coloreado por tipo (paleta apta para daltonismo). Se insinúa el nivel siguiente dentro de cada bloque. Los bloques demasiado pequeños se agrupan en **"Otros (N elementos, X)"**, que se abre con doble clic. Las carpetas que el análisis no llegó a recorrer entera llevan rayas diagonales y un "≥".
 - **Grises con significado:** el bloque "Windows y otros datos del sistema" (lo que ocupa el disco pero tu usuario no puede ver), `pagefile.sys` y `hiberfil.sys` ("solo informar") y "Mixto" (carpetas sin un tipo dominante).
@@ -119,11 +119,11 @@ El modo `--demo` es el único con el que se hacen capturas y pruebas: todo lo qu
 
 ### Limpieza
 
-- **Recomendaciones:** temporales del usuario y de Windows (solo lo de más de 24 h), cachés de Edge, Chrome y Firefox (con el navegador cerrado), y, como **Revisar**, Descargas y la Papelera. `pagefile.sys`, `hiberfil.sys` y `swapfile.sys` solo se explican. "Puedes liberar X sin riesgo" suma **solo** lo Seguro, y es una estimación: la cifra buena la mide la limpieza.
+- **Recomendaciones:** temporales del usuario y de Windows (solo lo de más de 24 h), cachés de Edge, Chrome y Firefox (con el navegador cerrado), y, como **Revisar**, Descargas y la Papelera. `pagefile.sys`, `hiberfil.sys` y `swapfile.sys` solo se explican. "Hasta X en candidatos de bajo riesgo" suma **solo** lo Seguro, y es una estimación, no un mínimo garantizado: la cifra buena la mide la limpieza.
 - **Todo pasa por la cesta y una confirmación** que agrupa por destino: lo regenerable se **borra** (se vuelve a crear solo) y tus archivos van a la **Papelera**. Lo que no cabe en la Papelera (o va a un disco sin tamaño máximo de Papelera configurado: se fija en las propiedades de la Papelera) sale aparte, en ámbar, y solo se elimina si lo marcas expresamente. Los cinco archivos tuyos más grandes se nombran siempre.
 - **Protegido:** Windows, Archivos de programa, `AppData` entero, las carpetas clave del perfil (solo se limpia su contenido), el propio Tesela (aunque esté dentro del temporal) y lo que no se pueda comprobar. Solo se limpian **unidades locales**: una ruta de red, aunque apunte a un disco de tu propio equipo (con `localhost` y su compartición administrativa), se rechaza. Se ve con candado y borde punteado y no se puede añadir.
-- **Borrado seguro:** se comprueba la identidad de cada elemento (volumen, id de archivo y enlaces) justo antes de tocarlo, se abre en exclusiva y se borra por handle, sin entrar nunca en puntos de reparse (junctions, enlaces simbólicos); un enlace duro no cuenta como liberado. Lo que está en uso se **salta**, no se fuerza. Lo que va a la Papelera se comprueba igual y se entrega a Windows **por su ruta original** (sin renombrarlo antes), con un handle de guarda abierto que impide cambiar sus carpetas por un enlace mientras tanto, y justo antes de que Windows actúe se comprueba otra vez que es el objeto aprobado (si no, no se envía). Windows avisa de lo que ha pasado con cada elemento y Tesela compara la **identidad** de lo que llegó a la Papelera con la aprobada (y que el nombre aprobado ya no exista). Si alguien lo sustituyó justo en medio, lo que llega es otro objeto: se te dice y se puede restaurar desde la Papelera. Los elementos se reparten en operaciones según el espacio que queda en la Papelera (las carpetas se miden justo antes), y lo que no cabe o no se puede garantizar no se envía; si Windows llegara a eliminar algo de forma definitiva, el envío se detiene en ese momento y no se toca nada más. Sin registro local de la limpieza no se borra nada. Mientras se ejecuta, cerrar la ventana se bloquea ("Espera a que termine o cancela").
-- **"Liberado ahora"** es lo que ha cambiado de verdad en el espacio libre de la unidad; lo enviado a la Papelera se cuenta aparte, porque no libera hasta que se vacía.
+- **Borrado seguro:** se comprueba la identidad de cada elemento (volumen, id de archivo y enlaces) justo antes de tocarlo, se abre en exclusiva y se borra por handle, sin entrar nunca en puntos de reparse (junctions, enlaces simbólicos); un enlace duro no cuenta como liberado. Lo que está en uso se **salta**, no se fuerza. Lo que va a la Papelera se comprueba igual y se entrega a Windows **por su ruta original** (sin renombrarlo antes), con un handle de guarda abierto que impide cambiar sus carpetas por un enlace mientras tanto, y justo antes de que Windows actúe se comprueba otra vez que es el objeto aprobado (si no, no se envía). Windows avisa de lo que ha pasado con cada elemento y Tesela compara la **identidad** de lo que llegó a la Papelera con la aprobada (y que el nombre aprobado ya no exista). Si alguien lo sustituyó justo en medio, lo que llega suele ser otro objeto: se te dice y se puede restaurar desde la Papelera; pero si ese objeto no cabe, Windows lo elimina, y esa ventana mínima no se puede cerrar del todo. Los elementos se reparten en operaciones según el espacio que queda en la Papelera (las carpetas se miden justo antes), y lo que no cabe o no se puede garantizar no se envía; si Windows llegara a eliminar algo de forma definitiva, el envío se detiene en ese momento y no se toca nada más. Sin registro local de la limpieza no se borra nada. Mientras se ejecuta, cerrar la ventana se bloquea ("Espera a que termine o cancela"). Si Tesela se ejecuta como administrador, la limpieza real y vaciar la Papelera no funcionan (por seguridad); el análisis y la simulación sí.
+- **"Cambio medido del espacio libre"** es lo que ha cambiado de verdad en el espacio libre de la unidad durante la limpieza (otros programas que escriban a la vez también lo mueven); lo eliminado y lo enviado a la Papelera se cuentan aparte, porque lo enviado no libera hasta que se vacía.
 - El árbol se actualiza **sin reescanear** (los histogramas quedan marcados como aproximados hasta reescanear).
 
 ## Hoja de ruta

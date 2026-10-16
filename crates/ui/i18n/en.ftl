@@ -70,8 +70,8 @@ scan-counts-of = { $files } files · { $size } of { $total } · { $time }
 scan-stop = Stop and view what we have
 scan-progress-label = Scan progress: { $pct }%
 scan-known-title = Places where temporary files usually pile up
-scan-known-sum = You can free at least { $size }
-scan-known-note = Only safe things count: temporary files older than a day and browser caches. We show you what is deleted and what goes to the Recycle Bin before cleaning.
+scan-known-sum = Up to { $size } in low-risk candidates (checked when cleaning)
+scan-known-note = This is an estimate, not a guaranteed minimum, and it only counts low-risk items: temporary files older than a day and browser caches. We show you what is deleted and what goes to the Recycle Bin before cleaning, and the real figure is measured when cleaning.
 scan-known-excluded = Downloads and the Recycle Bin are your own data: they are shown, but not counted in the figure above.
 risk-review-tag = Review
 scan-clean-safe = Clean the safe stuff
@@ -233,7 +233,7 @@ dest-permanent = Deleted · recreated on its own
 
 # Recommendations
 risk-safe-tag = Safe
-recs-title-safe = You can free { $size } with no risk
+recs-title-safe = Up to { $size } in low-risk candidates (checked when cleaning)
 recs-title-none = Nothing safe to clean right now
 recs-subtitle-review = And there is { $size } more that you should look at yourself.
 recs-clean-safe = Clean the safe items ({ $size })
@@ -358,8 +358,9 @@ run-phase-verify = Checking every item…
 run-progress = { $done } of { $total } items · { $count } entries checked
 run-close-blocked = Wait for it to finish or cancel: closing now would leave the cleanup half done.
 run-cancelling = Cancelling: what already started finishes and nothing else is touched.
-sum-freed = Freed now
-sum-dry = Simulation: this is what would have been freed
+sum-freed = Measured change in free space
+sum-freed-hint = This is how much the free space of the drive changed during the cleanup: other programs writing or deleting at the same time also change it. What was deleted and what was sent to the Recycle Bin are counted separately.
+sum-dry = Simulation: this is what would have been deleted (estimate)
 sum-permanent = Deleted permanently
 sum-recycled = Moved to the Recycle Bin
 sum-bin-purged = Recycle Bin emptied
@@ -491,7 +492,7 @@ sum-bin-unverifiable =
        *[other] { $count } Recycle Bin items are on a drive whose file system cannot be verified (FAT or exFAT) and were not touched.
     }
 sum-cancelled = You cancelled the cleanup: what was already done stays done.
-sum-diverge = "Deleted permanently" and "freed now" differ: this can be because of hard links, files another program had open, or changes made by Windows itself.
+sum-diverge = "Deleted permanently" and the measured change in free space differ: this can be because of hard links, files another program had open, writes by other programs, or changes made by Windows itself.
 
 ago-days =
     { $n ->
@@ -499,4 +500,4 @@ ago-days =
        *[other] { $count } days ago
     }
 settings-clear-history = Delete the cleanup history and logs
-home-last-clean = Last cleanup: { $ago } · you freed { $size }
+home-last-clean = Last cleanup: { $ago } · measured change in free space: { $size }
