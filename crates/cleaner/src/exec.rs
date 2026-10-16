@@ -342,6 +342,20 @@ impl Elevation for RealElevation {
     }
 }
 
+/// SOLO PRUEBAS: "no elevado", el valor POR DEFECTO de todo `Cleaner` en las pruebas. Los ejecutores de integración continua
+/// (`windows-latest`) corren ELEVADOS (UAC desactivado) y, con la consulta real, toda prueba que limpia daría `Elevated`: las
+/// pruebas no dependen del proceso que las lanza. Solo las pruebas de E1 inyectan "elevado" (`Cleaner::with_elevation`). En
+/// producción el valor por defecto es siempre [`RealElevation`].
+#[cfg(test)]
+pub(crate) struct NotElevated;
+
+#[cfg(test)]
+impl Elevation for NotElevated {
+    fn is_elevated(&self) -> bool {
+        false
+    }
+}
+
 /// Falla cerrado: sin poder consultar el token se trata como elevado.
 fn elevated_from(state: Option<bool>) -> bool {
     state.unwrap_or(true)

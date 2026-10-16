@@ -3588,6 +3588,20 @@ fn los_cambiados_de_la_papelera_cuentan_el_dueno_del_veto_y_no_la_ruta() {
     assert_eq!(bin_changed(1, &[], &wanted), 1);
 }
 
+/// Las pruebas no dependen de si el proceso que las lanza está elevado (los ejecutores de CI lo están): un `Cleaner` de pruebas
+/// no está elevado por defecto, y la elevación solo se inyecta donde se prueba E1.
+#[test]
+fn un_cleaner_de_pruebas_no_esta_elevado_por_defecto() {
+    let sb = Sandbox::new();
+    assert!(!cleaner_for(&sb).is_elevated());
+    assert!(!Cleaner::new(Roots::default()).is_elevated());
+    assert!(
+        Cleaner::new(Roots::default())
+            .with_elevation(Arc::new(FakeElevation(true)))
+            .is_elevated()
+    );
+}
+
 /// E1: una elevación inyectada para probar las dos ramas (el CI no se puede elevar).
 struct FakeElevation(bool);
 
@@ -3708,7 +3722,13 @@ fn el_proceso_de_pruebas_no_esta_elevado_segun_el_token() {
     assert!(elevated_from(None));
     assert!(elevated_from(Some(true)) && !elevated_from(Some(false)));
     assert!(!RealElevation.is_elevated());
+    // `Cleaner::new` usa "no elevado" en las pruebas (ver `NotElevated`); con la consulta real inyectada, también `false`.
     assert!(!Cleaner::new(Roots::default()).is_elevated());
+    assert!(
+        !Cleaner::new(Roots::default())
+            .with_elevation(Arc::new(RealElevation))
+            .is_elevated()
+    );
 }
 
 /// A-B2: una medida incompleta es siempre "NO intacto" en el juicio R6 (`dir_untouched`), y `remeasure` la distingue de una
