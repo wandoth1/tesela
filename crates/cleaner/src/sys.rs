@@ -95,6 +95,10 @@ pub struct Meta {
     /// Etiqueta de reparse; 0 si no es un reparse point.
     pub reparse_tag: u32,
     pub is_dir: bool,
+    /// `FileStandardInfo.DeletePending`: alguien ya marcó el objeto para borrar y desaparecerá al cerrarse el último handle
+    /// (hasta entonces el NOMBRE sigue visible y abrirlo da acceso denegado). Es la forma de saber, con un handle abierto,
+    /// que un objeto ya se eliminó.
+    pub delete_pending: bool,
     pub alloc: u64,
     pub logical: u64,
     /// El mayor de `CreationTime`, `LastWriteTime` y `ChangeTime` (FILETIME).
@@ -475,6 +479,7 @@ pub fn meta(h: &Handle) -> Result<Meta, Win32> {
         attrs: basic.FileAttributes,
         reparse_tag,
         is_dir: std_info.Directory,
+        delete_pending: std_info.DeletePending,
         alloc: std_info.AllocationSize.max(0) as u64,
         logical: std_info.EndOfFile.max(0) as u64,
         newest_filetime: basic
@@ -650,6 +655,24 @@ pub fn delete_on_handle(h: &Handle) -> Result<(), Win32> {
     }
     let legacy = FILE_DISPOSITION_INFO { DeleteFile: true };
     // SAFETY: igual que arriba, con la estructura de la clase clásica.
+    let ok = unsafe {
+        SetFileInformationByHandle(
+            h.0,
+            FileDispositionInfo,
+            &legacy as *const _ as *const c_void,
+            size_of::<FILE_DISPOSITION_INFO>() as u32,
+        )
+    };
+    if ok == 0 { Err(last_error()) } else { Ok(()) }
+}
+
+/// SOLO PARA PRUEBAS: borra `path` con la semántica CLÁSICA de Windows (`FileDispositionInfo`, sin POSIX), como hace la shell:
+/// si otro handle sigue abierto, el nombre queda visible como "pendiente de borrar" hasta que se cierre.
+#[cfg(test)]
+pub fn delete_legacy_for_test(path: &Path) -> Result<(), Win32> {
+    let h = open_path(path, DELETE | FILE_READ_ATTRIBUTES, FILE_SHARE_ALL)?;
+    let legacy = FILE_DISPOSITION_INFO { DeleteFile: true };
+    // SAFETY: `h.0` es un handle válido abierto con DELETE; el puntero apunta a `legacy` y se pasa su tamaño.
     let ok = unsafe {
         SetFileInformationByHandle(
             h.0,

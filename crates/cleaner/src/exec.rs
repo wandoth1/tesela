@@ -1359,8 +1359,13 @@ fn judge(
         BinState::Deleted => {
             // `psiNewlyCreated` nulo con éxito suele ser un borrado definitivo, pero la shell también lo notifica sin
             // haber tocado nada (medido: una carpeta con un archivo disperso enorme da `hr = 0x00270003`, nulo, y la
-            // carpeta sigue en el disco). Si el nombre aprobado sigue ahí, no se eliminó nada: no se dice que sí.
-            if std::fs::symlink_metadata(&p.path).is_ok() {
+            // carpeta sigue en el disco). Se decide POR OBJETO, no por nombre: con el handle de guarda aún abierto, un
+            // archivo que la shell SÍ eliminó mantiene su nombre visible como "pendiente de borrar" hasta soltar la guarda
+            // (medido: `hr = 0x00270008`, el nombre existe, abrirlo da acceso denegado y `DeletePending` es cierto).
+            // Solo si el objeto aprobado NO está pendiente de borrar Y reabrir la ruta da la MISMA identidad, la shell no
+            // tocó nada. Todo lo demás (pendiente de borrar, identidad distinta, ruta ilegible, handle ilegible) es un
+            // borrado definitivo.
+            if untouched_by_shell(p) {
                 (
                     ItemStatus::NotRecycled(RecycleFail::Shell(ev.hr)),
                     Outcome::NotRecycled,
@@ -1398,6 +1403,16 @@ fn judge(
             }
         }
     }
+}
+
+/// ¿Sigue el objeto aprobado intacto en su sitio? `true` solo si el handle de guarda NO está pendiente de borrar y la
+/// ruta, reabierta, da la misma identidad. Es la comprobación por OBJETO de `judge` (R1).
+fn untouched_by_shell(p: &Pending) -> bool {
+    let not_pending = sys::meta(&p.held).is_ok_and(|m| !m.delete_pending);
+    let same_object = sys::open_for_query(&p.path)
+        .and_then(|h| sys::meta(&h))
+        .is_ok_and(|m| m.identity == p.identity);
+    not_pending && same_object
 }
 
 /// Traduce el `HRESULT` de una eliminación fallida de la shell.

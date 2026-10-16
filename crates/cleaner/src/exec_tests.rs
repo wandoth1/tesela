@@ -2165,7 +2165,9 @@ impl RecycleShell for FakeShell {
                 .file_name()
                 .is_some_and(|n| n.to_string_lossy().contains("intacto"));
             let state = if nuke {
-                fs::remove_file(p).unwrap();
+                // La shell borra con la semántica clásica: con el handle de guarda abierto, el nombre queda "pendiente de
+                // borrar" hasta soltarlo (R1). `fs::remove_file` usa semántica POSIX y no lo reproduciría.
+                sys::delete_legacy_for_test(p).unwrap();
                 BinState::Deleted
             } else if intact {
                 // La shell notifica "eliminado" (nulo, con éxito) SIN haber tocado nada (medido con un archivo disperso).
@@ -2324,6 +2326,127 @@ fn el_primer_borrado_inesperado_corta_el_lote_en_curso() {
         rep.shell_error, None,
         "el E_ABORT propio no es un error de la shell"
     );
+}
+
+/// R1 (pura, sin la variable): la shell elimina el archivo con semántica CLÁSICA mientras el handle de guarda sigue abierto;
+/// el nombre queda visible como "pendiente de borrar" (abrirlo da acceso denegado). `judge` decide por OBJETO: es un borrado
+/// definitivo, no "la shell no tocó nada". Un mutante que decida por nombre (`symlink_metadata`) falla aquí.
+#[test]
+fn un_borrado_con_la_guarda_abierta_sigue_siendo_un_borrado_definitivo() {
+    let sb = Sandbox::new();
+    let shell = FakeShell::new(&sb, None, 0, "nunca");
+    let shell: &dyn RecycleShell = shell.as_ref();
+    let f = sb.write("r/borrado.bin", 1_000);
+    let id = {
+        let h = sys::open_for_query(&f).unwrap();
+        sys::meta(&h).unwrap().identity
+    };
+    let p = pending(id, &f, &f);
+    // Antes de borrar: intacto.
+    assert!(untouched_by_shell(&p));
+    // La shell lo borra (semántica clásica) con la guarda aún abierta.
+    sys::delete_legacy_for_test(&f).unwrap();
+    // El NOMBRE sigue visible (esto es lo que engañaba a `symlink_metadata`), abrirlo da acceso denegado y la guarda
+    // dice que está pendiente de borrar.
+    assert!(fs::symlink_metadata(&f).is_ok(), "el nombre sigue visible");
+    assert_eq!(sys::open_for_query(&f).err(), Some(sys::ACCESS_DENIED));
+    assert!(sys::meta(&p.held).unwrap().delete_pending);
+    assert!(!untouched_by_shell(&p));
+    let ev = crate::recycle::DeleteEvent {
+        item: OsString::from(f.as_os_str()),
+        hr: 0x0027_0008,
+        state: crate::recycle::BinState::Deleted,
+    };
+    assert_eq!(
+        judge(&p, Some(&ev), shell, false, false).0,
+        ItemStatus::DeletedUnexpectedly
+    );
+    // Al soltar la guarda, el archivo desaparece de verdad.
+    drop(p);
+    assert!(!f.exists());
+    // Lo mismo con una carpeta vacía borrada con semántica clásica.
+    let d = sb.mkdir("r/carpeta");
+    let did = sys::meta(&sys::open_for_query(&d).unwrap())
+        .unwrap()
+        .identity;
+    let pd = pending(did, &d, &d);
+    assert!(untouched_by_shell(&pd));
+    sys::delete_legacy_for_test(&d).unwrap();
+    assert!(!untouched_by_shell(&pd));
+    let evd = crate::recycle::DeleteEvent {
+        item: OsString::from(d.as_os_str()),
+        hr: 0x0027_0008,
+        state: crate::recycle::BinState::Deleted,
+    };
+    assert_eq!(
+        judge(&pd, Some(&evd), shell, false, false).0,
+        ItemStatus::DeletedUnexpectedly
+    );
+    // Y un elemento sustituido por otro objeto en el mismo nombre (identidad distinta) tampoco es "intacto".
+    let g = sb.write("r/sustituido.bin", 10);
+    let gid = sys::meta(&sys::open_for_query(&g).unwrap())
+        .unwrap()
+        .identity;
+    let pg = pending(gid, &g, &g);
+    fs::rename(&g, sb.path("r/sustituido-ori.bin")).unwrap();
+    sb.write("r/sustituido.bin", 10);
+    assert!(!untouched_by_shell(&pg));
+}
+
+/// R1 con la shell REAL (solo un archivo propio, tras `TESELA_REAL_RECYCLE_TESTS=1`): un archivo disperso del doble del
+/// volumen, que la shell elimina de verdad, llega al `judge` con la guarda abierta y consta como `DeletedUnexpectedly` (no
+/// como "no tocó nada"). La shell real recibe el elemento (una shell envoltorio salta el reparto, que lo habría frenado).
+#[test]
+fn con_la_shell_real_un_disperso_enorme_eliminado_consta_como_borrado_definitivo() {
+    use crate::exec::{BinRoom, RealShell};
+    let _lock = bin_lock();
+    if !bin_usable() {
+        return;
+    }
+    /// La shell real, pero con un reparto que siempre deja pasar y un encaje siempre bueno.
+    struct PassShell;
+    impl RecycleShell for PassShell {
+        fn recycle(&self, items: &[recycle::SendItem]) -> recycle::BatchOutcome {
+            RealShell.recycle(items)
+        }
+        fn bin_room(&self, _: &Path) -> BinRoom {
+            BinRoom {
+                max: Some(u64::MAX / 4),
+                used: Some(0),
+            }
+        }
+        fn fit(&self, _: &Path, _: u64) -> Fit {
+            Fit::Fits
+        }
+        fn is_bin_path(&self, p: &Path) -> bool {
+            RealShell.is_bin_path(p)
+        }
+    }
+    let before = ids();
+    let sb = Sandbox::new();
+    let _guard = BinGuard { uuid: sb.uuid() };
+    let c = cleaner_for(&sb).with_shell(Arc::new(PassShell));
+    let total = tesela_scanner::volume_space(&sb.long_root())
+        .map(|v| v.total)
+        .unwrap_or(1 << 40);
+    let len = total.saturating_mul(2).max(1 << 40);
+    sb.mkdir("Docs");
+    crate::testutil::sparse_file(&sb.path("Docs/enorme.bin"), len);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/enorme.bin"), c.protection());
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 1, "{:?}", plan.rejected);
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    eprintln!("disperso enorme (real): {:?}", rep.items[0].status);
+    assert_eq!(rep.items[0].status, ItemStatus::DeletedUnexpectedly);
+    assert_eq!(rep.deleted_unexpectedly, 1);
+    assert!(rep.recycle_stopped);
+    assert_eq!(rep.stop_reason, Some(StopReason::DeletedUnexpectedly));
+    assert!(
+        !sb.path("Docs/enorme.bin").exists(),
+        "la shell lo eliminó de verdad"
+    );
+    assert_eq!(ids(), before);
 }
 
 /// H2: la shell notifica `psiNewlyCreated` nulo con éxito pero NO tocó el elemento (medido con una carpeta que contiene un
