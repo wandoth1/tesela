@@ -395,6 +395,14 @@ struct Row {
     name: String,
     bytes: u64,
     done: bool,
+    /// Datos del usuario (Descargas, Papelera): riesgo "Revisar". Se enseñan, pero NO cuentan en la cifra grande de
+    /// "sitios conocidos" (PLAN.md §2.4: el titular suma solo lo seguro) y llevan la etiqueta "Revisar".
+    review: bool,
+}
+
+/// ¿Es una clase de sitio conocido con datos del usuario (riesgo "Revisar", nunca "seguro")?
+fn kind_is_review(k: Option<KnownKind>) -> bool {
+    matches!(k, Some(KnownKind::Downloads | KnownKind::RecycleBin))
 }
 
 /// Junta las rutas prioritarias de la misma clase en una sola fila (suma de bytes; terminada si todas lo están), en el
@@ -475,6 +483,7 @@ fn view_of(s: &ScanScreen, env: &Env) -> View {
                 name: env.tr.t(kind_key(k)),
                 bytes,
                 done,
+                review: kind_is_review(k),
             })
             .collect();
             let mut bars: Vec<(String, u64, bool)> = p
@@ -510,6 +519,7 @@ fn view_of(s: &ScanScreen, env: &Env) -> View {
                     name: env.tr.t(key),
                     bytes: (*bytes as f32 * (f / end).min(1.0)) as u64,
                     done: f >= *end,
+                    review: matches!(*key, "known-downloads" | "known-recycle-bin"),
                 })
                 .collect();
             // Cada carpeta avanza a su ritmo: las más grandes tardan más en completarse.
@@ -719,7 +729,8 @@ fn known_places(ui: &mut Ui, env: &mut Env, v: &View) {
                 .size(13.0)
                 .color(pal.text_muted),
         );
-        let sum: u64 = v.rows.iter().map(|r| r.bytes).sum();
+        // Solo lo que no son datos del usuario: Descargas y la Papelera se muestran pero no cuentan aquí.
+        let sum: u64 = v.rows.iter().filter(|r| !r.review).map(|r| r.bytes).sum();
         ui.label(
             RichText::new(
                 env.tr
@@ -733,6 +744,13 @@ fn known_places(ui: &mut Ui, env: &mut Env, v: &View) {
                 .size(13.0)
                 .color(pal.text_muted),
         );
+        if v.rows.iter().any(|r| r.review) {
+            ui.label(
+                RichText::new(env.tr.t("scan-known-excluded"))
+                    .size(13.0)
+                    .color(pal.text_muted),
+            );
+        }
     };
     let button = |ui: &mut Ui, env: &mut Env| {
         // Inactivo: la limpieza es del incremento 3.
@@ -811,6 +829,13 @@ fn known_places(ui: &mut Ui, env: &mut Env, v: &View) {
                 widgets::busy(ui, env.animate, 16.0, pal.accent);
             }
             ui.label(RichText::new(&r.name).size(15.0).color(pal.text));
+            if r.review {
+                ui.label(
+                    RichText::new(env.tr.t("risk-review-tag"))
+                        .size(12.0)
+                        .color(pal.review),
+                );
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 let (txt, col) = if r.done || r.bytes > 0 {
                     (env.tr.size(r.bytes), pal.text)
@@ -1042,6 +1067,22 @@ mod group_tests {
         let (started, cancelled) = test_hooks::counts(&t.0);
         assert_eq!(started, cancelled, "ningún escaneo queda sin cancelar");
         assert!(started <= 60);
+    }
+
+    #[test]
+    fn descargas_y_papelera_son_datos_del_usuario_y_no_cuentan_como_seguros() {
+        assert!(kind_is_review(Some(KnownKind::Downloads)));
+        assert!(kind_is_review(Some(KnownKind::RecycleBin)));
+        for k in [
+            KnownKind::UserTemp,
+            KnownKind::WindowsTemp,
+            KnownKind::ChromeCache,
+            KnownKind::EdgeCache,
+            KnownKind::FirefoxCache,
+        ] {
+            assert!(!kind_is_review(Some(k)), "{k:?}");
+        }
+        assert!(!kind_is_review(None));
     }
 
     #[test]

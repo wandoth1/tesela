@@ -1967,3 +1967,37 @@ fn con_una_ventana_modal_abierta_f5_y_ctrl_f_no_actuan() {
         "F5 vuelve a funcionar"
     );
 }
+
+#[test]
+fn descargas_y_papelera_no_cuentan_en_la_cifra_de_sitios_conocidos_y_llevan_revisar() {
+    for (lang, tag, excluded) in [
+        (LangPref::Es, "Revisar", "no cuentan en la cifra de arriba"),
+        (LangPref::En, "Review", "not counted in the figure above"),
+    ] {
+        let mut o = opts(StartScreen::Scan(1.0));
+        o.settings.language = lang;
+        let h = harness(o);
+        let tr = crate::Tr::new(lang.resolve());
+        // Con el progreso al 100 % cada fila vale su cifra final. La Papelera es de revisión: fuera de la cifra grande.
+        let safe: u64 = crate::demo::DEMO_KNOWN_ROWS
+            .iter()
+            .filter(|(k, _, _)| !matches!(*k, "known-downloads" | "known-recycle-bin"))
+            .map(|(_, b, _)| *b)
+            .sum();
+        let all: u64 = crate::demo::DEMO_KNOWN_ROWS
+            .iter()
+            .map(|(_, b, _)| *b)
+            .sum();
+        assert!(all > safe);
+        let want = tr.ta("scan-known-sum", crate::args!["size" => tr.size(safe)]);
+        let not_want = tr.ta("scan-known-sum", crate::args!["size" => tr.size(all)]);
+        h.get_by_label(&want);
+        assert!(
+            h.query_by_label(&not_want).is_none(),
+            "la Papelera no debe contar en la cifra grande"
+        );
+        // La etiqueta de riesgo y la nota que lo explica.
+        assert_eq!(h.query_all_by_label(tag).count(), 1, "{lang:?}");
+        h.get_by_label_contains(excluded);
+    }
+}
