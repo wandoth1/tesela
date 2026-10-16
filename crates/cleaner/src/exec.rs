@@ -10,8 +10,9 @@
 //!   IDENTIDAD con la aprobada: igual = enviado; distinta = "se movió a la Papelera un objeto distinto del aprobado"
 //!   (recuperable); sin elemento en la Papelera = eliminado definitivamente (no cabía); error = omitido con su motivo.
 //!   Un directorio con algo abierto dentro falla en seguro (mover es renombrar) y se informa como "en uso". El receptor
-//!   CORTA el lote (devuelve `E_ABORT`) tras el primer borrado definitivo o la primera ruta sin verificar: lo que queda del
-//!   lote no se procesa y sigue en su sitio.
+//!   vigila la entrega (devuelve `E_ABORT`): `PreDeleteItem` compara la identidad de lo que hay en la ruta con la aprobada
+//!   y veta el sustituto (M1); `PostDeleteItem` corta tras el primer borrado definitivo o la primera ruta sin verificar
+//!   (M2). Lo que queda del lote no se procesa y sigue en su sitio.
 //! * **Tres contadores**: "eliminado definitivamente" y "movido a la Papelera" son sumas de tamaños; "liberado ahora" es la
 //!   diferencia MEDIDA del espacio libre de cada volumen antes y después.
 //! * **Simulación** (`dry_run`): hace todo salvo lo destructivo y registra las identidades que habría tocado.
@@ -253,6 +254,9 @@ pub enum StopReason {
     DeletedUnexpectedly,
     /// No se pudo comprobar qué pasó con un elemento (la shell no dijo dónde quedó, o no se pudo abrir).
     Unverified,
+    /// Lo que había en la ruta justo antes de que la shell actuara no era lo aprobado (`PreDeleteItem` lo vetó): se detuvo
+    /// el envío y no se mandó nada más.
+    Changed,
 }
 
 /// Por qué no se ejecutó.
@@ -700,6 +704,14 @@ impl Cleaner {
                     let entries: Vec<(&PlanItem, Pending)> =
                         queue.drain(..n).filter_map(|i| slots[i].take()).collect();
                     let paths: Vec<PathBuf> = entries.iter().map(|(_, p)| p.path.clone()).collect();
+                    // La identidad aprobada viaja con la ruta: el receptor la comprueba en `PreDeleteItem`.
+                    let send: Vec<recycle::SendItem> = entries
+                        .iter()
+                        .map(|(_, p)| recycle::SendItem {
+                            path: p.path.clone(),
+                            identity: p.identity,
+                        })
+                        .collect();
                     #[cfg(test)]
                     for p in &paths {
                         crate::engine::test_hooks::before_shell(p);
@@ -710,7 +722,7 @@ impl Cleaner {
                         l.write_paths("recycle-begin", &paths);
                         l.flush();
                     }
-                    let outcome = shell.recycle(&paths);
+                    let outcome = shell.recycle(&send);
                     // Un error de la shell o de COM no se pierde: consta en el registro local y en el resumen. El `E_ABORT`
                     // que provoca el propio receptor al cortar el lote NO es un error de la shell: el motivo del corte va en
                     // `stop_reason`.
@@ -733,11 +745,21 @@ impl Cleaner {
                         .iter()
                         .map(|e| (PathKey::new(Path::new(&e.item)), e))
                         .collect();
+                    let vetoed: HashSet<PathKey> = outcome
+                        .vetoed
+                        .iter()
+                        .map(|v| PathKey::new(Path::new(&v.item)))
+                        .collect();
                     // 3. Juzgar cada elemento por lo que notificó la shell (con el handle de guarda aún abierto).
                     for (it, p) in &entries {
                         let ev = events.get(&PathKey::new(&p.path)).copied();
-                        let (status, o) =
-                            judge(p, ev, shell, outcome.any_aborted, outcome.sink_aborted);
+                        let (status, o) = if vetoed.contains(&PathKey::new(&p.path)) {
+                            // `PreDeleteItem` vio otro objeto en la ruta aprobada y lo vetó: no se envió (sigue ahí, el
+                            // sustituto) y consta como "cambió desde la confirmación".
+                            (ItemStatus::Root(RootStatus::Changed), Outcome::Changed)
+                        } else {
+                            judge(p, ev, shell, outcome.any_aborted, outcome.sink_aborted)
+                        };
                         let mut st = StatsSnapshot::default();
                         match status {
                             ItemStatus::Recycled => {
@@ -748,6 +770,7 @@ impl Cleaner {
                             ItemStatus::NotRecycled(RecycleFail::InUse) => st.in_use += 1,
                             ItemStatus::NotRecycled(RecycleFail::Denied) => st.denied += 1,
                             ItemStatus::NotRecycled(_) => st.other_errors += 1,
+                            ItemStatus::Root(RootStatus::Changed) => st.changed += 1,
                             _ => {}
                         }
                         // CORTE DE SEGURIDAD: tras un borrado inesperado o algo que no se pudo verificar no se envía nada más.
@@ -779,6 +802,12 @@ impl Cleaner {
                             l.flush();
                         }
                         results.insert(it.id, (status, st));
+                    }
+                    // Un veto (o cualquier otro corte del receptor) detiene también lo que queda por enviar.
+                    if outcome.sink_aborted && !report.recycle_stopped {
+                        stopped = true;
+                        report.recycle_stopped = true;
+                        report.stop_reason.get_or_insert(StopReason::Changed);
                     }
                     // Aquí se sueltan los handles de guarda de la operación.
                     drop(entries);
@@ -830,7 +859,9 @@ impl Cleaner {
     ///   la operación de la shell y hasta después de juzgar el elemento. Mientras está abierto, Windows NO deja renombrar
     ///   el padre ni el abuelo del elemento (error 5): no se puede cambiar un ancestro por un junction a otra carpeta en
     ///   la ventana entre esta comprobación y que la shell abra el elemento. La shell recicla igual (el handle comparte
-    ///   `DELETE`). Además permite comprobar al final que el objeto aprobado es el que acabó en la Papelera.
+    ///   `DELETE`: la guarda NO impide renombrar el propio elemento ni poner otro con su nombre; eso lo vigila
+    ///   `PreDeleteItem`, que compara la identidad justo antes de que la shell actúe). Además permite comprobar al final
+    ///   que el objeto aprobado es el que acabó en la Papelera.
     fn prepare_recycle(
         &self,
         it: &PlanItem,
@@ -1014,8 +1045,9 @@ impl BinRoom {
 /// pruebas ponen una simulada para probar el reparto en operaciones y el corte de seguridad sin que una operación real
 /// pueda eliminar o expulsar nada ajeno.
 pub(crate) trait RecycleShell: Send + Sync {
-    /// Envía las rutas en UNA operación y dice qué notificó la shell de cada una.
-    fn recycle(&self, paths: &[PathBuf]) -> recycle::BatchOutcome;
+    /// Envía los elementos (ruta original + identidad aprobada) en UNA operación y dice qué notificó la shell de cada
+    /// uno. El receptor de eventos veta lo que ya no es el objeto aprobado.
+    fn recycle(&self, items: &[recycle::SendItem]) -> recycle::BatchOutcome;
     /// Capacidad y ocupación de la Papelera del volumen cuya raíz es `root`.
     fn bin_room(&self, root: &Path) -> BinRoom;
     /// ¿Cabe un elemento de `bytes` con ruta `path` en la Papelera de su volumen? Se decide al aprobar y se vuelve a
@@ -1030,8 +1062,8 @@ pub(crate) trait RecycleShell: Send + Sync {
 pub(crate) struct RealShell;
 
 impl RecycleShell for RealShell {
-    fn recycle(&self, paths: &[PathBuf]) -> recycle::BatchOutcome {
-        match recycle::recycle_paths(paths, RecycleMode::Normal) {
+    fn recycle(&self, items: &[recycle::SendItem]) -> recycle::BatchOutcome {
+        match recycle::recycle_paths(items, RecycleMode::Normal) {
             Ok(o) => o,
             // Un fallo al arrancar COM o la operación no se traga: sin eventos, cada elemento queda como no procesado
             // (o no verificado), y el error consta en el resultado.

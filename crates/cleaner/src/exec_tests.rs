@@ -1175,11 +1175,13 @@ fn lnk_url_y_extensiones_conocidas_se_verifican_por_identidad() {
     assert_eq!(ids(), before);
 }
 
-/// Carrera: tras SOLTAR el handle y antes de que la shell abra el elemento, el mismo usuario lo sustituye por otro
-/// objeto del mismo nombre y tamaño. La shell manda el sustituto a la Papelera, el receptor lo ve (identidad distinta) y se
-/// informa; el original no se toca.
+/// Carrera (M1): tras SOLTAR el handle y antes de que la shell abra el elemento, el mismo usuario lo sustituye por otro
+/// objeto del mismo nombre y tamaño. `PreDeleteItem` compara la IDENTIDAD con la aprobada, ve otra y devuelve `E_ABORT`:
+/// el sustituto NO se envía (queda en su sitio), el original aprobado tampoco se toca, el elemento consta como "cambió
+/// desde la confirmación" y el lote se corta (lo que venía detrás no se procesa). Antes de M1 el sustituto llegaba a la
+/// Papelera (`RecycledOther`, recuperable).
 #[test]
-fn sustituir_tras_soltar_el_handle_manda_otro_objeto_a_la_papelera_y_se_informa() {
+fn sustituir_tras_soltar_el_handle_no_envia_el_sustituto_y_corta_el_lote() {
     let _lock = bin_lock();
     if !bin_usable() {
         return;
@@ -1206,31 +1208,81 @@ fn sustituir_tras_soltar_el_handle_manda_otro_objeto_a_la_papelera_y_se_informa(
     });
     let rep = exec(&c, &plan, false, false, None).unwrap();
     let st = |n: &str| rep.items.iter().find(|i| i.path.ends_with(n)).unwrap();
-    assert_eq!(st("foto.jpg").status, ItemStatus::RecycledOther);
+    assert_eq!(
+        st("foto.jpg").status,
+        ItemStatus::Root(crate::engine::RootStatus::Changed)
+    );
     assert!(
         st("foto.jpg").removed.is_empty(),
         "el árbol no se actualiza con lo que no es lo aprobado"
     );
-    assert_eq!(st("otro.jpg").status, ItemStatus::Recycled);
-    assert_eq!((rep.recycled_other, rep.unverified), (1, 0));
-    assert!(moved.exists(), "el original aprobado no se toca");
-    assert!(
-        !orig.exists(),
-        "el sustituto está en la Papelera (recuperable)"
-    );
     assert_eq!(
-        rep.recycled_bytes,
-        st("otro.jpg").stats.bytes,
-        "solo lo verificado cuenta como movido"
+        st("otro.jpg").status,
+        ItemStatus::NotRecycled(RecycleFail::Stopped)
     );
+    assert!(rep.recycle_stopped);
+    assert_eq!(rep.stop_reason, Some(StopReason::Changed));
+    assert_eq!((rep.recycled_other, rep.unverified), (0, 0));
+    assert!(rep.totals.changed >= 1);
+    assert!(moved.exists(), "el original aprobado no se toca");
+    assert!(orig.exists(), "el sustituto NO se envió: sigue en su sitio");
+    assert!(sb.path("Docs/otro.jpg").exists());
+    assert_eq!(rep.recycled_bytes, 0);
     let mine: Vec<BinItem> = recycle::list_bin()
         .unwrap()
         .into_iter()
         .filter(|i| is_mine(i, &sb.uuid()))
         .collect();
-    assert_eq!(mine.len(), 2, "{mine:?}");
-    recycle::purge_items(&mine, &AtomicBool::new(false)).unwrap();
+    assert_eq!(mine.len(), 0, "nada llegó a la Papelera: {mine:?}");
     assert_eq!(ids(), before);
+}
+
+/// M1 con la shell SIMULADA (no toca la Papelera real): lo mismo que la prueba anterior, con la comprobación de identidad
+/// del receptor emulada por la shell simulada.
+#[test]
+fn con_la_shell_simulada_el_sustituto_se_veta_y_el_resto_del_lote_no_se_procesa() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    let plan = plan_de(
+        &sb,
+        &c,
+        &[
+            ("a.txt", 100, 100),
+            ("b.txt", 100, 100),
+            ("c.txt", 100, 100),
+        ],
+    );
+    let (orig, moved) = (sb.path("Docs/b.txt"), sb.path("Docs/b-original.txt"));
+    let _hook = crate::engine::test_hooks::install_before_shell(sb.long("Docs"), {
+        let (orig, moved) = (orig.clone(), moved.clone());
+        move |p| {
+            if p.ends_with("b.txt") {
+                fs::rename(&orig, &moved).unwrap();
+                fs::write(&orig, vec![7u8; 100]).unwrap();
+            }
+        }
+    });
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    let st = |n: &str| {
+        rep.items
+            .iter()
+            .find(|i| i.path.ends_with(n))
+            .unwrap()
+            .status
+    };
+    // `a` se procesó antes del veto; `b` (sustituido) cambió; `c`, detrás en el lote, no se procesó.
+    assert_eq!(st("a.txt"), ItemStatus::Recycled);
+    assert_eq!(
+        st("b.txt"),
+        ItemStatus::Root(crate::engine::RootStatus::Changed)
+    );
+    assert_eq!(st("c.txt"), ItemStatus::NotRecycled(RecycleFail::Stopped));
+    assert!(orig.exists() && moved.exists() && sb.path("Docs/c.txt").exists());
+    assert!(rep.recycle_stopped);
+    assert_eq!(rep.stop_reason, Some(StopReason::Changed));
+    assert_eq!(rep.stopped_items, 1);
+    assert_eq!(rep.shell_error, None);
 }
 
 /// M-A: con el handle de GUARDA abierto, cambiar el padre o el abuelo del elemento (para poner un junction hacia otra
@@ -1462,8 +1514,10 @@ impl FakeShell {
 }
 
 impl RecycleShell for FakeShell {
-    fn recycle(&self, paths: &[PathBuf]) -> recycle::BatchOutcome {
+    fn recycle(&self, items: &[recycle::SendItem]) -> recycle::BatchOutcome {
         use crate::recycle::{BinState, DeleteEvent};
+        let paths: Vec<PathBuf> = items.iter().map(|i| i.path.clone()).collect();
+        let paths = paths.as_slice();
         self.ops.lock().unwrap().push(paths.to_vec());
         if let Some(hresult) = self.fail {
             return recycle::BatchOutcome {
@@ -1479,8 +1533,21 @@ impl RecycleShell for FakeShell {
                 .is_some_and(|n| n.to_string_lossy().contains(self.nuke))
         });
         let mut events = Vec::new();
+        let mut vetoed = Vec::new();
         let mut sink_aborted = false;
         for (i, p) in paths.iter().enumerate() {
+            // `PreDeleteItem` (M1): lo que hay ahora en la ruta debe ser el objeto aprobado; si no, veto y se corta el lote.
+            let now = sys::open_for_query(p)
+                .and_then(|h| sys::meta(&h))
+                .map(|m| m.identity);
+            if now.ok() != Some(items[i].identity) {
+                vetoed.push(recycle::Veto {
+                    item: p.clone().into_os_string(),
+                    kind: recycle::VetoKind::IdentityMismatch,
+                });
+                sink_aborted = true;
+                break;
+            }
             let len = fs::metadata(p).map_or(0, |m| m.len());
             let unknown = p
                 .file_name()
@@ -1517,6 +1584,7 @@ impl RecycleShell for FakeShell {
         recycle::BatchOutcome {
             events,
             sink_aborted,
+            vetoed,
             error: sink_aborted.then(|| crate::recycle::ShellError {
                 hresult: windows::Win32::Foundation::E_ABORT.0,
                 detail: "cancelado por el receptor".into(),
@@ -2070,7 +2138,7 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
     let shell_bin = {
         struct B(PathBuf);
         impl RecycleShell for B {
-            fn recycle(&self, _: &[PathBuf]) -> recycle::BatchOutcome {
+            fn recycle(&self, _: &[recycle::SendItem]) -> recycle::BatchOutcome {
                 recycle::BatchOutcome::default()
             }
             fn bin_room(&self, _: &Path) -> BinRoom {

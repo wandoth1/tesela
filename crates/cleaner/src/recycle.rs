@@ -6,18 +6,20 @@
 //!    registra, por elemento, `hrDelete` y la ruta real del elemento ya en la Papelera (`psiNewlyCreated`);
 //! 3. quien llama abre ESA ruta (`$R…`) y compara su identidad con la aprobada.
 //!
-//! Entre la comprobación del paso 1 y que la shell abra el elemento hay una ventana. Se cierra con un handle de GUARDA
-//! (`DELETE | READ_ATTRIBUTES`, compartiéndolo todo) que quien llama conserva abierto hasta después del paso 3: mientras
-//! está abierto Windows no deja renombrar el padre ni el abuelo del elemento (error 5), así que no se puede cambiar un
-//! ancestro por un junction hacia otra carpeta (medido por la auditoría; cubierto por las pruebas) y la shell recicla
-//! igual. Lo que NO puede impedir el handle es la sustitución del propio nombre por otro objeto (sí se puede renombrar el
-//! elemento: el handle comparte `DELETE`): ese caso cae en el paso 3.
+//! Entre la comprobación del paso 1 y que la shell abra el elemento hay una ventana. El handle de GUARDA
+//! (`DELETE | READ_ATTRIBUTES`, compartiéndolo todo) que quien llama conserva abierto hasta después del paso 3 impide
+//! renombrar los ANCESTROS del elemento (el padre y el abuelo: error 5), así que no se puede cambiar un ancestro por un
+//! junction hacia otra carpeta (medido por la auditoría; cubierto por las pruebas) y la shell recicla igual. La guarda NO
+//! impide renombrar el propio elemento (el handle comparte `DELETE`, que la shell necesita para moverlo a `$Recycle.Bin`) ni
+//! poner otro objeto con ese nombre. Eso lo vigila el receptor de eventos (ver más abajo): `PreDeleteItem` comprueba la
+//! IDENTIDAD de lo que hay en la ruta justo antes de que la shell actúe.
 //!
 //! La garantía real es, pues: (a) la comprobación de ruta y protección es previa y se mantiene con el handle de guarda;
-//! (b) lo que llega a la Papelera se comprueba por IDENTIDAD, y además `Recycled` exige que el nombre aprobado ya no
-//! exista y que el objeto de la guarda esté ahora dentro de una Papelera (otro nombre del mismo objeto, p. ej. un enlace
-//! duro, no cuenta); (c) cualquier otra cosa que llegue a la Papelera es recuperable y se informa (`RecycledOther`), pero
-//! NO se garantiza que "nunca" pueda ser un objeto no aprobado: solo que se detecta y es restaurable.
+//! (b) `PreDeleteItem` veta lo que no es el objeto aprobado, con una ventana RESIDUAL entre esa comprobación y el
+//! movimiento real de la shell (la shell abre y mueve por ruta: no hay forma de atarla a un handle); (c) lo que llega a la
+//! Papelera se comprueba por IDENTIDAD, y además `Recycled` exige que el nombre aprobado ya no exista y que el objeto de
+//! la guarda esté ahora dentro de una Papelera (otro nombre del mismo objeto, p. ej. un enlace duro, no cuenta); (d)
+//! cualquier otra cosa que llegue a la Papelera es recuperable y se informa (`RecycledOther`): se detecta y es restaurable.
 //!
 //! Banderas (decididas por las pruebas, ver `tests::wantnukewarning_*`):
 //! * enviar: `FOF_NO_UI | FOF_ALLOWUNDO | FOFX_RECYCLEONDELETE | FOF_NO_CONNECTED_ELEMENTS`;
@@ -25,13 +27,18 @@
 //!
 //! `FOF_NO_CONNECTED_ELEMENTS` (S1): sin ella, aprobar `pagina.html` puede arrastrar `pagina_files\`, que nadie aprobó.
 //!
-//! # El receptor de eventos corta el lote (M2)
-//! `PostDeleteItem` registra el evento PRIMERO y, si la shell eliminó definitivamente (`psiNewlyCreated` nulo) o no dijo
-//! dónde quedó el elemento, devuelve `E_ABORT`: la shell cancela las operaciones pendientes, de modo que el primer borrado
-//! inesperado ya no arrastra al resto del lote. Solo al ENVIAR; al purgar la Papelera el borrado definitivo es lo
-//! esperado y el receptor solo registra.
+//! # El receptor de eventos vigila (M1 y M2)
+//! * `PreDeleteItem` (M1) abre cada elemento por su ruta, sin seguir enlaces, y compara su IDENTIDAD con la aprobada; si no
+//!   coincide (o no se puede abrir, o no es lo aprobado), registra un [`Veto`] y devuelve `E_ABORT`: la shell cancela lo
+//!   pendiente y NO envía el sustituto (falla cerrado). Residual: entre esa comprobación y el movimiento real una
+//!   sustitución enviaría un objeto no aprobado, que el paso 3 detecta como `RecycledOther` (recuperable).
+//! * `PostDeleteItem` (M2) registra el evento PRIMERO y, si la shell eliminó definitivamente (`psiNewlyCreated` nulo) o no
+//!   dijo dónde quedó, devuelve `E_ABORT`: el primer borrado inesperado ya no arrastra al resto del lote.
+//!   Solo al ENVIAR; al purgar la Papelera el borrado definitivo es lo esperado y el receptor solo registra.
 #![allow(unsafe_code)]
 
+use crate::paths::PathKey;
+use crate::sys::{self, FileIdentity};
 use std::collections::HashSet;
 use std::ffi::{OsString, c_void};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
@@ -297,6 +304,46 @@ pub struct BatchOutcome {
     /// Solo al enviar: el receptor CANCELÓ el lote (devolvió un error de aborto) por un veto o por un borrado definitivo
     /// inesperado. Lo que no tiene evento sigue en su sitio.
     pub sink_aborted: bool,
+    /// Solo al enviar: elementos a los que `PreDeleteItem` puso veto (la identidad no era la aprobada).
+    pub vetoed: Vec<Veto>,
+}
+
+/// Un elemento que se entrega a la shell: su ruta original y la IDENTIDAD aprobada (volumen + FileId).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SendItem {
+    pub path: PathBuf,
+    pub identity: FileIdentity,
+}
+
+impl SendItem {
+    /// SOLO PARA PRUEBAS: captura la identidad actual de `path` (en producción la aprueba el ejecutor, no se lee aquí).
+    #[cfg(test)]
+    pub(crate) fn capture(path: &Path) -> SendItem {
+        let h = sys::open_for_query(path).expect("abre el elemento");
+        SendItem {
+            path: path.to_path_buf(),
+            identity: sys::meta(&h).expect("lee la identidad").identity,
+        }
+    }
+}
+
+/// Por qué `PreDeleteItem` vetó un elemento.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum VetoKind {
+    /// Lo que hay ahora en esa ruta no es el objeto aprobado (sustituido tras la comprobación).
+    IdentityMismatch,
+    /// No se pudo abrir o leer (código de Windows): ante la duda no se envía.
+    OpenFailed(u32),
+    /// La shell va a borrar algo que no estaba en la lista aprobada (por ejemplo un elemento conectado).
+    NotApproved,
+}
+
+/// Un veto del receptor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Veto {
+    /// Nombre de análisis del elemento (su ruta).
+    pub item: OsString,
+    pub kind: VetoKind,
 }
 
 type Events = Arc<Mutex<Vec<DeleteEvent>>>;
@@ -312,17 +359,53 @@ fn display(item: &IShellItem, sigdn: SIGDN) -> Option<OsString> {
 struct SinkState {
     /// El lote está cancelado: cualquier `PreDeleteItem` posterior falla (defensa por si la shell sigue tras un error).
     tripped: AtomicBool,
+    vetoes: Mutex<Vec<Veto>>,
+}
+
+/// Lo aprobado, por ruta: lo que `PreDeleteItem` comprueba antes de que la shell actúe.
+struct Guard {
+    approved: Vec<(PathKey, FileIdentity)>,
+}
+
+impl Guard {
+    fn new(items: &[SendItem]) -> Guard {
+        Guard {
+            approved: items
+                .iter()
+                .map(|i| (PathKey::new(&i.path), i.identity))
+                .collect(),
+        }
+    }
+
+    /// ¿Es `path` lo aprobado? Abre por ruta sin seguir enlaces y compara la identidad. Lo que cuelga de un elemento
+    /// aprobado (la shell puede notificar hijos de una carpeta) pasa: su ancestro ya se verificó. Lo que no cuelga de nada
+    /// aprobado se veta.
+    fn check(&self, path: &OsString) -> std::result::Result<(), VetoKind> {
+        let key = PathKey::new(Path::new(path));
+        if let Some((_, want)) = self.approved.iter().find(|(k, _)| *k == key) {
+            return match sys::open_for_query(Path::new(path)).and_then(|h| sys::meta(&h)) {
+                Ok(m) if m.identity == *want => Ok(()),
+                Ok(_) => Err(VetoKind::IdentityMismatch),
+                Err(c) => Err(VetoKind::OpenFailed(c)),
+            };
+        }
+        if self.approved.iter().any(|(k, _)| key.is_same_or_under(k)) {
+            Ok(())
+        } else {
+            Err(VetoKind::NotApproved)
+        }
+    }
 }
 
 /// El receptor de eventos de `IFileOperation`. Implementa la interfaz COM con `windows::core::implement` (la vtable,
-/// `QueryInterface`, `AddRef` y `Release` los genera la macro). Al PURGAR solo registra. Al ENVIAR (`abort_on_permanent`)
-/// corta el lote tras el primer borrado definitivo (ver el módulo). Un error de un método del receptor hace que la shell
-/// cancele lo que quedara pendiente: es exactamente lo que se quiere.
+/// `QueryInterface`, `AddRef` y `Release` los genera la macro). Al PURGAR solo registra. Al ENVIAR (con `guard`) además
+/// vigila: veta lo que no es lo aprobado y corta el lote tras el primer borrado definitivo (ver el módulo). Un error de un
+/// método del receptor hace que la shell cancele lo que quedara pendiente: es exactamente lo que se quiere.
 #[implement(IFileOperationProgressSink)]
 struct Recorder {
     events: Events,
     state: Arc<SinkState>,
-    abort_on_permanent: bool,
+    guard: Option<Guard>,
 }
 
 impl IFileOperationProgressSink_Impl for Recorder_Impl {
@@ -390,12 +473,31 @@ impl IFileOperationProgressSink_Impl for Recorder_Impl {
     ) -> windows::core::Result<()> {
         Ok(())
     }
-    fn PreDeleteItem(&self, _dwflags: u32, _psiitem: Ref<IShellItem>) -> windows::core::Result<()> {
+    fn PreDeleteItem(&self, _dwflags: u32, psiitem: Ref<IShellItem>) -> windows::core::Result<()> {
+        let Some(guard) = &self.guard else {
+            return Ok(());
+        };
         // Defensa: si el lote ya está cancelado, ningún elemento más se procesa aunque la shell siguiera.
-        if self.abort_on_permanent && self.state.tripped.load(Ordering::SeqCst) {
+        if self.state.tripped.load(Ordering::SeqCst) {
             return Err(E_ABORT.into());
         }
-        Ok(())
+        let item = psiitem
+            .as_ref()
+            .and_then(|i| display(i, SIGDN_DESKTOPABSOLUTEPARSING))
+            .unwrap_or_default();
+        match guard.check(&item) {
+            Ok(()) => Ok(()),
+            Err(kind) => {
+                // Veto: el sustituto NO se envía y se cancela el resto del lote (falla cerrado).
+                self.state.tripped.store(true, Ordering::SeqCst);
+                self.state
+                    .vetoes
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(Veto { item, kind });
+                Err(E_ABORT.into())
+            }
+        }
     }
     fn PostDeleteItem(
         &self,
@@ -427,7 +529,7 @@ impl IFileOperationProgressSink_Impl for Recorder_Impl {
                 hr: hrdelete.0,
                 state,
             });
-        if self.abort_on_permanent && unsafe_outcome {
+        if self.guard.is_some() && unsafe_outcome {
             self.state.tripped.store(true, Ordering::SeqCst);
             return Err(E_ABORT.into());
         }
@@ -476,13 +578,13 @@ struct Operation {
 }
 
 impl Operation {
-    fn new(flags: FILEOPERATION_FLAGS, abort_on_permanent: bool) -> Result<Operation> {
+    fn new(flags: FILEOPERATION_FLAGS, guard: Option<Guard>) -> Result<Operation> {
         let events: Events = Arc::new(Mutex::new(Vec::new()));
         let state = Arc::new(SinkState::default());
         let sink: IFileOperationProgressSink = Recorder {
             events: events.clone(),
             state: state.clone(),
-            abort_on_permanent,
+            guard,
         }
         .into();
         // SAFETY: COM está inicializado en este hilo (lo garantiza quien llama); `sink` es una interfaz viva que `Advise`
@@ -514,12 +616,15 @@ impl Operation {
             (error, aborted)
         };
         let events = std::mem::take(&mut *self.events.lock().unwrap_or_else(|e| e.into_inner()));
+        let vetoed =
+            std::mem::take(&mut *self.state.vetoes.lock().unwrap_or_else(|e| e.into_inner()));
         BatchOutcome {
             events,
             any_aborted: aborted,
             error,
             meta_removed: 0,
             sink_aborted: self.state.tripped.load(Ordering::SeqCst),
+            vetoed,
         }
     }
 }
@@ -556,15 +661,15 @@ pub(crate) fn purge_flags() -> FILEOPERATION_FLAGS {
 /// (una sustitución hecha por el mismo usuario solo puede mandar OTRO objeto a la Papelera, recuperable). Por eso el
 /// resultado trae, por elemento, la ruta real del elemento en la Papelera: quien llama compara su IDENTIDAD con la
 /// aprobada.
-pub fn recycle_paths(paths: &[PathBuf], mode: RecycleMode) -> Result<BatchOutcome> {
-    if paths.is_empty() {
+pub fn recycle_paths(items: &[SendItem], mode: RecycleMode) -> Result<BatchOutcome> {
+    if items.is_empty() {
         return Ok(BatchOutcome::default());
     }
     let _com = Com::init()?;
-    let op = Operation::new(send_flags(mode), true)?;
+    let op = Operation::new(send_flags(mode), Some(Guard::new(items)))?;
     let mut added = 0usize;
-    for p in paths {
-        let name = parsing_name(p);
+    for it in items {
+        let name = parsing_name(&it.path);
         // Una ruta que la shell no entiende (demasiado larga...) no aborta el lote: ese elemento no genera evento y
         // quien llama lo verá (sigue existiendo).
         // SAFETY: `name` termina en NUL y vive durante la llamada.
@@ -635,7 +740,7 @@ fn purge_items_flags(
         if cancel.load(Ordering::Relaxed) {
             break;
         }
-        let op = Operation::new(flags, false)?;
+        let op = Operation::new(flags, None)?;
         let mut added = 0usize;
         for it in chunk {
             // SAFETY: `op.op` y `it` son interfaces vivas.
@@ -886,6 +991,11 @@ mod tests {
     use crate::testutil::{Sandbox, bin_lock, sparse_file};
     use std::collections::HashSet;
 
+    /// Los elementos a enviar con la identidad que tienen ahora (lo "aprobado").
+    fn send_items(paths: &[PathBuf]) -> Vec<SendItem> {
+        paths.iter().map(|p| SendItem::capture(p)).collect()
+    }
+
     /// Identidad (volumen + FileId) de lo que hay en `p`.
     fn identity_of(p: &Path) -> crate::sys::FileIdentity {
         let h = crate::sys::open_for_query(p).unwrap();
@@ -913,7 +1023,7 @@ mod tests {
         sb.write("p/carpeta/x.bin", 2000);
         let paths = vec![sb.long("p/uno.txt"), sb.long("p/carpeta")];
         let ids_before_send: Vec<_> = paths.iter().map(|p| identity_of(p)).collect();
-        let r = recycle_paths(&paths, RecycleMode::Normal).unwrap();
+        let r = recycle_paths(&send_items(&paths), RecycleMode::Normal).unwrap();
         assert!(!r.any_aborted && r.error.is_none());
         assert!(paths.iter().all(|p| !p.exists()), "ya no están en su sitio");
         // La shell avisa de cada uno con el resultado y la ruta real del elemento en la Papelera, y esa ruta tiene la
@@ -1076,7 +1186,7 @@ mod tests {
             .iter()
             .map(|n| sb.long(&format!("p/{n}")))
             .collect();
-        recycle_paths(&paths, RecycleMode::Normal).unwrap();
+        recycle_paths(&send_items(&paths), RecycleMode::Normal).unwrap();
         let mine: Vec<BinItem> = list_bin()
             .unwrap()
             .into_iter()
@@ -1143,7 +1253,11 @@ mod tests {
         let _guard = BinGuard { uuid: sb.uuid() };
         sb.write("w/pagina.html", 1_000);
         sb.write("w/pagina_files/imagen.png", 2_000);
-        let r = recycle_paths(&[sb.long("w/pagina.html")], RecycleMode::Normal).unwrap();
+        let r = recycle_paths(
+            &send_items(&[sb.long("w/pagina.html")]),
+            RecycleMode::Normal,
+        )
+        .unwrap();
         assert!(r.error.is_none() && !r.any_aborted, "{r:?}");
         assert!(!sb.path("w/pagina.html").exists(), "el aprobado se fue");
         assert!(
@@ -1186,7 +1300,7 @@ mod tests {
             sb.long("m/b.txt"),
             sb.long("m/c.txt"),
         ];
-        let r = recycle_paths(&paths, RecycleMode::Normal).unwrap();
+        let r = recycle_paths(&send_items(&paths), RecycleMode::Normal).unwrap();
         eprintln!(
             "lote con un disperso enorme primero: eventos = {:?}, abortado = {}, sink_aborted = {}, error = {:?}",
             r.events, r.any_aborted, r.sink_aborted, r.error
@@ -1209,6 +1323,58 @@ mod tests {
             .filter(|i| is_mine(i, &sb.uuid()))
             .count();
         assert_eq!(in_bin, 0, "ninguno llegó a la Papelera");
+        assert_eq!(ids(), before);
+    }
+
+    /// M1 con la shell REAL: se aprueba `b.txt`, y ANTES de entregarlo a la shell se renombra y se pone otro archivo con el
+    /// mismo nombre (sustituto). `PreDeleteItem` compara la identidad, la encuentra distinta y devuelve `E_ABORT`: el
+    /// sustituto NO llega a la Papelera, el lote se corta (el siguiente elemento tampoco se procesa) y consta el veto.
+    #[test]
+    fn con_la_shell_real_un_sustituto_con_el_mismo_nombre_no_se_envia() {
+        let _lock = bin_lock();
+        if !bin_usable() {
+            return;
+        }
+        let before = ids();
+        let sb = Sandbox::new();
+        let _guard = BinGuard { uuid: sb.uuid() };
+        sb.write("s/a.txt", 700);
+        sb.write("s/b.txt", 800);
+        sb.write("s/c.txt", 900);
+        let paths = vec![sb.long("s/a.txt"), sb.long("s/b.txt"), sb.long("s/c.txt")];
+        let items = send_items(&paths);
+        // Tras "aprobar": el aprobado se aparta y otro archivo ocupa su nombre.
+        std::fs::rename(sb.path("s/b.txt"), sb.path("s/b-original.txt")).unwrap();
+        sb.write("s/b.txt", 800);
+        let r = recycle_paths(&items, RecycleMode::Normal).unwrap();
+        eprintln!(
+            "sustituto: eventos = {:?}, vetos = {:?}, sink_aborted = {}",
+            r.events, r.vetoed, r.sink_aborted
+        );
+        assert!(r.sink_aborted, "el receptor cortó el lote");
+        assert_eq!(r.vetoed.len(), 1, "{:?}", r.vetoed);
+        assert_eq!(r.vetoed[0].kind, VetoKind::IdentityMismatch);
+        assert_eq!(
+            PathKey::new(Path::new(&r.vetoed[0].item)),
+            PathKey::new(&paths[1])
+        );
+        // El sustituto sigue en su sitio, el original apartado también, y `c.txt` no se procesó.
+        assert!(sb.path("s/b.txt").exists() && sb.path("s/b-original.txt").exists());
+        assert!(
+            sb.path("s/c.txt").exists(),
+            "el resto del lote no se procesó"
+        );
+        // Lo único que pudo llegar a la Papelera es `a.txt` (se procesó antes del veto), y está verificado.
+        let mine: Vec<BinItem> = list_bin()
+            .unwrap()
+            .into_iter()
+            .filter(|i| is_mine(i, &sb.uuid()))
+            .collect();
+        assert!(
+            mine.iter().all(|i| i.name != "b.txt" && i.name != "c.txt"),
+            "{mine:?}"
+        );
+        purge_items(&mine, &AtomicBool::new(false)).unwrap();
         assert_eq!(ids(), before);
     }
 
@@ -1315,7 +1481,7 @@ mod tests {
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         sparse_file(&p, len);
         let lp = sb.long("n/enorme-normal.bin");
-        let res = recycle_paths(std::slice::from_ref(&lp), RecycleMode::Normal);
+        let res = recycle_paths(&send_items(std::slice::from_ref(&lp)), RecycleMode::Normal);
         let f = fate(&lp, &list_bin().unwrap(), &sb.uuid());
         let out = res.as_ref().expect("la llamada vuelve");
         eprintln!(
@@ -1405,6 +1571,6 @@ mod tests {
         // Solo actúa sobre un archivo de la propia prueba, dentro de su carpeta temporal.
         let s = p.to_string_lossy().to_lowercase();
         assert!(s.contains("tesela-test-") && s.ends_with("enorme-nukewarning.bin"));
-        let _ = recycle_paths(&[p], RecycleMode::WithNukeWarning);
+        let _ = recycle_paths(&send_items(&[p]), RecycleMode::WithNukeWarning);
     }
 }
