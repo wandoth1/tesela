@@ -701,7 +701,9 @@ pub(crate) fn fit_for(path: &Path, bytes: u64) -> Fit {
             }
         }
         BinLimit::Unknown => {
-            // Sin valor en el registro la shell usa un porcentaje por defecto (medido: el 10 % del volumen).
+            // Sin valor en el registro la shell usa un porcentaje por defecto que Microsoft no documenta: SE ASUME el 10 % del
+            // volumen (los `MaxCapacity` que se vieron en los volúmenes de medición eran ≈ el 10 %). Esta rama NO se ha
+            // probado contra la shell real (todos esos volúmenes tenían el valor en el registro).
             match tesela_scanner::volume_space(&root) {
                 Ok(v) if v.volume_scope && v.total > 0 => {
                     let max = v.total / 10;

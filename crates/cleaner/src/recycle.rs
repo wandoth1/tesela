@@ -319,6 +319,26 @@ pub(crate) mod bintest {
         }
     }
 
+    /// ¿Se puede probar la Papelera en este equipo? Hace falta que la shell la liste y que el volumen del `%TEMP%` la tenga
+    /// activada (en un runner de CI sin Papelera, o con "no mover los archivos a la Papelera", las pruebas que envían a
+    /// ella se saltan en vez de fallar por algo del entorno).
+    pub fn bin_usable() -> bool {
+        if list_bin().is_err() {
+            eprintln!("Papelera no disponible en este equipo: la prueba se salta");
+            return false;
+        }
+        let tmp = dunce::canonicalize(std::env::temp_dir()).unwrap();
+        let limit = crate::volume::volume_root(&tmp).map(|r| crate::volume::bin_limit(&r));
+        if matches!(
+            limit,
+            Some(crate::volume::BinLimit::NoBin | crate::volume::BinLimit::NukeOnDelete)
+        ) {
+            eprintln!("el volumen del temporal no tiene Papelera activa: la prueba se salta");
+            return false;
+        }
+        true
+    }
+
     pub fn ids() -> HashSet<OsString> {
         list_bin()
             .expect("lista la Papelera")
@@ -359,6 +379,9 @@ mod tests {
     #[test]
     fn enviar_listar_y_purgar_solo_elementos_propios() {
         let _lock = bin_lock();
+        if !bin_usable() {
+            return;
+        }
         let before = ids();
         let sb = Sandbox::new();
         let _guard = BinGuard { uuid: sb.uuid() };
@@ -403,6 +426,9 @@ mod tests {
     #[test]
     fn los_totales_de_la_papelera_son_coherentes_con_la_lista() {
         let _lock = bin_lock();
+        if !bin_usable() {
+            return;
+        }
         let (n, _bytes) = bin_totals().expect("SHQueryRecycleBin");
         let listed = list_bin().unwrap().len() as u64;
         // La shell cuenta los elementos de primer nivel igual que la enumeración (puede haber una diferencia si el
@@ -413,6 +439,9 @@ mod tests {
     #[test]
     fn purgar_una_lista_vacia_no_hace_nada() {
         let _lock = bin_lock();
+        if !bin_usable() {
+            return;
+        }
         let before = ids();
         assert_eq!(
             purge_items(&[]).unwrap(),
@@ -459,6 +488,9 @@ mod tests {
     #[test]
     fn wantnukewarning_con_no_ui_y_un_elemento_que_no_cabe() {
         let _lock = bin_lock();
+        if !bin_usable() {
+            return;
+        }
         let before = ids();
         let sb = Sandbox::new();
         let _guard = BinGuard { uuid: sb.uuid() };

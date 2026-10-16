@@ -10,7 +10,7 @@ use super::*;
 use crate::basket::Basket;
 use crate::plan::{ApproveOptions, Cleaner, Fit, RejectReason, UnfitReason};
 use crate::protect::{ProtectionRoots, Verdict};
-use crate::recycle::bintest::{BinGuard, ids, is_mine};
+use crate::recycle::bintest::{BinGuard, bin_usable, ids, is_mine};
 use crate::roots::Roots;
 use crate::rules::{CategoryId, Risk};
 use crate::testutil::{Sandbox, bin_lock};
@@ -205,6 +205,9 @@ fn dry_run_no_toca_nada_y_registra_las_identidades_aprobadas() {
 #[test]
 fn un_elemento_del_usuario_va_a_la_papelera_con_lapida_y_se_verifica() {
     let _lock = bin_lock();
+    if !bin_usable() {
+        return;
+    }
     let before = ids();
     let sb = Sandbox::new();
     let _guard = BinGuard { uuid: sb.uuid() };
@@ -273,6 +276,9 @@ fn un_elemento_del_usuario_va_a_la_papelera_con_lapida_y_se_verifica() {
 #[test]
 fn vaciar_la_papelera_purga_solo_la_lista_capturada() {
     let _lock = bin_lock();
+    if !bin_usable() {
+        return;
+    }
     let before = ids();
     let sb = Sandbox::new();
     let _guard = BinGuard { uuid: sb.uuid() };
@@ -346,6 +352,9 @@ fn vaciar_la_papelera_purga_solo_la_lista_capturada() {
 #[test]
 fn el_orden_primero_vaciar_y_despues_mover() {
     let _lock = bin_lock();
+    if !bin_usable() {
+        return;
+    }
     let before = ids();
     let sb = Sandbox::new();
     let _guard = BinGuard { uuid: sb.uuid() };
@@ -439,6 +448,9 @@ fn si_cambia_lo_que_cabe_se_pide_confirmar_otra_vez_antes_de_tocar_nada() {
 #[test]
 fn sustituir_un_elemento_aprobado_por_otro_igual_se_rechaza_en_la_ejecucion() {
     let _lock = bin_lock();
+    if !bin_usable() {
+        return;
+    }
     let before = ids();
     let sb = Sandbox::new();
     let _guard = BinGuard { uuid: sb.uuid() };
@@ -460,6 +472,9 @@ fn sustituir_un_elemento_aprobado_por_otro_igual_se_rechaza_en_la_ejecucion() {
 #[test]
 fn con_un_ancestro_cambiado_por_un_junction_la_papelera_no_mueve_lo_ajeno() {
     let _lock = bin_lock();
+    if !bin_usable() {
+        return;
+    }
     let before = ids();
     let mut sb = Sandbox::new();
     let _guard = BinGuard { uuid: sb.uuid() };
@@ -487,6 +502,9 @@ fn con_un_ancestro_cambiado_por_un_junction_la_papelera_no_mueve_lo_ajeno() {
 #[test]
 fn un_archivo_abierto_en_exclusiva_no_se_envia_y_una_carpeta_con_algo_abierto_dentro_tampoco() {
     let _lock = bin_lock();
+    if !bin_usable() {
+        return;
+    }
     let before = ids();
     let sb = Sandbox::new();
     let _guard = BinGuard { uuid: sb.uuid() };
@@ -556,6 +574,9 @@ fn un_archivo_abierto_en_exclusiva_no_se_envia_y_una_carpeta_con_algo_abierto_de
 #[test]
 fn una_carpeta_con_una_carpeta_conocida_dentro_se_expande_y_esa_se_respeta() {
     let _lock = bin_lock();
+    if !bin_usable() {
+        return;
+    }
     let before = ids();
     let sb = Sandbox::new();
     let _guard = BinGuard { uuid: sb.uuid() };
@@ -699,6 +720,9 @@ fn las_entradas_que_no_se_pueden_aprobar_se_rechazan_con_su_motivo() {
 #[test]
 fn contenido_de_una_carpeta_conocida_son_sus_hijos_y_no_ella() {
     let _lock = bin_lock();
+    if !bin_usable() {
+        return;
+    }
     let before = ids();
     let sb = Sandbox::new();
     let _guard = BinGuard { uuid: sb.uuid() };
