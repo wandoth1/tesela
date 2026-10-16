@@ -42,7 +42,7 @@ donde quieras y ejecuta `tesela.exe`; no instala nada ni toca el registro. Para 
 
 > El zip descargado lleva la marca de la web (*Mark of the Web*) y los archivos que descomprimes la heredan, así que SmartScreen puede avisar también al abrir el `tesela.exe` descomprimido (ver más abajo). Si has verificado la descarga, puedes quitar la marca antes de descomprimir con *Propiedades > Desbloquear* del zip, o con `Unblock-File .\tesela-<versión>-x64-portable.zip`.
 
-`tesela --version` y `tesela-scan --version` imprimen la versión. `tesela-scan` (herramienta de consola) la escribe por la salida **estándar**; `tesela.exe` (aplicación gráfica, sin consola propia) la escribe por la salida de **errores** de quien lo lanza, así que en PowerShell se ve con `Start-Process .	esela.exe -ArgumentList --version -Wait -NoNewWindow` o desde `cmd`.
+`tesela --version` y `tesela-scan --version` imprimen la versión. `tesela-scan` (herramienta de consola) la escribe por la salida **estándar**; `tesela.exe` (aplicación gráfica, sin consola propia) la escribe por la salida de **errores** de quien lo lanza, así que en PowerShell se ve con `Start-Process .\tesela.exe -ArgumentList --version -Wait -NoNewWindow` o desde `cmd`.
 
 ### Verificar la descarga
 
