@@ -5,7 +5,7 @@
 //! junctions se quitan antes como enlaces (nunca se entra en ellos) y sus destinos están dentro del mismo árbol.
 //! Ninguna prueba toca el `%TEMP%` real, las cachés de los navegadores ni la Papelera real salvo con elementos PROPIOS
 //! (ver `recycle`).
-#![allow(dead_code)]
+#![allow(dead_code, unsafe_code)]
 
 use std::fs;
 use std::io::Write;
@@ -172,4 +172,41 @@ impl Drop for Sandbox {
         }
         let _ = fs::remove_dir_all(&self.root);
     }
+}
+
+/// Serializa las pruebas que tocan la Papelera real (comparan el conjunto de ids antes y después).
+pub static BIN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Bloquea [`BIN_LOCK`] aunque otra prueba haya entrado en pánico con él cogido.
+pub fn bin_lock() -> std::sync::MutexGuard<'static, ()> {
+    BIN_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Crea un archivo DISPERSO de `len` bytes lógicos (no ocupa espacio en disco), para probar elementos "demasiado
+/// grandes" para la Papelera sin llenar el disco.
+pub fn sparse_file(path: &Path, len: u64) {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::IO::DeviceIoControl;
+    use windows_sys::Win32::System::Ioctl::FSCTL_SET_SPARSE;
+    let f = fs::File::create(path).expect("crea el archivo disperso");
+    let mut returned = 0u32;
+    // SAFETY: el handle pertenece a `f`, que sigue vivo; FSCTL_SET_SPARSE sin búfer de entrada marca el archivo como
+    // disperso; `returned` es escribible y no hay estructura OVERLAPPED (llamada síncrona).
+    let ok = unsafe {
+        DeviceIoControl(
+            f.as_raw_handle() as _,
+            FSCTL_SET_SPARSE,
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut(),
+            0,
+            &mut returned,
+            std::ptr::null_mut(),
+        )
+    };
+    assert_ne!(
+        ok, 0,
+        "FSCTL_SET_SPARSE falló (¿volumen sin soporte de archivos dispersos?)"
+    );
+    f.set_len(len).expect("fija la longitud lógica");
 }
