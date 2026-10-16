@@ -7,7 +7,10 @@
 //!   que alimenta el `TreeBuilder` de `tesela-model`.
 //! * Cola prioritaria con las rutas conocidas (temporales, cachés, Papelera del usuario, Descargas) y adopción por
 //!   `FileId` de la cadena de ancestros.
-//! * Los reparse points no se siguen; los placeholders de la nube llevan el flag `CLOUD`; rutas `\\?\`.
+//! * Los reparse points no se siguen. Tampoco la raíz: un junction, un symlink de carpeta o un punto de montaje dado
+//!   como raíz se rechaza con un error (se abre sin seguirlo y se clasifica ANTES de resolver su destino), y una ruta
+//!   prioritaria que lo sea se descarta sin abrir su destino. Los placeholders de la nube llevan el flag `CLOUD`;
+//!   rutas `\\?\`.
 //! * Cancelación ("Parar y ver"): se construye el árbol con lo recibido y los directorios no recorridos quedan
 //!   `INCOMPLETE`.
 //!
@@ -327,21 +330,41 @@ fn drive_of(p: &Path) -> Option<PathBuf> {
     }
 }
 
+/// Mensaje técnico de la raíz que es un enlace (junction, symlink de carpeta o punto de montaje). La biblioteca no
+/// escribe frases para el usuario: la interfaz la muestra como el detalle de "no se puede abrir la ruta".
+const ROOT_IS_LINK: &str = "the scan root is a link (junction, symbolic link or mount point) and links are not followed: choose the folder it points to";
+
 /// Arranca un escaneo. La preparación (abrir y listar la raíz, resolver las rutas prioritarias) es síncrona, así que
 /// los errores de la raíz se devuelven aquí; el resto corre en hilos y se sigue con [`ScanHandle`].
+///
+/// La ruta que da el usuario se abre SIN seguir su reparse point final y se clasifica con `classify::root_plan` ANTES de
+/// resolver nada: una raíz que es un junction, un symlink de carpeta o un punto de montaje se RECHAZA (`ScanError::Root`
+/// con `ErrorKind::Unsupported`) en vez de recorrer su destino, igual que los enlaces que cuelgan de la raíz no se
+/// siguen. Solo después se calcula la ruta canónica, SOBRE ESE MISMO handle (sin una segunda apertura que siga el enlace
+/// y sin carrera entre comprobar y resolver). Las carpetas de la nube se recorren con su filtro, como siempre; los
+/// componentes intermedios que sean enlaces los resuelve el sistema (es una ruta, no un enlace elegido). Un volumen
+/// montado en una carpeta se escanea por su letra o por su ruta `\\?\Volume{...}\`, no por la carpeta de montaje.
 pub fn start(opts: ScanOptions) -> Result<ScanHandle, ScanError> {
     let t0 = Instant::now();
-    let root = std::fs::canonicalize(&opts.root).map_err(ScanError::Root)?;
-    if !root.is_dir() {
+    let sys::Opened {
+        handle: attr_h,
+        meta: root_meta,
+        path: root,
+    } = sys::open_resolved(&opts.root).map_err(|c| ScanError::Root(io_err(c)))?;
+    if !classify::is_dir(root_meta.attrs) {
         return Err(ScanError::NotADirectory(root));
+    }
+    let plan = classify::root_plan(root_meta.attrs, root_meta.reparse_tag);
+    if plan.zero_size {
+        return Err(ScanError::Root(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            ROOT_IS_LINK,
+        )));
     }
     let root_w = sys::wide(&root);
     let display_root = dunce::simplified(&root).to_path_buf();
     let full_volume = drive_root(&root).is_some() || opts.volume_override.is_some();
 
-    let attr_h = sys::open_dir(&root_w, sys::FILE_READ_ATTRIBUTES, false)
-        .map_err(|c| ScanError::Root(io_err(c)))?;
-    let root_meta = sys::dir_meta(&attr_h).map_err(|c| ScanError::Root(io_err(c)))?;
     let fs_name = sys::fs_name(&attr_h).unwrap_or_default();
     drop(attr_h);
     // Solo NTFS y ReFS tienen FileId estables y enlaces duros: en el resto no se guarda el FileId.
@@ -362,16 +385,16 @@ pub fn start(opts: ScanOptions) -> Result<ScanHandle, ScanError> {
     // Nodo raíz (id 0) y listado de la raíz, en este hilo.
     let root_id = sh.reserve_ids(1);
     debug_assert_eq!(root_id, 0);
-    // La raíz pasa por la MISMA clasificación que los descendientes (carpeta de la nube, reparse point...).
-    let plan = classify::root_plan(root_meta.attrs, root_meta.reparse_tag);
+    // La raíz pasa por la MISMA clasificación que los descendientes (`plan`, calculado arriba): aquí solo llegan las
+    // carpetas normales y las de la nube; un enlace ya se rechazó.
     let mut root_batch = Batch::detached(root_id);
     root_batch.push_utf16(
         0,
         &sys::wide(&display_root),
         EntryData {
             flags: plan.flags,
-            alloc: if plan.zero_size { 0 } else { root_meta.alloc },
-            logical: if plan.zero_size { 0 } else { root_meta.logical },
+            alloc: root_meta.alloc,
+            logical: root_meta.logical,
             mtime: classify::filetime_to_unix(root_meta.mtime_filetime),
             file_id: 0,
         },
@@ -386,7 +409,7 @@ pub fn start(opts: ScanOptions) -> Result<ScanHandle, ScanError> {
         cloud: plan.open_cloud,
     };
     let mut st = WorkerState::new();
-    // Una raíz que no se debe listar (nube sin poblar, junction) se queda sin lote de listado: el builder la marca
+    // Una raíz que no se debe listar (carpeta de la nube sin poblar) se queda sin lote de listado: el builder la marca
     // `INCOMPLETE`, igual que a un descendiente así.
     let root_stats = if plan.walk {
         walker::process_dir(&sh, &tx, &root_task, true, &mut st)

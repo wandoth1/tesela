@@ -81,6 +81,18 @@ struct Planned {
     target: Option<u16>,
 }
 
+/// Ruta canónica de la candidata `p` si es un directorio que se puede recorrer, o `None`. La candidata se abre SIN
+/// seguir su reparse point final y se clasifica ANTES de resolverla: un junction, un symlink de carpeta o un punto de
+/// montaje se descarta sin abrir su destino (el recorrido general tampoco los sigue), en vez de canonizarlo hacia el
+/// destino y aceptar la ruta de este. La ruta canónica sale del mismo handle.
+fn canonical_dir(p: &Path) -> Option<PathBuf> {
+    let opened = sys::open_resolved(p).ok()?;
+    let meta = opened.meta;
+    (classify::is_dir(meta.attrs)
+        && classify::dir_action(meta.attrs, meta.reparse_tag) != classify::DirAction::SkipReparse)
+        .then_some(opened.path)
+}
+
 /// Resuelve `candidates` (rutas sin canonizar, sin comprobar). `root` es la ruta escaneada, canónica.
 pub(crate) fn resolve(
     sh: &Shared,
@@ -96,7 +108,7 @@ pub(crate) fn resolve(
         if sh.cancel.load(std::sync::atomic::Ordering::Relaxed) {
             break;
         }
-        let Ok(canon) = std::fs::canonicalize(&p) else {
+        let Some(canon) = canonical_dir(&p) else {
             continue;
         };
         let (prefix, comps) = split(&canon);
