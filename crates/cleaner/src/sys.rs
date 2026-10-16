@@ -225,11 +225,13 @@ fn open_rel(
     share: u32,
     expect: Expect,
 ) -> Result<Handle, Win32> {
-    // Un nombre con separadores o vacío no es un nombre de entrada: se rechaza antes de llegar al kernel.
+    // Un nombre con separadores o vacío no es un nombre de entrada: se rechaza antes de llegar al kernel. Tampoco con `:`:
+    // en NTFS abre un flujo de datos alternativo (`archivo:flujo`) o un atributo (`carpeta::$INDEX_ALLOCATION`), no la
+    // entrada (H6.10).
     if name.is_empty()
         || name
             .iter()
-            .any(|&c| c == b'\\' as u16 || c == b'/' as u16 || c == 0)
+            .any(|&c| c == b'\\' as u16 || c == b'/' as u16 || c == b':' as u16 || c == 0)
         || name.len() > (u16::MAX as usize) / 2
     {
         return Err(ERROR_INVALID_PARAMETER);
@@ -802,6 +804,27 @@ mod tests {
             Some(ERROR_INVALID_PARAMETER)
         );
         assert!(open_child_for_query(&dh, &w(".."), Expect::Dir).is_err());
+        // H6.10: un `:` (flujo de datos alternativo, `::$INDEX_ALLOCATION`) no es un nombre de entrada: se rechaza antes
+        // del kernel aunque el flujo exista.
+        std::fs::write(sb.path("d/x.bin:flujo"), b"oculto").unwrap();
+        for bad in [
+            "x.bin:flujo",
+            "sub::$INDEX_ALLOCATION",
+            "x.bin::$DATA",
+            ":",
+            "a:b",
+        ] {
+            assert_eq!(
+                open_child_for_query(&dh, &w(bad), Expect::File).err(),
+                Some(ERROR_INVALID_PARAMETER),
+                "{bad}"
+            );
+            assert_eq!(
+                open_child_for_query(&dh, &w(bad), Expect::Dir).err(),
+                Some(ERROR_INVALID_PARAMETER),
+                "{bad}"
+            );
+        }
     }
 
     #[test]
