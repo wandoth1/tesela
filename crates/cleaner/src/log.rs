@@ -2,22 +2,47 @@
 //!
 //! * `%LOCALAPPDATA%\Tesela\limpieza-<fecha>.jsonl`: una línea JSON por entrada procesada (ruta, identidad, tamaño,
 //!   resultado). SOLO en la máquina del usuario: contiene rutas reales y nunca se sube ni se versiona. Se conservan los
-//!   últimos [`KEEP_LOGS`] y cada uno tiene un tope de líneas ([`MAX_LINES`]) y de bytes ([`MAX_BYTES`]). Se vuelca a disco
-//!   cada pocas líneas y tras cada elemento (si la aplicación se cierra a mitad, consta hasta dónde llegó). "Borrar el
+//!   últimos [`KEEP_LOGS`] y cada uno tiene un tope de líneas ([`MAX_LINES`]) y de bytes ([`MAX_BYTES`]). "Borrar el
 //!   historial" de Ajustes los borra también ([`history_clear`]).
+//!
+//! # Retención (m2)
+//! Hay dos clases de registro, con retención PROPIA e independiente: los reales ([`KEEP_LOGS`]) y los de simulación
+//! (`-simulacion`, [`KEEP_SIM_LOGS`]). Al crear su registro, cada ejecución poda SOLO su clase: una limpieza real, los
+//! reales; una simulación (`--dry-run`), las simulaciones. Una simulación nunca toca un registro real: antes, 31
+//! simulaciones seguidas desplazaban los registros reales (los que sirven para reconstruir lo borrado) por orden de fecha.
+//!
+//! Un registro que no llegó a usarse (la ejecución se rechazó antes de tocar nada: p. ej. `NeedsReconfirm`) se BORRA
+//! ([`LogWriter::discard`]): contiene solo la línea de arranque y ocuparía una plaza de la retención de los registros
+//! con contenido. Es lo más simple y seguro: no hay que decidir cuándo "empezar" a registrar ni excluir nada de la poda.
+//!
+//! # Garantías del registro (M4)
+//! * **Sin registro no hay acción destructiva.** Quien ejecuta exige un registro (salvo en simulación) y lo comprueba.
+//! * **Un error de escritura no se traga.** El primer error de escritura o de volcado MARCA el registro como fallido
+//!   ([`LogWriter::ok`]) y activa la bandera de cancelación del ejecutor: la limpieza se detiene en el siguiente punto
+//!   seguro (entre entradas, entre operaciones, entre trozos de la Papelera) y no se toca nada más.
+//! * **Intención antes, resultado después.** Antes de cada operación se escribe y se VUELCA una línea de intención
+//!   ([`LogWriter::write_intent`]: en cada lote entregado a la shell lista sus elementos); después, el resultado.
+//!   Los resultados por entrada del recorrido por handle se vuelcan cada [`FLUSH_EVERY`] líneas y al terminar cada operación.
+//! * **Volcado y `sync_all`.** `flush` (los bytes llegan a la caché del sistema, que sobrevive a que el proceso muera o la
+//!   ventana se cierre a la fuerza: la amenaza que se modela) tras cada intención y cada elemento; `sync_all` (a disco) solo
+//!   al crear el registro y al terminar, para no frenar cada elemento con un `fsync` (milisegundos por llamada, miles de
+//!   llamadas) cuando el riesgo de un corte de corriente a mitad no justifica ese coste.
 //! * `%LOCALAPPDATA%\Tesela\history.jsonl`: SOLO resúmenes (fecha, unidad, usado, liberado ahora, enviado a la
 //!   Papelera). Nunca el árbol ni rutas. Se puede borrar desde Ajustes.
 
 use crate::engine::{Event, EventSink, Outcome};
 use serde::{Deserialize, Serialize};
+use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// Registros que se conservan.
+/// Registros REALES que se conservan.
 pub const KEEP_LOGS: usize = 30;
+/// Registros de SIMULACIÓN (`--dry-run`) que se conservan. Se podan aparte de los reales (m2).
+pub const KEEP_SIM_LOGS: usize = 10;
 /// Tope de líneas de un registro (un `%TEMP%` enorme tiene cientos de miles de archivos).
 pub const MAX_LINES: u64 = 250_000;
 /// Tope de bytes de un registro (rutas largas: 250 000 líneas podrían pasar de cien MiB).
@@ -54,15 +79,69 @@ fn unix_now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// El archivo del registro. En las pruebas puede fallar a propósito después de `left` bytes.
+enum LogFile {
+    Real(File),
+    #[cfg(test)]
+    FailAfter {
+        file: File,
+        left: usize,
+    },
+}
+
+impl Write for LogFile {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            LogFile::Real(f) => f.write(buf),
+            #[cfg(test)]
+            LogFile::FailAfter { file, left } => {
+                if *left == 0 {
+                    return Err(std::io::Error::other("fallo de escritura simulado"));
+                }
+                let n = buf.len().min(*left);
+                let w = file.write(&buf[..n])?;
+                *left -= w;
+                Ok(w)
+            }
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            LogFile::Real(f) => f.flush(),
+            #[cfg(test)]
+            LogFile::FailAfter { file, .. } => file.flush(),
+        }
+    }
+}
+
+impl LogFile {
+    fn sync_all(&self) -> std::io::Result<()> {
+        match self {
+            LogFile::Real(f) => f.sync_all(),
+            #[cfg(test)]
+            LogFile::FailAfter { file, .. } => file.sync_all(),
+        }
+    }
+}
+
 /// El escritor del registro de una ejecución.
 pub struct LogWriter {
     path: PathBuf,
-    out: Mutex<BufWriter<File>>,
+    out: Mutex<BufWriter<LogFile>>,
     lines: AtomicU64,
     bytes: AtomicU64,
     truncated: AtomicBool,
     /// Tope de bytes (las pruebas lo bajan).
     max_bytes: AtomicU64,
+    /// El primer error de escritura o de volcado marca el registro como fallido para siempre.
+    failed: AtomicBool,
+    first_error: Mutex<Option<String>>,
+    /// Bandera de cancelación del ejecutor: un error de escritura la activa (la limpieza se detiene en el siguiente punto
+    /// seguro).
+    cancel_on_error: Mutex<Option<Arc<AtomicBool>>>,
+    /// ¿Se escribió ya algo de una OPERACIÓN (una intención, una entrada, un `bin-item`, un resultado)? Mientras no, el
+    /// registro solo tiene la línea de arranque y las notas `rejected`, y se puede descartar (R2).
+    operation_written: AtomicBool,
 }
 
 #[derive(Serialize)]
@@ -100,8 +179,30 @@ fn outcome_name(o: Outcome) -> String {
 }
 
 impl LogWriter {
-    /// Crea el registro de una ejecución en `dir` (se crea si no existe) y poda los antiguos.
+    /// Crea el registro de una ejecución en `dir` (se crea si no existe) y poda los antiguos. Si no se puede crear o no se
+    /// puede escribir y volcar la línea de arranque (con `sync_all`), es un error: sin registro no se limpia.
     pub fn create(dir: &Path, dry_run: bool) -> std::io::Result<LogWriter> {
+        Self::create_with(dir, dry_run, LogFile::Real)
+    }
+
+    /// SOLO PARA PRUEBAS: un registro cuyo archivo falla al escribir pasados `bytes` bytes.
+    #[cfg(test)]
+    pub(crate) fn create_failing_after(
+        dir: &Path,
+        dry_run: bool,
+        bytes: usize,
+    ) -> std::io::Result<LogWriter> {
+        Self::create_with(dir, dry_run, move |file| LogFile::FailAfter {
+            file,
+            left: bytes,
+        })
+    }
+
+    fn create_with(
+        dir: &Path,
+        dry_run: bool,
+        wrap: impl FnOnce(File) -> LogFile,
+    ) -> std::io::Result<LogWriter> {
         fs::create_dir_all(dir)?;
         let (y, mo, d, h, mi, s) = utc_parts(unix_now());
         let mut name = format!("limpieza-{y:04}{mo:02}{d:02}-{h:02}{mi:02}{s:02}");
@@ -120,19 +221,29 @@ impl LogWriter {
             .open(&path)?;
         let w = LogWriter {
             path,
-            out: Mutex::new(BufWriter::new(f)),
+            out: Mutex::new(BufWriter::new(wrap(f))),
             lines: AtomicU64::new(0),
             bytes: AtomicU64::new(0),
             truncated: AtomicBool::new(false),
             max_bytes: AtomicU64::new(MAX_BYTES),
+            failed: AtomicBool::new(false),
+            first_error: Mutex::new(None),
+            cancel_on_error: Mutex::new(None),
+            operation_written: AtomicBool::new(false),
         };
         w.raw(&format!(
             "{{\"t\":\"start\",\"dry_run\":{dry_run},\"unix\":{}}}",
             unix_now()
-        ));
-        // La línea de arranque ya está en disco: aunque la aplicación muera enseguida, consta que hubo una limpieza.
-        w.flush();
-        prune(dir, KEEP_LOGS);
+        ))?;
+        // La línea de arranque ya está en disco (con `sync_all`): aunque la aplicación muera enseguida, consta que hubo
+        // una limpieza.
+        w.sync()?;
+        // Cada ejecución poda SOLO su clase: una simulación nunca toca un registro real (m2).
+        prune(
+            dir,
+            dry_run,
+            if dry_run { KEEP_SIM_LOGS } else { KEEP_LOGS },
+        );
         Ok(w)
     }
 
@@ -140,26 +251,165 @@ impl LogWriter {
         &self.path
     }
 
-    fn raw(&self, line: &str) {
-        let mut g = self.out.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = writeln!(g, "{line}");
-        self.bytes
-            .fetch_add(line.len() as u64 + 1, Ordering::Relaxed);
+    /// Marca el registro como fallido (la primera vez guarda el error) y activa la cancelación del ejecutor.
+    fn poison(&self, e: &std::io::Error) {
+        self.failed.store(true, Ordering::SeqCst);
+        self.first_error
+            .lock()
+            .unwrap_or_else(|x| x.into_inner())
+            .get_or_insert_with(|| e.to_string());
+        if let Some(c) = self
+            .cancel_on_error
+            .lock()
+            .unwrap_or_else(|x| x.into_inner())
+            .as_ref()
+        {
+            c.store(true, Ordering::SeqCst);
+        }
     }
 
-    /// Escribe una entrada procesada.
-    pub fn write_event(&self, ev: &Event) {
+    fn checked<T>(&self, r: std::io::Result<T>) -> std::io::Result<T> {
+        if let Err(e) = &r {
+            self.poison(e);
+        }
+        r
+    }
+
+    fn raw(&self, line: &str) -> std::io::Result<()> {
+        let r = {
+            let mut g = self.out.lock().unwrap_or_else(|e| e.into_inner());
+            writeln!(g, "{line}")
+        };
+        self.bytes
+            .fetch_add(line.len() as u64 + 1, Ordering::Relaxed);
+        self.checked(r)
+    }
+
+    /// Borra el archivo del registro: para una ejecución que se rechazó antes de tocar nada (ver el módulo). SOLO si no se
+    /// escribió nada de una operación (intención, entrada, `bin-item`, resultado): con algo escrito NO se borra y devuelve
+    /// un error (R2). No hace falta cerrar nada antes: Windows admite borrar un archivo abierto con compartición de borrado.
+    pub(crate) fn discard(&self) -> std::io::Result<()> {
+        if self.operation_written.load(Ordering::SeqCst) {
+            return Err(std::io::Error::other(
+                "el registro ya contiene operaciones: no se descarta",
+            ));
+        }
+        match fs::remove_file(&self.path) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        }
+    }
+
+    /// ¿Llegó el registro a su tope (líneas o bytes) y dejó de anotar? La limpieza sigue, pero lo posterior no consta.
+    pub fn truncated(&self) -> bool {
+        self.truncated.load(Ordering::Relaxed)
+    }
+
+    /// SOLO PARA PRUEBAS: baja el tope de bytes.
+    #[cfg(test)]
+    pub(crate) fn set_max_bytes_for_test(&self, n: u64) {
+        self.max_bytes.store(n, Ordering::Relaxed);
+    }
+
+    /// ¿Va bien el registro? `false` en cuanto falló una escritura o un volcado (ya no se puede confiar en que conste lo
+    /// que se haga).
+    pub fn ok(&self) -> bool {
+        !self.failed.load(Ordering::SeqCst)
+    }
+
+    /// El primer error de escritura o de volcado, si lo hubo.
+    pub fn error(&self) -> Option<String> {
+        self.first_error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Hace que un error de escritura active `flag` (la cancelación del ejecutor). Si ya había fallado, la activa ya.
+    pub fn cancel_on_error(&self, flag: Arc<AtomicBool>) {
+        if !self.ok() {
+            flag.store(true, Ordering::SeqCst);
+        }
+        *self
+            .cancel_on_error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(flag);
+    }
+
+    /// Vuelca lo escrito al sistema (y `sync_all` a disco). Un error marca el registro como fallido.
+    pub fn sync(&self) -> std::io::Result<()> {
+        let r = {
+            let mut g = self.out.lock().unwrap_or_else(|e| e.into_inner());
+            g.flush().and_then(|()| g.get_ref().sync_all())
+        };
+        self.checked(r)
+    }
+
+    /// Escribe una LÍNEA DE INTENCIÓN y la vuelca antes de que se haga la operación: `kind` con la lista de rutas que se van
+    /// a tocar. Si no se puede escribir o volcar, es un error y la operación NO debe hacerse.
+    pub fn write_intent(&self, kind: &str, paths: &[PathBuf]) -> std::io::Result<()> {
+        let list: Vec<String> = paths
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        let v = serde_json::json!({ "t": kind, "paths": list });
+        self.operation_written.store(true, Ordering::SeqCst);
+        self.raw(&v.to_string())?;
+        self.flush_checked()
+    }
+
+    /// Un elemento de la Papelera purgado (o saltado), individualmente: ruta de origen, `id`, tamaño y resultado.
+    pub fn write_bin_item(&self, original: &Path, id: &OsStr, size: u64, out: &str) {
+        self.operation_written.store(true, Ordering::SeqCst);
+        let v = serde_json::json!({
+            "t": "bin-item",
+            "path": original.to_string_lossy(),
+            "id": id.to_string_lossy(),
+            "bytes": size,
+            "out": out,
+        });
+        let _ = self.raw(&v.to_string());
+    }
+
+    /// Como [`LogWriter::flush`], pero devuelve el error.
+    pub fn flush_checked(&self) -> std::io::Result<()> {
+        let r = self.out.lock().unwrap_or_else(|e| e.into_inner()).flush();
+        self.checked(r)
+    }
+
+    /// Cuenta una línea y dice si el registro ya pasó su tope (líneas o bytes): en ese caso deja UNA marca de truncado y ya
+    /// no se escribe más. Lo comparten las entradas y las notas `rejected`, para que ninguna se salte el tope (R4).
+    fn over_cap(&self) -> Option<u64> {
         let n = self.lines.fetch_add(1, Ordering::Relaxed);
         if n > MAX_LINES
             || self.bytes.load(Ordering::Relaxed) > self.max_bytes.load(Ordering::Relaxed)
         {
-            // Una sola marca de truncado; después no se escribe más (el tope en líneas y en bytes).
             if !self.truncated.swap(true, Ordering::Relaxed) {
-                self.raw("{\"t\":\"truncated\"}");
+                let _ = self.raw("{\"t\":\"truncated\"}");
                 self.flush();
             }
+            return None;
+        }
+        Some(n)
+    }
+
+    /// Una nota de algo que NO llegó al plan (`rejected`), con el mismo tope y el mismo truncado que las entradas. No cuenta
+    /// como operación escrita (R2).
+    pub fn write_rejected(&self, path: &Path, reason: &str) {
+        if self.over_cap().is_none() {
             return;
         }
+        let v =
+            serde_json::json!({ "t": "rejected", "path": path.to_string_lossy(), "text": reason });
+        let _ = self.raw(&v.to_string());
+    }
+
+    /// Escribe una entrada procesada.
+    pub fn write_event(&self, ev: &Event) {
+        self.operation_written.store(true, Ordering::SeqCst);
+        let Some(n) = self.over_cap() else {
+            return;
+        };
         if n % FLUSH_EVERY == FLUSH_EVERY - 1 {
             self.flush();
         }
@@ -175,25 +425,15 @@ impl LogWriter {
             out: outcome_name(ev.outcome),
         };
         if let Ok(s) = serde_json::to_string(&line) {
-            self.raw(&s);
+            let _ = self.raw(&s);
         }
     }
 
     /// Una línea de texto libre del propio registro (resumen, avisos).
     pub fn write_note(&self, kind: &str, text: &str) {
+        self.operation_written.store(true, Ordering::SeqCst);
         let v = serde_json::json!({ "t": kind, "text": text });
-        self.raw(&v.to_string());
-    }
-
-    /// Una nota con una lista de rutas (las que se van a entregar a la shell en una operación). Se llama justo antes y se
-    /// vuelca: tras un cierre forzoso se sabe qué pudo moverse.
-    pub fn write_paths(&self, kind: &str, paths: &[PathBuf]) {
-        let list: Vec<String> = paths
-            .iter()
-            .map(|p| p.to_string_lossy().into_owned())
-            .collect();
-        let v = serde_json::json!({ "t": kind, "paths": list });
-        self.raw(&v.to_string());
+        let _ = self.raw(&v.to_string());
     }
 
     /// El receptor de eventos para el recorrido.
@@ -202,8 +442,9 @@ impl LogWriter {
         Arc::new(move |ev| me.write_event(&ev))
     }
 
+    /// Vuelca lo escrito al sistema. Un error marca el registro como fallido (ver [`LogWriter::ok`]).
     pub fn flush(&self) {
-        let _ = self.out.lock().unwrap_or_else(|e| e.into_inner()).flush();
+        let _ = self.flush_checked();
     }
 }
 
@@ -213,16 +454,24 @@ impl Drop for LogWriter {
     }
 }
 
-/// Deja los `keep` registros más recientes de `dir` (por nombre, que lleva la fecha).
-fn prune(dir: &Path, keep: usize) {
+/// ¿Es un registro de simulación? (`limpieza-<fecha>-simulacion[-n].jsonl`).
+fn is_sim_log(name: &str) -> bool {
+    name.contains("-simulacion")
+}
+
+/// Deja los `keep` registros más recientes de UNA clase (`sim`: simulaciones; si no, reales) de `dir` (por nombre, que
+/// lleva la fecha). La otra clase no se toca.
+fn prune(dir: &Path, sim: bool, keep: usize) {
     let Ok(rd) = fs::read_dir(dir) else { return };
     let mut logs: Vec<PathBuf> = rd
         .flatten()
         .map(|e| e.path())
         .filter(|p| {
             p.extension().is_some_and(|x| x == "jsonl")
-                && p.file_name()
-                    .is_some_and(|n| n.to_string_lossy().starts_with("limpieza-"))
+                && p.file_name().is_some_and(|n| {
+                    let n = n.to_string_lossy();
+                    n.starts_with("limpieza-") && is_sim_log(&n) == sim
+                })
         })
         .collect();
     logs.sort();
@@ -327,6 +576,19 @@ mod tests {
                 .to_string_lossy()
                 .ends_with("-simulacion.jsonl")
         );
+        // La simulación NO poda (m2): los 35 antiguos siguen.
+        let olds = |dir: &Path| {
+            fs::read_dir(dir)
+                .unwrap()
+                .flatten()
+                .filter(|e| {
+                    e.file_name()
+                        .to_string_lossy()
+                        .starts_with("limpieza-2000-")
+                })
+                .count()
+        };
+        assert_eq!(olds(&dir), KEEP_LOGS + 5);
         let sink = log.sink();
         sink(Event {
             unit: 3,
@@ -356,7 +618,57 @@ mod tests {
             .flatten()
             .filter(|e| e.file_name().to_string_lossy().starts_with("limpieza-"))
             .count();
-        assert!(n <= KEEP_LOGS + 1, "{n}");
+        assert_eq!(n, KEEP_LOGS + 5 + 1, "{n}");
+        // Una limpieza REAL sí poda sus reales: quedan en `KEEP_LOGS` (el nuevo cuenta) y la simulación se conserva.
+        let real = LogWriter::create(&dir, false).unwrap();
+        let (mut reales, mut sims) = (0, 0);
+        for e in fs::read_dir(&dir).unwrap().flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            if name.starts_with("limpieza-") && name.ends_with(".jsonl") {
+                if name.contains("-simulacion") {
+                    sims += 1;
+                } else {
+                    reales += 1;
+                }
+            }
+        }
+        assert_eq!(reales, KEEP_LOGS);
+        assert_eq!(sims, 1);
+        assert!(real.path().exists());
+    }
+
+    /// m2 y H6.6: 31 registros reales y una simulación: siguen los 31 reales (la simulación nunca toca un registro real).
+    /// Las simulaciones se podan SOLO entre sí (a `KEEP_SIM_LOGS`) y una limpieza real poda solo los reales.
+    #[test]
+    fn cada_clase_de_registro_se_poda_solo_a_si_misma() {
+        let sb = Sandbox::new();
+        let dir = sb.mkdir("Tesela");
+        for i in 0..31 {
+            fs::write(dir.join(format!("limpieza-2001-{i:03}.jsonl")), b"{}").unwrap();
+        }
+        let count = |dir: &Path, sim: bool| {
+            fs::read_dir(dir)
+                .unwrap()
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().into_owned())
+                .filter(|n| n.starts_with("limpieza-") && n.contains("-simulacion") == sim)
+                .count()
+        };
+        let sim = LogWriter::create(&dir, true).unwrap();
+        assert!(sim.path().exists());
+        assert_eq!(count(&dir, false), 31, "la simulación no toca los reales");
+        // 40 simulaciones seguidas (en el mismo segundo los nombres llevan sufijo): los reales intactos y las
+        // simulaciones, podadas entre sí.
+        let sims: Vec<LogWriter> = (0..40)
+            .map(|_| LogWriter::create(&dir, true).unwrap())
+            .collect();
+        assert_eq!(count(&dir, false), 31);
+        assert_eq!(count(&dir, true), KEEP_SIM_LOGS);
+        drop(sims);
+        // Una limpieza real poda SOLO los reales (a `KEEP_LOGS`) y deja las simulaciones como están.
+        let _real = LogWriter::create(&dir, false).unwrap();
+        assert_eq!(count(&dir, false), KEEP_LOGS);
+        assert_eq!(count(&dir, true), KEEP_SIM_LOGS);
     }
 
     fn event(i: usize, path_len: usize) -> Event {
@@ -369,6 +681,56 @@ mod tests {
             links: 1,
             outcome: Outcome::Deleted,
         }
+    }
+
+    /// H6.8: un registro descartado desaparece (no queda un archivo con solo la línea de arranque ocupando plaza).
+    #[test]
+    fn un_registro_descartado_no_deja_archivo() {
+        let sb = Sandbox::new();
+        let dir = sb.mkdir("Tesela");
+        let log = LogWriter::create(&dir, false).unwrap();
+        let path = log.path().to_path_buf();
+        assert!(path.exists());
+        // Las notas `rejected` no son una operación: se puede descartar.
+        log.write_rejected(Path::new("x"), "ReparseAncestor");
+        assert!(log.discard().is_ok());
+        assert!(!path.exists());
+        // R2: con una operación escrita (intención, entrada, `bin-item` o resultado) NO se borra y devuelve un error.
+        for i in 0..4 {
+            let log = LogWriter::create(&dir, false).unwrap();
+            let path = log.path().to_path_buf();
+            match i {
+                0 => log
+                    .write_intent("delete-begin", &[PathBuf::from("a")])
+                    .unwrap(),
+                1 => log.write_event(&event(0, 5)),
+                2 => log.write_bin_item(Path::new("a"), OsStr::new("id"), 1, "purged"),
+                _ => log.write_note("recycle", "resultado"),
+            }
+            assert!(log.discard().is_err(), "{i}");
+            assert!(
+                path.exists(),
+                "{i}: no se borra un registro con operaciones"
+            );
+        }
+    }
+
+    /// R4: las notas `rejected` respetan el mismo tope y el mismo truncado que las entradas.
+    #[test]
+    fn las_notas_rejected_respetan_el_tope_del_registro() {
+        let sb = Sandbox::new();
+        let dir = sb.mkdir("Tesela");
+        let log = LogWriter::create(&dir, false).unwrap();
+        log.set_max_bytes_for_test(2_000);
+        for i in 0..500 {
+            log.write_rejected(Path::new(&format!("C:\\carpeta\\{i}")), "ReparseAncestor");
+        }
+        log.flush();
+        let text = fs::read_to_string(log.path()).unwrap();
+        assert!(log.truncated());
+        assert!(text.len() < 2_000 + 500, "{}", text.len());
+        assert_eq!(text.matches("\"truncated\"").count(), 1);
+        assert!(text.matches("\"rejected\"").count() < 50);
     }
 
     #[test]
@@ -384,7 +746,7 @@ mod tests {
             "falta la línea de arranque"
         );
         let paths = vec![PathBuf::from("a.txt"), PathBuf::from("b c.txt")];
-        log.write_paths("recycle-begin", &paths);
+        log.write_intent("recycle-begin", &paths).unwrap();
         log.flush();
         let text = fs::read_to_string(log.path()).unwrap();
         let line = text.lines().find(|l| l.contains("recycle-begin")).unwrap();

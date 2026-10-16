@@ -241,6 +241,11 @@ recs-clean-safe = Limpiar lo seguro ({ $size })
 recs-safe-hint = Ya marcado. Se recrea solo o se reinstala.
 recs-review-hint = Sin marcar. Ábrelo y decide tú.
 recs-info-hint = Lo gestiona Windows. Te explicamos qué es.
+recs-unavailable-title = No disponible
+recs-unavailable-line = { $name }: { $detail }
+recs-unavailable-link = la carpeta es un enlace (junction) a otra ubicación; Tesela no limpia a través de enlaces.
+recs-unavailable-changed = la carpeta cambió mientras se comprobaba; vuelve a comprobar.
+recs-unavailable-outside = la carpeta temporal está redirigida fuera de los datos locales del usuario; Tesela no limpia carpetas redirigidas.
 recs-none = En esta carpeta no hay sitios de limpieza conocidos. Analiza una unidad entera para ver recomendaciones.
 recs-review-none = Aquí no hay nada que revisar.
 recs-info-none = No hay archivos de este tipo en lo analizado.
@@ -264,6 +269,7 @@ confirm-subtitle =
         [one] { $count } elemento · { $size } · comprobamos cada ruta otra vez justo antes de borrar
        *[other] { $count } elementos · { $size } · comprobamos cada ruta otra vez justo antes de borrar
     }
+confirm-no-log = No se pudo crear el registro de la limpieza, así que no se ha hecho nada. Comprueba que se puede escribir en la carpeta de datos de Tesela (en tu carpeta de datos locales) y vuelve a intentarlo. La simulación sigue funcionando sin registro.
 confirm-empty = No hay nada que limpiar con esta cesta.
 confirm-dry-banner = Modo simulación: no se borrará ni se moverá nada; solo se registra lo que se haría.
 confirm-reconfirm = Algo cambió desde que lo confirmaste (lo que cabe en la Papelera). Revisa de nuevo antes de limpiar.
@@ -286,7 +292,8 @@ confirm-more =
         [one] y { $count } más
        *[other] y { $count } más
     }
-confirm-group-unfit = Se eliminará definitivamente porque no cabe en la Papelera
+confirm-group-unfit = Se eliminará definitivamente porque no se puede enviar a la Papelera
+confirm-unfit-capacity-hint = Para poder enviarlo a la Papelera: abre las propiedades de la Papelera de reciclaje y fija un tamaño máximo para la unidad.
 confirm-unfit-check = Entiendo que esto no se podrá recuperar
 confirm-unfit-note = Sin marcar la casilla, estos elementos no se tocan.
 unfit-no-bin = la unidad no tiene Papelera
@@ -295,6 +302,7 @@ unfit-too-big = supera el tamaño de la Papelera
 unfit-path-long = la ruta es demasiado larga para la Papelera
 unfit-policy = una directiva del sistema impide usar la Papelera
 unfit-unknown = no se pudo comprobar si cabe en la Papelera
+unfit-capacity-unknown = la Papelera de la unidad no tiene un tamaño máximo configurado: no hay garantía de que quepa
 confirm-hardlink =
     { $n ->
         [one] { $count } archivo está compartido con otro nombre: no liberará espacio ({ $size })
@@ -320,6 +328,8 @@ reject-missing = ya no existe
 reject-denied = sin permiso
 reject-identity = no se puede verificar
 reject-reparse = es un enlace
+reject-reparse-ancestor = un enlace en su ruta
+reject-outside-local = la carpeta temporal está redirigida fuera de los datos locales del usuario
 reject-protected = protegido
 reject-untouchable = no se puede borrar entero
 reject-other = error del sistema
@@ -410,6 +420,24 @@ sum-recycle-stopped =
         [one] Se detuvo el envío a la Papelera: Windows eliminó definitivamente un elemento que no cabía. Por precaución no se envió { $count } elemento más: sigue donde estaba.
        *[other] Se detuvo el envío a la Papelera: Windows eliminó definitivamente un elemento que no cabía. Por precaución no se enviaron { $count } elementos más: siguen donde estaban.
     }
+sum-recycle-stopped-unverified =
+    { $n ->
+        [0] Se detuvo el envío a la Papelera: no se pudo comprobar qué pasó con un elemento. Por precaución no se tocó nada más.
+        [one] Se detuvo el envío a la Papelera: no se pudo comprobar qué pasó con un elemento. Por precaución no se envió { $count } elemento más: sigue donde estaba.
+       *[other] Se detuvo el envío a la Papelera: no se pudo comprobar qué pasó con un elemento. Por precaución no se enviaron { $count } elementos más: siguen donde estaban.
+    }
+sum-recycle-stopped-changed =
+    { $n ->
+        [0] Se detuvo el envío a la Papelera: un elemento cambió justo antes de enviarlo y no se envió. Por precaución no se tocó nada más.
+        [one] Se detuvo el envío a la Papelera: un elemento cambió justo antes de enviarlo y no se envió. Por precaución no se envió { $count } elemento más: sigue donde estaba.
+       *[other] Se detuvo el envío a la Papelera: un elemento cambió justo antes de enviarlo y no se envió. Por precaución no se enviaron { $count } elementos más: siguen donde estaban.
+    }
+sum-recycle-stopped-declined =
+    { $n ->
+        [0] Se detuvo el envío a la Papelera: Windows no pudo enviar un elemento (no cabía) y lo dejó donde estaba. Por precaución no se tocó nada más.
+        [one] Se detuvo el envío a la Papelera: Windows no pudo enviar un elemento (no cabía) y lo dejó donde estaba. Por precaución no se envió { $count } elemento más: sigue donde estaba.
+       *[other] Se detuvo el envío a la Papelera: Windows no pudo enviar un elemento (no cabía) y lo dejó donde estaba. Por precaución no se enviaron { $count } elementos más: siguen donde estaban.
+    }
 sum-no-room =
     { $n ->
         [one] { $count } elemento no se envió porque no hay sitio en la Papelera: vacíala o libera espacio. Sigue donde estaba.
@@ -439,6 +467,18 @@ sum-bin-failed =
     { $n ->
         [one] La Papelera no se pudo vaciar del todo: { $count } elemento sigue ahí.
        *[other] La Papelera no se pudo vaciar del todo: { $count } elementos siguen ahí.
+    }
+sum-bin-changed =
+    { $n ->
+        [one] { $count } elemento de la Papelera cambió desde la confirmación y no se tocó.
+       *[other] { $count } elementos de la Papelera cambiaron desde la confirmación y no se tocaron.
+    }
+sum-log-failed = No se pudo escribir el registro de la limpieza, así que se detuvo en el siguiente punto seguro y no se tocó nada más. Lo que ya estaba hecho se queda y puede no constar entero en el registro.
+sum-log-truncated = El registro de la limpieza llegó a su tamaño máximo y dejó de anotar: lo que se hizo después no consta en él.
+sum-bin-unverifiable =
+    { $n ->
+        [one] { $count } elemento de la Papelera está en una unidad cuyo sistema de archivos no permite verificarlo (FAT o exFAT) y no se tocó.
+       *[other] { $count } elementos de la Papelera están en una unidad cuyo sistema de archivos no permite verificarlos (FAT o exFAT) y no se tocaron.
     }
 sum-cancelled = Cancelaste la limpieza: lo que ya estaba hecho se queda.
 sum-diverge = "Eliminado definitivamente" y "liberado ahora" no coinciden: puede ser por enlaces duros, archivos que otro programa tenía abiertos o cambios del propio Windows.

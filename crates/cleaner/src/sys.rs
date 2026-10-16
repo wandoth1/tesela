@@ -95,6 +95,10 @@ pub struct Meta {
     /// Etiqueta de reparse; 0 si no es un reparse point.
     pub reparse_tag: u32,
     pub is_dir: bool,
+    /// `FileStandardInfo.DeletePending`: alguien ya marcó el objeto para borrar y desaparecerá al cerrarse el último handle
+    /// (hasta entonces el NOMBRE sigue visible y abrirlo da acceso denegado). Es la forma de saber, con un handle abierto,
+    /// que un objeto ya se eliminó.
+    pub delete_pending: bool,
     pub alloc: u64,
     pub logical: u64,
     /// El mayor de `CreationTime`, `LastWriteTime` y `ChangeTime` (FILETIME).
@@ -225,11 +229,13 @@ fn open_rel(
     share: u32,
     expect: Expect,
 ) -> Result<Handle, Win32> {
-    // Un nombre con separadores o vacío no es un nombre de entrada: se rechaza antes de llegar al kernel.
+    // Un nombre con separadores o vacío no es un nombre de entrada: se rechaza antes de llegar al kernel. Tampoco con `:`:
+    // en NTFS abre un flujo de datos alternativo (`archivo:flujo`) o un atributo (`carpeta::$INDEX_ALLOCATION`), no la
+    // entrada (H6.10).
     if name.is_empty()
         || name
             .iter()
-            .any(|&c| c == b'\\' as u16 || c == b'/' as u16 || c == 0)
+            .any(|&c| c == b'\\' as u16 || c == b'/' as u16 || c == b':' as u16 || c == 0)
         || name.len() > (u16::MAX as usize) / 2
     {
         return Err(ERROR_INVALID_PARAMETER);
@@ -314,6 +320,66 @@ pub fn open_child_dir_for_listing(parent: &Handle, name: &[u16]) -> Result<Handl
         FILE_SHARE_ALL,
         Expect::Dir,
     )
+}
+
+/// Por qué falla [`open_reparse_free_dir`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChainError {
+    /// La ruta no es absoluta con letra de unidad y componentes normales (UNC, relativa, `..`, `\\.\`...).
+    BadPath,
+    /// El componente `component` (nombre tal como se escribió en la ruta) es un reparse point (junction, symlink, punto de
+    /// montaje, nube): la cadena no es de confianza.
+    Reparse { component: String },
+    /// Error del sistema al abrir un componente (o al leer su identidad).
+    Os(Win32),
+}
+
+/// Abre el directorio `path` recorriendo la cadena COMPONENTE A COMPONENTE desde la raíz del volumen, con aperturas
+/// RELATIVAS (`NtCreateFile` + `RootDirectory` + `FILE_OPEN_REPARSE_POINT`), y exige que NINGÚN componente (ni la raíz de
+/// la unidad ni el último) sea un reparse point. Devuelve el handle del último.
+///
+/// Es la comprobación de las raíces de categoría (PLAN.md §3.7.3): `GetFinalPathNameByHandleW` resuelve en silencio los
+/// enlaces de los ANCESTROS, así que comparar la ruta canónica con la léxica no basta para ver un junction por encima de
+/// `User Data` o de `%TEMP%`. Hay que mirar cada componente de la ruta TAL COMO SE ESCRIBIÓ (los nombres 8.3 de `%TEMP%`
+/// valen: los resuelve el sistema de archivos al abrir).
+pub fn open_reparse_free_dir(path: &Path) -> Result<Handle, ChainError> {
+    use std::path::{Component, Prefix};
+    let plain = strip_verbatim(path.to_path_buf());
+    let mut comps = plain.components();
+    let drive = match comps.next() {
+        Some(Component::Prefix(p)) => match p.kind() {
+            Prefix::Disk(l) | Prefix::VerbatimDisk(l) => l,
+            _ => return Err(ChainError::BadPath),
+        },
+        _ => return Err(ChainError::BadPath),
+    };
+    if !matches!(comps.next(), Some(Component::RootDir)) {
+        return Err(ChainError::BadPath);
+    }
+    let root = PathBuf::from(format!("{}:\\", drive as char));
+    // Solo se piden atributos (no `FILE_LIST_DIRECTORY`): hay carpetas que un usuario sin elevar no puede listar
+    // (`Windows\Temp`) y la cadena no necesita listar nada.
+    let mut cur = open_for_query(&root).map_err(ChainError::Os)?;
+    let check = |h: &Handle, name: &str| -> Result<(), ChainError> {
+        let m = meta(h).map_err(ChainError::Os)?;
+        if m.is_reparse() {
+            return Err(ChainError::Reparse {
+                component: name.to_string(),
+            });
+        }
+        Ok(())
+    };
+    check(&cur, &root.display().to_string())?;
+    for c in comps {
+        let Component::Normal(name) = c else {
+            return Err(ChainError::BadPath);
+        };
+        let wide: Vec<u16> = name.encode_wide().collect();
+        let next = open_child_for_query(&cur, &wide, Expect::Dir).map_err(ChainError::Os)?;
+        check(&next, &name.to_string_lossy())?;
+        cur = next;
+    }
+    Ok(cur)
 }
 
 /// Abre por ruta con acceso `DELETE` y compartiendo todo: comprobación previa de un elemento que va a la Papelera (se
@@ -413,6 +479,7 @@ pub fn meta(h: &Handle) -> Result<Meta, Win32> {
         attrs: basic.FileAttributes,
         reparse_tag,
         is_dir: std_info.Directory,
+        delete_pending: std_info.DeletePending,
         alloc: std_info.AllocationSize.max(0) as u64,
         logical: std_info.EndOfFile.max(0) as u64,
         newest_filetime: basic
@@ -599,6 +666,24 @@ pub fn delete_on_handle(h: &Handle) -> Result<(), Win32> {
     if ok == 0 { Err(last_error()) } else { Ok(()) }
 }
 
+/// SOLO PARA PRUEBAS: borra `path` con la semántica CLÁSICA de Windows (`FileDispositionInfo`, sin POSIX), como hace la shell:
+/// si otro handle sigue abierto, el nombre queda visible como "pendiente de borrar" hasta que se cierre.
+#[cfg(test)]
+pub fn delete_legacy_for_test(path: &Path) -> Result<(), Win32> {
+    let h = open_path(path, DELETE | FILE_READ_ATTRIBUTES, FILE_SHARE_ALL)?;
+    let legacy = FILE_DISPOSITION_INFO { DeleteFile: true };
+    // SAFETY: `h.0` es un handle válido abierto con DELETE; el puntero apunta a `legacy` y se pasa su tamaño.
+    let ok = unsafe {
+        SetFileInformationByHandle(
+            h.0,
+            FileDispositionInfo,
+            &legacy as *const _ as *const c_void,
+            size_of::<FILE_DISPOSITION_INFO>() as u32,
+        )
+    };
+    if ok == 0 { Err(last_error()) } else { Ok(()) }
+}
+
 /// SOLO PARA PRUEBAS: fija creación, último acceso, última escritura y cambio del objeto a `filetime` (FILETIME).
 #[cfg(test)]
 pub fn set_all_times_for_test(path: &Path, filetime: i64) -> Result<(), Win32> {
@@ -742,6 +827,27 @@ mod tests {
             Some(ERROR_INVALID_PARAMETER)
         );
         assert!(open_child_for_query(&dh, &w(".."), Expect::Dir).is_err());
+        // H6.10: un `:` (flujo de datos alternativo, `::$INDEX_ALLOCATION`) no es un nombre de entrada: se rechaza antes
+        // del kernel aunque el flujo exista.
+        std::fs::write(sb.path("d/x.bin:flujo"), b"oculto").unwrap();
+        for bad in [
+            "x.bin:flujo",
+            "sub::$INDEX_ALLOCATION",
+            "x.bin::$DATA",
+            ":",
+            "a:b",
+        ] {
+            assert_eq!(
+                open_child_for_query(&dh, &w(bad), Expect::File).err(),
+                Some(ERROR_INVALID_PARAMETER),
+                "{bad}"
+            );
+            assert_eq!(
+                open_child_for_query(&dh, &w(bad), Expect::Dir).err(),
+                Some(ERROR_INVALID_PARAMETER),
+                "{bad}"
+            );
+        }
     }
 
     #[test]
@@ -840,5 +946,49 @@ mod tests {
         // Y su identidad es distinta de la del destino.
         let target = meta(&open_for_query(&sb.path("t")).unwrap()).unwrap();
         assert_ne!(m.identity, target.identity);
+    }
+
+    #[test]
+    fn la_cadena_se_recorre_por_componentes_y_rechaza_cualquier_reparse_point() {
+        let mut sb = Sandbox::new();
+        sb.mkdir("real/a/b");
+        sb.mkdir("destino/dentro");
+        sb.junction("real/enlace", "destino");
+        // Una cadena limpia (incluida la del propio `%TEMP%` de la prueba) se abre y da la ruta canónica.
+        let h = open_reparse_free_dir(&sb.path("real/a/b")).unwrap();
+        assert_eq!(final_path(&h).unwrap(), sb.long("real/a/b"));
+        // Con el prefijo verbatim y otra capitalización, igual.
+        let upper = PathBuf::from(sb.long("real/a").to_string_lossy().to_uppercase());
+        assert!(open_reparse_free_dir(&upper).is_ok());
+        // Un junction como ÚLTIMO componente se rechaza (se abre a sí mismo, no a su destino).
+        assert_eq!(
+            open_reparse_free_dir(&sb.path("real/enlace")).err(),
+            Some(ChainError::Reparse {
+                component: "enlace".into()
+            })
+        );
+        // Un junction ANCESTRO también, aunque el destino exista y sea un directorio normal.
+        assert_eq!(
+            open_reparse_free_dir(&sb.path("real/enlace/dentro")).err(),
+            Some(ChainError::Reparse {
+                component: "enlace".into()
+            })
+        );
+        // Rutas que no son absolutas con letra de unidad, o que no existen.
+        assert_eq!(
+            open_reparse_free_dir(Path::new(r"real\a")).err(),
+            Some(ChainError::BadPath)
+        );
+        assert_eq!(
+            open_reparse_free_dir(Path::new(r"\servidor\recurso\x")).err(),
+            Some(ChainError::BadPath)
+        );
+        assert!(matches!(
+            open_reparse_free_dir(&sb.path("real/no-existe")).err(),
+            Some(ChainError::Os(2 | 3))
+        ));
+        // Un archivo no es un directorio de la cadena.
+        sb.write("real/f.bin", 10);
+        assert!(open_reparse_free_dir(&sb.path("real/f.bin")).is_err());
     }
 }

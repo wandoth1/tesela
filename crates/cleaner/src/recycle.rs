@@ -6,31 +6,45 @@
 //!    registra, por elemento, `hrDelete` y la ruta real del elemento ya en la Papelera (`psiNewlyCreated`);
 //! 3. quien llama abre ESA ruta (`$R…`) y compara su identidad con la aprobada.
 //!
-//! Entre la comprobación del paso 1 y que la shell abra el elemento hay una ventana. Se cierra con un handle de GUARDA
-//! (`DELETE | READ_ATTRIBUTES`, compartiéndolo todo) que quien llama conserva abierto hasta después del paso 3: mientras
-//! está abierto Windows no deja renombrar el padre ni el abuelo del elemento (error 5), así que no se puede cambiar un
-//! ancestro por un junction hacia otra carpeta (medido por la auditoría; cubierto por las pruebas) y la shell recicla
-//! igual. Lo que NO puede impedir el handle es la sustitución del propio nombre por otro objeto (sí se puede renombrar el
-//! elemento: el handle comparte `DELETE`): ese caso cae en el paso 3.
+//! Entre la comprobación del paso 1 y que la shell abra el elemento hay una ventana. El handle de GUARDA
+//! (`DELETE | READ_ATTRIBUTES`, compartiéndolo todo) que quien llama conserva abierto hasta después del paso 3 impide
+//! renombrar los ANCESTROS del elemento (el padre y el abuelo: error 5), así que no se puede cambiar un ancestro por un
+//! junction hacia otra carpeta (medido por la auditoría; cubierto por las pruebas) y la shell recicla igual. La guarda NO
+//! impide renombrar el propio elemento (el handle comparte `DELETE`, que la shell necesita para moverlo a `$Recycle.Bin`) ni
+//! poner otro objeto con ese nombre. Eso lo vigila el receptor de eventos (ver más abajo): `PreDeleteItem` comprueba la
+//! IDENTIDAD de lo que hay en la ruta justo antes de que la shell actúe.
 //!
 //! La garantía real es, pues: (a) la comprobación de ruta y protección es previa y se mantiene con el handle de guarda;
-//! (b) lo que llega a la Papelera se comprueba por IDENTIDAD, y además `Recycled` exige que el nombre aprobado ya no
-//! exista y que el objeto de la guarda esté ahora dentro de una Papelera (otro nombre del mismo objeto, p. ej. un enlace
-//! duro, no cuenta); (c) cualquier otra cosa que llegue a la Papelera es recuperable y se informa (`RecycledOther`), pero
-//! NO se garantiza que "nunca" pueda ser un objeto no aprobado: solo que se detecta y es restaurable.
+//! (b) `PreDeleteItem` veta lo que no es el objeto aprobado, con una ventana RESIDUAL entre esa comprobación y el
+//! movimiento real de la shell (la shell abre y mueve por ruta: no hay forma de atarla a un handle); (c) lo que llega a la
+//! Papelera se comprueba por IDENTIDAD, y además `Recycled` exige que el nombre aprobado ya no exista y que el objeto de
+//! la guarda esté ahora dentro de una Papelera (otro nombre del mismo objeto, p. ej. un enlace duro, no cuenta); (d)
+//! cualquier otra cosa que llegue a la Papelera es recuperable y se informa (`RecycledOther`): se detecta y es restaurable.
 //!
 //! Banderas (decididas por las pruebas, ver `tests::wantnukewarning_*`):
-//! * enviar: `FOF_NO_UI | FOF_ALLOWUNDO | FOFX_RECYCLEONDELETE`;
-//! * purgar elementos de la Papelera: `FOF_NO_UI`.
+//! * enviar: `FOF_NO_UI | FOF_ALLOWUNDO | FOFX_RECYCLEONDELETE | FOF_NO_CONNECTED_ELEMENTS`;
+//! * purgar elementos de la Papelera: `FOF_NO_UI | FOF_NO_CONNECTED_ELEMENTS`.
+//!
+//! `FOF_NO_CONNECTED_ELEMENTS` (S1): sin ella, aprobar `pagina.html` puede arrastrar `pagina_files\`, que nadie aprobó.
+//!
+//! # El receptor de eventos vigila (M1 y M2)
+//! * `PreDeleteItem` (M1) abre cada elemento por su ruta, sin seguir enlaces, y compara su IDENTIDAD con la aprobada; si no
+//!   coincide (o no se puede abrir, o no es lo aprobado), registra un [`Veto`] y devuelve `E_ABORT`: la shell cancela lo
+//!   pendiente y NO envía el sustituto (falla cerrado). Residual: entre esa comprobación y el movimiento real una
+//!   sustitución enviaría un objeto no aprobado, que el paso 3 detecta como `RecycledOther` (recuperable).
+//! * `PostDeleteItem` (M2) registra el evento PRIMERO y, si la shell eliminó definitivamente (`psiNewlyCreated` nulo) o no
+//!   dijo dónde quedó, devuelve `E_ABORT`: el primer borrado inesperado ya no arrastra al resto del lote.
+//!   Solo al ENVIAR; al purgar la Papelera el borrado definitivo es lo esperado y el receptor solo registra.
 #![allow(unsafe_code)]
 
-use std::collections::HashSet;
+use crate::paths::PathKey;
+use crate::sys::{self, FileIdentity};
 use std::ffi::{OsString, c_void};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use windows::Win32::Foundation::{FILETIME, PROPERTYKEY};
+use windows::Win32::Foundation::{E_ABORT, FILETIME, PROPERTYKEY};
 use windows::Win32::Storage::EnhancedStorage::PKEY_Size;
 use windows::Win32::System::Com::StructuredStorage::PropVariantToBSTR;
 use windows::Win32::System::Com::{
@@ -40,10 +54,10 @@ use windows::Win32::System::Com::{
 #[cfg(test)]
 use windows::Win32::UI::Shell::FOF_WANTNUKEWARNING;
 use windows::Win32::UI::Shell::{
-    BHID_EnumItems, FILEOPERATION_FLAGS, FOF_ALLOWUNDO, FOF_NO_UI, FOFX_RECYCLEONDELETE,
-    FOLDERID_RecycleBinFolder, FileOperation, IEnumShellItems, IFileOperation,
-    IFileOperationProgressSink, IFileOperationProgressSink_Impl, IShellItem, IShellItem2,
-    KF_FLAG_DEFAULT, PID_DISPLACED_DATE, PID_DISPLACED_FROM, PSGUID_DISPLACED,
+    BHID_EnumItems, FILEOPERATION_FLAGS, FOF_ALLOWUNDO, FOF_NO_CONNECTED_ELEMENTS, FOF_NO_UI,
+    FOFX_RECYCLEONDELETE, FOLDERID_RecycleBinFolder, FileOperation, IEnumShellItems,
+    IFileOperation, IFileOperationProgressSink, IFileOperationProgressSink_Impl, IShellItem,
+    IShellItem2, KF_FLAG_DEFAULT, PID_DISPLACED_DATE, PID_DISPLACED_FROM, PSGUID_DISPLACED,
     SHCreateItemFromParsingName, SHGetKnownFolderItem, SHQUERYRBINFO, SHQueryRecycleBinW, SIGDN,
     SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_FILESYSPATH, SIGDN_PARENTRELATIVE,
 };
@@ -140,6 +154,72 @@ pub struct BinItem {
     pub time_deleted: i64,
     /// Tamaño que da la shell (`System.Size`; 0 si no lo da, como en las carpetas).
     pub size: u64,
+    /// Identidad (volumen + FileId) del `$R` (los datos) al enumerar. Al purgar se vuelve a leer: si no coincide, el
+    /// elemento cambió y se salta. `None` = no se pudo leer al enumerar: no se puede verificar y no se purga.
+    pub data_id: Option<FileIdentity>,
+    /// Identidad del `$I` hermano (los metadatos) al enumerar (misma regla).
+    pub meta_id: Option<FileIdentity>,
+    /// El sistema de archivos del `$R` no da identidad (FAT, exFAT: `FileIdInfo` no existe): el elemento no se puede
+    /// verificar y no se purga, pero NO es que haya "cambiado": se cuenta aparte (H6.9).
+    pub no_identity: bool,
+}
+
+/// Identidad (volumen + FileId) de lo que hay en `p`, sin seguir enlaces. `None` si no se puede abrir o leer.
+fn identity_at(p: &Path) -> Option<FileIdentity> {
+    identity_result(p).ok()
+}
+
+/// Como [`identity_at`], con el código de Windows si falla.
+fn identity_result(p: &Path) -> std::result::Result<FileIdentity, sys::Win32> {
+    sys::open_for_query(p)
+        .and_then(|h| sys::meta(&h))
+        .map(|m| m.identity)
+}
+
+/// ¿Es el código de "este sistema de archivos no da `FileIdInfo`"? (`ERROR_INVALID_FUNCTION`, `ERROR_NOT_SUPPORTED`,
+/// `ERROR_INVALID_PARAMETER`, como en `plan::verify`.)
+fn is_no_identity_error(code: sys::Win32) -> bool {
+    matches!(code, 1 | 50 | 87)
+}
+
+/// Qué hacer con un elemento de la lista aprobada al purgar.
+#[derive(Debug, PartialEq, Eq)]
+enum BinCheck {
+    /// Sigue siendo el mismo: se purga.
+    Same,
+    /// Cambió desde que se enumeró: se salta ("cambió").
+    Changed,
+    /// Su sistema de archivos no da identidad: no se puede verificar, se salta (motivo propio).
+    Unverifiable,
+}
+
+fn check_bin_item(item: &BinItem) -> BinCheck {
+    if item.no_identity {
+        BinCheck::Unverifiable
+    } else if bin_item_unchanged(item) {
+        BinCheck::Same
+    } else {
+        BinCheck::Changed
+    }
+}
+
+/// El `$I` hermano EXACTO de un `$R`: `$R<token>[.ext]` -> `$I<token>[.ext]`. `None` si no es un `$R`.
+fn meta_sibling(data: &Path) -> Option<PathBuf> {
+    let name = data.file_name()?.to_str()?;
+    (name.starts_with("$R") && name.len() > 2)
+        .then(|| data.with_file_name(format!("$I{}", &name[2..])))
+}
+
+/// ¿Sigue siendo el elemento aprobado? Re-lee la identidad del `$R` y del `$I` y la compara con la capturada al enumerar.
+/// Sin identidad capturada o con otra distinta (alguien vació y volvió a llenar la Papelera, o sustituyó los archivos),
+/// no: el elemento se salta ("cambió desde la confirmación").
+fn bin_item_unchanged(item: &BinItem) -> bool {
+    let data = PathBuf::from(&item.id);
+    let (Some(want_data), Some(want_meta)) = (item.data_id, item.meta_id) else {
+        return false;
+    };
+    identity_at(&data) == Some(want_data)
+        && meta_sibling(&data).and_then(|m| identity_at(&m)) == Some(want_meta)
 }
 
 impl BinItem {
@@ -196,12 +276,21 @@ pub fn list_bin() -> Result<Vec<BinItem>> {
             let original_parent = PathBuf::from(OsString::from_wide(&loc));
             let time_deleted = filetime_to_unix(item2.GetFileTime(&SCID_DATE_DELETED)?);
             let size = item2.GetUInt64(&PKEY_Size).unwrap_or(0);
+            // Las identidades del `$R` y del `$I`, para volver a comprobarlas al purgar (M3).
+            let data = PathBuf::from(&id);
+            let data_res = identity_result(&data);
+            let no_identity = data_res.as_ref().is_err_and(|c| is_no_identity_error(*c));
+            let data_id = data_res.ok();
+            let meta_id = meta_sibling(&data).and_then(|m| identity_at(&m));
             out.push(BinItem {
                 id,
                 name,
                 original_parent,
                 time_deleted,
                 size,
+                data_id,
+                meta_id,
+                no_identity,
             });
         }
         Ok(out)
@@ -286,6 +375,55 @@ pub struct BatchOutcome {
     /// Solo al purgar: `$I` de elementos purgados que la shell dejó huérfanos y que se quitaron (ver
     /// [`remove_orphan_meta`]).
     pub meta_removed: u64,
+    /// Solo al enviar: el receptor CANCELÓ el lote (devolvió un error de aborto) por un veto o por un borrado definitivo
+    /// inesperado. Lo que no tiene evento sigue en su sitio.
+    pub sink_aborted: bool,
+    /// Solo al enviar: elementos a los que `PreDeleteItem` puso veto (la identidad no era la aprobada).
+    pub vetoed: Vec<Veto>,
+    /// Solo al purgar: elementos de la lista que NO se purgaron porque su `$R` o su `$I` ya no tenían la identidad
+    /// capturada al enumerar (o no se capturó): `id` de cada uno.
+    pub changed_bin: Vec<OsString>,
+    /// Solo al purgar: elementos que NO se purgaron porque su sistema de archivos no da identidad (FAT, exFAT) y no se
+    /// pueden verificar: `id` de cada uno. No es que hayan cambiado (H6.9).
+    pub unverifiable_bin: Vec<OsString>,
+}
+
+/// Un elemento que se entrega a la shell: su ruta original y la IDENTIDAD aprobada (volumen + FileId).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SendItem {
+    pub path: PathBuf,
+    pub identity: FileIdentity,
+}
+
+impl SendItem {
+    /// SOLO PARA PRUEBAS: captura la identidad actual de `path` (en producción la aprueba el ejecutor, no se lee aquí).
+    #[cfg(test)]
+    pub(crate) fn capture(path: &Path) -> SendItem {
+        let h = sys::open_for_query(path).expect("abre el elemento");
+        SendItem {
+            path: path.to_path_buf(),
+            identity: sys::meta(&h).expect("lee la identidad").identity,
+        }
+    }
+}
+
+/// Por qué `PreDeleteItem` vetó un elemento.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum VetoKind {
+    /// Lo que hay ahora en esa ruta no es el objeto aprobado (sustituido tras la comprobación).
+    IdentityMismatch,
+    /// No se pudo abrir o leer (código de Windows): ante la duda no se envía.
+    OpenFailed(u32),
+    /// La shell va a borrar algo que no estaba en la lista aprobada (por ejemplo un elemento conectado).
+    NotApproved,
+}
+
+/// Un veto del receptor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Veto {
+    /// Nombre de análisis del elemento (su ruta).
+    pub item: OsString,
+    pub kind: VetoKind,
 }
 
 type Events = Arc<Mutex<Vec<DeleteEvent>>>;
@@ -296,12 +434,122 @@ fn display(item: &IShellItem, sigdn: SIGDN) -> Option<OsString> {
     unsafe { item.GetDisplayName(sigdn).ok().map(|p| take_pwstr(p)) }
 }
 
+/// Estado que el receptor comparte con quien lo creó.
+#[derive(Default)]
+struct SinkState {
+    /// El lote está cancelado: cualquier `PreDeleteItem` posterior falla (defensa por si la shell sigue tras un error).
+    tripped: AtomicBool,
+    vetoes: Mutex<Vec<Veto>>,
+}
+
+/// Lo aprobado, por ruta: lo que `PreDeleteItem` comprueba antes de que la shell actúe.
+struct Guard {
+    approved: Vec<(PathKey, FileIdentity)>,
+}
+
+impl Guard {
+    fn new(items: &[SendItem]) -> Guard {
+        Guard {
+            approved: items
+                .iter()
+                .map(|i| (PathKey::new(&i.path), i.identity))
+                .collect(),
+        }
+    }
+
+    /// ¿Es `path` lo aprobado? Abre por ruta sin seguir enlaces y compara la identidad. SOLO pasa lo que está aprobado
+    /// por esa ruta exacta: un hijo de un elemento aprobado, un alias (otro nombre del mismo objeto) o cualquier otra cosa
+    /// se vetan (`NotApproved`). Con la shell real una carpeta emite un único evento, así que la rama "los hijos pasan"
+    /// era inalcanzable y fallar cerrado es mejor (H6.1).
+    fn check(&self, path: &OsString) -> std::result::Result<(), VetoKind> {
+        let key = PathKey::new(Path::new(path));
+        let Some((_, want)) = self.approved.iter().find(|(k, _)| *k == key) else {
+            return Err(VetoKind::NotApproved);
+        };
+        match sys::open_for_query(Path::new(path)).and_then(|h| sys::meta(&h)) {
+            Ok(m) if m.identity == *want => Ok(()),
+            Ok(_) => Err(VetoKind::IdentityMismatch),
+            Err(c) => Err(VetoKind::OpenFailed(c)),
+        }
+    }
+}
+
+/// El estado de un elemento según `psiNewlyCreated` de `PostDeleteItem`: `None` = nulo (eliminado definitivamente);
+/// `Some(None)` = hay elemento pero no se pudo leer su ruta; `Some(Some(ruta))` = está en la Papelera. Pura.
+fn bin_state(newly_created: Option<Option<PathBuf>>) -> BinState {
+    match newly_created {
+        None => BinState::Deleted,
+        Some(Some(p)) => BinState::InBin(p),
+        Some(None) => BinState::InBinUnknownPath,
+    }
+}
+
+/// ¿Debe el receptor cortar el lote tras este `PostDeleteItem`? Solo al ENVIAR (`sending`: al purgar el borrado
+/// definitivo es lo esperado) y solo si la shell dijo que fue bien pero el elemento no está verificablemente en la
+/// Papelera: eliminado definitivamente (`Deleted`) o sin ruta (`InBinUnknownPath`). Pura.
+fn post_delete_aborts(sending: bool, hrdelete: i32, state: &BinState) -> bool {
+    sending && hrdelete >= 0 && matches!(state, BinState::Deleted | BinState::InBinUnknownPath)
+}
+
+/// La lógica del receptor SIN COM (así se prueba en cualquier equipo): `Recorder` solo traduce los argumentos de la shell
+/// y llama aquí.
+struct SinkCore {
+    events: Events,
+    state: Arc<SinkState>,
+    guard: Option<Guard>,
+}
+
+impl SinkCore {
+    /// `PreDeleteItem`: `true` = la shell puede seguir con este elemento; `false` = el receptor debe devolver `E_ABORT`.
+    fn pre_delete(&self, item: OsString) -> bool {
+        let Some(guard) = &self.guard else {
+            return true;
+        };
+        // Defensa: si el lote ya está cancelado, ningún elemento más se procesa aunque la shell siguiera.
+        if self.state.tripped.load(Ordering::SeqCst) {
+            return false;
+        }
+        match guard.check(&item) {
+            Ok(()) => true,
+            Err(kind) => {
+                // Veto: el sustituto NO se envía y se cancela el resto del lote (falla cerrado).
+                self.state.tripped.store(true, Ordering::SeqCst);
+                self.state
+                    .vetoes
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(Veto { item, kind });
+                false
+            }
+        }
+    }
+
+    /// `PostDeleteItem`: registra el evento PRIMERO. `true` = el receptor debe devolver `E_ABORT` (y el lote queda
+    /// cancelado).
+    fn post_delete(&self, item: OsString, hrdelete: i32, state: BinState) -> bool {
+        let abort = post_delete_aborts(self.guard.is_some(), hrdelete, &state);
+        self.events
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(DeleteEvent {
+                item,
+                hr: hrdelete,
+                state,
+            });
+        if abort {
+            self.state.tripped.store(true, Ordering::SeqCst);
+        }
+        abort
+    }
+}
+
 /// El receptor de eventos de `IFileOperation`. Implementa la interfaz COM con `windows::core::implement` (la vtable,
-/// `QueryInterface`, `AddRef` y `Release` los genera la macro). Solo REGISTRA: nunca decide ni falla (si un método
-/// devolviera un error, la shell cancelaría todo lo que quedara pendiente).
+/// `QueryInterface`, `AddRef` y `Release` los genera la macro). Al PURGAR solo registra. Al ENVIAR (con `guard`) además
+/// vigila: veta lo que no es lo aprobado y corta el lote tras el primer borrado definitivo (ver el módulo). Un error de un
+/// método del receptor hace que la shell cancele lo que quedara pendiente: es exactamente lo que se quiere.
 #[implement(IFileOperationProgressSink)]
 struct Recorder {
-    events: Events,
+    core: SinkCore,
 }
 
 impl IFileOperationProgressSink_Impl for Recorder_Impl {
@@ -369,8 +617,16 @@ impl IFileOperationProgressSink_Impl for Recorder_Impl {
     ) -> windows::core::Result<()> {
         Ok(())
     }
-    fn PreDeleteItem(&self, _dwflags: u32, _psiitem: Ref<IShellItem>) -> windows::core::Result<()> {
-        Ok(())
+    fn PreDeleteItem(&self, _dwflags: u32, psiitem: Ref<IShellItem>) -> windows::core::Result<()> {
+        let item = psiitem
+            .as_ref()
+            .and_then(|i| display(i, SIGDN_DESKTOPABSOLUTEPARSING))
+            .unwrap_or_default();
+        if self.core.pre_delete(item) {
+            Ok(())
+        } else {
+            Err(E_ABORT.into())
+        }
     }
     fn PostDeleteItem(
         &self,
@@ -383,22 +639,16 @@ impl IFileOperationProgressSink_Impl for Recorder_Impl {
             .as_ref()
             .and_then(|i| display(i, SIGDN_DESKTOPABSOLUTEPARSING))
             .unwrap_or_default();
-        let state = match psinewlycreated.as_ref() {
-            None => BinState::Deleted,
-            Some(n) => match display(n, SIGDN_FILESYSPATH) {
-                Some(p) => BinState::InBin(PathBuf::from(p)),
-                None => BinState::InBinUnknownPath,
-            },
-        };
-        self.events
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(DeleteEvent {
-                item,
-                hr: hrdelete.0,
-                state,
-            });
-        Ok(())
+        let state = bin_state(
+            psinewlycreated
+                .as_ref()
+                .map(|n| display(n, SIGDN_FILESYSPATH).map(PathBuf::from)),
+        );
+        if self.core.post_delete(item, hrdelete.0, state) {
+            Err(E_ABORT.into())
+        } else {
+            Ok(())
+        }
     }
     fn PreNewItem(
         &self,
@@ -439,13 +689,19 @@ struct Operation {
     op: IFileOperation,
     cookie: u32,
     events: Events,
+    state: Arc<SinkState>,
 }
 
 impl Operation {
-    fn new(flags: FILEOPERATION_FLAGS) -> Result<Operation> {
+    fn new(flags: FILEOPERATION_FLAGS, guard: Option<Guard>) -> Result<Operation> {
         let events: Events = Arc::new(Mutex::new(Vec::new()));
+        let state = Arc::new(SinkState::default());
         let sink: IFileOperationProgressSink = Recorder {
-            events: events.clone(),
+            core: SinkCore {
+                events: events.clone(),
+                state: state.clone(),
+                guard,
+            },
         }
         .into();
         // SAFETY: COM está inicializado en este hilo (lo garantiza quien llama); `sink` es una interfaz viva que `Advise`
@@ -454,7 +710,12 @@ impl Operation {
             let op: IFileOperation = CoCreateInstance(&FileOperation, None, CLSCTX_ALL)?;
             op.SetOperationFlags(flags)?;
             let cookie = op.Advise(&sink)?;
-            Ok(Operation { op, cookie, events })
+            Ok(Operation {
+                op,
+                cookie,
+                events,
+                state,
+            })
         }
     }
 
@@ -472,11 +733,17 @@ impl Operation {
             (error, aborted)
         };
         let events = std::mem::take(&mut *self.events.lock().unwrap_or_else(|e| e.into_inner()));
+        let vetoed =
+            std::mem::take(&mut *self.state.vetoes.lock().unwrap_or_else(|e| e.into_inner()));
         BatchOutcome {
             events,
             any_aborted: aborted,
             error,
             meta_removed: 0,
+            sink_aborted: self.state.tripped.load(Ordering::SeqCst),
+            vetoed,
+            changed_bin: Vec::new(),
+            unverifiable_bin: Vec::new(),
         }
     }
 }
@@ -492,27 +759,36 @@ pub enum RecycleMode {
     WithNukeWarning,
 }
 
+/// Las banderas con las que se envía a la Papelera (S1: `FOF_NO_CONNECTED_ELEMENTS` evita que aprobar `pagina.html`
+/// arrastre `pagina_files\`, que nadie aprobó). `FOF_WANTNUKEWARNING` solo existe en las pruebas.
+pub(crate) fn send_flags(mode: RecycleMode) -> FILEOPERATION_FLAGS {
+    let base = FOF_NO_UI | FOF_ALLOWUNDO | FOFX_RECYCLEONDELETE | FOF_NO_CONNECTED_ELEMENTS;
+    match mode {
+        RecycleMode::Normal => base,
+        #[cfg(test)]
+        RecycleMode::WithNukeWarning => base | FOF_WANTNUKEWARNING,
+    }
+}
+
+/// Las banderas con las que se purgan elementos de la Papelera (también sin elementos conectados).
+pub(crate) fn purge_flags() -> FILEOPERATION_FLAGS {
+    FOF_NO_UI | FOF_NO_CONNECTED_ELEMENTS
+}
+
 /// Envía las rutas (una operación `IFileOperation` con todas) a la Papelera POR SU RUTA ORIGINAL. La shell abre cada
 /// elemento por su cuenta: entre que quien llama cierra su handle y ese momento hay una ventana, acotada por el destino
 /// (una sustitución hecha por el mismo usuario solo puede mandar OTRO objeto a la Papelera, recuperable). Por eso el
 /// resultado trae, por elemento, la ruta real del elemento en la Papelera: quien llama compara su IDENTIDAD con la
 /// aprobada.
-pub fn recycle_paths(paths: &[PathBuf], mode: RecycleMode) -> Result<BatchOutcome> {
-    if paths.is_empty() {
+pub fn recycle_paths(items: &[SendItem], mode: RecycleMode) -> Result<BatchOutcome> {
+    if items.is_empty() {
         return Ok(BatchOutcome::default());
     }
     let _com = Com::init()?;
-    let flags = match mode {
-        RecycleMode::Normal => FOF_NO_UI | FOF_ALLOWUNDO | FOFX_RECYCLEONDELETE,
-        #[cfg(test)]
-        RecycleMode::WithNukeWarning => {
-            FOF_NO_UI | FOF_ALLOWUNDO | FOFX_RECYCLEONDELETE | FOF_WANTNUKEWARNING
-        }
-    };
-    let op = Operation::new(flags)?;
+    let op = Operation::new(send_flags(mode), Some(Guard::new(items)))?;
     let mut added = 0usize;
-    for p in paths {
-        let name = parsing_name(p);
+    for it in items {
+        let name = parsing_name(&it.path);
         // Una ruta que la shell no entiende (demasiado larga...) no aborta el lote: ese elemento no genera evento y
         // quien llama lo verá (sigue existiendo).
         // SAFETY: `name` termina en NUL y vive durante la llamada.
@@ -532,26 +808,54 @@ pub fn recycle_paths(paths: &[PathBuf], mode: RecycleMode) -> Result<BatchOutcom
     Ok(op.perform())
 }
 
+/// Un paso de la purga, para el registro local (M4): lo que se va a hacer, lo que se saltó y lo que pasó, ELEMENTO A
+/// ELEMENTO.
+pub enum PurgeStep<'a> {
+    /// Antes de cada trozo: los elementos que se van a entregar a la shell (la INTENCIÓN). Si quien observa no puede
+    /// dejarla escrita, cancela (`cancel`) y el trozo NO se entrega.
+    Begin(&'a [&'a BinItem]),
+    /// Elementos que se saltaron porque su `$R` o su `$I` ya no eran los de la enumeración.
+    Skipped(&'a [&'a BinItem]),
+    /// Elementos que se saltaron porque su sistema de archivos no da identidad y no se pueden verificar.
+    Unverifiable(&'a [&'a BinItem]),
+    /// Después de cada trozo: cada elemento con el `HRESULT` que notificó la shell (`None` = sin aviso).
+    Done(&'a [(&'a BinItem, Option<i32>)]),
+}
+
 /// Purga (borra definitivamente) SOLO los elementos de la lista, PASANDO POR LA CARPETA SHELL de la Papelera: se
 /// enumera la Papelera y se llama a `IFileOperation::DeleteItem` sobre los `IShellItem` enumerados, de modo que la shell
 /// elimina a la vez el `$R` (los datos) y el `$I` (sus metadatos). Nunca por la ruta `$R`: eso dejaba el `$I` huérfano.
 /// Quien llama pasa una lista enumerada al confirmar y los elementos se casan por su `id` estable: lo que haya entrado
-/// después no se toca. La cancelación se mira entre trozos de 500.
+/// después no se toca. Antes de tocar un elemento se comprueba que su `$R` y su `$I` siguen teniendo la identidad que
+/// tenían al enumerar (M3). La cancelación se mira entre trozos de 500.
 pub fn purge_items(items: &[BinItem], cancel: &AtomicBool) -> Result<BatchOutcome> {
-    purge_items_flags(items, cancel, FOF_NO_UI)
+    purge_items_flags(items, cancel, purge_flags(), &mut |_| {})
+}
+
+/// Como [`purge_items`], pero avisa de cada paso (ver [`PurgeStep`]) para dejarlo en el registro.
+pub fn purge_items_observed(
+    items: &[BinItem],
+    cancel: &AtomicBool,
+    obs: &mut dyn FnMut(PurgeStep<'_>),
+) -> Result<BatchOutcome> {
+    purge_items_flags(items, cancel, purge_flags(), obs)
 }
 
 fn purge_items_flags(
     items: &[BinItem],
     cancel: &AtomicBool,
     flags: FILEOPERATION_FLAGS,
+    obs: &mut dyn FnMut(PurgeStep<'_>),
 ) -> Result<BatchOutcome> {
     if items.is_empty() {
         return Ok(BatchOutcome::default());
     }
     let _com = Com::init()?;
-    let wanted: HashSet<&OsString> = items.iter().map(|i| &i.id).collect();
-    let mut found: Vec<IShellItem> = Vec::with_capacity(items.len());
+    let by_id: std::collections::HashMap<&OsString, &BinItem> =
+        items.iter().map(|i| (&i.id, i)).collect();
+    let mut changed: Vec<&BinItem> = Vec::new();
+    let mut unverifiable: Vec<&BinItem> = Vec::new();
+    let mut found: Vec<(IShellItem, &BinItem)> = Vec::with_capacity(items.len());
     // SAFETY: COM está inicializado en este hilo; todas las interfaces y cadenas son propias de esta función y se
     // liberan con el RAII de `windows` o con `take_pwstr`.
     unsafe {
@@ -567,25 +871,46 @@ fn purge_items_flags(
             }
             let Some(item) = arr[0].take() else { break };
             if let Some(id) = display(&item, SIGDN_DESKTOPABSOLUTEPARSING)
-                && wanted.contains(&id)
+                && let Some(approved) = by_id.get(&id).copied()
             {
-                found.push(item);
-                if found.len() == wanted.len() {
+                // M3: el elemento se identifica por `id` (un nombre), pero antes de tocarlo se comprueba que el `$R` y el
+                // `$I` son los mismos objetos que al enumerar.
+                match check_bin_item(approved) {
+                    BinCheck::Same => found.push((item, approved)),
+                    BinCheck::Changed => changed.push(approved),
+                    BinCheck::Unverifiable => unverifiable.push(approved),
+                }
+                if found.len() + changed.len() + unverifiable.len() == by_id.len() {
                     break;
                 }
             }
         }
     }
-    let mut out = BatchOutcome::default();
-    let by_id: std::collections::HashMap<&OsString, &BinItem> =
-        items.iter().map(|i| (&i.id, i)).collect();
+    let mut out = BatchOutcome {
+        changed_bin: changed.iter().map(|i| i.id.clone()).collect(),
+        unverifiable_bin: unverifiable.iter().map(|i| i.id.clone()).collect(),
+        ..BatchOutcome::default()
+    };
+    if !changed.is_empty() {
+        obs(PurgeStep::Skipped(&changed));
+    }
+    if !unverifiable.is_empty() {
+        obs(PurgeStep::Unverifiable(&unverifiable));
+    }
     for chunk in found.chunks(500) {
         if cancel.load(Ordering::Relaxed) {
             break;
         }
-        let op = Operation::new(flags)?;
+        // La INTENCIÓN antes de entregar nada a la shell: si quien observa no pudo dejarla escrita, cancela y este trozo no
+        // se entrega.
+        let chunk_items: Vec<&BinItem> = chunk.iter().map(|(_, i)| *i).collect();
+        obs(PurgeStep::Begin(&chunk_items));
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        let op = Operation::new(flags, None)?;
         let mut added = 0usize;
-        for it in chunk {
+        for (it, _) in chunk {
             // SAFETY: `op.op` y `it` son interfaces vivas.
             if unsafe { op.op.DeleteItem(it, None) }.is_ok() {
                 added += 1;
@@ -606,6 +931,11 @@ fn purge_items_flags(
                 out.meta_removed += 1;
             }
         }
+        let done: Vec<(&BinItem, Option<i32>)> = chunk_items
+            .iter()
+            .map(|i| (*i, r.events.iter().find(|e| e.item == i.id).map(|e| e.hr)))
+            .collect();
+        obs(PurgeStep::Done(&done));
         out.events.extend(r.events);
         if let Some(e) = r.error {
             out.error = Some(e);
@@ -614,11 +944,13 @@ fn purge_items_flags(
     Ok(out)
 }
 
-/// Lo que guarda un `$I` (metadatos de un elemento de la Papelera): versión, tamaño y ruta original.
+/// Lo que guarda un `$I` (metadatos de un elemento de la Papelera): versión, tamaño, cuándo se borró y ruta original.
 #[derive(Debug, PartialEq, Eq)]
 struct MetaInfo {
     version: u64,
     size: u64,
+    /// Momento del borrado (FILETIME), tal como lo guarda la shell en el desplazamiento 16.
+    deleted_ft: i64,
     original: PathBuf,
 }
 
@@ -627,6 +959,7 @@ fn parse_meta(b: &[u8]) -> Option<MetaInfo> {
     let u64_at = |at: usize| Some(u64::from_le_bytes(b.get(at..at + 8)?.try_into().ok()?));
     let version = u64_at(0)?;
     let size = u64_at(8)?;
+    let deleted_ft = u64_at(16)? as i64;
     let (start, max_units) = match version {
         1 => (24usize, 260usize),
         2 => {
@@ -654,23 +987,79 @@ fn parse_meta(b: &[u8]) -> Option<MetaInfo> {
     Some(MetaInfo {
         version,
         size,
+        deleted_ft,
         original: PathBuf::from(OsString::from_wide(&units)),
     })
 }
 
+/// ¿Es `info` (el `$I` leído) el de `item`, la lista aprobada? Compara TODO lo que el `$I` y la shell comparten: la carpeta
+/// de la que se borró, el nombre (la shell puede ocultar la extensión), el tamaño (cuando la shell lo da: 0 en las carpetas)
+/// y el instante del borrado. `data` es la ruta del `$R` (de él sale la extensión).
+fn meta_matches(info: &MetaInfo, item: &BinItem, data: &Path) -> bool {
+    use crate::paths::PathKey;
+    let same_folder = info
+        .original
+        .parent()
+        .is_some_and(|p| PathKey::new(p) == PathKey::new(&item.original_parent));
+    let ext = |p: &Path| {
+        p.extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .unwrap_or_default()
+    };
+    let lower = |s: &std::ffi::OsStr| s.to_string_lossy().to_lowercase();
+    let want = lower(&item.name);
+    let same_name = info.original.file_name().is_some_and(|n| {
+        lower(n) == want
+            || (info
+                .original
+                .file_stem()
+                .is_some_and(|stem| lower(stem) == want)
+                && ext(&info.original) == ext(data))
+    });
+    let same_size = item.size == 0 || info.size == item.size;
+    let same_time = filetime_to_unix(FILETIME {
+        dwLowDateTime: info.deleted_ft as u64 as u32,
+        dwHighDateTime: ((info.deleted_ft as u64) >> 32) as u32,
+    }) == item.time_deleted;
+    same_folder && same_name && same_size && same_time && ext(&info.original) == ext(data)
+}
+
+/// ¿Qué hay en la ruta del `$R`? Distingue "no existe" de "no se pudo saber" (un error de acceso NO es "no existe").
+#[derive(Debug, PartialEq, Eq)]
+enum DataState {
+    Gone,
+    Exists,
+    Unknown,
+}
+
+fn classify_data_error(code: sys::Win32) -> DataState {
+    // ERROR_FILE_NOT_FOUND y ERROR_PATH_NOT_FOUND: no existe. Cualquier otro (acceso denegado, uso compartido...): no se
+    // sabe.
+    if matches!(code, 2 | 3) {
+        DataState::Gone
+    } else {
+        DataState::Unknown
+    }
+}
+
+fn data_state(data: &Path) -> DataState {
+    match sys::open_for_query(data) {
+        Ok(_) => DataState::Exists,
+        Err(c) => classify_data_error(c),
+    }
+}
+
 /// Quita el `$I` que la shell dejó huérfano tras purgar el elemento `item` (cuyo `$R` ya no existe). Es lo único que este
 /// módulo hace por ruta dentro de `$Recycle.Bin`, y solo con TODAS estas condiciones:
-/// * el `$R` (el `id` del elemento) ya no existe, se llama `$R<token>[.ext]` y está en `<unidad>:\$Recycle.Bin\<SID del
-///   usuario actual>\`;
-/// * existe el hermano EXACTO `$I<token>[.ext]`, es un archivo normal pequeño (sin reparse point) y su contenido es un `$I`
-///   válido cuya ruta original cuelga de la misma carpeta que dice el elemento y con la misma extensión;
-/// * se abre en exclusiva y se lee, se interpreta y se borra por ese mismo handle.
+/// * el `$R` (el `id` del elemento) se llama `$R<token>[.ext]` y está en `<unidad>:\$Recycle.Bin\<SID del usuario
+///   actual>\`, y de verdad NO existe (un error de acceso no cuenta como "no existe": ver [`remove_orphan_meta_at`]);
+/// * existe el hermano EXACTO `$I<token>[.ext]`, con la misma identidad que al enumerar.
+///
+/// El resto de comprobaciones (contenido y borrado) están en [`remove_orphan_meta_at`], que no depende de dónde esté la
+/// carpeta y por eso se prueba con archivos sintéticos.
 fn remove_orphan_meta(item: &BinItem) -> bool {
     use crate::paths::PathKey;
     let data = PathBuf::from(&item.id);
-    if std::fs::symlink_metadata(&data).is_ok() {
-        return false;
-    }
     let (Some(name), Some(sid_dir)) = (data.file_name().and_then(|n| n.to_str()), data.parent())
     else {
         return false;
@@ -690,16 +1079,34 @@ fn remove_orphan_meta(item: &BinItem) -> bool {
     if !(mine && root_ok && bin_name.eq_ignore_ascii_case("$Recycle.Bin")) {
         return false;
     }
-    let meta_path = sid_dir.join(format!("$I{}", &name[2..]));
+    let Some(meta_path) = meta_sibling(&data) else {
+        return false;
+    };
+    remove_orphan_meta_at(item, &data, &meta_path)
+}
+
+/// Las condiciones sobre el contenido (M3), con las rutas del `$R` y del `$I` dadas:
+/// * el `$R` no existe de verdad: solo "no encontrado" cuenta; cualquier otro error (acceso, uso compartido...) es
+///   "se desconoce" y el `$I` NO se borra;
+/// * el `$I` es un archivo normal pequeño (sin reparse point) con la MISMA identidad que se capturó al enumerar
+///   (`item.meta_id`), se abre en exclusiva y se lee, se interpreta y se borra por ese mismo handle;
+/// * su contenido coincide con lo aprobado: carpeta de origen, nombre, tamaño (si la shell lo da) y momento del borrado.
+fn remove_orphan_meta_at(item: &BinItem, data: &Path, meta_path: &Path) -> bool {
+    if data_state(data) != DataState::Gone {
+        return false;
+    }
+    let Some(want_id) = item.meta_id else {
+        return false;
+    };
     // Se abre en EXCLUSIVA primero y se lee, se interpreta y se borra por ese MISMO handle: lo que se lee es lo que se
     // borra.
-    let Ok(h) = crate::sys::open_path_exclusive_read(&meta_path) else {
+    let Ok(h) = crate::sys::open_path_exclusive_read(meta_path) else {
         return false;
     };
     let Ok(m) = crate::sys::meta(&h) else {
         return false;
     };
-    if m.is_dir || m.is_reparse() || m.logical > 70_000 {
+    if m.is_dir || m.is_reparse() || m.logical > 70_000 || m.identity != want_id {
         return false;
     }
     let Ok(bytes) = crate::sys::read_small(&h, 70_000) else {
@@ -708,16 +1115,7 @@ fn remove_orphan_meta(item: &BinItem) -> bool {
     let Some(info) = parse_meta(&bytes) else {
         return false;
     };
-    let same_folder = info
-        .original
-        .parent()
-        .is_some_and(|p| PathKey::new(p) == PathKey::new(&item.original_parent));
-    let ext = |p: &Path| {
-        p.extension()
-            .map(|e| e.to_string_lossy().to_lowercase())
-            .unwrap_or_default()
-    };
-    if !same_folder || ext(&info.original) != ext(&data) {
+    if !meta_matches(&info, item, data) {
         return false;
     }
     crate::sys::delete_on_handle(&h).is_ok()
@@ -834,6 +1232,11 @@ mod tests {
     use crate::testutil::{Sandbox, bin_lock, sparse_file};
     use std::collections::HashSet;
 
+    /// Los elementos a enviar con la identidad que tienen ahora (lo "aprobado").
+    fn send_items(paths: &[PathBuf]) -> Vec<SendItem> {
+        paths.iter().map(|p| SendItem::capture(p)).collect()
+    }
+
     /// Identidad (volumen + FileId) de lo que hay en `p`.
     fn identity_of(p: &Path) -> crate::sys::FileIdentity {
         let h = crate::sys::open_for_query(p).unwrap();
@@ -861,7 +1264,7 @@ mod tests {
         sb.write("p/carpeta/x.bin", 2000);
         let paths = vec![sb.long("p/uno.txt"), sb.long("p/carpeta")];
         let ids_before_send: Vec<_> = paths.iter().map(|p| identity_of(p)).collect();
-        let r = recycle_paths(&paths, RecycleMode::Normal).unwrap();
+        let r = recycle_paths(&send_items(&paths), RecycleMode::Normal).unwrap();
         assert!(!r.any_aborted && r.error.is_none());
         assert!(paths.iter().all(|p| !p.exists()), "ya no están en su sitio");
         // La shell avisa de cada uno con el resultado y la ruta real del elemento en la Papelera, y esa ruta tiene la
@@ -929,17 +1332,27 @@ mod tests {
         assert_eq!(ids(), before, "la Papelera queda exactamente como estaba");
     }
 
-    fn meta_v2(original: &str) -> Vec<u8> {
+    /// Un `$I` de versión 2 con el tamaño, el instante de borrado (FILETIME) y la ruta original dados.
+    fn meta_v2_with(original: &str, size: u64, deleted_ft: i64) -> Vec<u8> {
         let wide: Vec<u16> = original.encode_utf16().chain(Some(0)).collect();
         let mut b = Vec::new();
         b.extend_from_slice(&2u64.to_le_bytes());
-        b.extend_from_slice(&1234u64.to_le_bytes());
-        b.extend_from_slice(&0u64.to_le_bytes());
+        b.extend_from_slice(&size.to_le_bytes());
+        b.extend_from_slice(&(deleted_ft as u64).to_le_bytes());
         b.extend_from_slice(&(wide.len() as u32).to_le_bytes());
         for u in wide {
             b.extend_from_slice(&u.to_le_bytes());
         }
         b
+    }
+
+    fn meta_v2(original: &str) -> Vec<u8> {
+        meta_v2_with(original, 1234, 0)
+    }
+
+    /// FILETIME de un instante Unix.
+    fn ft_of(unix: i64) -> i64 {
+        (unix + 11_644_473_600) * 10_000_000
     }
 
     #[test]
@@ -950,20 +1363,25 @@ mod tests {
             MetaInfo {
                 version: 2,
                 size: 1234,
+                deleted_ft: 0,
                 original: PathBuf::from(r"C:\a\b\uno.txt")
             }
         );
+        // El instante del borrado sale del desplazamiento 16.
+        let con_fecha =
+            parse_meta(&meta_v2_with(r"C:\a\b\uno.txt", 7, ft_of(1_700_000_000))).unwrap();
+        assert_eq!(con_fecha.deleted_ft, ft_of(1_700_000_000));
         let mut v1 = Vec::new();
         v1.extend_from_slice(&1u64.to_le_bytes());
         v1.extend_from_slice(&99u64.to_le_bytes());
-        v1.extend_from_slice(&0u64.to_le_bytes());
+        v1.extend_from_slice(&5u64.to_le_bytes());
         let mut path: Vec<u16> = r"C:\x\y.bin".encode_utf16().collect();
         path.resize(260, 0);
         for u in path {
             v1.extend_from_slice(&u.to_le_bytes());
         }
         let v1 = parse_meta(&v1).unwrap();
-        assert_eq!((v1.version, v1.size), (1, 99));
+        assert_eq!((v1.version, v1.size, v1.deleted_ft), (1, 99, 5));
         assert_eq!(v1.original, PathBuf::from(r"C:\x\y.bin"));
         // Basura, versiones desconocidas, truncados y rutas vacías.
         assert!(parse_meta(&[]).is_none());
@@ -976,36 +1394,284 @@ mod tests {
         assert!(parse_meta(&meta_v2(r"C:\a\b")[..30]).is_none());
     }
 
-    #[test]
-    fn el_i_huerfano_solo_se_quita_si_todo_cuadra() {
-        let sb = Sandbox::new();
-        // Fuera de `$Recycle.Bin\<mi SID>\`: nunca se toca, aunque el nombre y el contenido parezcan los de un `$I`.
-        let fake_dir = sb.mkdir(&format!(
-            "$Recycle.Bin/{}",
-            ["S-1-5", "-21-1-2-3-1001"].concat()
-        ));
-        std::fs::write(
-            fake_dir.join("$IABC123.txt"),
-            meta_v2(&format!("{}\\p\\uno.txt", sb.long_root().display())),
+    const UNIX_T: i64 = 1_700_000_000;
+
+    /// Un "elemento de la Papelera" SINTÉTICO en una carpeta de la prueba (no la real): `$R<token>.txt` ya no existe y el
+    /// `$I<token>.txt` hermano tiene el contenido dado. Devuelve el elemento tal como lo habría enumerado `list_bin`
+    /// (identidades del `$R` y del `$I`), y las rutas.
+    struct Orphan {
+        item: BinItem,
+        data: PathBuf,
+        meta: PathBuf,
+    }
+
+    fn orphan(sb: &Sandbox, token: &str, content: &[u8]) -> Orphan {
+        let dir = sb.mkdir("bin/S-synthetic");
+        let data = dir.join(format!("$R{token}.txt"));
+        let meta = dir.join(format!("$I{token}.txt"));
+        std::fs::write(&data, b"datos del elemento").unwrap();
+        std::fs::write(&meta, content).unwrap();
+        let data_id = identity_at(&data);
+        let meta_id = identity_at(&meta);
+        // El `$R` ya fue purgado por la shell.
+        std::fs::remove_file(&data).unwrap();
+        Orphan {
+            item: BinItem {
+                id: data.clone().into_os_string(),
+                name: OsString::from("uno.txt"),
+                original_parent: sb.long("p"),
+                time_deleted: UNIX_T,
+                size: 1234,
+                data_id,
+                meta_id,
+                no_identity: false,
+            },
+            data,
+            meta,
+        }
+    }
+
+    fn good_meta(sb: &Sandbox) -> Vec<u8> {
+        meta_v2_with(
+            &format!("{}\\p\\uno.txt", sb.long_root().display()),
+            1234,
+            ft_of(UNIX_T),
         )
-        .unwrap();
-        let item = BinItem {
-            id: fake_dir.join("$RABC123.txt").into_os_string(),
-            name: OsString::from("uno.txt"),
-            original_parent: sb.long("p"),
-            time_deleted: 0,
-            size: 0,
-        };
-        assert!(!remove_orphan_meta(&item));
-        assert!(fake_dir.join("$IABC123.txt").exists());
-        // Un id que no es un `$R`, o cuyo `$R` sigue existiendo.
+    }
+
+    /// M3: el `$I` huérfano solo se quita si TODO cuadra con lo aprobado: con archivos sintéticos (la función toma las
+    /// rutas), cada discrepancia deja el `$I` intacto.
+    #[test]
+    fn el_i_huerfano_solo_se_quita_si_todo_cuadra_con_lo_aprobado() {
+        let sb = Sandbox::new();
+        // El caso bueno: se quita (y solo el `$I`).
+        let o = orphan(&sb, "GOOD01", &good_meta(&sb));
+        assert!(remove_orphan_meta_at(&o.item, &o.data, &o.meta));
+        assert!(!o.meta.exists());
+        // La shell oculta la extensión (`HideFileExt`): el nombre aprobado es `uno` y sigue valiendo.
+        let mut o = orphan(&sb, "HIDEXT", &good_meta(&sb));
+        o.item.name = OsString::from("uno");
+        assert!(remove_orphan_meta_at(&o.item, &o.data, &o.meta));
+        // En las carpetas la shell no da tamaño (0): no se compara.
+        let mut o = orphan(&sb, "DIR001", &good_meta(&sb));
+        o.item.size = 0;
+        assert!(remove_orphan_meta_at(&o.item, &o.data, &o.meta));
+
+        // Cada discrepancia: el `$I` se queda.
+        type Tamper = Box<dyn Fn(&mut BinItem, &Sandbox)>;
+        let cases: Vec<(&str, Tamper)> = vec![
+            (
+                "nombre",
+                Box::new(|i, _| i.name = OsString::from("otro.txt")),
+            ),
+            ("tamano", Box::new(|i, _| i.size = 999)),
+            ("fecha", Box::new(|i, _| i.time_deleted += 1)),
+            (
+                "carpeta",
+                Box::new(|i, sb| i.original_parent = sb.long("otra")),
+            ),
+            ("sin identidad del $I", Box::new(|i, _| i.meta_id = None)),
+            (
+                "identidad del $I distinta",
+                Box::new(|i, _| {
+                    i.meta_id = Some(FileIdentity {
+                        volume_serial: 1,
+                        file_id: 2,
+                    })
+                }),
+            ),
+        ];
+        for (n, (why, f)) in cases.iter().enumerate() {
+            let mut o = orphan(&sb, &format!("BAD{n:03}"), &good_meta(&sb));
+            f(&mut o.item, &sb);
+            assert!(!remove_orphan_meta_at(&o.item, &o.data, &o.meta), "{why}");
+            assert!(o.meta.exists(), "{why}: el $I debe seguir");
+        }
+        // Una extensión distinta de la del `$R`.
+        let o = orphan(
+            &sb,
+            "EXT001",
+            &meta_v2_with(
+                &format!("{}\\p\\uno.doc", sb.long_root().display()),
+                1234,
+                ft_of(UNIX_T),
+            ),
+        );
+        assert!(!remove_orphan_meta_at(&o.item, &o.data, &o.meta));
+        assert!(o.meta.exists());
+        // Un `$I` cuyo contenido no es un `$I`.
+        let o = orphan(&sb, "JUNK01", b"esto no es un $I");
+        assert!(!remove_orphan_meta_at(&o.item, &o.data, &o.meta));
+        assert!(o.meta.exists());
+    }
+
+    /// Fuera de `<unidad>:\$Recycle.Bin\<mi SID>\` el `$I` nunca se toca, aunque el nombre y el contenido (e incluso las
+    /// identidades y los metadatos) parezcan los de un elemento de la Papelera.
+    #[test]
+    fn el_i_huerfano_fuera_de_la_papelera_del_usuario_nunca_se_toca() {
+        let sb = Sandbox::new();
+        let o = orphan(&sb, "LOC001", &good_meta(&sb));
+        // El contenido y las identidades cuadran (se quitaría con `remove_orphan_meta_at`), pero la ruta no es la de la
+        // Papelera del usuario.
+        assert!(!remove_orphan_meta(&o.item));
+        assert!(o.meta.exists());
+        // Un id que no es un `$R`.
         let not_r = BinItem {
-            id: fake_dir.join("otra.txt").into_os_string(),
-            ..item.clone()
+            id: o.data.with_file_name("otra.txt").into_os_string(),
+            ..o.item.clone()
         };
         assert!(!remove_orphan_meta(&not_r));
-        std::fs::write(fake_dir.join("$RABC123.txt"), b"datos").unwrap();
-        assert!(!remove_orphan_meta(&item));
+        assert!(o.meta.exists());
+    }
+
+    /// M3: si el `$R` existe todavía, o si preguntar por él da un error que NO es "no encontrado" (acceso, nombre no
+    /// válido...), el `$I` NO se borra: un error es "se desconoce", no "no existe".
+    #[test]
+    fn un_error_al_consultar_el_r_no_cuenta_como_que_no_existe() {
+        for c in [2, 3] {
+            assert_eq!(classify_data_error(c), DataState::Gone, "{c}");
+        }
+        for c in [1, 5, 32, 87, 123, 1920] {
+            assert_eq!(classify_data_error(c), DataState::Unknown, "{c}");
+        }
+        let sb = Sandbox::new();
+        // Existe -> Exists.
+        let o = orphan(&sb, "STATE1", &good_meta(&sb));
+        std::fs::write(&o.data, b"x").unwrap();
+        assert_eq!(data_state(&o.data), DataState::Exists);
+        assert!(!remove_orphan_meta_at(&o.item, &o.data, &o.meta));
+        assert!(o.meta.exists());
+        std::fs::remove_file(&o.data).unwrap();
+        assert_eq!(data_state(&o.data), DataState::Gone);
+        // Una ruta que da un error distinto de "no encontrado" (nombre no válido): desconocido, el `$I` se queda.
+        let invalid = o.data.with_file_name("$RSTATE1*.txt");
+        assert_eq!(data_state(&invalid), DataState::Unknown);
+        assert!(!remove_orphan_meta_at(&o.item, &invalid, &o.meta));
+        assert!(o.meta.exists());
+        // Y con el `$R` realmente ausente, sí.
+        assert!(remove_orphan_meta_at(&o.item, &o.data, &o.meta));
+    }
+
+    /// M3: al purgar, el `$R` y el `$I` tienen que seguir siendo los mismos objetos que al enumerar.
+    #[test]
+    fn un_elemento_de_la_papelera_cuyo_r_o_i_cambiaron_no_es_el_aprobado() {
+        let sb = Sandbox::new();
+        let dir = sb.mkdir("bin/S-synthetic");
+        let (data, meta) = (dir.join("$RTOKEN1.txt"), dir.join("$ITOKEN1.txt"));
+        std::fs::write(&data, b"datos").unwrap();
+        std::fs::write(&meta, b"meta").unwrap();
+        let item = BinItem {
+            id: data.clone().into_os_string(),
+            name: OsString::from("uno.txt"),
+            original_parent: sb.long("p"),
+            time_deleted: UNIX_T,
+            size: 5,
+            data_id: identity_at(&data),
+            meta_id: identity_at(&meta),
+            no_identity: false,
+        };
+        assert!(bin_item_unchanged(&item));
+        assert_eq!(check_bin_item(&item), BinCheck::Same);
+        // H6.9: sin FileId (FAT, exFAT) no es "cambió": motivo propio.
+        assert_eq!(
+            check_bin_item(&BinItem {
+                no_identity: true,
+                data_id: None,
+                ..item.clone()
+            }),
+            BinCheck::Unverifiable
+        );
+        assert_eq!(
+            check_bin_item(&BinItem {
+                data_id: None,
+                ..item.clone()
+            }),
+            BinCheck::Changed
+        );
+        assert!(is_no_identity_error(1) && is_no_identity_error(50) && is_no_identity_error(87));
+        assert!(!is_no_identity_error(5) && !is_no_identity_error(2));
+        // Sin identidades capturadas: no se puede verificar.
+        assert!(!bin_item_unchanged(&BinItem {
+            data_id: None,
+            ..item.clone()
+        }));
+        assert!(!bin_item_unchanged(&BinItem {
+            meta_id: None,
+            ..item.clone()
+        }));
+        // El `$I` sustituido por otro archivo con el mismo nombre (otra identidad).
+        std::fs::remove_file(&meta).unwrap();
+        std::fs::write(&meta, b"meta").unwrap();
+        assert!(!bin_item_unchanged(&item), "el $I ya no es el mismo objeto");
+        // El `$R` sustituido.
+        let item2 = BinItem {
+            meta_id: identity_at(&meta),
+            ..item.clone()
+        };
+        assert!(bin_item_unchanged(&item2));
+        std::fs::remove_file(&data).unwrap();
+        std::fs::write(&data, b"datos").unwrap();
+        assert!(
+            !bin_item_unchanged(&item2),
+            "el $R ya no es el mismo objeto"
+        );
+        // Y si desaparece, tampoco.
+        std::fs::remove_file(&data).unwrap();
+        assert!(!bin_item_unchanged(&item2));
+    }
+
+    /// M3 con la shell REAL: un elemento PROPIO cuya identidad capturada ya no cuadra se SALTA al purgar (no se toca y
+    /// consta como cambiado); con la identidad buena se purga. La Papelera de después es la de antes.
+    #[test]
+    fn purgar_salta_un_elemento_propio_cuya_identidad_no_cuadra() {
+        let _lock = bin_lock();
+        if !bin_usable() {
+            return;
+        }
+        let before = ids();
+        let sb = Sandbox::new();
+        let _guard = BinGuard { uuid: sb.uuid() };
+        sb.write("q/uno.txt", 600);
+        recycle_paths(&send_items(&[sb.long("q/uno.txt")]), RecycleMode::Normal).unwrap();
+        let mine: Vec<BinItem> = list_bin()
+            .unwrap()
+            .into_iter()
+            .filter(|i| is_mine(i, &sb.uuid()))
+            .collect();
+        assert_eq!(mine.len(), 1, "{mine:?}");
+        let good = mine[0].clone();
+        assert!(good.data_id.is_some() && good.meta_id.is_some(), "{good:?}");
+        // Identidad del `$R` falseada: se salta.
+        let tampered = BinItem {
+            data_id: Some(FileIdentity {
+                volume_serial: 1,
+                file_id: 2,
+            }),
+            ..good.clone()
+        };
+        let r = purge_items(std::slice::from_ref(&tampered), &AtomicBool::new(false)).unwrap();
+        assert_eq!(r.changed_bin, vec![tampered.id.clone()]);
+        assert!(r.events.is_empty(), "la shell no vio nada: {:?}", r.events);
+        assert!(PathBuf::from(&good.id).exists(), "el $R sigue ahí");
+        // Lo mismo con el `$I`.
+        let tampered_meta = BinItem {
+            meta_id: None,
+            ..good.clone()
+        };
+        let r = purge_items(
+            std::slice::from_ref(&tampered_meta),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(r.changed_bin.len(), 1);
+        assert!(PathBuf::from(&good.id).exists());
+        // Con las identidades buenas, se purga y no queda ni el `$I` huérfano.
+        let meta_path = meta_sibling(Path::new(&good.id)).unwrap();
+        let r = purge_items(std::slice::from_ref(&good), &AtomicBool::new(false)).unwrap();
+        assert!(r.changed_bin.is_empty());
+        assert!(r.events.iter().any(|e| e.item == good.id && e.succeeded()));
+        assert!(!PathBuf::from(&good.id).exists() && !meta_path.exists());
+        assert_eq!(ids(), before);
     }
 
     #[test]
@@ -1024,7 +1690,7 @@ mod tests {
             .iter()
             .map(|n| sb.long(&format!("p/{n}")))
             .collect();
-        recycle_paths(&paths, RecycleMode::Normal).unwrap();
+        recycle_paths(&send_items(&paths), RecycleMode::Normal).unwrap();
         let mine: Vec<BinItem> = list_bin()
             .unwrap()
             .into_iter()
@@ -1052,6 +1718,303 @@ mod tests {
             .collect();
         assert_eq!(left, vec![mine[2].clone()]);
         purge_items(&left, &AtomicBool::new(false)).unwrap();
+        assert_eq!(ids(), before);
+    }
+
+    fn send_item(sb: &Sandbox, rel: &str, size: usize) -> SendItem {
+        SendItem::capture(&sb.write(rel, size))
+    }
+
+    /// H3 (sin COM): la comprobación de `PreDeleteItem` por ruta. Misma identidad pasa; otra identidad, un archivo que ya no
+    /// está, un hijo, un alias (otro nombre del mismo objeto) y cualquier ruta no aprobada se vetan.
+    #[test]
+    fn el_guard_solo_deja_pasar_la_ruta_aprobada_con_su_identidad() {
+        let sb = Sandbox::new();
+        let a = send_item(&sb, "g/a.txt", 100);
+        let dir = SendItem::capture(&sb.mkdir("g/carpeta"));
+        sb.write("g/carpeta/hijo.txt", 50);
+        let guard = Guard::new(&[a.clone(), dir.clone()]);
+        let os = |p: &Path| p.as_os_str().to_os_string();
+        // La misma ruta con la misma identidad: pasa (también con otra capitalización).
+        assert_eq!(guard.check(&os(&a.path)), Ok(()));
+        assert_eq!(guard.check(&os(&dir.path)), Ok(()));
+        let upper = PathBuf::from(a.path.to_string_lossy().to_uppercase());
+        assert_eq!(guard.check(&os(&upper)), Ok(()));
+        // Un hijo de un elemento aprobado: se veta (la shell real emite un solo evento por carpeta).
+        assert_eq!(
+            guard.check(&os(&dir.path.join("hijo.txt"))),
+            Err(VetoKind::NotApproved)
+        );
+        // Algo que no estaba en la lista.
+        let otro = sb.write("g/otro.txt", 10);
+        assert_eq!(guard.check(&os(&otro)), Err(VetoKind::NotApproved));
+        // Un alias del objeto aprobado (enlace duro con OTRO nombre): misma identidad pero no es la ruta aprobada.
+        sb.hard_link("g/a.txt", "g/alias.txt");
+        assert_eq!(
+            guard.check(&os(&sb.path("g/alias.txt"))),
+            Err(VetoKind::NotApproved)
+        );
+        // El aprobado se aparta y otro objeto ocupa su nombre: identidad distinta.
+        std::fs::remove_file(sb.path("g/alias.txt")).unwrap();
+        std::fs::rename(sb.path("g/a.txt"), sb.path("g/a-original.txt")).unwrap();
+        sb.write("g/a.txt", 100);
+        assert_eq!(guard.check(&os(&a.path)), Err(VetoKind::IdentityMismatch));
+        // Un enlace duro a OTRO objeto en el nombre aprobado: identidad distinta.
+        std::fs::remove_file(sb.path("g/a.txt")).unwrap();
+        sb.write("g/ajeno.txt", 100);
+        sb.hard_link("g/ajeno.txt", "g/a.txt");
+        assert_eq!(guard.check(&os(&a.path)), Err(VetoKind::IdentityMismatch));
+        // Un enlace duro al MISMO objeto aprobado en su nombre: la identidad coincide (lo que lo detecta es m1, que
+        // compara `NumberOfLinks`, no esta comprobación).
+        std::fs::remove_file(sb.path("g/a.txt")).unwrap();
+        sb.hard_link("g/a-original.txt", "g/a.txt");
+        assert_eq!(guard.check(&os(&a.path)), Ok(()));
+        // El nombre aprobado ya no existe: no se puede comprobar, se veta.
+        std::fs::remove_file(sb.path("g/a.txt")).unwrap();
+        assert!(matches!(
+            guard.check(&os(&a.path)),
+            Err(VetoKind::OpenFailed(2 | 3))
+        ));
+    }
+
+    /// H3 (sin COM): el estado según `psiNewlyCreated` y la decisión de cortar el lote tras `PostDeleteItem`.
+    #[test]
+    fn la_decision_de_cortar_el_lote_es_pura_y_cubre_todos_los_casos() {
+        let p = PathBuf::from(r"C:\$Recycle.Bin\S\$R1");
+        assert_eq!(bin_state(None), BinState::Deleted);
+        assert_eq!(bin_state(Some(None)), BinState::InBinUnknownPath);
+        assert_eq!(bin_state(Some(Some(p.clone()))), BinState::InBin(p.clone()));
+        let ok = 0;
+        let fail = 0x8007_0005u32 as i32;
+        // Al ENVIAR con éxito: eliminado o sin ruta cortan; en la Papelera, no.
+        assert!(post_delete_aborts(true, ok, &BinState::Deleted));
+        assert!(post_delete_aborts(true, ok, &BinState::InBinUnknownPath));
+        assert!(post_delete_aborts(true, 0x0027_0003, &BinState::Deleted));
+        assert!(!post_delete_aborts(true, ok, &BinState::InBin(p)));
+        // Si la shell falló, no se corta por esto (el fallo ya consta como error del elemento).
+        assert!(!post_delete_aborts(true, fail, &BinState::Deleted));
+        assert!(!post_delete_aborts(true, fail, &BinState::InBinUnknownPath));
+        // Al PURGAR el borrado definitivo es lo esperado: nunca corta.
+        assert!(!post_delete_aborts(false, ok, &BinState::Deleted));
+        assert!(!post_delete_aborts(false, ok, &BinState::InBinUnknownPath));
+    }
+
+    fn core_for(items: &[SendItem], sending: bool) -> SinkCore {
+        SinkCore {
+            events: Arc::new(Mutex::new(Vec::new())),
+            state: Arc::new(SinkState::default()),
+            guard: sending.then(|| Guard::new(items)),
+        }
+    }
+
+    /// H3 (sin COM): el receptor registra el evento ANTES de decidir cortar, y una vez cortado niega todo lo posterior.
+    #[test]
+    fn el_receptor_registra_primero_corta_despues_y_niega_lo_posterior() {
+        let sb = Sandbox::new();
+        let a = send_item(&sb, "r/a.txt", 10);
+        let b = send_item(&sb, "r/b.txt", 10);
+        let core = core_for(&[a.clone(), b.clone()], true);
+        let os = |p: &Path| p.as_os_str().to_os_string();
+        assert!(core.pre_delete(os(&a.path)));
+        // Eliminado definitivamente con éxito: el evento consta y se pide cortar.
+        assert!(core.post_delete(os(&a.path), 0, BinState::Deleted));
+        {
+            let ev = core.events.lock().unwrap();
+            assert_eq!(ev.len(), 1);
+            assert_eq!((ev[0].hr, &ev[0].state), (0, &BinState::Deleted));
+        }
+        assert!(core.state.tripped.load(Ordering::SeqCst));
+        // Cortado: el siguiente `PreDeleteItem` se niega aunque sea lo aprobado.
+        assert!(!core.pre_delete(os(&b.path)));
+        // Un lote en el que todo va a la Papelera no corta y registra cada evento.
+        let ok = core_for(std::slice::from_ref(&a), true);
+        let bin = PathBuf::from(r"C:\$Recycle.Bin\S\$R1");
+        assert!(!ok.post_delete(os(&a.path), 0, BinState::InBin(bin)));
+        assert!(!ok.state.tripped.load(Ordering::SeqCst));
+        // Al purgar (sin guarda) nada corta ni veta.
+        let purge = core_for(&[], false);
+        assert!(purge.pre_delete(os(&a.path)));
+        assert!(!purge.post_delete(os(&a.path), 0, BinState::Deleted));
+        assert!(!purge.state.tripped.load(Ordering::SeqCst));
+        assert_eq!(purge.events.lock().unwrap().len(), 1);
+    }
+
+    /// H3 (sin COM): un veto registra su motivo, corta y niega lo siguiente.
+    #[test]
+    fn un_veto_del_receptor_registra_el_motivo_y_corta_el_lote() {
+        let sb = Sandbox::new();
+        let a = send_item(&sb, "v/a.txt", 10);
+        let b = send_item(&sb, "v/b.txt", 10);
+        let core = core_for(&[a.clone(), b.clone()], true);
+        let os = |p: &Path| p.as_os_str().to_os_string();
+        std::fs::rename(sb.path("v/a.txt"), sb.path("v/a-ori.txt")).unwrap();
+        sb.write("v/a.txt", 10);
+        assert!(!core.pre_delete(os(&a.path)), "el sustituto se veta");
+        let vetoes = core.state.vetoes.lock().unwrap().clone();
+        assert_eq!(vetoes.len(), 1);
+        assert_eq!(vetoes[0].kind, VetoKind::IdentityMismatch);
+        assert!(core.state.tripped.load(Ordering::SeqCst));
+        assert!(!core.pre_delete(os(&b.path)), "lo siguiente, también");
+    }
+
+    /// S1: las banderas de envío y de purga llevan `FOF_NO_CONNECTED_ELEMENTS` (aprobar `pagina.html` no puede arrastrar
+    /// `pagina_files\`), y el envío conserva las que lo hacen recuperable y sin diálogos.
+    #[test]
+    fn las_banderas_de_envio_y_de_purga_excluyen_los_elementos_conectados() {
+        let has = |f: FILEOPERATION_FLAGS, x: FILEOPERATION_FLAGS| f.0 & x.0 == x.0;
+        let send = send_flags(RecycleMode::Normal);
+        for flag in [
+            FOF_NO_CONNECTED_ELEMENTS,
+            FOF_NO_UI,
+            FOF_ALLOWUNDO,
+            FOFX_RECYCLEONDELETE,
+        ] {
+            assert!(has(send, flag), "{flag:?}");
+        }
+        assert!(has(
+            send_flags(RecycleMode::WithNukeWarning),
+            FOF_NO_CONNECTED_ELEMENTS
+        ));
+        let purge = purge_flags();
+        assert!(has(purge, FOF_NO_CONNECTED_ELEMENTS) && has(purge, FOF_NO_UI));
+        // Y nunca la bandera que se cuelga con FOF_NO_UI.
+        assert!(!has(send, FOF_WANTNUKEWARNING) && !has(purge, FOF_WANTNUKEWARNING));
+    }
+
+    /// S1 con la shell REAL: enviar `pagina.html` no arrastra su carpeta `pagina_files\`. Solo elementos propios.
+    #[test]
+    fn enviar_pagina_html_no_arrastra_su_carpeta_pagina_files() {
+        let _lock = bin_lock();
+        if !bin_usable() {
+            return;
+        }
+        let before = ids();
+        let sb = Sandbox::new();
+        let _guard = BinGuard { uuid: sb.uuid() };
+        sb.write("w/pagina.html", 1_000);
+        sb.write("w/pagina_files/imagen.png", 2_000);
+        let r = recycle_paths(
+            &send_items(&[sb.long("w/pagina.html")]),
+            RecycleMode::Normal,
+        )
+        .unwrap();
+        assert!(r.error.is_none() && !r.any_aborted, "{r:?}");
+        assert!(!sb.path("w/pagina.html").exists(), "el aprobado se fue");
+        assert!(
+            sb.path("w/pagina_files/imagen.png").exists(),
+            "el elemento conectado NO se aprobó y no debe irse"
+        );
+        let mine: Vec<BinItem> = list_bin()
+            .unwrap()
+            .into_iter()
+            .filter(|i| is_mine(i, &sb.uuid()))
+            .collect();
+        assert_eq!(mine.len(), 1, "{mine:?}");
+        purge_items(&mine, &AtomicBool::new(false)).unwrap();
+        assert_eq!(ids(), before);
+    }
+
+    /// M2 con la shell REAL: un archivo disperso enorme (no cabe en ninguna Papelera) EN PRIMER LUGAR de un lote con dos
+    /// archivos pequeños. La shell lo elimina definitivamente; el receptor registra el evento y devuelve `E_ABORT`, y los
+    /// dos pequeños NO se procesan: siguen en su sitio y no están en la Papelera. Solo elementos propios.
+    #[test]
+    fn con_la_shell_real_el_primer_borrado_inesperado_no_arrastra_al_resto_del_lote() {
+        let _lock = bin_lock();
+        if !bin_usable() {
+            return;
+        }
+        let before = ids();
+        let sb = Sandbox::new();
+        let _guard = BinGuard { uuid: sb.uuid() };
+        let total = tesela_scanner::volume_space(&sb.long_root())
+            .map(|v| v.total)
+            .unwrap_or(1 << 40);
+        let len = total.saturating_mul(2).max(1 << 40);
+        let big = sb.path("m/a-enorme.bin");
+        std::fs::create_dir_all(big.parent().unwrap()).unwrap();
+        sparse_file(&big, len);
+        sb.write("m/b.txt", 500);
+        sb.write("m/c.txt", 500);
+        let paths = vec![
+            sb.long("m/a-enorme.bin"),
+            sb.long("m/b.txt"),
+            sb.long("m/c.txt"),
+        ];
+        let r = recycle_paths(&send_items(&paths), RecycleMode::Normal).unwrap();
+        eprintln!(
+            "lote con un disperso enorme primero: eventos = {:?}, abortado = {}, sink_aborted = {}, error = {:?}",
+            r.events, r.any_aborted, r.sink_aborted, r.error
+        );
+        let ev = r.events.first().expect("la shell avisa de lo que elimina");
+        assert!(ev.succeeded() && ev.state == BinState::Deleted, "{ev:?}");
+        assert!(r.sink_aborted, "el receptor cortó el lote");
+        assert_eq!(r.events.len(), 1, "nada más se procesó: {:?}", r.events);
+        assert!(
+            !paths[0].exists(),
+            "el enorme se eliminó (evento registrado)"
+        );
+        assert!(
+            paths[1].exists() && paths[2].exists(),
+            "los demás siguen en su sitio"
+        );
+        let in_bin = list_bin()
+            .unwrap()
+            .into_iter()
+            .filter(|i| is_mine(i, &sb.uuid()))
+            .count();
+        assert_eq!(in_bin, 0, "ninguno llegó a la Papelera");
+        assert_eq!(ids(), before);
+    }
+
+    /// M1 con la shell REAL: se aprueba `b.txt`, y ANTES de entregarlo a la shell se renombra y se pone otro archivo con el
+    /// mismo nombre (sustituto). `PreDeleteItem` compara la identidad, la encuentra distinta y devuelve `E_ABORT`: el
+    /// sustituto NO llega a la Papelera, el lote se corta (el siguiente elemento tampoco se procesa) y consta el veto.
+    #[test]
+    fn con_la_shell_real_un_sustituto_con_el_mismo_nombre_no_se_envia() {
+        let _lock = bin_lock();
+        if !bin_usable() {
+            return;
+        }
+        let before = ids();
+        let sb = Sandbox::new();
+        let _guard = BinGuard { uuid: sb.uuid() };
+        sb.write("s/a.txt", 700);
+        sb.write("s/b.txt", 800);
+        sb.write("s/c.txt", 900);
+        let paths = vec![sb.long("s/a.txt"), sb.long("s/b.txt"), sb.long("s/c.txt")];
+        let items = send_items(&paths);
+        // Tras "aprobar": el aprobado se aparta y otro archivo ocupa su nombre.
+        std::fs::rename(sb.path("s/b.txt"), sb.path("s/b-original.txt")).unwrap();
+        sb.write("s/b.txt", 800);
+        let r = recycle_paths(&items, RecycleMode::Normal).unwrap();
+        eprintln!(
+            "sustituto: eventos = {:?}, vetos = {:?}, sink_aborted = {}",
+            r.events, r.vetoed, r.sink_aborted
+        );
+        assert!(r.sink_aborted, "el receptor cortó el lote");
+        assert_eq!(r.vetoed.len(), 1, "{:?}", r.vetoed);
+        assert_eq!(r.vetoed[0].kind, VetoKind::IdentityMismatch);
+        assert_eq!(
+            PathKey::new(Path::new(&r.vetoed[0].item)),
+            PathKey::new(&paths[1])
+        );
+        // El sustituto sigue en su sitio, el original apartado también, y `c.txt` no se procesó.
+        assert!(sb.path("s/b.txt").exists() && sb.path("s/b-original.txt").exists());
+        assert!(
+            sb.path("s/c.txt").exists(),
+            "el resto del lote no se procesó"
+        );
+        // Lo único que pudo llegar a la Papelera es `a.txt` (se procesó antes del veto), y está verificado.
+        let mine: Vec<BinItem> = list_bin()
+            .unwrap()
+            .into_iter()
+            .filter(|i| is_mine(i, &sb.uuid()))
+            .collect();
+        assert!(
+            mine.iter().all(|i| i.name != "b.txt" && i.name != "c.txt"),
+            "{mine:?}"
+        );
+        purge_items(&mine, &AtomicBool::new(false)).unwrap();
         assert_eq!(ids(), before);
     }
 
@@ -1158,7 +2121,7 @@ mod tests {
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
         sparse_file(&p, len);
         let lp = sb.long("n/enorme-normal.bin");
-        let res = recycle_paths(std::slice::from_ref(&lp), RecycleMode::Normal);
+        let res = recycle_paths(&send_items(std::slice::from_ref(&lp)), RecycleMode::Normal);
         let f = fate(&lp, &list_bin().unwrap(), &sb.uuid());
         let out = res.as_ref().expect("la llamada vuelve");
         eprintln!(
@@ -1174,6 +2137,8 @@ mod tests {
             Fate::GoneNotInBin => {
                 let ev = ev.expect("la shell avisa de lo que elimina");
                 assert!(ev.succeeded() && ev.state == BinState::Deleted, "{ev:?}");
+                // M2: el receptor registró el evento y CORTÓ el lote (devolvió E_ABORT tras `PostDeleteItem`).
+                assert!(out.sink_aborted, "el receptor debe cortar el lote: {out:?}");
             }
             Fate::InBin => {
                 let ev = ev.expect("la shell avisa de lo que envía");
@@ -1246,6 +2211,6 @@ mod tests {
         // Solo actúa sobre un archivo de la propia prueba, dentro de su carpeta temporal.
         let s = p.to_string_lossy().to_lowercase();
         assert!(s.contains("tesela-test-") && s.ends_with("enorme-nukewarning.bin"));
-        let _ = recycle_paths(&[p], RecycleMode::WithNukeWarning);
+        let _ = recycle_paths(&send_items(&[p]), RecycleMode::WithNukeWarning);
     }
 }

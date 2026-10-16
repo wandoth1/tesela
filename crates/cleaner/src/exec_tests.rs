@@ -32,6 +32,7 @@ fn cleaner_for(sb: &Sandbox) -> Cleaner {
             roaming_appdata: Some(sb.long("Roaming")),
         },
         downloads: None,
+        startup_rejections: Vec::new(),
         protection: ProtectionRoots {
             denied: vec![sb.long("Local/Google/Chrome/User Data"), sb.long("Prot")],
             untouchable: vec![sb.long("Local"), sb.long("Roaming")],
@@ -49,6 +50,20 @@ fn cancel() -> Arc<AtomicBool> {
     Arc::new(AtomicBool::new(false))
 }
 
+/// Un registro de prueba para `c`: en su carpeta de datos (dentro del sandbox) o, si no tiene, en una carpeta propia de
+/// la prueba que `exec` borra al terminar.
+fn log_for(c: &Cleaner) -> (Arc<LogWriter>, Option<PathBuf>) {
+    match c.data_dir.clone() {
+        Some(d) => (Arc::new(LogWriter::create(&d, false).unwrap()), None),
+        None => {
+            let d = std::env::temp_dir().join(format!("tesela-test-log-{}", uuid::Uuid::new_v4()));
+            (Arc::new(LogWriter::create(&d, false).unwrap()), Some(d))
+        }
+    }
+}
+
+/// Ejecuta el plan. Sin registro explícito, una ejecución REAL usa uno de prueba (M4: sin registro no se limpia; la
+/// simulación sí puede ir sin él).
 fn exec(
     c: &Cleaner,
     plan: &Plan,
@@ -56,7 +71,14 @@ fn exec(
     allow_unfit: bool,
     log: Option<Arc<LogWriter>>,
 ) -> Result<Report, ExecError> {
-    c.execute(
+    let (log, tmp) = match log {
+        None if !dry => {
+            let (l, tmp) = log_for(c);
+            (Some(l), tmp)
+        }
+        other => (other, None),
+    };
+    let r = c.execute(
         plan,
         &ExecOptions {
             dry_run: dry,
@@ -64,7 +86,11 @@ fn exec(
             log,
         },
         &Progress::new(),
-    )
+    );
+    if let Some(d) = tmp {
+        let _ = fs::remove_dir_all(d);
+    }
+    r
 }
 
 fn approve(c: &Cleaner, b: &Basket) -> Plan {
@@ -346,10 +372,38 @@ fn vaciar_la_papelera_purga_solo_la_lista_capturada() {
             .count(),
         3
     );
-    let rep = exec(&c, &plan, false, false, None).unwrap();
+    let log = Arc::new(LogWriter::create(&sb.path("Tesela"), false).unwrap());
+    let rep = exec(&c, &plan, false, false, Some(log.clone())).unwrap();
     let bin = rep.bin.unwrap();
     assert_eq!((bin.requested, bin.purged, bin.still_there), (2, 2, 0));
     assert!(!bin.failed);
+    // M4: cada elemento purgado consta POR SEPARADO en el registro, tras la intención del trozo; el que entró después no.
+    let text = fs::read_to_string(log.path()).unwrap();
+    let lines: Vec<serde_json::Value> = text
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let begin = lines
+        .iter()
+        .position(|v| v["t"] == "bin-begin")
+        .expect("falta la intención de la purga");
+    let items: Vec<(usize, &serde_json::Value)> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| v["t"] == "bin-item")
+        .collect();
+    assert_eq!(items.len(), 2, "{text}");
+    for (i, v) in &items {
+        assert!(*i > begin);
+        assert_eq!(v["out"], "purged");
+        let path = v["path"].as_str().unwrap();
+        assert!(
+            path.ends_with("uno.txt") || path.ends_with("dos.txt"),
+            "{path}"
+        );
+        assert_eq!(v["bytes"], 2_000);
+    }
+    assert!(!text.contains("tres.txt"));
     let left: Vec<BinItem> = recycle::list_bin()
         .unwrap()
         .into_iter()
@@ -369,6 +423,100 @@ fn vaciar_la_papelera_purga_solo_la_lista_capturada() {
         .map(|i| i.id)
         .collect();
     assert_eq!(foreign, before);
+}
+
+/// M3 + M4 con la Papelera real (solo elementos propios): si la identidad capturada al confirmar de un elemento ya no
+/// cuadra (aquí, falseada en el plan), se SALTA al vaciar: la shell no lo ve, consta como cambiado en el informe y en el
+/// registro, y los demás se purgan.
+#[test]
+fn vaciar_salta_el_elemento_cuya_identidad_cambio_y_lo_deja_en_el_registro() {
+    let _lock = bin_lock();
+    if !bin_usable() {
+        return;
+    }
+    let before = ids();
+    let sb = Sandbox::new();
+    let _guard = BinGuard { uuid: sb.uuid() };
+    let c = cleaner_for(&sb);
+    for n in ["uno.txt", "dos.txt"] {
+        sb.write(&format!("Docs/{n}"), 2_000);
+    }
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/uno.txt"), c.protection());
+    b.add_path(sb.long("Docs/dos.txt"), c.protection());
+    exec(&c, &approve(&c, &b), false, false, None).unwrap();
+    let mut v = Basket::new();
+    v.set_empty_bin(true);
+    let mut plan = c.approve(&v, &ApproveOptions::default(), &cancel());
+    let bp = plan.bin.as_mut().unwrap();
+    assert_eq!(bp.items.len(), 2);
+    // Falsear la identidad del `$R` del primero: ya no es lo que se aprobó.
+    bp.items[0].data_id = Some(FileIdentity {
+        volume_serial: 1,
+        file_id: 2,
+    });
+    let skipped_name = bp.items[0].original_path();
+    let log = Arc::new(LogWriter::create(&sb.path("Tesela"), false).unwrap());
+    let rep = exec(&c, &plan, false, false, Some(log.clone())).unwrap();
+    let bin = rep.bin.unwrap();
+    assert_eq!(
+        (bin.requested, bin.purged, bin.still_there, bin.changed),
+        (2, 1, 1, 1)
+    );
+    let text = fs::read_to_string(log.path()).unwrap();
+    let changed_lines = text
+        .lines()
+        .filter(|l| l.contains("\"bin-item\"") && l.contains("\"changed\""))
+        .count();
+    assert_eq!(changed_lines, 1, "{text}");
+    assert!(text.contains("\"purged\""));
+    let left: Vec<BinItem> = recycle::list_bin()
+        .unwrap()
+        .into_iter()
+        .filter(|i| is_mine(i, &sb.uuid()))
+        .collect();
+    assert_eq!(left.len(), 1, "{left:?}");
+    assert_eq!(left[0].original_path(), skipped_name);
+    recycle::purge_items(&left, &AtomicBool::new(false)).unwrap();
+    assert_eq!(ids(), before);
+}
+
+/// M4 con la Papelera real (solo un elemento propio): si no se puede escribir la intención `bin-begin` del trozo, la shell NO
+/// llega a ver ese trozo: nada se purga (`purged = 0`), el elemento sigue en la Papelera y el informe dice `log_failed`.
+#[test]
+fn un_error_de_escritura_en_bin_begin_impide_que_la_shell_vea_el_trozo() {
+    let _lock = bin_lock();
+    if !bin_usable() {
+        return;
+    }
+    let before = ids();
+    let sb = Sandbox::new();
+    let _guard = BinGuard { uuid: sb.uuid() };
+    let c = cleaner_for(&sb);
+    sb.write("Docs/uno.txt", 2_000);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/uno.txt"), c.protection());
+    exec(&c, &approve(&c, &b), false, false, None).unwrap();
+    let mut v = Basket::new();
+    v.set_empty_bin(true);
+    let plan = c.approve(&v, &ApproveOptions::default(), &cancel());
+    assert_eq!(plan.bin.as_ref().unwrap().items.len(), 1);
+    // El presupuesto cubre la línea de arranque pero no la intención `bin-begin`.
+    let log = Arc::new(LogWriter::create_failing_after(&sb.path("L"), false, 80).unwrap());
+    let rep = exec(&c, &plan, false, false, Some(log.clone())).unwrap();
+    let bin = rep.bin.unwrap();
+    assert_eq!((bin.requested, bin.purged, bin.still_there), (1, 0, 1));
+    assert!(rep.log_failed, "{rep:?}");
+    assert!(!log.ok());
+    let left: Vec<BinItem> = recycle::list_bin()
+        .unwrap()
+        .into_iter()
+        .filter(|i| is_mine(i, &sb.uuid()))
+        .collect();
+    assert_eq!(left.len(), 1, "el elemento sigue en la Papelera: {left:?}");
+    assert!(PathBuf::from(&left[0].id).exists());
+    recycle::purge_items(&left, &AtomicBool::new(false)).unwrap();
+    assert_eq!(ids(), before);
 }
 
 #[test]
@@ -793,7 +941,14 @@ fn cancelar_antes_de_empezar_no_toca_nada() {
     let progress = Progress::new();
     progress.cancel();
     let rep = c
-        .execute(&plan, &ExecOptions::default(), &progress)
+        .execute(
+            &plan,
+            &ExecOptions {
+                log: Some(log_for(&c).0),
+                ..ExecOptions::default()
+            },
+            &progress,
+        )
         .unwrap();
     assert!(rep.cancelled);
     assert!(sb.path("Temp/a.tmp").exists() && sb.path("Docs/b.txt").exists());
@@ -880,6 +1035,7 @@ fn la_propia_aplicacion_dentro_del_temporal_nunca_se_borra() {
         windows_temp: None,
         browser: BrowserRoots::default(),
         downloads: None,
+        startup_rejections: Vec::new(),
         protection: ProtectionRoots {
             denied: vec![sb.long("Temp/app")],
             untouchable: vec![],
@@ -908,6 +1064,333 @@ fn la_propia_aplicacion_dentro_del_temporal_nunca_se_borra() {
     let mut b2 = Basket::new();
     b2.add_path(sb.long("Temp/app"), c.protection());
     assert!(approve(&c, &b2).items.is_empty());
+}
+
+/// Roots de prueba con una carpeta "protegida" (`Prot`), SIN canonicalizar `Local`/`Temp` (un junction en sus ancestros
+/// se verá en la cadena tal como se escribió).
+fn roots_with_raw(sb: &Sandbox, local: PathBuf, user_temp: Option<PathBuf>) -> Roots {
+    sb.mkdir("Roaming");
+    Roots {
+        user_temp,
+        windows_temp: None,
+        browser: BrowserRoots {
+            local_appdata: Some(local.clone()),
+            roaming_appdata: Some(sb.long("Roaming")),
+        },
+        downloads: None,
+        startup_rejections: Vec::new(),
+        protection: ProtectionRoots {
+            denied: vec![sb.long("Prot"), local.join(r"Google\Chrome\User Data")],
+            untouchable: vec![sb.long("Roaming")],
+            content_roots: vec![],
+            exempt: vec![],
+        },
+    }
+}
+
+/// B1 (v0.1.1): un junction ANCESTRO de la raíz de una categoría (`User Data` -> una carpeta protegida con un
+/// `ShaderCache`) no convierte lo protegido en caché borrable: la raíz se descarta (capa 1) y, aunque se aceptara, la
+/// exención solo levanta su zona declarada (capa 2). Nada de lo protegido se toca ni en simulación ni de verdad.
+#[test]
+fn un_junction_por_encima_de_user_data_no_vuelve_borrable_lo_protegido() {
+    let mut sb = Sandbox::new();
+    sb.write_aged("Prot/UD/ShaderCache/s.bin", 4_000, 72);
+    sb.write_aged("Prot/UD/GrShaderCache/g.bin", 3_000, 72);
+    sb.write_aged("Prot/UD/Default/Cache/c.bin", 2_000, 72);
+    sb.write_aged("Prot/UD/Cookies", 100, 72);
+    sb.mkdir("Local/Google/Chrome");
+    sb.junction("Local/Google/Chrome/User Data", "Prot/UD");
+    let roots = roots_with_raw(&sb, sb.path("Local"), None);
+    let c = Cleaner::new(roots);
+    // El escáner ve las cachés a través del enlace, pero ninguna pasa la cadena.
+    let checks = c.roots().category_root_checks(CategoryId::ChromeCache);
+    assert!(
+        !checks.is_empty(),
+        "el escáner las lista a través del junction"
+    );
+    for ck in &checks {
+        assert!(
+            matches!(
+                &ck.result,
+                Err(crate::roots::RootRejection::ReparseInChain { component })
+                    if component == "User Data"
+            ),
+            "{:?}",
+            ck.result
+        );
+    }
+    assert!(c.roots().category_roots(CategoryId::ChromeCache).is_empty());
+    // Lo protegido, por su ruta real, sigue denegado.
+    for rel in [
+        "Prot/UD/ShaderCache",
+        "Prot/UD/ShaderCache/s.bin",
+        "Prot/UD/Default/Cache",
+    ] {
+        assert_eq!(
+            c.protection()
+                .target_verdict(&crate::paths::PathKey::new(&sb.long(rel))),
+            Verdict::Denied,
+            "{rel}"
+        );
+    }
+    // Aprobar y ejecutar (simulación y real): no hay elementos, todo queda en su sitio.
+    let mut b = Basket::new();
+    b.set_category(CategoryId::ChromeCache, true);
+    let plan = approve(&c, &b);
+    assert!(plan.items.is_empty(), "{:?}", plan.items.len());
+    assert!(!plan.rejected.is_empty());
+    assert!(
+        plan.rejected
+            .iter()
+            .all(|r| r.reason == RejectReason::ReparseAncestor),
+        "{:?}",
+        plan.rejected
+    );
+    exec(&c, &plan, true, false, None).unwrap();
+    exec(&c, &plan, false, false, None).unwrap();
+    for rel in [
+        "Prot/UD/ShaderCache/s.bin",
+        "Prot/UD/GrShaderCache/g.bin",
+        "Prot/UD/Default/Cache/c.bin",
+        "Prot/UD/Cookies",
+    ] {
+        assert!(sb.path(rel).exists(), "{rel}");
+    }
+}
+
+/// H4: una raíz descartada por un enlace en su ruta no desaparece en silencio: `unavailable_roots` da el motivo (lo que la
+/// interfaz enseña como "no disponible"), las raíces descartadas al arrancar también se devuelven, y el registro de la
+/// ejecución anota lo rechazado con su motivo.
+#[test]
+fn una_raiz_descartada_deja_su_motivo_visible_y_en_el_registro() {
+    let mut sb = Sandbox::new();
+    sb.write_aged("Prot/UD/ShaderCache/s.bin", 4_000, 72);
+    sb.mkdir("Local/Google/Chrome");
+    sb.junction("Local/Google/Chrome/User Data", "Prot/UD");
+    let mut roots = roots_with_raw(&sb, sb.path("Local"), None);
+    // Y una raíz que `from_system` descartó al arrancar (p. ej. un %TEMP% redirigido).
+    roots.startup_rejections.push((
+        CategoryId::UserTemp,
+        sb.path("Redirigida"),
+        crate::roots::RootRejection::OutsideLocalAppData,
+    ));
+    let c = Cleaner::new(roots);
+    let un = c.roots().unavailable_roots(CategoryId::ChromeCache);
+    assert!(!un.is_empty());
+    assert!(un.iter().all(|(_, why)| matches!(
+        why,
+        crate::roots::RootRejection::ReparseInChain { component } if component == "User Data"
+    )));
+    let temp = c.roots().unavailable_roots(CategoryId::UserTemp);
+    assert_eq!(temp.len(), 1);
+    assert_eq!(temp[0].1, crate::roots::RootRejection::OutsideLocalAppData);
+    // Lo que no es de seguridad (no existe, sin permiso) no se enseña como "no disponible".
+    assert!(
+        !crate::roots::RootRejection::Os(5).is_user_visible()
+            && crate::roots::RootRejection::NotCanonical.is_user_visible()
+    );
+    // La aprobación lo rechaza y el registro lo anota.
+    let mut b = Basket::new();
+    b.set_category(CategoryId::ChromeCache, true);
+    b.set_category(CategoryId::UserTemp, true);
+    let plan = approve(&c, &b);
+    assert!(plan.items.is_empty());
+    // Chrome: un enlace en su ruta; el %TEMP% redirigido: su propio motivo (R5), no "un enlace".
+    assert!(
+        plan.rejected
+            .iter()
+            .filter(|r| r.reason != RejectReason::OutsideLocalAppData)
+            .all(|r| r.reason == RejectReason::ReparseAncestor)
+    );
+    assert_eq!(
+        plan.rejected
+            .iter()
+            .filter(|r| r.reason == RejectReason::OutsideLocalAppData)
+            .count(),
+        1,
+        "{:?}",
+        plan.rejected
+    );
+    let log = Arc::new(LogWriter::create(&sb.path("Tesela"), false).unwrap());
+    exec(&c, &plan, false, false, Some(log.clone())).unwrap();
+    let text = fs::read_to_string(log.path()).unwrap();
+    assert!(
+        text.lines()
+            .any(|l| l.contains("\"rejected\"") && l.contains("ReparseAncestor")),
+        "{text}"
+    );
+}
+
+/// B1 (capa 2, aislada): aunque una raíz "canónica" llegue a `Prot\UD\ShaderCache` por el camino que sea (aquí la capa 1
+/// no se ejecuta: se inyecta la ruta resuelta), la exención de Chrome declara SU zona (`...\User Data`), no `Prot`.
+#[test]
+fn la_exencion_de_una_cache_no_levanta_una_denegacion_ajena() {
+    let sb = Sandbox::new();
+    sb.write_aged("Prot/UD/ShaderCache/s.bin", 4_000, 72);
+    sb.mkdir("Local/Google/Chrome");
+    let local = sb.long("Local");
+    let user_data = local.join(r"Google\Chrome\User Data");
+    let prot = crate::protect::Protection::new(&ProtectionRoots {
+        denied: vec![sb.long("Prot"), user_data.clone()],
+        exempt: vec![crate::protect::Exempt::new(
+            sb.long("Prot/UD/ShaderCache"),
+            Some(user_data),
+        )],
+        ..ProtectionRoots::default()
+    });
+    assert_eq!(
+        prot.target_verdict(&crate::paths::PathKey::new(
+            &sb.long("Prot/UD/ShaderCache/s.bin")
+        )),
+        Verdict::Denied
+    );
+}
+
+/// B1 (v0.1.1), mismo agujero con `%TEMP%`: un ancestro de la raíz del temporal es un junction hacia una carpeta
+/// protegida. Con la ruta tal como se escribió se descarta (capa 1); con la ruta ya resuelta (lo que daba `canon`) la
+/// exención de `%TEMP%` no declara zona y la denegación de `Prot` sigue en pie (capa 2).
+#[test]
+fn un_junction_por_encima_de_temp_no_vuelve_borrable_lo_protegido() {
+    let mut sb = Sandbox::new();
+    sb.write_aged("Prot/T/Temp/x.tmp", 3_000, 72);
+    sb.write_aged("Prot/T/Temp/sub/y.tmp", 3_000, 72);
+    sb.junction("Enlace", "Prot/T");
+    // (1) La ruta como la daría `GetTempPath`: pasa por el junction.
+    let c = Cleaner::new(roots_with_raw(
+        &sb,
+        sb.long("Local"),
+        Some(sb.path("Enlace/Temp")),
+    ));
+    assert!(c.roots().category_roots(CategoryId::UserTemp).is_empty());
+    let mut b = Basket::new();
+    b.set_category(CategoryId::UserTemp, true);
+    let plan = approve(&c, &b);
+    assert!(plan.items.is_empty());
+    assert_eq!(plan.rejected.len(), 1);
+    assert_eq!(plan.rejected[0].reason, RejectReason::ReparseAncestor);
+    exec(&c, &plan, false, false, None).unwrap();
+    assert!(sb.path("Prot/T/Temp/x.tmp").exists());
+    // (2) Ya resuelta: la cadena está limpia, pero la raíz cae dentro de `Prot` (denegada) y nada la levanta.
+    let c2 = Cleaner::new(roots_with_raw(
+        &sb,
+        sb.long("Local"),
+        Some(sb.long("Prot/T/Temp")),
+    ));
+    let plan2 = approve(&c2, &b);
+    assert!(plan2.items.is_empty(), "{:?}", plan2.items.len());
+    assert_eq!(
+        plan2.rejected[0].reason,
+        RejectReason::Protected(Verdict::Denied)
+    );
+    exec(&c2, &plan2, false, false, None).unwrap();
+    assert!(sb.path("Prot/T/Temp/x.tmp").exists());
+    assert!(sb.path("Prot/T/Temp/sub/y.tmp").exists());
+}
+
+/// H1: la aprobación abre la raíz para listarla DESPUÉS de comprobar la cadena. Si en esa ventana un ancestro se cambia
+/// por un junction hacia otra carpeta del usuario (no denegada), lo que se abriría sería otro objeto, y la identidad
+/// capturada ya sería la equivocada. Se compara con la identidad que vio el recorrido y con la ruta resuelta: se rechaza.
+#[test]
+fn un_ancestro_cambiado_entre_la_cadena_y_la_apertura_se_rechaza() {
+    let mut sb = Sandbox::new();
+    sb.write_aged("Anc/Temp/bueno.tmp", 1_000, 72);
+    sb.write_aged("Otra/Temp/ajeno.tmp", 1_000, 72);
+    let roots = roots_with_raw(&sb, sb.long("Local"), Some(sb.path("Anc/Temp")));
+    let c = Cleaner::new(roots);
+    // Justo antes de que la aprobación abra la raíz: `Anc` pasa a ser un junction hacia `Otra`.
+    let (anc, anc_real, otra) = (sb.path("Anc"), sb.path("Anc-real"), sb.path("Otra"));
+    let _hook = crate::engine::test_hooks::install(sb.long("Anc/Temp"), move |_| {
+        if !anc_real.exists() {
+            fs::rename(&anc, &anc_real).unwrap();
+            let out = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&anc)
+                .arg(&otra)
+                .output()
+                .unwrap();
+            assert!(out.status.success());
+        }
+    });
+    let mut b = Basket::new();
+    b.set_category(CategoryId::UserTemp, true);
+    let plan = approve(&c, &b);
+    sb.register_junction("Anc");
+    assert!(
+        plan.items.is_empty(),
+        "se aprobó el objeto equivocado: {:?}",
+        plan.items.iter().map(|i| &i.path).collect::<Vec<_>>()
+    );
+    assert_eq!(plan.rejected.len(), 1, "{:?}", plan.rejected);
+    assert_eq!(plan.rejected[0].reason, RejectReason::ReparseAncestor);
+    assert!(sb.path("Otra/Temp/ajeno.tmp").exists());
+}
+
+/// H1 (pura): misma identidad y misma ruta resuelta, o no es lo que vio la cadena.
+#[test]
+fn chain_matches_exige_la_misma_identidad_y_la_misma_ruta() {
+    use crate::paths::PathKey;
+    let id = |n: u128| FileIdentity {
+        volume_serial: 7,
+        file_id: n,
+    };
+    let root = Path::new(r"C:\Users\<usuario>\AppData\Local\Temp");
+    let key = PathKey::new(root);
+    assert!(crate::plan::chain_matches(id(1), root, id(1), &key));
+    assert!(!crate::plan::chain_matches(id(1), root, id(2), &key));
+    let otra = PathKey::new(Path::new(r"C:\Otra\Temp"));
+    assert!(!crate::plan::chain_matches(id(1), root, id(1), &otra));
+    // El volumen también cuenta.
+    let otro_vol = FileIdentity {
+        volume_serial: 8,
+        file_id: 1,
+    };
+    assert!(!crate::plan::chain_matches(id(1), root, otro_vol, &key));
+}
+
+/// B1: el caso benigno: raíces reales, sin reparse points, siguen funcionando y llevan la zona declarada.
+#[test]
+fn las_raices_sin_reparse_points_siguen_siendo_categorias() {
+    let sb = Sandbox::new();
+    sb.mkdir("Temp");
+    sb.mkdir("Local/Google/Chrome/User Data/Default/Cache");
+    sb.mkdir("Local/Mozilla/Firefox/Profiles/p1/cache2");
+    let mut roots = roots_with_raw(&sb, sb.long("Local"), Some(sb.long("Temp")));
+    roots
+        .protection
+        .denied
+        .push(sb.long("Local/Mozilla/Firefox"));
+    let c = Cleaner::new(roots);
+    for id in [
+        CategoryId::UserTemp,
+        CategoryId::ChromeCache,
+        CategoryId::FirefoxCache,
+    ] {
+        let cks = c.roots().category_root_checks(id);
+        assert_eq!(cks.len(), 1, "{id:?}");
+        assert!(cks[0].result.is_ok(), "{id:?}: {:?}", cks[0].result);
+    }
+    let chrome = c.roots().category_root_checks(CategoryId::ChromeCache);
+    let v = chrome[0].result.as_ref().unwrap();
+    assert_eq!(
+        v.path,
+        sb.long("Local/Google/Chrome/User Data/Default/Cache")
+    );
+    assert_eq!(
+        v.zone.as_deref(),
+        Some(sb.long("Local/Google/Chrome/User Data").as_path())
+    );
+    assert_eq!(
+        c.protection()
+            .target_verdict(&crate::paths::PathKey::new(&v.path.join("f_000001"))),
+        Verdict::Allowed
+    );
+    let mut b = Basket::new();
+    b.set_category(CategoryId::ChromeCache, true);
+    b.set_category(CategoryId::FirefoxCache, true);
+    b.set_category(CategoryId::UserTemp, true);
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 3, "{:?}", plan.rejected);
+    assert!(plan.rejected.is_empty());
 }
 
 // ---- El receptor de eventos: identidad (no nombre), carreras tras soltar el handle, y el juicio por elemento ----------
@@ -972,11 +1455,13 @@ fn lnk_url_y_extensiones_conocidas_se_verifican_por_identidad() {
     assert_eq!(ids(), before);
 }
 
-/// Carrera: tras SOLTAR el handle y antes de que la shell abra el elemento, el mismo usuario lo sustituye por otro
-/// objeto del mismo nombre y tamaño. La shell manda el sustituto a la Papelera, el receptor lo ve (identidad distinta) y se
-/// informa; el original no se toca.
+/// Carrera (M1): tras SOLTAR el handle y antes de que la shell abra el elemento, el mismo usuario lo sustituye por otro
+/// objeto del mismo nombre y tamaño. `PreDeleteItem` compara la IDENTIDAD con la aprobada, ve otra y devuelve `E_ABORT`:
+/// el sustituto NO se envía (queda en su sitio), el original aprobado tampoco se toca, el elemento consta como "cambió
+/// desde la confirmación" y el lote se corta (lo que venía detrás no se procesa). Antes de M1 el sustituto llegaba a la
+/// Papelera (`RecycledOther`, recuperable).
 #[test]
-fn sustituir_tras_soltar_el_handle_manda_otro_objeto_a_la_papelera_y_se_informa() {
+fn sustituir_tras_soltar_el_handle_no_envia_el_sustituto_y_corta_el_lote() {
     let _lock = bin_lock();
     if !bin_usable() {
         return;
@@ -1003,31 +1488,81 @@ fn sustituir_tras_soltar_el_handle_manda_otro_objeto_a_la_papelera_y_se_informa(
     });
     let rep = exec(&c, &plan, false, false, None).unwrap();
     let st = |n: &str| rep.items.iter().find(|i| i.path.ends_with(n)).unwrap();
-    assert_eq!(st("foto.jpg").status, ItemStatus::RecycledOther);
+    assert_eq!(
+        st("foto.jpg").status,
+        ItemStatus::Root(crate::engine::RootStatus::Changed)
+    );
     assert!(
         st("foto.jpg").removed.is_empty(),
         "el árbol no se actualiza con lo que no es lo aprobado"
     );
-    assert_eq!(st("otro.jpg").status, ItemStatus::Recycled);
-    assert_eq!((rep.recycled_other, rep.unverified), (1, 0));
-    assert!(moved.exists(), "el original aprobado no se toca");
-    assert!(
-        !orig.exists(),
-        "el sustituto está en la Papelera (recuperable)"
-    );
     assert_eq!(
-        rep.recycled_bytes,
-        st("otro.jpg").stats.bytes,
-        "solo lo verificado cuenta como movido"
+        st("otro.jpg").status,
+        ItemStatus::NotRecycled(RecycleFail::Stopped)
     );
+    assert!(rep.recycle_stopped);
+    assert_eq!(rep.stop_reason, Some(StopReason::Changed));
+    assert_eq!((rep.recycled_other, rep.unverified), (0, 0));
+    assert!(rep.totals.changed >= 1);
+    assert!(moved.exists(), "el original aprobado no se toca");
+    assert!(orig.exists(), "el sustituto NO se envió: sigue en su sitio");
+    assert!(sb.path("Docs/otro.jpg").exists());
+    assert_eq!(rep.recycled_bytes, 0);
     let mine: Vec<BinItem> = recycle::list_bin()
         .unwrap()
         .into_iter()
         .filter(|i| is_mine(i, &sb.uuid()))
         .collect();
-    assert_eq!(mine.len(), 2, "{mine:?}");
-    recycle::purge_items(&mine, &AtomicBool::new(false)).unwrap();
+    assert_eq!(mine.len(), 0, "nada llegó a la Papelera: {mine:?}");
     assert_eq!(ids(), before);
+}
+
+/// M1 con la shell SIMULADA (no toca la Papelera real): lo mismo que la prueba anterior, con la comprobación de identidad
+/// del receptor emulada por la shell simulada.
+#[test]
+fn con_la_shell_simulada_el_sustituto_se_veta_y_el_resto_del_lote_no_se_procesa() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    let plan = plan_de(
+        &sb,
+        &c,
+        &[
+            ("a.txt", 100, 100),
+            ("b.txt", 100, 100),
+            ("c.txt", 100, 100),
+        ],
+    );
+    let (orig, moved) = (sb.path("Docs/b.txt"), sb.path("Docs/b-original.txt"));
+    let _hook = crate::engine::test_hooks::install_before_shell(sb.long("Docs"), {
+        let (orig, moved) = (orig.clone(), moved.clone());
+        move |p| {
+            if p.ends_with("b.txt") {
+                fs::rename(&orig, &moved).unwrap();
+                fs::write(&orig, vec![7u8; 100]).unwrap();
+            }
+        }
+    });
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    let st = |n: &str| {
+        rep.items
+            .iter()
+            .find(|i| i.path.ends_with(n))
+            .unwrap()
+            .status
+    };
+    // `a` se procesó antes del veto; `b` (sustituido) cambió; `c`, detrás en el lote, no se procesó.
+    assert_eq!(st("a.txt"), ItemStatus::Recycled);
+    assert_eq!(
+        st("b.txt"),
+        ItemStatus::Root(crate::engine::RootStatus::Changed)
+    );
+    assert_eq!(st("c.txt"), ItemStatus::NotRecycled(RecycleFail::Stopped));
+    assert!(orig.exists() && moved.exists() && sb.path("Docs/c.txt").exists());
+    assert!(rep.recycle_stopped);
+    assert_eq!(rep.stop_reason, Some(StopReason::Changed));
+    assert_eq!(rep.stopped_items, 1);
+    assert_eq!(rep.shell_error, None);
 }
 
 /// M-A: con el handle de GUARDA abierto, cambiar el padre o el abuelo del elemento (para poner un junction hacia otra
@@ -1204,10 +1739,387 @@ fn un_enlace_duro_sustituto_ya_no_da_un_recycled_falso() {
     assert_eq!(ids(), before);
 }
 
+// ---- M4: el registro es condición de la limpieza ------------------------------------------------------------------------
+
+/// M4: sin registro NO hay ninguna acción destructiva (ni definitiva ni a la Papelera ni vaciar): la ejecución real sin
+/// registro, o con uno que ya falló, devuelve `LogRequired` y no toca nada. La simulación sí puede ir sin registro.
+#[test]
+fn sin_registro_no_hay_ninguna_accion_destructiva() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    sb.write_aged("Temp/viejo.tmp", 10_000, 72);
+    sb.write("Docs/b.txt", 1_000);
+    let mut b = Basket::new();
+    b.set_category(CategoryId::UserTemp, true);
+    b.add_path(sb.long("Docs/b.txt"), c.protection());
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 2, "{:?}", plan.rejected);
+    // Sin registro: nada.
+    let opts = ExecOptions::default();
+    assert_eq!(
+        c.execute(&plan, &opts, &Progress::new()).err(),
+        Some(ExecError::LogRequired)
+    );
+    assert!(sb.path("Temp/viejo.tmp").exists() && sb.path("Docs/b.txt").exists());
+    assert!(fake.names().is_empty());
+    // Con un registro que ya falló: tampoco.
+    let failed = Arc::new(
+        LogWriter::create_failing_after(&sb.path("LogMalo"), false, 400).expect("arranca"),
+    );
+    for i in 0..60 {
+        failed.write_note(
+            "x",
+            &format!("relleno largo para agotar el presupuesto {i}"),
+        );
+    }
+    failed.flush();
+    assert!(!failed.ok(), "el registro debería haber fallado");
+    assert_eq!(
+        c.execute(
+            &plan,
+            &ExecOptions {
+                log: Some(failed),
+                ..ExecOptions::default()
+            },
+            &Progress::new()
+        )
+        .err(),
+        Some(ExecError::LogRequired)
+    );
+    assert!(sb.path("Temp/viejo.tmp").exists() && sb.path("Docs/b.txt").exists());
+    // La simulación va sin registro.
+    let dry = exec(&c, &plan, true, false, None).unwrap();
+    assert!(dry.dry_run && !dry.log_failed);
+    assert!(sb.path("Temp/viejo.tmp").exists() && sb.path("Docs/b.txt").exists());
+}
+
+/// H6.8: una ejecución rechazada antes de tocar nada (`NeedsReconfirm`, `LogRequired`) no deja un registro con solo la línea
+/// de arranque ocupando una plaza de la retención.
+#[test]
+fn una_ejecucion_rechazada_no_deja_registro() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    let mut plan = plan_de(&sb, &c, &[("a.txt", 100, 100)]);
+    // El encaje cambió desde la confirmación: lo aprobado dice "no cabe" y ahora cabe.
+    plan.items[0].fit = Fit::Unfit(UnfitReason::TooBig);
+    let log = Arc::new(LogWriter::create(&sb.path("Tesela"), false).unwrap());
+    let path = log.path().to_path_buf();
+    assert!(path.exists());
+    let r = exec(&c, &plan, false, false, Some(log));
+    assert!(matches!(r, Err(ExecError::NeedsReconfirm(_))), "{r:?}");
+    assert!(
+        !path.exists(),
+        "el registro de una ejecución que no se hizo se borra"
+    );
+    assert!(sb.path("Docs/a.txt").exists());
+    // Con un registro ya fallido tampoco queda.
+    let plan2 = plan_de(&sb, &c, &[("b.txt", 100, 100)]);
+    let bad = Arc::new(LogWriter::create_failing_after(&sb.path("Tesela2"), false, 400).unwrap());
+    for i in 0..60 {
+        bad.write_rejected(
+            Path::new("x"),
+            &format!("relleno largo para agotar el presupuesto {i}"),
+        );
+    }
+    bad.flush();
+    assert!(!bad.ok());
+    let bad_path = bad.path().to_path_buf();
+    let r2 = exec(&c, &plan2, false, false, Some(bad));
+    assert_eq!(r2.err(), Some(ExecError::LogRequired));
+    assert!(!bad_path.exists());
+}
+
+/// H5: si el registro llega a su tope y deja de anotar, la limpieza sigue pero el informe lo dice (`log_truncated`).
+#[test]
+fn un_registro_truncado_se_propaga_al_informe() {
+    let sb = Sandbox::new();
+    let c = cleaner_for(&sb);
+    for i in 0..60 {
+        sb.write_aged(&format!("Temp/t{i:02}.tmp"), 100, 72);
+    }
+    let mut b = Basket::new();
+    b.set_category(CategoryId::UserTemp, true);
+    let plan = approve(&c, &b);
+    let log = Arc::new(LogWriter::create(&sb.path("Tesela"), false).unwrap());
+    log.set_max_bytes_for_test(2_000);
+    let rep = exec(&c, &plan, false, false, Some(log.clone())).unwrap();
+    assert!(log.truncated());
+    assert!(
+        rep.log_truncated && !rep.log_failed && !rep.cancelled,
+        "{rep:?}"
+    );
+    assert_eq!(
+        sb.count_entries("Temp"),
+        0,
+        "la limpieza siguió hasta el final"
+    );
+    // Un registro normal no se marca.
+    let sb2 = Sandbox::new();
+    let c2 = cleaner_for(&sb2);
+    sb2.write_aged("Temp/a.tmp", 100, 72);
+    let plan2 = approve(&c2, &b);
+    let rep2 = exec(&c2, &plan2, false, false, None).unwrap();
+    assert!(!rep2.log_truncated);
+}
+
+/// H6.5: la cancelación del usuario y el fallo del registro se informan por separado; ya no se oculta una cancelación real
+/// porque además falló el registro.
+#[test]
+fn la_cancelacion_del_usuario_no_se_oculta_si_ademas_falla_el_registro() {
+    let sb = Sandbox::new();
+    let c = cleaner_for(&sb);
+    sb.write_aged("Temp/a.tmp", 10_000, 72);
+    let mut b = Basket::new();
+    b.set_category(CategoryId::UserTemp, true);
+    let plan = approve(&c, &b);
+    // Cancela el usuario Y el registro falla (la intención no cabe).
+    let log = Arc::new(LogWriter::create_failing_after(&sb.path("L1"), false, 80).unwrap());
+    let progress = Progress::new();
+    progress.cancel();
+    let rep = c
+        .execute(
+            &plan,
+            &ExecOptions {
+                log: Some(log),
+                ..ExecOptions::default()
+            },
+            &progress,
+        )
+        .unwrap();
+    assert!(rep.cancelled, "la cancelación real consta");
+    assert!(sb.path("Temp/a.tmp").exists());
+    // Solo falla el registro: no es una cancelación del usuario.
+    let sb2 = Sandbox::new();
+    let c2 = cleaner_for(&sb2);
+    sb2.write_aged("Temp/a.tmp", 10_000, 72);
+    let plan2 = approve(&c2, &b);
+    let log2 = Arc::new(LogWriter::create_failing_after(&sb2.path("L2"), false, 80).unwrap());
+    let rep2 = exec(&c2, &plan2, false, false, Some(log2)).unwrap();
+    assert!(rep2.log_failed && !rep2.cancelled);
+}
+
+/// R3: la bandera de cancelación ya no es pública: `cancel()` es la única forma de cancelar desde fuera y siempre anota que lo
+/// pidió el usuario.
+#[test]
+fn cancelar_siempre_anota_que_lo_pidio_el_usuario() {
+    let p = Progress::new();
+    assert!(!p.is_cancelled() && !p.user_cancelled());
+    p.cancel();
+    assert!(p.is_cancelled() && p.user_cancelled());
+}
+
+/// R4: un plan con muchos rechazados no infla el registro (tope de notas con una línea final con el resto).
+#[test]
+fn los_rechazados_del_plan_se_anotan_con_tope() {
+    let sb = Sandbox::new();
+    let c = cleaner_for(&sb);
+    sb.write_aged("Temp/a.tmp", 100, 72);
+    let mut b = Basket::new();
+    b.set_category(CategoryId::UserTemp, true);
+    let mut plan = approve(&c, &b);
+    for i in 0..500 {
+        plan.rejected.push(crate::plan::Rejected {
+            path: PathBuf::from(format!("C:/falso/{i}")),
+            reason: RejectReason::Missing,
+        });
+    }
+    let log = Arc::new(LogWriter::create(&sb.path("Tesela"), false).unwrap());
+    exec(&c, &plan, false, false, Some(log.clone())).unwrap();
+    let text = fs::read_to_string(log.path()).unwrap();
+    let n = text.lines().filter(|l| l.contains("\"rejected\"")).count();
+    assert_eq!(n, 201, "200 notas y una línea con el resto");
+    assert!(text.contains("300 más sin anotar"));
+}
+
+/// M4: un registro que no se puede crear es un error (la interfaz no ejecuta nada): aquí, la carpeta de datos es un archivo.
+#[test]
+fn un_registro_que_no_se_puede_crear_es_un_error() {
+    let sb = Sandbox::new();
+    sb.write("Tesela", 10); // un archivo donde debería ir la carpeta
+    assert!(LogWriter::create(&sb.path("Tesela"), false).is_err());
+    assert!(LogWriter::create(&sb.path("Tesela/sub"), false).is_err());
+    // Y uno que falla ya en la línea de arranque.
+    assert!(LogWriter::create_failing_after(&sb.path("L0"), false, 0).is_err());
+}
+
+/// M4: la INTENCIÓN antes del resultado, para cada operación: el lote que se entrega a la shell lista sus elementos, y el
+/// lote definitivo, sus raíces, ANTES de cualquier resultado.
+#[test]
+fn el_registro_lleva_la_intencion_de_cada_operacion_antes_de_sus_resultados() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    sb.write_aged("Temp/viejo.tmp", 10_000, 72);
+    let mut plan = plan_de(&sb, &c, &[("a.txt", 100, 100), ("b.txt", 100, 100)]);
+    // Más un elemento definitivo (la categoría de temporales).
+    let mut b = Basket::new();
+    b.set_category(CategoryId::UserTemp, true);
+    let perm = approve(&c, &b);
+    plan.items.extend(perm.items.into_iter().map(|mut i| {
+        i.id = 2;
+        i
+    }));
+    let log = Arc::new(LogWriter::create(&sb.path("Tesela"), false).unwrap());
+    exec(&c, &plan, false, false, Some(log.clone())).unwrap();
+    let text = fs::read_to_string(log.path()).unwrap();
+    let lines: Vec<serde_json::Value> = text
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let pos = |kind: &str| lines.iter().position(|v| v["t"] == kind);
+    let (del_begin, rec_begin) = (
+        pos("delete-begin").expect("falta la intención del lote definitivo"),
+        pos("recycle-begin").expect("falta la intención del lote de la Papelera"),
+    );
+    // La intención del lote definitivo, antes de cualquier resultado de sus entradas.
+    let first_entry = pos("entry").expect("hay entradas");
+    assert!(del_begin < first_entry, "{del_begin} < {first_entry}");
+    // La del envío, antes de los resultados `recycle`.
+    let first_recycle = pos("recycle").expect("hay resultados de la Papelera");
+    assert!(rec_begin < first_recycle);
+    // Lista los elementos del lote.
+    let paths = lines[rec_begin]["paths"].as_array().unwrap();
+    let names: Vec<&str> = paths.iter().map(|p| p.as_str().unwrap()).collect();
+    assert!(
+        names.iter().any(|n| n.ends_with("a.txt")) && names.iter().any(|n| n.ends_with("b.txt"))
+    );
+    let roots = lines[del_begin]["paths"].as_array().unwrap();
+    assert!(roots[0].as_str().unwrap().ends_with("Temp"));
+    assert!(pos("delete-end").is_some() && pos("summary").is_some());
+    assert!(log.ok());
+}
+
+/// M4: un error de escritura del registro DETIENE la limpieza en el siguiente punto seguro: si falla la intención del
+/// lote definitivo, no se borra nada; si falla a mitad, el resto no se procesa. El informe lo dice (`log_failed`) y no se
+/// presenta como una cancelación del usuario.
+#[test]
+fn un_error_de_escritura_del_registro_detiene_la_limpieza() {
+    // (1) Falla ya en la intención: no se borra NADA.
+    let sb = Sandbox::new();
+    let c = cleaner_for(&sb);
+    for i in 0..30 {
+        sb.write_aged(&format!("Temp/f{i:02}.tmp"), 1_000, 72);
+    }
+    let mut b = Basket::new();
+    b.set_category(CategoryId::UserTemp, true);
+    let plan = approve(&c, &b);
+    // El presupuesto alcanza para la línea de arranque (≈ 50 bytes) pero no para la intención.
+    let log = Arc::new(LogWriter::create_failing_after(&sb.path("L1"), false, 80).unwrap());
+    let rep = exec(&c, &plan, false, false, Some(log.clone())).unwrap();
+    assert!(rep.log_failed && !rep.cancelled, "{rep:?}");
+    assert!(!log.ok());
+    assert_eq!(sb.count_entries("Temp"), 30, "no se borró nada");
+    assert!(matches!(
+        rep.items[0].status,
+        ItemStatus::Root(crate::engine::RootStatus::Cancelled)
+    ));
+
+    // (2) Falla a mitad (la intención cabe, los resultados por entrada no): se detiene en el siguiente punto seguro, con
+    // trabajo sin hacer.
+    let sb2 = Sandbox::new();
+    let c2 = cleaner_for(&sb2).with_threads(2);
+    for i in 0..400 {
+        sb2.write_aged(&format!("Temp/g{i:03}.tmp"), 100, 72);
+    }
+    let mut b2 = Basket::new();
+    b2.set_category(CategoryId::UserTemp, true);
+    let plan2 = approve(&c2, &b2);
+    let log2 = Arc::new(LogWriter::create_failing_after(&sb2.path("L2"), false, 1_500).unwrap());
+    let rep2 = exec(&c2, &plan2, false, false, Some(log2.clone())).unwrap();
+    assert!(rep2.log_failed && !rep2.cancelled, "{rep2:?}");
+    let left = sb2.count_entries("Temp");
+    assert!(left > 0, "la limpieza debía detenerse antes de terminar");
+    assert!(left < 400, "algo se había hecho antes del fallo: {left}");
+    assert!(log2.error().is_some());
+
+    // (3) Falla la intención del lote de la Papelera: la shell NO ve nada.
+    let sb3 = Sandbox::new();
+    let fake = FakeShell::new(&sb3, Some(1 << 40), 0, "nunca");
+    let c3 = cleaner_for(&sb3).with_shell(fake.clone());
+    let plan3 = plan_de(&sb3, &c3, &[("a.txt", 100, 100), ("b.txt", 100, 100)]);
+    let log3 = Arc::new(LogWriter::create_failing_after(&sb3.path("L3"), false, 80).unwrap());
+    let rep3 = exec(&c3, &plan3, false, false, Some(log3)).unwrap();
+    assert!(rep3.log_failed);
+    assert!(fake.names().is_empty(), "no se entregó nada a la shell");
+    assert!(sb3.path("Docs/a.txt").exists() && sb3.path("Docs/b.txt").exists());
+    for it in &rep3.items {
+        assert_eq!(
+            it.status,
+            ItemStatus::Root(crate::engine::RootStatus::Cancelled)
+        );
+    }
+}
+
+// ---- m1: el número de enlaces aprobado es EXACTO ------------------------------------------------------------------------
+
+/// m1: se aprueba un archivo con 1 enlace y, antes de ejecutar, alguien le añade un segundo nombre (mismo objeto, otra
+/// ruta). Con la misma identidad, antes pasaba; ahora el número de enlaces aprobado es exacto y se rechaza ("cambió desde la
+/// confirmación"), tanto con destino Papelera como definitivo. Ningún nombre se toca.
+#[test]
+fn un_enlace_duro_anadido_tras_la_aprobacion_se_rechaza() {
+    for destination in [Destination::Recycle, Destination::Permanent] {
+        let sb = Sandbox::new();
+        let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+        let c = cleaner_for(&sb).with_shell(fake.clone());
+        sb.write("Docs/x.bin", 6_000);
+        let mut b = Basket::new();
+        b.add_path(sb.long("Docs/x.bin"), c.protection());
+        let mut plan = approve(&c, &b);
+        assert_eq!(plan.items.len(), 1, "{:?}", plan.rejected);
+        assert!(!plan.items[0].hard_linked);
+        plan.items[0].destination = destination;
+        // Después de aprobar: un segundo nombre para el mismo objeto.
+        sb.hard_link("Docs/x.bin", "Docs/x-otro-nombre.bin");
+        let rep = exec(&c, &plan, false, false, None).unwrap();
+        assert_eq!(
+            rep.items[0].status,
+            ItemStatus::Root(crate::engine::RootStatus::Changed),
+            "{destination:?}"
+        );
+        assert!(rep.totals.changed >= 1, "{destination:?}");
+        assert!(rep.items[0].removed.is_empty());
+        assert!(sb.path("Docs/x.bin").exists() && sb.path("Docs/x-otro-nombre.bin").exists());
+        assert!(fake.names().is_empty(), "no llegó a la shell");
+    }
+}
+
+/// m1: lo mismo al revés (se aprueba con 2 enlaces y se quita uno) se rechaza; sin cambios, el elemento con 2 enlaces se
+/// envía con normalidad.
+#[test]
+fn quitar_un_enlace_duro_tras_la_aprobacion_tambien_se_rechaza() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    sb.write("Docs/x.bin", 6_000);
+    sb.hard_link("Docs/x.bin", "Docs/y.bin");
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/x.bin"), c.protection());
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 1);
+    assert!(plan.items[0].hard_linked);
+    // Sin cambios: se envía.
+    let rep_ok = exec(&c, &plan, true, false, None).unwrap();
+    assert_eq!(rep_ok.items[0].status, ItemStatus::WouldRecycle);
+    // Se quita el otro nombre: el número de enlaces ya no es el aprobado.
+    fs::remove_file(sb.path("Docs/y.bin")).unwrap();
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    assert_eq!(
+        rep.items[0].status,
+        ItemStatus::Root(crate::engine::RootStatus::Changed)
+    );
+    assert!(sb.path("Docs/x.bin").exists());
+    assert!(fake.names().is_empty());
+}
+
 // ---- Reparto en operaciones y corte de seguridad (M-C), con una shell SIMULADA ----------------------------------------
 
 /// Una shell simulada: "recicla" moviendo a una carpeta del sandbox y, si en la operación hay un elemento cuyo nombre
-/// contiene `nuke`, ELIMINA todos los de esa operación (así decide la shell real: por operación). Anota las operaciones.
+/// contiene `nuke`, la shell decide por operación que no cabe: ELIMINA el primer elemento (`PostDeleteItem` con
+/// `psiNewlyCreated` nulo) y el receptor de eventos CORTA el lote (M2): los demás no se procesan ni tienen evento. Un
+/// elemento cuyo nombre contiene `unknown` se recicla pero la shell "no dice dónde": también corta el lote. Anota las
+/// operaciones.
 struct FakeShell {
     bin: PathBuf,
     max: Option<u64>,
@@ -1256,8 +2168,10 @@ impl FakeShell {
 }
 
 impl RecycleShell for FakeShell {
-    fn recycle(&self, paths: &[PathBuf]) -> recycle::BatchOutcome {
+    fn recycle(&self, items: &[recycle::SendItem]) -> recycle::BatchOutcome {
         use crate::recycle::{BinState, DeleteEvent};
+        let paths: Vec<PathBuf> = items.iter().map(|i| i.path.clone()).collect();
+        let paths = paths.as_slice();
         self.ops.lock().unwrap().push(paths.to_vec());
         if let Some(hresult) = self.fail {
             return recycle::BatchOutcome {
@@ -1273,10 +2187,43 @@ impl RecycleShell for FakeShell {
                 .is_some_and(|n| n.to_string_lossy().contains(self.nuke))
         });
         let mut events = Vec::new();
+        let mut vetoed = Vec::new();
+        let mut sink_aborted = false;
         for (i, p) in paths.iter().enumerate() {
+            // `PreDeleteItem` (M1): lo que hay ahora en la ruta debe ser el objeto aprobado; si no, veto y se corta el lote.
+            let now = sys::open_for_query(p)
+                .and_then(|h| sys::meta(&h))
+                .map(|m| m.identity);
+            if now.ok() != Some(items[i].identity) {
+                vetoed.push(recycle::Veto {
+                    item: p.clone().into_os_string(),
+                    kind: recycle::VetoKind::IdentityMismatch,
+                });
+                sink_aborted = true;
+                break;
+            }
             let len = fs::metadata(p).map_or(0, |m| m.len());
+            let unknown = p
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().contains("unknown"));
+            let intact = p
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().contains("intacto"));
             let state = if nuke {
-                fs::remove_file(p).unwrap();
+                // La shell borra con la semántica clásica: con el handle de guarda abierto, el nombre queda "pendiente de
+                // borrar" hasta soltarlo (R1). `fs::remove_file` usa semántica POSIX y no lo reproduciría.
+                sys::delete_legacy_for_test(p).unwrap();
+                BinState::Deleted
+            } else if p.is_dir()
+                && p.file_name()
+                    .is_some_and(|n| n.to_string_lossy().contains("parcial"))
+            {
+                // R6: la shell elimina definitivamente UN hijo y notifica "eliminado" de la carpeta, que sigue en su sitio.
+                let child = fs::read_dir(p).unwrap().flatten().next().unwrap().path();
+                sys::delete_legacy_for_test(&child).unwrap();
+                BinState::Deleted
+            } else if intact {
+                // La shell notifica "eliminado" (nulo, con éxito) SIN haber tocado nada (medido con un archivo disperso).
                 BinState::Deleted
             } else {
                 let dest = self.bin.join(format!(
@@ -1286,16 +2233,32 @@ impl RecycleShell for FakeShell {
                 ));
                 fs::rename(p, &dest).unwrap();
                 *self.used.lock().unwrap() += len;
-                BinState::InBin(dest)
+                if unknown {
+                    BinState::InBinUnknownPath
+                } else {
+                    BinState::InBin(dest)
+                }
             };
+            let unsafe_outcome = matches!(state, BinState::Deleted | BinState::InBinUnknownPath);
             events.push(DeleteEvent {
                 item: p.clone().into_os_string(),
                 hr: 0,
                 state,
             });
+            // El receptor registra el evento y DESPUÉS devuelve E_ABORT: la shell no procesa el resto.
+            if unsafe_outcome {
+                sink_aborted = true;
+                break;
+            }
         }
         recycle::BatchOutcome {
             events,
+            sink_aborted,
+            vetoed,
+            error: sink_aborted.then(|| crate::recycle::ShellError {
+                hresult: windows::Win32::Foundation::E_ABORT.0,
+                detail: "cancelado por el receptor".into(),
+            }),
             ..recycle::BatchOutcome::default()
         }
     }
@@ -1307,6 +2270,15 @@ impl RecycleShell for FakeShell {
     }
     fn is_bin_path(&self, p: &Path) -> bool {
         crate::paths::PathKey::new(p).is_same_or_under(&crate::paths::PathKey::new(&self.bin))
+    }
+    /// El encaje no depende del equipo (registro, directivas): cabe salvo que pase del 90 % de la capacidad simulada.
+    fn fit(&self, _path: &Path, bytes: u64) -> Fit {
+        match self.max {
+            Some(max) if (bytes as u128) * 100 > (max as u128) * 90 => {
+                Fit::Unfit(UnfitReason::TooBig)
+            }
+            _ => Fit::Fits,
+        }
     }
 }
 
@@ -1323,7 +2295,7 @@ fn plan_de(sb: &Sandbox, c: &Cleaner, items: &[(&str, usize, u64)]) -> Plan {
     for (it, (_, _, est)) in plan.items.iter_mut().zip(items) {
         it.estimate.bytes = *est;
         it.estimate.logical = *est;
-        it.fit = crate::plan::fit_for(&it.path, *est);
+        it.fit = c.fit(&it.path, *est);
         assert_eq!(it.fit, Fit::Fits);
     }
     plan
@@ -1363,6 +2335,348 @@ fn un_elemento_que_no_cabe_entre_otros_pequenos_nunca_arrastra_a_los_demas_y_cor
     assert_eq!((rep.deleted_unexpectedly, rep.stopped_items), (1, 2));
     // El primero fue en su propia operación (no con el enorme) y el enorme en la suya, y no hubo más.
     assert_eq!(fake.names(), vec![vec!["a.txt"], vec!["enorme.bin"]]);
+}
+
+/// M2: el primer borrado definitivo inesperado de una operación CORTA el lote en curso (el receptor devuelve `E_ABORT`
+/// tras registrar el evento): lo que venía detrás en la MISMA operación no se procesa y sigue en su sitio, y no se envía
+/// nada más. El `E_ABORT` propio no se cuenta como error de la shell.
+#[test]
+fn el_primer_borrado_inesperado_corta_el_lote_en_curso() {
+    let sb = Sandbox::new();
+    // Todos pequeños (van juntos en UNA operación) y uno con nombre `enorme`: la shell decide que la operación no cabe.
+    let fake = FakeShell::new(&sb, Some(10_000), 0, "enorme");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    let plan = plan_de(
+        &sb,
+        &c,
+        &[
+            ("a.txt", 100, 100),
+            ("enorme.bin", 100, 100),
+            ("c.txt", 100, 100),
+        ],
+    );
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    let st = |n: &str| {
+        rep.items
+            .iter()
+            .find(|i| i.path.ends_with(n))
+            .unwrap()
+            .status
+    };
+    assert_eq!(fake.names().len(), 1, "una sola operación");
+    // El primero se eliminó (evento registrado); el resto de la operación NO se procesó y sigue ahí.
+    assert_eq!(st("a.txt"), ItemStatus::DeletedUnexpectedly);
+    assert_eq!(
+        st("enorme.bin"),
+        ItemStatus::NotRecycled(RecycleFail::Stopped)
+    );
+    assert_eq!(st("c.txt"), ItemStatus::NotRecycled(RecycleFail::Stopped));
+    assert!(sb.path("Docs/enorme.bin").exists() && sb.path("Docs/c.txt").exists());
+    assert!(rep.recycle_stopped);
+    assert_eq!(rep.stop_reason, Some(StopReason::DeletedUnexpectedly));
+    assert_eq!((rep.deleted_unexpectedly, rep.stopped_items), (1, 2));
+    assert_eq!(
+        rep.shell_error, None,
+        "el E_ABORT propio no es un error de la shell"
+    );
+}
+
+/// R1 (pura, sin la variable): la shell elimina el archivo con semántica CLÁSICA mientras el handle de guarda sigue abierto;
+/// el nombre queda visible como "pendiente de borrar" (abrirlo da acceso denegado). `judge` decide por OBJETO: es un borrado
+/// definitivo, no "la shell no tocó nada". Un mutante que decida por nombre (`symlink_metadata`) falla aquí.
+#[test]
+fn un_borrado_con_la_guarda_abierta_sigue_siendo_un_borrado_definitivo() {
+    let sb = Sandbox::new();
+    let shell = FakeShell::new(&sb, None, 0, "nunca");
+    let shell: &dyn RecycleShell = shell.as_ref();
+    let f = sb.write("r/borrado.bin", 1_000);
+    let id = {
+        let h = sys::open_for_query(&f).unwrap();
+        sys::meta(&h).unwrap().identity
+    };
+    let p = pending(id, &f, &f);
+    // Antes de borrar: intacto.
+    assert!(untouched_by_shell(&p));
+    // La shell lo borra (semántica clásica) con la guarda aún abierta.
+    sys::delete_legacy_for_test(&f).unwrap();
+    // El NOMBRE sigue visible (esto es lo que engañaba a `symlink_metadata`), abrirlo da acceso denegado y la guarda
+    // dice que está pendiente de borrar.
+    assert!(fs::symlink_metadata(&f).is_ok(), "el nombre sigue visible");
+    assert_eq!(sys::open_for_query(&f).err(), Some(sys::ACCESS_DENIED));
+    assert!(sys::meta(&p.held).unwrap().delete_pending);
+    assert!(!untouched_by_shell(&p));
+    let ev = crate::recycle::DeleteEvent {
+        item: OsString::from(f.as_os_str()),
+        hr: 0x0027_0008,
+        state: crate::recycle::BinState::Deleted,
+    };
+    assert_eq!(
+        judge(&p, Some(&ev), shell, false, false).0,
+        ItemStatus::DeletedUnexpectedly
+    );
+    // Al soltar la guarda, el archivo desaparece de verdad.
+    drop(p);
+    assert!(!f.exists());
+    // Lo mismo con una carpeta vacía borrada con semántica clásica.
+    let d = sb.mkdir("r/carpeta");
+    let did = sys::meta(&sys::open_for_query(&d).unwrap())
+        .unwrap()
+        .identity;
+    let pd = pending(did, &d, &d);
+    assert!(untouched_by_shell(&pd));
+    sys::delete_legacy_for_test(&d).unwrap();
+    assert!(!untouched_by_shell(&pd));
+    let evd = crate::recycle::DeleteEvent {
+        item: OsString::from(d.as_os_str()),
+        hr: 0x0027_0008,
+        state: crate::recycle::BinState::Deleted,
+    };
+    assert_eq!(
+        judge(&pd, Some(&evd), shell, false, false).0,
+        ItemStatus::DeletedUnexpectedly
+    );
+    // Y un elemento sustituido por otro objeto en el mismo nombre (identidad distinta) tampoco es "intacto".
+    let g = sb.write("r/sustituido.bin", 10);
+    let gid = sys::meta(&sys::open_for_query(&g).unwrap())
+        .unwrap()
+        .identity;
+    let pg = pending(gid, &g, &g);
+    fs::rename(&g, sb.path("r/sustituido-ori.bin")).unwrap();
+    sb.write("r/sustituido.bin", 10);
+    assert!(!untouched_by_shell(&pg));
+}
+
+/// R6 (sin la Papelera real): la shell elimina definitivamente UN hijo de una carpeta y notifica "eliminado" de la carpeta, que
+/// sigue en su sitio. El objeto carpeta está intacto, pero lo que contiene no: NO es `ShellDeclined`, es un borrado definitivo
+/// (parcial) y el corte se mantiene. Con la carpeta realmente intacta, sigue siendo `ShellDeclined`.
+#[test]
+fn una_carpeta_que_pierde_hijos_no_es_shell_declined() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    // Una carpeta cuyo nombre hace que la shell simulada borre un hijo, y otra que deja intacta.
+    sb.write("Docs/parcial/a.bin", 3_000);
+    sb.write("Docs/parcial/b.bin", 3_000);
+    sb.write("Docs/intacto/a.bin", 3_000);
+    sb.write("Docs/intacto/b.bin", 3_000);
+    for (name, esperado) in [
+        ("parcial", ItemStatus::DeletedUnexpectedly),
+        ("intacto", ItemStatus::NotRecycled(RecycleFail::Shell(0))),
+    ] {
+        let mut b = Basket::new();
+        b.add_path(sb.long(&format!("Docs/{name}")), c.protection());
+        let plan = approve(&c, &b);
+        assert_eq!(plan.items.len(), 1, "{:?}", plan.rejected);
+        let rep = exec(&c, &plan, false, false, None).unwrap();
+        assert_eq!(rep.items[0].status, esperado, "{name}");
+        assert!(rep.recycle_stopped, "{name}: el corte se mantiene");
+        assert!(sb.path(&format!("Docs/{name}")).exists());
+        if name == "parcial" {
+            assert_eq!(rep.deleted_unexpectedly, 1);
+            assert_eq!(rep.stop_reason, Some(StopReason::DeletedUnexpectedly));
+            assert_eq!(sb.count_entries("Docs/parcial"), 1, "perdió un hijo");
+        } else {
+            assert_eq!(rep.deleted_unexpectedly, 0);
+            assert_eq!(rep.stop_reason, Some(StopReason::ShellDeclined));
+            assert_eq!(sb.count_entries("Docs/intacto"), 2);
+        }
+    }
+}
+
+/// R6 con la shell REAL (solo cosas propias, tras `TESELA_REAL_RECYCLE_TESTS=1`): una carpeta con un disperso enorme (que no
+/// cabe) y archivos pequeños. Se registra qué hace de verdad la shell y se exige el invariante: si el resultado es "la shell
+/// no tocó nada" (`NotRecycled`), todos los hijos siguen; si falta alguno, es `DeletedUnexpectedly`.
+#[test]
+fn con_la_shell_real_una_carpeta_con_un_disperso_enorme_no_pierde_hijos_sin_decirlo() {
+    use crate::exec::{BinRoom, RealShell};
+    let _lock = bin_lock();
+    if !bin_usable() {
+        return;
+    }
+    struct PassShell;
+    impl RecycleShell for PassShell {
+        fn recycle(&self, items: &[recycle::SendItem]) -> recycle::BatchOutcome {
+            RealShell.recycle(items)
+        }
+        fn bin_room(&self, _: &Path) -> BinRoom {
+            BinRoom {
+                max: Some(u64::MAX / 4),
+                used: Some(0),
+            }
+        }
+        fn fit(&self, _: &Path, _: u64) -> Fit {
+            Fit::Fits
+        }
+        fn is_bin_path(&self, p: &Path) -> bool {
+            RealShell.is_bin_path(p)
+        }
+    }
+    let before = ids();
+    let sb = Sandbox::new();
+    let _guard = BinGuard { uuid: sb.uuid() };
+    let c = cleaner_for(&sb).with_shell(Arc::new(PassShell));
+    let total = tesela_scanner::volume_space(&sb.long_root())
+        .map(|v| v.total)
+        .unwrap_or(1 << 40);
+    let len = total.saturating_mul(2).max(1 << 40);
+    sb.write("Docs/carpeta/a-pequeno.bin", 2_000);
+    crate::testutil::sparse_file(&sb.path("Docs/carpeta/b-enorme.bin"), len);
+    sb.write("Docs/carpeta/c-pequeno.bin", 2_000);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/carpeta"), c.protection());
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 1, "{:?}", plan.rejected);
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    let left = if sb.path("Docs/carpeta").exists() {
+        sb.count_entries("Docs/carpeta")
+    } else {
+        0
+    };
+    eprintln!(
+        "carpeta con disperso enorme (shell real): estado = {:?}, hijos que quedan = {left} de 3, recycle_stopped = {}",
+        rep.items[0].status, rep.recycle_stopped
+    );
+    match rep.items[0].status {
+        // La shell dice que no tocó nada: entonces los 3 hijos siguen.
+        ItemStatus::NotRecycled(_) => assert_eq!(left, 3, "faltan hijos sin decirlo"),
+        // Eliminado (entera o parcialmente) o movido a la Papelera: cualquiera es coherente con lo que quedó.
+        ItemStatus::DeletedUnexpectedly | ItemStatus::Recycled | ItemStatus::RecycledOther => {}
+        other => panic!("estado inesperado: {other:?}"),
+    }
+    let mine: Vec<BinItem> = recycle::list_bin()
+        .unwrap()
+        .into_iter()
+        .filter(|i| is_mine(i, &sb.uuid()))
+        .collect();
+    recycle::purge_items(&mine, &AtomicBool::new(false)).unwrap();
+    assert_eq!(ids(), before);
+}
+
+/// R1 con la shell REAL (solo un archivo propio, tras `TESELA_REAL_RECYCLE_TESTS=1`): un archivo disperso del doble del
+/// volumen, que la shell elimina de verdad, llega al `judge` con la guarda abierta y consta como `DeletedUnexpectedly` (no
+/// como "no tocó nada"). La shell real recibe el elemento (una shell envoltorio salta el reparto, que lo habría frenado).
+#[test]
+fn con_la_shell_real_un_disperso_enorme_eliminado_consta_como_borrado_definitivo() {
+    use crate::exec::{BinRoom, RealShell};
+    let _lock = bin_lock();
+    if !bin_usable() {
+        return;
+    }
+    /// La shell real, pero con un reparto que siempre deja pasar y un encaje siempre bueno.
+    struct PassShell;
+    impl RecycleShell for PassShell {
+        fn recycle(&self, items: &[recycle::SendItem]) -> recycle::BatchOutcome {
+            RealShell.recycle(items)
+        }
+        fn bin_room(&self, _: &Path) -> BinRoom {
+            BinRoom {
+                max: Some(u64::MAX / 4),
+                used: Some(0),
+            }
+        }
+        fn fit(&self, _: &Path, _: u64) -> Fit {
+            Fit::Fits
+        }
+        fn is_bin_path(&self, p: &Path) -> bool {
+            RealShell.is_bin_path(p)
+        }
+    }
+    let before = ids();
+    let sb = Sandbox::new();
+    let _guard = BinGuard { uuid: sb.uuid() };
+    let c = cleaner_for(&sb).with_shell(Arc::new(PassShell));
+    let total = tesela_scanner::volume_space(&sb.long_root())
+        .map(|v| v.total)
+        .unwrap_or(1 << 40);
+    let len = total.saturating_mul(2).max(1 << 40);
+    sb.mkdir("Docs");
+    crate::testutil::sparse_file(&sb.path("Docs/enorme.bin"), len);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/enorme.bin"), c.protection());
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 1, "{:?}", plan.rejected);
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    eprintln!("disperso enorme (real): {:?}", rep.items[0].status);
+    assert_eq!(rep.items[0].status, ItemStatus::DeletedUnexpectedly);
+    assert_eq!(rep.deleted_unexpectedly, 1);
+    assert!(rep.recycle_stopped);
+    assert_eq!(rep.stop_reason, Some(StopReason::DeletedUnexpectedly));
+    assert!(
+        !sb.path("Docs/enorme.bin").exists(),
+        "la shell lo eliminó de verdad"
+    );
+    assert_eq!(ids(), before);
+}
+
+/// H2: la shell notifica `psiNewlyCreated` nulo con éxito pero NO tocó el elemento (medido con una carpeta que contiene un
+/// archivo disperso enorme: `hr = 0x00270003` y la carpeta sigue en el disco). No se afirma que se eliminó nada
+/// (`DeletedUnexpectedly` solo si el nombre ya no está), pero el corte de seguridad se mantiene.
+#[test]
+fn una_eliminacion_notificada_sin_tocar_nada_no_se_cuenta_como_borrado_y_sigue_cortando() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    let plan = plan_de(
+        &sb,
+        &c,
+        &[
+            ("intacto.txt", 100, 100),
+            ("b.txt", 100, 100),
+            ("c.txt", 100, 100),
+        ],
+    );
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    let st = |n: &str| {
+        rep.items
+            .iter()
+            .find(|i| i.path.ends_with(n))
+            .unwrap()
+            .status
+    };
+    assert!(matches!(
+        st("intacto.txt"),
+        ItemStatus::NotRecycled(RecycleFail::Shell(0))
+    ));
+    assert_eq!(st("b.txt"), ItemStatus::NotRecycled(RecycleFail::Stopped));
+    assert_eq!(st("c.txt"), ItemStatus::NotRecycled(RecycleFail::Stopped));
+    assert!(sb.path("Docs/intacto.txt").exists());
+    assert_eq!(rep.deleted_unexpectedly, 0, "no se borró nada");
+    assert!(rep.recycle_stopped, "el corte se mantiene");
+    assert_eq!(rep.stop_reason, Some(StopReason::ShellDeclined));
+    assert_eq!(rep.stopped_items, 2);
+}
+
+/// M2: una ruta sin verificar (`InBinUnknownPath` con éxito) también corta el lote, y `Unverified` provoca
+/// `recycle_stopped`.
+#[test]
+fn una_ruta_sin_verificar_tambien_corta_el_lote_y_marca_recycle_stopped() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(10_000), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    let plan = plan_de(
+        &sb,
+        &c,
+        &[
+            ("unknown.txt", 100, 100),
+            ("b.txt", 100, 100),
+            ("c.txt", 100, 100),
+        ],
+    );
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    let st = |n: &str| {
+        rep.items
+            .iter()
+            .find(|i| i.path.ends_with(n))
+            .unwrap()
+            .status
+    };
+    assert_eq!(st("unknown.txt"), ItemStatus::Unverified);
+    assert_eq!(st("b.txt"), ItemStatus::NotRecycled(RecycleFail::Stopped));
+    assert_eq!(st("c.txt"), ItemStatus::NotRecycled(RecycleFail::Stopped));
+    assert!(sb.path("Docs/b.txt").exists() && sb.path("Docs/c.txt").exists());
+    assert!(rep.recycle_stopped);
+    assert_eq!(rep.stop_reason, Some(StopReason::Unverified));
+    assert_eq!((rep.unverified, rep.stopped_items), (1, 2));
 }
 
 #[test]
@@ -1428,8 +2742,10 @@ fn los_pequenos_se_agrupan_hasta_el_presupuesto_y_nunca_pasan_del_90_por_ciento_
     assert!(!rep2.recycle_stopped);
 }
 
+/// B2: sin capacidad conocida de la Papelera no se puede garantizar que quepa (y la shell, si no cabe, elimina de verdad):
+/// NINGÚN elemento se envía (`NoRoom`), ni siquiera los pequeños. Antes iba cada uno solo.
 #[test]
-fn sin_capacidad_conocida_cada_elemento_va_en_su_propia_operacion() {
+fn sin_capacidad_conocida_no_se_envia_nada_a_la_papelera() {
     let sb = Sandbox::new();
     let fake = FakeShell::new(&sb, None, 0, "nunca");
     let c = cleaner_for(&sb).with_shell(fake.clone());
@@ -1439,36 +2755,47 @@ fn sin_capacidad_conocida_cada_elemento_va_en_su_propia_operacion() {
         &[("a", 100, 100), ("b", 100, 100), ("c", 100, 100)],
     );
     let rep = exec(&c, &plan, false, false, None).unwrap();
-    assert!(rep.items.iter().all(|i| i.status == ItemStatus::Recycled));
-    assert_eq!(fake.names(), vec![vec!["a"], vec!["b"], vec!["c"]]);
+    for it in &rep.items {
+        assert_eq!(
+            it.status,
+            ItemStatus::NotRecycled(RecycleFail::NoRoom),
+            "{:?}",
+            it.path
+        );
+    }
+    assert!(fake.names().is_empty(), "la shell no vio ninguna operación");
+    for n in ["a", "b", "c"] {
+        assert!(sb.path(&format!("Docs/{n}")).exists());
+    }
+    assert_eq!(rep.no_room, 3);
+    assert!(!rep.recycle_stopped);
 }
 
-/// Sin `MaxCapacity` en el registro se usa la misma capacidad estimada que `fit_decide` (el 5 % del volumen): el
-/// presupuesto y `NoRoom` actúan también entonces (antes cada elemento iba solo y sin comprobar su tamaño).
+/// B2: la capacidad del reparto es SOLO la configurada (`MaxCapacity`); sin ella (`Unknown`) y en cualquier otro caso
+/// (sin Papelera, desactivada, indeterminada) no hay capacidad: `max = None` y el reparto falla cerrado. Ya no se asume un
+/// porcentaje del volumen.
 #[test]
-fn sin_max_capacity_se_usa_la_capacidad_estimada_y_actua_no_room() {
+fn la_capacidad_del_reparto_es_solo_la_configurada() {
     use crate::volume::BinLimit;
-    // La capacidad estimada: el 5 % del volumen.
-    assert_eq!(
-        room_from(BinLimit::Unknown, Some(200_000), Some(0)).max,
-        Some(10_000)
-    );
-    assert_eq!(
-        room_from(BinLimit::Max(777), Some(200_000), None).max,
-        Some(777)
-    );
+    assert_eq!(room_from(BinLimit::Max(777), None).max, Some(777));
+    assert_eq!(room_from(BinLimit::Max(777), Some(5)).used, Some(5));
     for l in [
+        BinLimit::Unknown,
         BinLimit::NoBin,
         BinLimit::NukeOnDelete,
         BinLimit::Indeterminate,
     ] {
-        assert_eq!(room_from(l, Some(200_000), Some(0)).max, None, "{l:?}");
+        assert_eq!(room_from(l, Some(0)).max, None, "{l:?}");
+        assert_eq!(take_op(&[1], room_from(l, Some(0))), Take::NoRoom, "{l:?}");
     }
-    assert_eq!(room_from(BinLimit::Unknown, None, Some(0)).max, None);
-    assert_eq!(room_from(BinLimit::Unknown, Some(0), Some(0)).max, None);
-    // Con esa capacidad, la shell simulada reparte y rechaza como con una configurada.
+    // Capacidad configurada pero ocupación desconocida: tampoco se envía.
+    assert_eq!(
+        take_op(&[1], room_from(BinLimit::Max(10_000), None)),
+        Take::NoRoom
+    );
+    // Con una capacidad configurada, la shell simulada reparte y rechaza como siempre.
     let sb = Sandbox::new();
-    let room = room_from(BinLimit::Unknown, Some(200_000), Some(0));
+    let room = room_from(BinLimit::Max(10_000), Some(0));
     let fake = FakeShell::new(&sb, room.max, 0, "enorme");
     let c = cleaner_for(&sb).with_shell(fake.clone());
     // Capacidad 10 000: lo que pase de 9 000 no cabe ni solo; un "grande" (> 1 000) va solo; los pequeños, juntos.
@@ -1478,11 +2805,92 @@ fn sin_max_capacity_se_usa_la_capacidad_estimada_y_actua_no_room() {
         &[
             ("a", 100, 100),
             ("b", 100, 100),
-            ("gigante", 100, 9_500),
             ("grande", 100, 2_000),
             ("c", 100, 100),
         ],
     );
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    for it in &rep.items {
+        assert_eq!(it.status, ItemStatus::Recycled, "{:?}", it.path);
+    }
+    assert_eq!(
+        fake.names(),
+        vec![vec!["a", "b"], vec!["grande"], vec!["c"]]
+    );
+}
+
+/// Un directorio de `Docs/<nombre>` con un archivo de `len` bytes, aprobado con su medida real.
+fn plan_dir(sb: &Sandbox, c: &Cleaner, name: &str, len: usize) -> Plan {
+    sb.write(&format!("Docs/{name}/f0.bin"), len);
+    let mut b = Basket::new();
+    b.add_path(sb.long(&format!("Docs/{name}")), c.protection());
+    let plan = approve(c, &b);
+    assert_eq!(plan.items.len(), 1, "{:?}", plan.rejected);
+    assert!(plan.items[0].is_dir());
+    plan
+}
+
+/// B2: un directorio que CRECIÓ 1 MiB después de aprobarlo no se envía: el reparto se basaba en un tamaño que ya no es
+/// cierto. Queda en su sitio con el estado "cambió desde la confirmación" (contador `changed` del resumen).
+#[test]
+fn un_directorio_que_crecio_tras_la_aprobacion_no_se_envia() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    let plan = plan_dir(&sb, &c, "crece", 5_000);
+    // Después de aprobar: 1 MiB más dentro.
+    sb.write("Docs/crece/nuevo.bin", 1 << 20);
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    assert_eq!(
+        rep.items[0].status,
+        ItemStatus::Root(crate::engine::RootStatus::Changed)
+    );
+    assert!(rep.items[0].removed.is_empty());
+    assert!(sb.path("Docs/crece/f0.bin").exists() && sb.path("Docs/crece/nuevo.bin").exists());
+    assert!(fake.names().is_empty(), "no llegó a la shell");
+    assert!(
+        rep.totals.changed >= 1,
+        "consta como cambiado en el resumen"
+    );
+    // Sin cambios, el mismo directorio sí se envía (control).
+    let sb2 = Sandbox::new();
+    let fake2 = FakeShell::new(&sb2, Some(1 << 40), 0, "nunca");
+    let c2 = cleaner_for(&sb2).with_shell(fake2.clone());
+    let plan2 = plan_dir(&sb2, &c2, "igual", 5_000);
+    let rep2 = exec(&c2, &plan2, false, false, None).unwrap();
+    assert_eq!(rep2.items[0].status, ItemStatus::Recycled);
+}
+
+/// H6.2: el directorio se mide JUSTO ANTES de la operación que lo incluye, no al preparar el trozo entero: aquí crece
+/// durante el envío de la operación anterior (un archivo grande que va solo) y, al llegar su turno, no se envía.
+#[test]
+fn el_directorio_se_mide_justo_antes_de_su_operacion_no_al_preparar_el_trozo() {
+    let sb = Sandbox::new();
+    // Capacidad 10 000: lo que pasa de 1 000 va SOLO en su operación (así hay dos operaciones, una por elemento).
+    let fake = FakeShell::new(&sb, Some(10_000), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    sb.write("Docs/a.bin", 6_000);
+    sb.write("Docs/crece/f0.bin", 6_000);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/a.bin"), c.protection());
+    b.add_path(sb.long("Docs/crece"), c.protection());
+    let mut plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 2);
+    // Estimaciones coherentes con la capacidad simulada (cada uno > 10 % de 10 000 y cabe).
+    for it in &mut plan.items {
+        it.estimate.bytes = 5_000;
+        it.estimate.logical = 5_000;
+        it.fit = c.fit(&it.path, 5_000);
+        assert_eq!(it.fit, Fit::Fits);
+    }
+    // El directorio crece cuando se va a entregar `a.bin` (después de preparar el trozo, antes de su propia operación).
+    // Con una medida hecha al preparar, el directorio se habría repartido con el tamaño viejo.
+    let grow = sb.path("Docs/crece/nuevo.bin");
+    let _hook = crate::engine::test_hooks::install_before_shell(sb.long("Docs"), move |p| {
+        if p.ends_with("a.bin") {
+            fs::write(&grow, vec![1u8; 1 << 20]).unwrap();
+        }
+    });
     let rep = exec(&c, &plan, false, false, None).unwrap();
     let st = |n: &str| {
         rep.items
@@ -1491,16 +2899,46 @@ fn sin_max_capacity_se_usa_la_capacidad_estimada_y_actua_no_room() {
             .unwrap()
             .status
     };
-    assert_eq!(st("gigante"), ItemStatus::NotRecycled(RecycleFail::NoRoom));
-    assert!(sb.path("Docs/gigante").exists(), "no se envió ni se tocó");
-    for n in ["a", "b", "grande", "c"] {
-        assert_eq!(st(n), ItemStatus::Recycled, "{n}");
-    }
+    assert_eq!(st("a.bin"), ItemStatus::Recycled);
+    assert_eq!(
+        st("crece"),
+        ItemStatus::Root(crate::engine::RootStatus::Changed)
+    );
+    assert!(sb.path("Docs/crece/nuevo.bin").exists());
     assert_eq!(
         fake.names(),
-        vec![vec!["a", "b"], vec!["grande"], vec!["c"]]
+        vec![vec!["a.bin"]],
+        "el directorio no llegó a la shell"
     );
-    assert_eq!(rep.no_room, 1);
+}
+
+/// B2: un directorio que ENCOGIÓ se reparte con su tamaño nuevo (no con el aprobado). El aprobado (estimación falseada
+/// a 8 500 con 2 000 ya ocupados de una capacidad de 10 000: presupuesto 7 000) no cabría; el real, mucho menor, sí.
+#[test]
+fn un_directorio_que_encogio_se_reparte_con_su_tamano_nuevo() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(10_000), 2_000, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    let mut plan = plan_dir(&sb, &c, "encoge", 1_000);
+    // La estimación al aprobar era enorme (el directorio contenía mucho más).
+    plan.items[0].estimate.bytes = 8_500;
+    plan.items[0].estimate.logical = 8_500;
+    plan.items[0].fit = c.fit(&plan.items[0].path, 8_500);
+    assert_eq!(plan.items[0].fit, Fit::Fits);
+    // Con la estimación vieja, `take_op` diría NoRoom (8 500 > 7 000): la medida nueva manda.
+    let room = BinRoom {
+        max: Some(10_000),
+        used: Some(2_000),
+    };
+    assert_eq!(take_op(&[8_500], room), Take::NoRoom);
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    assert_eq!(
+        rep.items[0].status,
+        ItemStatus::Recycled,
+        "{:?}",
+        rep.items[0]
+    );
+    assert_eq!(fake.names(), vec![vec!["encoge"]]);
 }
 
 /// Un error de la shell o de COM al enviar consta en el registro local (con su HRESULT) y en el informe (para el resumen);
@@ -1549,8 +2987,13 @@ fn take_op_es_una_funcion_pura_con_las_reglas_del_reparto() {
         max: Some(max),
         used: Some(used),
     };
-    // Sin capacidad conocida: solo.
-    assert_eq!(take_op(&[10, 10], BinRoom::UNKNOWN), Take::Send(1));
+    // Sin capacidad ni ocupación conocidas: nunca se envía (B2).
+    assert_eq!(take_op(&[10, 10], BinRoom::UNKNOWN), Take::NoRoom);
+    let sin_max = BinRoom {
+        max: None,
+        used: Some(0),
+    };
+    assert_eq!(take_op(&[1], sin_max), Take::NoRoom);
     // Todo lo pequeño junto mientras quepa en el presupuesto (90 % de 10 000 menos lo ocupado).
     assert_eq!(take_op(&[300, 300, 300], room(10_000, 0)), Take::Send(3));
     assert_eq!(
@@ -1564,13 +3007,16 @@ fn take_op_es_una_funcion_pura_con_las_reglas_del_reparto() {
     assert_eq!(take_op(&[600, 10], room(10_000, 8_700)), Take::NoRoom);
     assert_eq!(take_op(&[9_000], room(10_000, 0)), Take::Send(1));
     assert_eq!(take_op(&[9_001], room(10_000, 0)), Take::NoRoom);
-    // Sin ocupación conocida: solo, y solo si cabría en una Papelera vacía.
+    // Sin ocupación conocida: no se envía (antes iba solo si cabía en una Papelera vacía).
     let sin_uso = BinRoom {
         max: Some(10_000),
         used: None,
     };
-    assert_eq!(take_op(&[800, 800], sin_uso), Take::Send(1));
+    assert_eq!(take_op(&[800, 800], sin_uso), Take::NoRoom);
+    assert_eq!(take_op(&[1], sin_uso), Take::NoRoom);
     assert_eq!(take_op(&[9_500], sin_uso), Take::NoRoom);
+    // Una lista vacía no envía nada.
+    assert_eq!(take_op(&[], BinRoom::UNKNOWN), Take::Send(0));
 }
 
 /// M-C con la shell REAL, de forma segura: un archivo disperso de miles de GiB lógicos (no ocupa nada) entre dos pequeños.
@@ -1654,6 +3100,8 @@ fn pending(identity: FileIdentity, path: &Path, held_path: &Path) -> Pending {
         links: 1,
         held: sys::open_path_for_rename(held_path).unwrap(),
         size: 0,
+        measured: true,
+        snapshot: None,
     }
 }
 
@@ -1678,11 +3126,14 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
     let shell_bin = {
         struct B(PathBuf);
         impl RecycleShell for B {
-            fn recycle(&self, _: &[PathBuf]) -> recycle::BatchOutcome {
+            fn recycle(&self, _: &[recycle::SendItem]) -> recycle::BatchOutcome {
                 recycle::BatchOutcome::default()
             }
             fn bin_room(&self, _: &Path) -> BinRoom {
                 BinRoom::UNKNOWN
+            }
+            fn fit(&self, _: &Path, _: u64) -> Fit {
+                Fit::Fits
             }
             fn is_bin_path(&self, p: &Path) -> bool {
                 crate::paths::PathKey::new(p).is_same_or_under(&crate::paths::PathKey::new(&self.0))
@@ -1705,31 +3156,34 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
     // Misma identidad, el nombre aprobado ya no existe y el objeto de la guarda está en la Papelera -> enviado.
     let p = pending(id, gone, &bin_file);
     let e = ev(0, BinState::InBin(bin_file.clone()));
-    assert_eq!(judge(&p, Some(&e), shell, false).0, ItemStatus::Recycled);
+    assert_eq!(
+        judge(&p, Some(&e), shell, false, false).0,
+        ItemStatus::Recycled
+    );
     // ...pero si el nombre aprobado SIGUE existiendo (otro nombre del mismo objeto llegó a la Papelera), no.
     let p_name = pending(id, &bin_file, &bin_file);
     assert_eq!(
-        judge(&p_name, Some(&e), shell, false).0,
+        judge(&p_name, Some(&e), shell, false, false).0,
         ItemStatus::RecycledOther
     );
     // ...ni si el objeto de la guarda NO está en la Papelera (sigue en su sitio con otro nombre).
     let fuera = sb.write("Docs/vivo.txt", 10);
     let p_fuera = pending(id, gone, &fuera);
     assert_eq!(
-        judge(&p_fuera, Some(&e), shell, false).0,
+        judge(&p_fuera, Some(&e), shell, false, false).0,
         ItemStatus::RecycledOther
     );
     // ...ni si el número de enlaces del objeto cambió respecto a lo comprobado (se le añadió otro nombre).
     let mut p_links = pending(id, gone, &bin_file);
     p_links.links = 3;
     assert_eq!(
-        judge(&p_links, Some(&e), shell, false).0,
+        judge(&p_links, Some(&e), shell, false, false).0,
         ItemStatus::RecycledOther
     );
     // Otra identidad -> se movió a la Papelera un objeto distinto del aprobado.
     let p2 = pending(ident(id.file_id ^ 1), gone, &bin_file);
     assert_eq!(
-        judge(&p2, Some(&e), shell, false).0,
+        judge(&p2, Some(&e), shell, false, false).0,
         ItemStatus::RecycledOther
     );
     let p3 = pending(
@@ -1741,32 +3195,64 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
         &bin_file,
     );
     assert_eq!(
-        judge(&p3, Some(&e), shell, false).0,
+        judge(&p3, Some(&e), shell, false, false).0,
         ItemStatus::RecycledOther
     );
-    // La shell lo eliminó definitivamente (`psiNewlyCreated` nulo).
+    // La shell lo eliminó definitivamente (`psiNewlyCreated` nulo) y el nombre ya no está.
     assert_eq!(
-        judge(&p, Some(&ev(0, BinState::Deleted)), shell, false).0,
+        judge(&p, Some(&ev(0, BinState::Deleted)), shell, false, false).0,
         ItemStatus::DeletedUnexpectedly
+    );
+    // H2: nulo con éxito pero el elemento SIGUE en su sitio: la shell no tocó nada (no se dice que se eliminó).
+    let here_ev = DeleteEvent {
+        item: OsString::from(bin_file.as_os_str()),
+        hr: 0x0027_0003,
+        state: BinState::Deleted,
+    };
+    let p_here = pending(id, &bin_file, &bin_file);
+    assert_eq!(
+        judge(&p_here, Some(&here_ev), shell, false, false).0,
+        ItemStatus::NotRecycled(RecycleFail::Shell(0x0027_0003))
     );
     // No dio ruta, o la ruta no se puede abrir -> no verificado.
     assert_eq!(
-        judge(&p, Some(&ev(0, BinState::InBinUnknownPath)), shell, false).0,
+        judge(
+            &p,
+            Some(&ev(0, BinState::InBinUnknownPath)),
+            shell,
+            false,
+            false
+        )
+        .0,
         ItemStatus::Unverified
     );
     let nada = ev(0, BinState::InBin(sb.path("bin/no-esta.txt")));
     assert_eq!(
-        judge(&p, Some(&nada), shell, false).0,
+        judge(&p, Some(&nada), shell, false, false).0,
         ItemStatus::Unverified
     );
     // Errores: en uso, sin permiso y otros, con su HRESULT.
     let hr_win32 = |c: u32| (0x8007_0000u32 | c) as i32;
     assert_eq!(
-        judge(&p, Some(&ev(hr_win32(32), BinState::Deleted)), shell, false).0,
+        judge(
+            &p,
+            Some(&ev(hr_win32(32), BinState::Deleted)),
+            shell,
+            false,
+            false
+        )
+        .0,
         ItemStatus::NotRecycled(RecycleFail::InUse)
     );
     assert_eq!(
-        judge(&p, Some(&ev(hr_win32(5), BinState::Deleted)), shell, false).0,
+        judge(
+            &p,
+            Some(&ev(hr_win32(5), BinState::Deleted)),
+            shell,
+            false,
+            false
+        )
+        .0,
         ItemStatus::NotRecycled(RecycleFail::Denied)
     );
     assert_eq!(
@@ -1774,6 +3260,7 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
             &p,
             Some(&ev(0x8000_4005u32 as i32, BinState::Deleted)),
             shell,
+            false,
             false
         )
         .0,
@@ -1786,6 +3273,7 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
             &p,
             Some(&ev(0x8027_0021u32 as i32, BinState::Deleted)),
             shell,
+            false,
             false
         )
         .0,
@@ -1796,6 +3284,7 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
             &p,
             Some(&ev(0x8027_0027u32 as i32, BinState::Deleted)),
             shell,
+            false,
             false
         )
         .0,
@@ -1804,14 +3293,22 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
     // Sin aviso: sigue en su sitio -> no procesado (o abortado, si la shell dijo que abortó); ya no está -> no verificado.
     let here = pending(id, &bin_file, &bin_file);
     assert_eq!(
-        judge(&here, None, shell, false).0,
+        judge(&here, None, shell, false, false).0,
         ItemStatus::NotRecycled(RecycleFail::NotProcessed)
     );
     assert_eq!(
-        judge(&here, None, shell, true).0,
+        judge(&here, None, shell, true, false).0,
         ItemStatus::NotRecycled(RecycleFail::Aborted)
     );
-    assert_eq!(judge(&p, None, shell, false).0, ItemStatus::Unverified);
+    // El receptor cortó el lote (M2): sin aviso y en su sitio = detenido por el corte de seguridad.
+    assert_eq!(
+        judge(&here, None, shell, false, true).0,
+        ItemStatus::NotRecycled(RecycleFail::Stopped)
+    );
+    assert_eq!(
+        judge(&p, None, shell, false, false).0,
+        ItemStatus::Unverified
+    );
 }
 
 #[test]

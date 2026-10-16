@@ -230,6 +230,9 @@ pub enum UnitSpec {
         approved: FileIdentity,
         /// Etiqueta de reparse aprobada (0 salvo archivos de la nube, que se admiten solo como elemento suelto).
         approved_tag: u32,
+        /// `NumberOfLinks` EXACTO que tenía al aprobar: si al ejecutar es otro (alguien le añadió o quitó nombres), se
+        /// rechaza como "cambió desde la confirmación".
+        approved_links: u32,
         is_dir: bool,
     },
 }
@@ -679,7 +682,7 @@ fn start_unit(shared: &Shared, local: &Worker<Task>, unit: Arc<Unit>) {
                 Ok(h) => h,
                 Err(c) => return root_open_error(&unit, c),
             };
-            let Some(node) = verify_root(&unit, h, &path, &approved, 0, true, false) else {
+            let Some(node) = verify_root(&unit, h, &path, &approved, None, true, false) else {
                 return;
             };
             unit.set_status(RootStatus::Done);
@@ -689,6 +692,7 @@ fn start_unit(shared: &Shared, local: &Worker<Task>, unit: Arc<Unit>) {
             path,
             approved,
             approved_tag,
+            approved_links,
             is_dir,
         } => {
             if is_dir {
@@ -701,14 +705,21 @@ fn start_unit(shared: &Shared, local: &Worker<Task>, unit: Arc<Unit>) {
                     Ok(h) => h,
                     Err(c) => return root_open_error(&unit, c),
                 };
-                let Some(node) = verify_root(&unit, h, &path, &approved, approved_tag, false, true)
-                else {
+                let Some(node) = verify_root(
+                    &unit,
+                    h,
+                    &path,
+                    &approved,
+                    Some(approved_links),
+                    false,
+                    true,
+                ) else {
                     return;
                 };
                 unit.set_status(RootStatus::Done);
                 list_and_spawn(shared, local, node);
             } else {
-                entry_file(&unit, &path, &approved, approved_tag);
+                entry_file(&unit, &path, &approved, approved_tag, approved_links);
             }
         }
     }
@@ -721,7 +732,7 @@ fn verify_root(
     h: Handle,
     approved_path: &Path,
     approved: &FileIdentity,
-    approved_tag: u32,
+    approved_links: Option<u32>,
     contents: bool,
     deletable: bool,
 ) -> Option<Arc<DirNode>> {
@@ -734,8 +745,8 @@ fn verify_root(
         }
     };
     // Un directorio con reparse point (junction, symlink, punto de montaje) nunca se acepta: no se entra en él.
-    let _ = approved_tag;
-    if !m.is_dir || m.identity != *approved || m.is_reparse() {
+    let links_changed = approved_links.is_some_and(|l| l != m.links);
+    if !m.is_dir || m.identity != *approved || m.is_reparse() || links_changed {
         unit.set_status(RootStatus::Changed);
         Stats::add(&unit.stats.changed, 1);
         emit(
@@ -812,7 +823,13 @@ fn verify_root(
 }
 
 /// Un archivo suelto aprobado como elemento de la cesta.
-fn entry_file(unit: &Arc<Unit>, path: &Path, approved: &FileIdentity, approved_tag: u32) {
+fn entry_file(
+    unit: &Arc<Unit>,
+    path: &Path,
+    approved: &FileIdentity,
+    approved_tag: u32,
+    approved_links: u32,
+) {
     let env = &unit.env;
     let opened = if env.mode == Mode::Measure {
         sys::open_for_query(path)
@@ -837,7 +854,8 @@ fn entry_file(unit: &Arc<Unit>, path: &Path, approved: &FileIdentity, approved_t
     // reparse point se rechaza.
     let reparse_ok =
         !m.is_reparse() || (m.reparse_tag == approved_tag && sys::is_cloud_tag(m.reparse_tag));
-    if m.is_dir || m.identity != *approved || !reparse_ok {
+    // Misma identidad pero otro número de enlaces (alguien añadió o quitó nombres): cambió desde la confirmación.
+    if m.is_dir || m.identity != *approved || !reparse_ok || m.links != approved_links {
         unit.set_status(RootStatus::Changed);
         Stats::add(&unit.stats.changed, 1);
         emit(

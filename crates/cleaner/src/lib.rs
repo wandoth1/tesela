@@ -35,7 +35,7 @@ pub use basket::{AddOutcome, Basket, Source};
 pub use engine::{Mode, StatsSnapshot};
 pub use exec::{
     BinReport, ExecError, ExecOptions, ItemReport, ItemStatus, Phase, Progress, RecycleFail,
-    Removed, Report,
+    Removed, Report, StopReason,
 };
 pub use log::{HistoryEntry, LogWriter};
 pub use plan::{ApproveOptions, Cleaner, Fit, Plan, PlanItem, RejectReason, Rejected, UnfitReason};

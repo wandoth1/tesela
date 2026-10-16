@@ -9,14 +9,14 @@ use crate::recs::eligible_by_age;
 use crate::treepath::Locator;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tesela_cleaner::engine::{StatsSnapshot, UnitSpec};
 use tesela_cleaner::exec::BinReport;
 use tesela_cleaner::paths::PathKey;
 use tesela_cleaner::plan::BinPlan;
-use tesela_cleaner::protect::{ChildAction, ProtectionRoots};
+use tesela_cleaner::protect::{ChildAction, Exempt, ProtectionRoots};
 use tesela_cleaner::recycle::BinItem;
 use tesela_cleaner::sys::FileIdentity;
 use tesela_cleaner::{
@@ -32,6 +32,8 @@ pub struct DemoBackend {
     root: String,
     prot: Arc<Protection>,
     browsers: Mutex<Vec<Browser>>,
+    /// Categorías "no disponibles" (lo pone una prueba de la interfaz).
+    unavailable: Mutex<Vec<(CategoryId, tesela_cleaner::roots::RootRejection)>>,
     /// Cuánto dura la ejecución simulada (para que se vea el progreso). 0 en las pruebas.
     delay: Duration,
     cache_dirs: Vec<(CategoryId, PathBuf)>,
@@ -69,18 +71,29 @@ impl DemoBackend {
                 .map(|n| p(&root, &format!("{me}\\{n}")))
                 .collect(),
             exempt: vec![
-                p(&root, "Windows\\Temp"),
-                p(
-                    &root,
-                    &format!("{local}\\Google\\Chrome\\User Data\\Default\\Cache"),
+                Exempt::new(p(&root, "Windows\\Temp"), Some(p(&root, "Windows"))),
+                Exempt::new(
+                    p(
+                        &root,
+                        &format!("{local}\\Google\\Chrome\\User Data\\Default\\Cache"),
+                    ),
+                    Some(p(&root, &format!("{local}\\Google\\Chrome\\User Data"))),
                 ),
-                p(
-                    &root,
-                    &format!("{local}\\Microsoft\\Edge\\User Data\\Default\\Cache"),
+                Exempt::new(
+                    p(
+                        &root,
+                        &format!("{local}\\Microsoft\\Edge\\User Data\\Default\\Cache"),
+                    ),
+                    Some(p(&root, &format!("{local}\\Microsoft\\Edge\\User Data"))),
                 ),
-                p(
-                    &root,
-                    &format!("{local}\\Mozilla\\Firefox\\Profiles\\demo.default-release\\cache2"),
+                Exempt::new(
+                    p(
+                        &root,
+                        &format!(
+                            "{local}\\Mozilla\\Firefox\\Profiles\\demo.default-release\\cache2"
+                        ),
+                    ),
+                    Some(p(&root, &format!("{local}\\Mozilla\\Firefox"))),
                 ),
             ],
         });
@@ -112,9 +125,16 @@ impl DemoBackend {
             root,
             prot: Arc::new(prot),
             browsers: Mutex::new(vec![Browser::Chrome]),
+            unavailable: Mutex::new(Vec::new()),
             delay,
             cache_dirs,
         }
+    }
+
+    /// Marca una categoría como "no disponible" (como si una raíz se hubiera descartado por un enlace en su ruta): las
+    /// pruebas de la interfaz lo usan.
+    pub fn set_unavailable(&self, id: CategoryId, why: tesela_cleaner::roots::RootRejection) {
+        *self.unavailable.lock().unwrap_or_else(|e| e.into_inner()) = vec![(id, why)];
     }
 
     /// Navegadores "abiertos" (en la demostración, Chrome por defecto; las pruebas lo cambian).
@@ -126,8 +146,8 @@ impl DemoBackend {
         format!("{}Users\\{USER}", self.root)
     }
 
-    /// ¿Cabe en la Papelera de la unidad ficticia? Mismo criterio que el `cleaner` real cuando el registro no da límite:
-    /// el 5 % conservador de la unidad (`DEFAULT_BIN_PERCENT_ASSUMED`), con un margen del 90 %.
+    /// ¿Cabe en la Papelera de la unidad ficticia? La unidad de la demostración tiene un tamaño máximo CONFIGURADO (el 5 %
+    /// de la unidad); como en el `cleaner` real, solo cabe lo que cabe en ese máximo, con un margen del 90 %.
     fn fit(&self, bytes: u64) -> Fit {
         let limit = demo::drives()[0].total / 100 * 5;
         if (bytes as u128) * 100 > (limit as u128) * 90 {
@@ -203,6 +223,7 @@ impl DemoBackend {
                 path: path.to_path_buf(),
                 approved: DemoBackend::identity(node),
                 approved_tag: 0,
+                approved_links: 1,
                 is_dir: n.is_dir(),
             },
             min_age: Duration::ZERO,
@@ -221,7 +242,29 @@ impl DemoBackend {
 }
 
 impl Backend for DemoBackend {
+    fn unavailable_roots(
+        &self,
+        id: CategoryId,
+    ) -> Vec<(PathBuf, tesela_cleaner::roots::RootRejection)> {
+        self.unavailable
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|(c, _)| *c == id)
+            .map(|(_, why)| (p(&self.root, "Users\\ejemplo\\no-disponible"), why.clone()))
+            .collect()
+    }
+
     fn category_roots(&self, id: CategoryId) -> Vec<PathBuf> {
+        if self
+            .unavailable
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .any(|(c, _)| *c == id)
+        {
+            return Vec::new();
+        }
         match id {
             CategoryId::UserTemp => vec![p(
                 &self.root,
@@ -335,6 +378,9 @@ impl Backend for DemoBackend {
                             )),
                             time_deleted: DEMO_NOW as i64 - 86_400 * (i as i64 % 60),
                             size: 0,
+                            data_id: None,
+                            meta_id: None,
+                            no_identity: false,
                         })
                         .collect();
                     plan.bin = Some(BinPlan {
@@ -377,6 +423,8 @@ impl Backend for DemoBackend {
                 requested: b.items.len() as u64,
                 purged: b.items.len() as u64,
                 still_there: 0,
+                changed: 0,
+                unverifiable: 0,
                 bytes_hint: b.bytes_hint,
                 failed: false,
             });
@@ -384,7 +432,7 @@ impl Backend for DemoBackend {
         }
         step(Phase::Deleting);
         for it in &plan.items {
-            if progress.cancel.load(Ordering::Relaxed) {
+            if progress.is_cancelled() {
                 break;
             }
             let unfit_skipped = it.is_unfit() && !opts.allow_unfit_permanent;
@@ -477,7 +525,7 @@ impl Backend for DemoBackend {
             progress.add_item_done();
         }
         step(Phase::Verifying);
-        rep.cancelled = progress.cancel.load(Ordering::Relaxed);
+        rep.cancelled = progress.is_cancelled();
         if !opts.dry_run && rep.recycled_bytes > 0 {
             // Toda la Papelera ficticia: lo que ya tenía (la carpeta del árbol, si no se vació) más lo recién enviado.
             let before = if rep.bin.is_some() {

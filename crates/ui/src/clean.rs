@@ -18,7 +18,8 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tesela_cleaner::log::{HistoryEntry, history_append};
 use tesela_cleaner::{
     ApproveOptions, Backend, Basket, Browser, CategoryId, ExecError, ExecOptions, Fit, LogWriter,
-    Phase, Plan, PlanItem, Progress, RejectReason, Removed, Report, UnfitReason, Verdict,
+    Phase, Plan, PlanItem, Progress, RejectReason, Removed, Report, StopReason, UnfitReason,
+    Verdict,
 };
 
 /// Contexto del volumen que se está limpiando (para el historial y las barras antes/ahora del resumen).
@@ -83,6 +84,10 @@ enum Stage {
 /// Aviso breve (toast) pendiente de pintar.
 pub(crate) enum Note {
     NothingToClean,
+    /// No se pudo crear el registro local: sin registro no se limpia (M4). No se ha tocado nada.
+    NoLog,
+    /// Lo que cabe en la Papelera cambió desde la confirmación: hay que revisar y confirmar otra vez.
+    Reconfirm,
 }
 
 impl Drop for CleanFlow {
@@ -209,13 +214,16 @@ impl CleanFlow {
             allow_unfit_permanent: false,
             log: None,
         };
-        if let Ok(report) = backend.execute(&plan, &opts, &Progress::new()) {
-            self.finish(
+        match backend.execute(&plan, &opts, &Progress::new()) {
+            Ok(report) => self.finish(
                 backend,
                 report,
                 dry,
                 vol.volume.map(|(t, f)| t.saturating_sub(f)),
-            );
+            ),
+            // El error no se traga: se enseña con el mismo aviso que en el flujo normal (H6.7).
+            Err(ExecError::LogRequired) => self.note = Some(Note::NoLog),
+            Err(ExecError::NeedsReconfirm(_)) => self.note = Some(Note::Reconfirm),
         }
     }
 
@@ -281,6 +289,11 @@ impl CleanFlow {
                     let used_before = run.used_before;
                     let _ = (allow_unfit, dry);
                     self.finish(backend, report, dry_run, used_before);
+                }
+                Ok(Err(ExecError::LogRequired)) => {
+                    // El ejecutor exige un registro utilizable: no se ha tocado nada.
+                    self.stage = Stage::Idle;
+                    self.note = Some(Note::NoLog);
                 }
                 Ok(Err(ExecError::NeedsReconfirm(_))) => {
                     // Lo que cabe en la Papelera cambió desde la confirmación: se vuelve a aprobar y a confirmar.
@@ -363,15 +376,18 @@ impl CleanFlow {
             _ => {}
         }
         if let Some(note) = &self.note {
-            let key = match note {
-                Note::NothingToClean => "confirm-empty",
+            let (key, secs) = match note {
+                Note::NothingToClean => ("confirm-empty", 4.0),
+                // Más larga: explica por qué no pasó nada.
+                Note::NoLog => ("confirm-no-log", 12.0),
+                Note::Reconfirm => ("confirm-reconfirm", 8.0),
             };
             let msg = env.tr.t(key);
             toast(ctx, &msg);
             // El aviso dura unos segundos.
             let until = ctx.data_mut(|d| {
                 *d.get_temp_mut_or_insert_with(egui::Id::new("tesela-note-until"), || {
-                    ctx.input(|i| i.time) + 4.0
+                    ctx.input(|i| i.time) + secs
                 })
             });
             if ctx.input(|i| i.time) > until {
@@ -392,13 +408,20 @@ impl CleanFlow {
             && let Stage::Confirm(c) = &self.stage
         {
             let plan = c.plan.clone();
-            self.vol = vol;
-            let progress = Progress::new();
-            let (tx, rx) = crossbeam_channel::bounded(1);
+            // SIN REGISTRO NO HAY ACCIÓN DESTRUCTIVA (M4): si el registro local no se puede crear, no se ejecuta nada y se
+            // dice por qué. La simulación (y la demostración, que nunca toca el disco) puede seguir sin él.
             let log = backend
                 .data_dir()
                 .and_then(|d| LogWriter::create(&d, dry).ok())
                 .map(Arc::new);
+            if abort_without_log(log.is_some(), dry, backend.is_demo()) {
+                self.note = Some(Note::NoLog);
+                ctx.request_repaint();
+                return;
+            }
+            self.vol = vol;
+            let progress = Progress::new();
+            let (tx, rx) = crossbeam_channel::bounded(1);
             let opts = ExecOptions {
                 dry_run: dry,
                 allow_unfit_permanent: allow_unfit,
@@ -422,6 +445,12 @@ impl CleanFlow {
             }));
         }
     }
+}
+
+/// ¿Hay que abortar la limpieza por falta de registro (M4)? Sin registro no hay acción destructiva: solo la simulación
+/// (que no toca nada) y la demostración (que nunca toca el disco) pueden seguir sin él.
+fn abort_without_log(has_log: bool, dry: bool, is_demo: bool) -> bool {
+    !has_log && !dry && !is_demo
 }
 
 fn toast(ctx: &egui::Context, msg: &str) {
@@ -452,6 +481,12 @@ fn item_name(env: &Env, it: &PlanItem) -> String {
     }
 }
 
+/// ¿Alguno no cabe porque la Papelera de su unidad no tiene tamaño máximo configurado?
+fn has_capacity_unknown(fits: impl Iterator<Item = Fit>) -> bool {
+    fits.into_iter()
+        .any(|f| f == Fit::Unfit(UnfitReason::CapacityUnknown))
+}
+
 fn unfit_reason_key(r: UnfitReason) -> &'static str {
     match r {
         UnfitReason::NoBin => "unfit-no-bin",
@@ -460,6 +495,7 @@ fn unfit_reason_key(r: UnfitReason) -> &'static str {
         UnfitReason::PathTooLong => "unfit-path-long",
         UnfitReason::Policy => "unfit-policy",
         UnfitReason::Unknown => "unfit-unknown",
+        UnfitReason::CapacityUnknown => "unfit-capacity-unknown",
     }
 }
 
@@ -775,6 +811,10 @@ fn confirm_groups(ui: &mut Ui, env: &mut Env, c: &mut Confirm, plan: &Plan) {
                         Some(&it.path.display().to_string()),
                     );
                 }
+                // Sin tamaño máximo configurado, cómo arreglarlo (H6.3).
+                if has_capacity_unknown(unfit.iter().map(|i| i.fit)) {
+                    note_line(ui, &pal, &env.tr.t("confirm-unfit-capacity-hint"), false);
+                }
                 ui.add_space(6.0);
                 let label = env.tr.t("confirm-unfit-check");
                 ui.checkbox(&mut c.allow_unfit, &label);
@@ -828,6 +868,8 @@ fn confirm_groups(ui: &mut Ui, env: &mut Env, c: &mut Confirm, plan: &Plan) {
                     RejectReason::AccessDenied => env.tr.t("reject-denied"),
                     RejectReason::NoIdentity => env.tr.t("reject-identity"),
                     RejectReason::Reparse => env.tr.t("reject-reparse"),
+                    RejectReason::ReparseAncestor => env.tr.t("reject-reparse-ancestor"),
+                    RejectReason::OutsideLocalAppData => env.tr.t("reject-outside-local"),
                     RejectReason::Protected(Verdict::Denied) => env.tr.t("reject-protected"),
                     RejectReason::Protected(_) => env.tr.t("reject-untouchable"),
                     RejectReason::NotLocal => env.tr.t("reject-not-local"),
@@ -983,8 +1025,16 @@ fn summary_lines(env: &Env, s: &Summary) -> Vec<(String, bool)> {
     let tr = env.tr;
     let mut v: Vec<(String, bool)> = Vec::new();
     let n = |k: &str, n: u64| tr.ta(k, args!["n" => n, "count" => tr.int(n)]);
+    // Las dos cosas pueden darse a la vez y se dicen las dos: la cancelación del usuario y el fallo del registro (que
+    // detiene la limpieza solo).
     if r.cancelled {
         v.push((tr.t("sum-cancelled"), true));
+    }
+    if r.log_failed {
+        v.push((tr.t("sum-log-failed"), true));
+    }
+    if r.log_truncated {
+        v.push((tr.t("sum-log-truncated"), true));
     }
     if r.deleted_unexpectedly > 0 {
         v.push((n("sum-unexpected", r.deleted_unexpectedly), true));
@@ -999,7 +1049,13 @@ fn summary_lines(env: &Env, s: &Summary) -> Vec<(String, bool)> {
         ));
     }
     if r.recycle_stopped {
-        v.push((n("sum-recycle-stopped", r.stopped_items), true));
+        let key = match r.stop_reason {
+            Some(StopReason::Unverified) => "sum-recycle-stopped-unverified",
+            Some(StopReason::Changed) => "sum-recycle-stopped-changed",
+            Some(StopReason::ShellDeclined) => "sum-recycle-stopped-declined",
+            _ => "sum-recycle-stopped",
+        };
+        v.push((n(key, r.stopped_items), true));
     }
     if r.no_room > 0 {
         v.push((n("sum-no-room", r.no_room), true));
@@ -1037,10 +1093,19 @@ fn summary_lines(env: &Env, s: &Summary) -> Vec<(String, bool)> {
     if t.shared_files > 0 {
         v.push((n("sum-shared", t.shared_files), false));
     }
-    if let Some(b) = &r.bin
-        && b.still_there > 0
-    {
-        v.push((n("sum-bin-failed", b.still_there), true));
+    if let Some(b) = &r.bin {
+        if b.changed > 0 {
+            v.push((n("sum-bin-changed", b.changed), true));
+        }
+        if b.unverifiable > 0 {
+            v.push((n("sum-bin-unverifiable", b.unverifiable), true));
+        }
+        if b.still_there > b.changed + b.unverifiable {
+            v.push((
+                n("sum-bin-failed", b.still_there - b.changed - b.unverifiable),
+                true,
+            ));
+        }
     }
     // Si "liberado ahora" y "eliminado" divergen, se dice por qué en una línea.
     if let Some(f) = r.freed_now {
@@ -1233,4 +1298,40 @@ fn summary_ui(ui: &mut Ui, env: &mut Env, s: &Summary) -> Option<SummaryClick> {
             });
         });
     click
+}
+
+#[cfg(test)]
+mod log_gate_tests {
+    use super::{abort_without_log, has_capacity_unknown};
+    use tesela_cleaner::{Fit, UnfitReason};
+
+    /// H6.3: la pista de "fija un tamaño máximo" solo sale si algo no cabe por `CapacityUnknown`.
+    #[test]
+    fn la_pista_de_la_capacidad_solo_sale_con_capacity_unknown() {
+        assert!(has_capacity_unknown(
+            [
+                Fit::Unfit(UnfitReason::TooBig),
+                Fit::Unfit(UnfitReason::CapacityUnknown)
+            ]
+            .into_iter()
+        ));
+        assert!(!has_capacity_unknown(
+            [
+                Fit::Unfit(UnfitReason::TooBig),
+                Fit::Unfit(UnfitReason::Policy)
+            ]
+            .into_iter()
+        ));
+        assert!(!has_capacity_unknown(std::iter::empty()));
+    }
+
+    /// M4: sin registro, una ejecución REAL se aborta; la simulación y la demostración siguen.
+    #[test]
+    fn sin_registro_solo_la_simulacion_y_la_demostracion_siguen() {
+        assert!(abort_without_log(false, false, false));
+        assert!(!abort_without_log(false, true, false), "simulación");
+        assert!(!abort_without_log(false, false, true), "demostración");
+        assert!(!abort_without_log(true, false, false), "con registro");
+        assert!(!abort_without_log(true, true, true));
+    }
 }

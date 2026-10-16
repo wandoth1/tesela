@@ -10,8 +10,9 @@
 //! la categoría.
 
 use crate::paths::{PathKey, canonical_path};
-use crate::protect::{Protection, ProtectionRoots};
+use crate::protect::{Exempt, Protection, ProtectionRoots};
 use crate::rules::CategoryId;
+use crate::sys::{self, FileIdentity};
 use std::path::{Path, PathBuf};
 use tesela_scanner::{BrowserRoots, KnownKind, browser_cache_dirs, known_folder};
 use windows_sys::Win32::UI::Shell::{
@@ -32,6 +33,9 @@ pub struct Roots {
     pub browser: BrowserRoots,
     /// La carpeta Descargas.
     pub downloads: Option<PathBuf>,
+    /// Raíces que `from_system` descartó al arrancar (con su motivo): `category_root_checks` las devuelve como rechazos,
+    /// de modo que una categoría que desaparece por un enlace en su ruta no lo hace en silencio (H4).
+    pub startup_rejections: Vec<(CategoryId, PathBuf, RootRejection)>,
     /// Qué proteger.
     pub protection: ProtectionRoots,
 }
@@ -39,6 +43,79 @@ pub struct Roots {
 /// Ruta canónica larga de un directorio que existe, o `None`.
 fn canon(p: &Path) -> Option<PathBuf> {
     canonical_path(p).ok()
+}
+
+/// Por qué se descartó la raíz de una categoría.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RootRejection {
+    /// Un componente de la cadena (desde la raíz del volumen) es un reparse point: un enlace ahí puede llevar la "raíz" a
+    /// una carpeta protegida.
+    ReparseInChain { component: String },
+    /// La ruta resuelta por el handle no es la que se recorrió (cambió mientras se comprobaba).
+    NotCanonical,
+    /// La carpeta temporal del usuario está redirigida fuera de `%LOCALAPPDATA%` (no es `Local\Temp` ni cuelga de ella).
+    OutsideLocalAppData,
+    /// La ruta no es utilizable (no es absoluta con letra de unidad, no existe o no se abre): código de Windows.
+    Os(u32),
+}
+
+impl RootRejection {
+    /// ¿Es algo que el usuario debe saber (la categoría "desaparece" por un motivo de seguridad que puede no esperar)?
+    /// Un `Os` (no existe, sin permiso) no lo es: simplemente no hay nada que limpiar.
+    pub fn is_user_visible(&self) -> bool {
+        !matches!(self, RootRejection::Os(_))
+    }
+}
+
+/// La raíz de una categoría ya comprobada: su ruta canónica y la ÚNICA zona denegada que puede levantar.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VerifiedRoot {
+    /// Ruta canónica larga, resuelta por el handle del último componente.
+    pub path: PathBuf,
+    /// Identidad (volumen + FileId) del objeto que vio el recorrido de la cadena. La aprobación la compara con la del
+    /// handle con el que abre la raíz para listarla: si difieren, algo cambió entre los dos pasos (H1).
+    pub identity: FileIdentity,
+    /// La zona denegada en cuyo interior vive la raíz (ver [`Exempt`]).
+    pub zone: Option<PathBuf>,
+}
+
+/// Una raíz candidata de una categoría y el resultado de su comprobación.
+#[derive(Clone, Debug)]
+pub struct RootCheck {
+    /// La ruta tal como se tenía (sin resolver nada).
+    pub raw: PathBuf,
+    pub result: Result<VerifiedRoot, RootRejection>,
+}
+
+/// Capa 1 de B1: acepta `raw` solo si TODA la cadena, desde la raíz del volumen y componente a componente, está libre de
+/// reparse points (ver [`sys::open_reparse_free_dir`]) y la ruta que da el handle del último coincide con la canónica.
+/// Devuelve la ruta canónica y la identidad del último componente.
+pub(crate) fn verify_chain(raw: &Path) -> Result<(PathBuf, FileIdentity), RootRejection> {
+    let h = sys::open_reparse_free_dir(raw).map_err(|e| match e {
+        sys::ChainError::Reparse { component } => RootRejection::ReparseInChain { component },
+        sys::ChainError::BadPath => RootRejection::Os(ERROR_BAD_PATHNAME),
+        sys::ChainError::Os(c) => RootRejection::Os(c),
+    })?;
+    let canonical = sys::final_path(&h).map_err(RootRejection::Os)?;
+    let identity = sys::meta(&h).map_err(RootRejection::Os)?.identity;
+    // `canonical_path` abre por ruta: si no da el mismo sitio que el handle recorrido, algo cambió entre medias.
+    if canon(raw).is_none_or(|c| PathKey::new(&c) != PathKey::new(&canonical)) {
+        return Err(RootRejection::NotCanonical);
+    }
+    Ok((canonical, identity))
+}
+
+/// `ERROR_BAD_PATHNAME`.
+const ERROR_BAD_PATHNAME: u32 = 161;
+
+/// La carpeta DENEGADA (relativa a `%LOCALAPPDATA%`) en cuyo interior viven las cachés de cada navegador.
+fn browser_zone_rel(id: CategoryId) -> Option<&'static str> {
+    match id {
+        CategoryId::ChromeCache => Some(r"Google\Chrome\User Data"),
+        CategoryId::EdgeCache => Some(r"Microsoft\Edge\User Data"),
+        CategoryId::FirefoxCache => Some(r"Mozilla\Firefox"),
+        _ => None,
+    }
 }
 
 fn kf(id: &windows_sys::core::GUID) -> Option<PathBuf> {
@@ -76,11 +153,34 @@ impl Roots {
         let program_data = kf(&FOLDERID_ProgramData);
         let public = kf(&FOLDERID_Public);
 
-        // %TEMP%: solo si, canonicalizado, es %LOCALAPPDATA%\Temp o cuelga de ella.
-        let user_temp = crate::volume::temp_path()
-            .and_then(|t| canon(&t))
-            .filter(|t| accept_user_temp(t, local.as_deref()));
-        let windows_temp = windows.as_ref().and_then(|w| canon(&w.join("Temp")));
+        // %TEMP%: solo si su cadena (tal como la da Windows, SIN canonicalizar) no tiene reparse points y, ya
+        // canonicalizada, es %LOCALAPPDATA%\Temp o cuelga de ella.
+        let mut startup_rejections: Vec<(CategoryId, PathBuf, RootRejection)> = Vec::new();
+        let user_temp = crate::volume::temp_path().and_then(|t| match verify_chain(&t) {
+            Ok((p, _)) if accept_user_temp(&p, local.as_deref()) => Some(p),
+            Ok(_) => {
+                startup_rejections.push((
+                    CategoryId::UserTemp,
+                    t,
+                    RootRejection::OutsideLocalAppData,
+                ));
+                None
+            }
+            Err(e) => {
+                startup_rejections.push((CategoryId::UserTemp, t, e));
+                None
+            }
+        });
+        let windows_temp = windows.as_ref().and_then(|w| {
+            let raw = w.join("Temp");
+            match verify_chain(&raw) {
+                Ok((p, _)) => Some(p),
+                Err(e) => {
+                    startup_rejections.push((CategoryId::WindowsTemp, raw, e));
+                    None
+                }
+            }
+        });
 
         let mut denied: Vec<PathBuf> = Vec::new();
         denied.extend(windows.iter().cloned());
@@ -94,9 +194,13 @@ impl Roots {
         }
         // Los datos de los navegadores: el perfil NUNCA es caché (las cachés concretas son excepciones, abajo).
         if let Some(l) = &local {
-            denied.push(l.join(r"Google\Chrome\User Data"));
-            denied.push(l.join(r"Microsoft\Edge\User Data"));
-            denied.push(l.join(r"Mozilla\Firefox"));
+            for id in [
+                CategoryId::ChromeCache,
+                CategoryId::EdgeCache,
+                CategoryId::FirefoxCache,
+            ] {
+                denied.extend(browser_zone_rel(id).map(|z| l.join(z)));
+            }
         }
         if let Some(r) = &roaming {
             denied.push(r.join(r"Mozilla\Firefox"));
@@ -142,6 +246,7 @@ impl Roots {
                 roaming_appdata: roaming,
             },
             downloads,
+            startup_rejections,
             protection: ProtectionRoots {
                 denied,
                 untouchable,
@@ -151,40 +256,102 @@ impl Roots {
         }
     }
 
-    /// Las cachés de navegador que existen ahora mismo (solo directorios de caché concretos, ver
-    /// `tesela_scanner::browser_cache_dirs`), con su categoría.
+    /// Las cachés de navegador que existen ahora mismo y cuya cadena está libre de reparse points (ver
+    /// [`verify_chain`]; solo directorios de caché concretos, ver `tesela_scanner::browser_cache_dirs`), con su categoría
+    /// y la ruta CANÓNICA resuelta por handle.
     pub fn browser_cache_dirs(&self) -> Vec<(CategoryId, PathBuf)> {
-        browser_cache_dirs(&self.browser)
-            .into_iter()
-            .filter_map(|(k, p)| {
-                let id = match k {
-                    KnownKind::ChromeCache => CategoryId::ChromeCache,
-                    KnownKind::EdgeCache => CategoryId::EdgeCache,
-                    KnownKind::FirefoxCache => CategoryId::FirefoxCache,
-                    _ => return None,
+        [
+            CategoryId::ChromeCache,
+            CategoryId::EdgeCache,
+            CategoryId::FirefoxCache,
+        ]
+        .into_iter()
+        .flat_map(|id| {
+            self.category_root_checks(id)
+                .into_iter()
+                .filter_map(move |c| c.result.ok().map(|v| (id, v.path)))
+        })
+        .collect()
+    }
+
+    /// Las raíces candidatas de una categoría con acción `Contents`, TAL COMO SE TIENEN (sin resolver), y su
+    /// comprobación: cadena sin reparse points desde la raíz del volumen (capa 1 de B1) y la zona denegada que cada una
+    /// puede levantar (capa 2). Una raíz rechazada no es una categoría: no se ofrece, no se aprueba y no exime nada.
+    pub fn category_root_checks(&self, id: CategoryId) -> Vec<RootCheck> {
+        let raws: Vec<PathBuf> = match id {
+            CategoryId::UserTemp => self.user_temp.iter().cloned().collect(),
+            CategoryId::WindowsTemp => self.windows_temp.iter().cloned().collect(),
+            CategoryId::ChromeCache | CategoryId::EdgeCache | CategoryId::FirefoxCache => {
+                let kind = match id {
+                    CategoryId::ChromeCache => KnownKind::ChromeCache,
+                    CategoryId::EdgeCache => KnownKind::EdgeCache,
+                    _ => KnownKind::FirefoxCache,
                 };
-                // La autorización sale de la raíz canónica: se resuelve por handle (nunca de la cadena).
-                canon(&p).map(|c| (id, c))
+                browser_cache_dirs(&self.browser)
+                    .into_iter()
+                    .filter(|(k, _)| *k == kind)
+                    .map(|(_, p)| p)
+                    .collect()
+            }
+            _ => Vec::new(),
+        };
+        let startup = self
+            .startup_rejections
+            .iter()
+            .filter(|(c, ..)| *c == id)
+            .map(|(_, raw, why)| RootCheck {
+                raw: raw.clone(),
+                result: Err(why.clone()),
+            });
+        let checked = raws
+            .into_iter()
+            .map(|raw| {
+                let result = verify_chain(&raw).map(|(path, identity)| VerifiedRoot {
+                    zone: self.zone_of(id, &path),
+                    path,
+                    identity,
+                });
+                RootCheck { raw, result }
             })
+            .collect::<Vec<_>>();
+        startup.chain(checked).collect()
+    }
+
+    /// Las raíces de la categoría que se descartaron y el motivo (solo las que el usuario debe conocer: ver
+    /// [`RootRejection::is_user_visible`]).
+    pub fn unavailable_roots(&self, id: CategoryId) -> Vec<(PathBuf, RootRejection)> {
+        self.category_root_checks(id)
+            .into_iter()
+            .filter_map(|c| c.result.err().map(|e| (c.raw, e)))
+            .filter(|(_, e)| e.is_user_visible())
             .collect()
     }
 
-    /// Las raíces (directorios) de una categoría con acción `Contents`.
-    pub fn category_roots(&self, id: CategoryId) -> Vec<PathBuf> {
+    /// La ÚNICA denegación que puede levantar la raíz canónica `root` de la categoría `id` (ver [`Exempt`]): la carpeta
+    /// denegada en cuyo interior vive. `Windows\Temp` → la carpeta de Windows (su padre); las cachés de navegador → su
+    /// `User Data` (Firefox: `Mozilla\Firefox`), calculada con la misma ruta que la denegación; `%TEMP%` → ninguna
+    /// (`Local` es intocable, no denegada).
+    fn zone_of(&self, id: CategoryId, root: &Path) -> Option<PathBuf> {
         match id {
-            CategoryId::UserTemp => self.user_temp.iter().cloned().collect(),
-            CategoryId::WindowsTemp => self.windows_temp.iter().cloned().collect(),
-            CategoryId::ChromeCache | CategoryId::EdgeCache | CategoryId::FirefoxCache => self
-                .browser_cache_dirs()
-                .into_iter()
-                .filter(|(c, _)| *c == id)
-                .map(|(_, p)| p)
-                .collect(),
-            _ => Vec::new(),
+            CategoryId::WindowsTemp => root.parent().map(Path::to_path_buf),
+            CategoryId::ChromeCache | CategoryId::EdgeCache | CategoryId::FirefoxCache => {
+                let local = self.browser.local_appdata.as_ref()?;
+                browser_zone_rel(id).map(|z| local.join(z))
+            }
+            _ => None,
         }
     }
 
-    /// La protección con las raíces de las categorías como excepciones (lo que cuelga de ellas no se deniega).
+    /// Las raíces (directorios, canónicas) de una categoría con acción `Contents` que pasaron la comprobación.
+    pub fn category_roots(&self, id: CategoryId) -> Vec<PathBuf> {
+        self.category_root_checks(id)
+            .into_iter()
+            .filter_map(|c| c.result.ok().map(|v| v.path))
+            .collect()
+    }
+
+    /// La protección con las raíces de las categorías comprobadas como excepciones: lo que cuelga de ellas no se deniega,
+    /// pero SOLO levantan la zona denegada que cada una declara (nunca "esa zona o cualquiera por encima").
     pub fn protection(&self) -> Protection {
         let mut pr = self.protection.clone();
         for id in [
@@ -194,7 +361,12 @@ impl Roots {
             CategoryId::EdgeCache,
             CategoryId::FirefoxCache,
         ] {
-            pr.exempt.extend(self.category_roots(id));
+            pr.exempt.extend(
+                self.category_root_checks(id)
+                    .into_iter()
+                    .filter_map(|c| c.result.ok())
+                    .map(|v| Exempt::new(v.path, v.zone)),
+            );
         }
         Protection::new(&pr)
     }
@@ -255,6 +427,26 @@ mod tests {
             let ud = l.join(r"Google\Chrome\User Data\Default\History");
             assert_eq!(p.target_verdict(&PathKey::new(&ud)), Verdict::Denied);
         }
+    }
+
+    /// La comprobación de la cadena solo pide ATRIBUTOS de cada componente: `Windows\Temp` se acepta aunque un usuario sin
+    /// elevar no pueda listarla (antes de esto, pedir `FILE_LIST_DIRECTORY` la descartaba en silencio). Y las raíces del
+    /// sistema que existen pasan la cadena en este equipo.
+    #[test]
+    fn la_cadena_no_exige_poder_listar_la_carpeta() {
+        let win = kf(&FOLDERID_Windows).expect("Windows");
+        let temp = win.join("Temp");
+        if temp.is_dir() {
+            let ok = verify_chain(&temp);
+            assert_eq!(
+                ok.as_ref().ok().map(|(p, _)| p.as_path()),
+                Some(canon(&temp).unwrap().as_path()),
+                "{ok:?}"
+            );
+            assert!(Roots::from_system(None).windows_temp.is_some());
+        }
+        let local = kf(&FOLDERID_LocalAppData).expect("LocalAppData");
+        assert!(verify_chain(&local).is_ok());
     }
 
     #[test]

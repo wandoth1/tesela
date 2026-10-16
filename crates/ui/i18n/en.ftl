@@ -240,6 +240,11 @@ recs-clean-safe = Clean the safe items ({ $size })
 recs-safe-hint = Already checked. Recreated on its own or reinstalled.
 recs-review-hint = Unchecked. Open it and decide.
 recs-info-hint = Managed by Windows. We explain what it is.
+recs-unavailable-title = Not available
+recs-unavailable-line = { $name }: { $detail }
+recs-unavailable-link = the folder is a link (junction) to another location; Tesela does not clean through links.
+recs-unavailable-changed = the folder changed while it was being checked; check again.
+recs-unavailable-outside = the temporary folder is redirected outside the user's local data; Tesela does not clean redirected folders.
 recs-none = There are no known cleanup places in this folder. Scan a whole drive to see recommendations.
 recs-review-none = Nothing to review here.
 recs-info-none = There are no files of this kind in what was scanned.
@@ -263,6 +268,7 @@ confirm-subtitle =
         [one] { $count } item · { $size } · we check every path again right before deleting
        *[other] { $count } items · { $size } · we check every path again right before deleting
     }
+confirm-no-log = The cleaning log could not be created, so nothing was done. Check that the Tesela data folder (in your local app data) is writable and try again. Simulation still works without a log.
 confirm-empty = There is nothing to clean with this basket.
 confirm-dry-banner = Simulation mode: nothing will be deleted or moved; only what would be done is logged.
 confirm-reconfirm = Something changed since you confirmed (what fits in the Recycle Bin). Review again before cleaning.
@@ -285,7 +291,8 @@ confirm-more =
         [one] and { $count } more
        *[other] and { $count } more
     }
-confirm-group-unfit = Will be deleted permanently because it does not fit in the Recycle Bin
+confirm-group-unfit = Will be deleted permanently because it cannot be sent to the Recycle Bin
+confirm-unfit-capacity-hint = To be able to send it to the Recycle Bin: open the Recycle Bin properties and set a maximum size for the drive.
 confirm-unfit-check = I understand this cannot be recovered
 confirm-unfit-note = Without checking the box, these items are not touched.
 unfit-no-bin = the drive has no Recycle Bin
@@ -294,6 +301,7 @@ unfit-too-big = it exceeds the size of the Recycle Bin
 unfit-path-long = the path is too long for the Recycle Bin
 unfit-policy = a system policy prevents using the Recycle Bin
 unfit-unknown = it could not be checked whether it fits in the Recycle Bin
+unfit-capacity-unknown = the drive's Recycle Bin has no maximum size configured: there is no guarantee it fits
 confirm-hardlink =
     { $n ->
         [one] { $count } file is shared with another name: it will not free space ({ $size })
@@ -319,6 +327,8 @@ reject-missing = no longer exists
 reject-denied = no permission
 reject-identity = cannot be verified
 reject-reparse = is a link
+reject-reparse-ancestor = a link on its path
+reject-outside-local = the temporary folder is redirected outside the user's local data
 reject-protected = protected
 reject-untouchable = cannot be deleted as a whole
 reject-other = system error
@@ -409,6 +419,24 @@ sum-recycle-stopped =
         [one] Sending to the Recycle Bin was stopped: Windows permanently deleted an item that did not fit. As a precaution { $count } more item was not sent: it is still where it was.
        *[other] Sending to the Recycle Bin was stopped: Windows permanently deleted an item that did not fit. As a precaution { $count } more items were not sent: they are still where they were.
     }
+sum-recycle-stopped-unverified =
+    { $n ->
+        [0] Sending to the Recycle Bin was stopped: what happened to one item could not be verified. As a precaution nothing else was touched.
+        [one] Sending to the Recycle Bin was stopped: what happened to one item could not be verified. As a precaution { $count } more item was not sent: it is still where it was.
+       *[other] Sending to the Recycle Bin was stopped: what happened to one item could not be verified. As a precaution { $count } more items were not sent: they are still where they were.
+    }
+sum-recycle-stopped-changed =
+    { $n ->
+        [0] Sending to the Recycle Bin was stopped: one item changed right before it was sent and was not sent. As a precaution nothing else was touched.
+        [one] Sending to the Recycle Bin was stopped: one item changed right before it was sent and was not sent. As a precaution { $count } more item was not sent: it is still where it was.
+       *[other] Sending to the Recycle Bin was stopped: one item changed right before it was sent and was not sent. As a precaution { $count } more items were not sent: they are still where they were.
+    }
+sum-recycle-stopped-declined =
+    { $n ->
+        [0] Sending to the Recycle Bin was stopped: Windows could not send one item (it did not fit) and left it where it was. As a precaution nothing else was touched.
+        [one] Sending to the Recycle Bin was stopped: Windows could not send one item (it did not fit) and left it where it was. As a precaution { $count } more item was not sent: it is still where it was.
+       *[other] Sending to the Recycle Bin was stopped: Windows could not send one item (it did not fit) and left it where it was. As a precaution { $count } more items were not sent: they are still where they were.
+    }
 sum-no-room =
     { $n ->
         [one] { $count } item was not sent because there is no room in the Recycle Bin: empty it or free up space. It is still where it was.
@@ -438,6 +466,18 @@ sum-bin-failed =
     { $n ->
         [one] The Recycle Bin could not be emptied completely: { $count } item is still there.
        *[other] The Recycle Bin could not be emptied completely: { $count } items are still there.
+    }
+sum-bin-changed =
+    { $n ->
+        [one] { $count } Recycle Bin item changed since you confirmed and was not touched.
+       *[other] { $count } Recycle Bin items changed since you confirmed and were not touched.
+    }
+sum-log-failed = The cleaning log could not be written, so the cleaning stopped at the next safe point and nothing else was touched. What was already done stays and may not be fully recorded in the log.
+sum-log-truncated = The cleaning log reached its maximum size and stopped recording: what was done afterwards is not in it.
+sum-bin-unverifiable =
+    { $n ->
+        [one] { $count } Recycle Bin item is on a drive whose file system cannot be verified (FAT or exFAT) and was not touched.
+       *[other] { $count } Recycle Bin items are on a drive whose file system cannot be verified (FAT or exFAT) and were not touched.
     }
 sum-cancelled = You cancelled the cleanup: what was already done stays done.
 sum-diverge = "Deleted permanently" and "freed now" differ: this can be because of hard links, files another program had open, or changes made by Windows itself.
