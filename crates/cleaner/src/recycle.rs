@@ -39,7 +39,6 @@
 
 use crate::paths::PathKey;
 use crate::sys::{self, FileIdentity};
-use std::collections::HashSet;
 use std::ffi::{OsString, c_void};
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
@@ -155,6 +154,38 @@ pub struct BinItem {
     pub time_deleted: i64,
     /// Tamaño que da la shell (`System.Size`; 0 si no lo da, como en las carpetas).
     pub size: u64,
+    /// Identidad (volumen + FileId) del `$R` (los datos) al enumerar. Al purgar se vuelve a leer: si no coincide, el
+    /// elemento cambió y se salta. `None` = no se pudo leer al enumerar: no se puede verificar y no se purga.
+    pub data_id: Option<FileIdentity>,
+    /// Identidad del `$I` hermano (los metadatos) al enumerar (misma regla).
+    pub meta_id: Option<FileIdentity>,
+}
+
+/// Identidad (volumen + FileId) de lo que hay en `p`, sin seguir enlaces. `None` si no se puede abrir o leer.
+fn identity_at(p: &Path) -> Option<FileIdentity> {
+    sys::open_for_query(p)
+        .and_then(|h| sys::meta(&h))
+        .ok()
+        .map(|m| m.identity)
+}
+
+/// El `$I` hermano EXACTO de un `$R`: `$R<token>[.ext]` -> `$I<token>[.ext]`. `None` si no es un `$R`.
+fn meta_sibling(data: &Path) -> Option<PathBuf> {
+    let name = data.file_name()?.to_str()?;
+    (name.starts_with("$R") && name.len() > 2)
+        .then(|| data.with_file_name(format!("$I{}", &name[2..])))
+}
+
+/// ¿Sigue siendo el elemento aprobado? Re-lee la identidad del `$R` y del `$I` y la compara con la capturada al enumerar.
+/// Sin identidad capturada o con otra distinta (alguien vació y volvió a llenar la Papelera, o sustituyó los archivos),
+/// no: el elemento se salta ("cambió desde la confirmación").
+fn bin_item_unchanged(item: &BinItem) -> bool {
+    let data = PathBuf::from(&item.id);
+    let (Some(want_data), Some(want_meta)) = (item.data_id, item.meta_id) else {
+        return false;
+    };
+    identity_at(&data) == Some(want_data)
+        && meta_sibling(&data).and_then(|m| identity_at(&m)) == Some(want_meta)
 }
 
 impl BinItem {
@@ -211,12 +242,18 @@ pub fn list_bin() -> Result<Vec<BinItem>> {
             let original_parent = PathBuf::from(OsString::from_wide(&loc));
             let time_deleted = filetime_to_unix(item2.GetFileTime(&SCID_DATE_DELETED)?);
             let size = item2.GetUInt64(&PKEY_Size).unwrap_or(0);
+            // Las identidades del `$R` y del `$I`, para volver a comprobarlas al purgar (M3).
+            let data = PathBuf::from(&id);
+            let data_id = identity_at(&data);
+            let meta_id = meta_sibling(&data).and_then(|m| identity_at(&m));
             out.push(BinItem {
                 id,
                 name,
                 original_parent,
                 time_deleted,
                 size,
+                data_id,
+                meta_id,
             });
         }
         Ok(out)
@@ -306,6 +343,9 @@ pub struct BatchOutcome {
     pub sink_aborted: bool,
     /// Solo al enviar: elementos a los que `PreDeleteItem` puso veto (la identidad no era la aprobada).
     pub vetoed: Vec<Veto>,
+    /// Solo al purgar: elementos de la lista que NO se purgaron porque su `$R` o su `$I` ya no tenían la identidad
+    /// capturada al enumerar (o no se pudo verificar): `id` de cada uno.
+    pub changed_bin: Vec<OsString>,
 }
 
 /// Un elemento que se entrega a la shell: su ruta original y la IDENTIDAD aprobada (volumen + FileId).
@@ -625,6 +665,7 @@ impl Operation {
             meta_removed: 0,
             sink_aborted: self.state.tripped.load(Ordering::SeqCst),
             vetoed,
+            changed_bin: Vec::new(),
         }
     }
 }
@@ -707,7 +748,9 @@ fn purge_items_flags(
         return Ok(BatchOutcome::default());
     }
     let _com = Com::init()?;
-    let wanted: HashSet<&OsString> = items.iter().map(|i| &i.id).collect();
+    let by_id: std::collections::HashMap<&OsString, &BinItem> =
+        items.iter().map(|i| (&i.id, i)).collect();
+    let mut changed: Vec<OsString> = Vec::new();
     let mut found: Vec<IShellItem> = Vec::with_capacity(items.len());
     // SAFETY: COM está inicializado en este hilo; todas las interfaces y cadenas son propias de esta función y se
     // liberan con el RAII de `windows` o con `take_pwstr`.
@@ -724,18 +767,25 @@ fn purge_items_flags(
             }
             let Some(item) = arr[0].take() else { break };
             if let Some(id) = display(&item, SIGDN_DESKTOPABSOLUTEPARSING)
-                && wanted.contains(&id)
+                && let Some(approved) = by_id.get(&id)
             {
-                found.push(item);
-                if found.len() == wanted.len() {
+                // M3: el elemento se identifica por `id` (un nombre), pero antes de tocarlo se comprueba que el `$R` y el
+                // `$I` son los mismos objetos que al enumerar.
+                if bin_item_unchanged(approved) {
+                    found.push(item);
+                } else {
+                    changed.push(id);
+                }
+                if found.len() + changed.len() == by_id.len() {
                     break;
                 }
             }
         }
     }
-    let mut out = BatchOutcome::default();
-    let by_id: std::collections::HashMap<&OsString, &BinItem> =
-        items.iter().map(|i| (&i.id, i)).collect();
+    let mut out = BatchOutcome {
+        changed_bin: changed,
+        ..BatchOutcome::default()
+    };
     for chunk in found.chunks(500) {
         if cancel.load(Ordering::Relaxed) {
             break;
@@ -771,11 +821,13 @@ fn purge_items_flags(
     Ok(out)
 }
 
-/// Lo que guarda un `$I` (metadatos de un elemento de la Papelera): versión, tamaño y ruta original.
+/// Lo que guarda un `$I` (metadatos de un elemento de la Papelera): versión, tamaño, cuándo se borró y ruta original.
 #[derive(Debug, PartialEq, Eq)]
 struct MetaInfo {
     version: u64,
     size: u64,
+    /// Momento del borrado (FILETIME), tal como lo guarda la shell en el desplazamiento 16.
+    deleted_ft: i64,
     original: PathBuf,
 }
 
@@ -784,6 +836,7 @@ fn parse_meta(b: &[u8]) -> Option<MetaInfo> {
     let u64_at = |at: usize| Some(u64::from_le_bytes(b.get(at..at + 8)?.try_into().ok()?));
     let version = u64_at(0)?;
     let size = u64_at(8)?;
+    let deleted_ft = u64_at(16)? as i64;
     let (start, max_units) = match version {
         1 => (24usize, 260usize),
         2 => {
@@ -811,23 +864,79 @@ fn parse_meta(b: &[u8]) -> Option<MetaInfo> {
     Some(MetaInfo {
         version,
         size,
+        deleted_ft,
         original: PathBuf::from(OsString::from_wide(&units)),
     })
 }
 
+/// ¿Es `info` (el `$I` leído) el de `item`, la lista aprobada? Compara TODO lo que el `$I` y la shell comparten: la carpeta
+/// de la que se borró, el nombre (la shell puede ocultar la extensión), el tamaño (cuando la shell lo da: 0 en las carpetas)
+/// y el instante del borrado. `data` es la ruta del `$R` (de él sale la extensión).
+fn meta_matches(info: &MetaInfo, item: &BinItem, data: &Path) -> bool {
+    use crate::paths::PathKey;
+    let same_folder = info
+        .original
+        .parent()
+        .is_some_and(|p| PathKey::new(p) == PathKey::new(&item.original_parent));
+    let ext = |p: &Path| {
+        p.extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .unwrap_or_default()
+    };
+    let lower = |s: &std::ffi::OsStr| s.to_string_lossy().to_lowercase();
+    let want = lower(&item.name);
+    let same_name = info.original.file_name().is_some_and(|n| {
+        lower(n) == want
+            || (info
+                .original
+                .file_stem()
+                .is_some_and(|stem| lower(stem) == want)
+                && ext(&info.original) == ext(data))
+    });
+    let same_size = item.size == 0 || info.size == item.size;
+    let same_time = filetime_to_unix(FILETIME {
+        dwLowDateTime: info.deleted_ft as u64 as u32,
+        dwHighDateTime: ((info.deleted_ft as u64) >> 32) as u32,
+    }) == item.time_deleted;
+    same_folder && same_name && same_size && same_time && ext(&info.original) == ext(data)
+}
+
+/// ¿Qué hay en la ruta del `$R`? Distingue "no existe" de "no se pudo saber" (un error de acceso NO es "no existe").
+#[derive(Debug, PartialEq, Eq)]
+enum DataState {
+    Gone,
+    Exists,
+    Unknown,
+}
+
+fn classify_data_error(code: sys::Win32) -> DataState {
+    // ERROR_FILE_NOT_FOUND y ERROR_PATH_NOT_FOUND: no existe. Cualquier otro (acceso denegado, uso compartido...): no se
+    // sabe.
+    if matches!(code, 2 | 3) {
+        DataState::Gone
+    } else {
+        DataState::Unknown
+    }
+}
+
+fn data_state(data: &Path) -> DataState {
+    match sys::open_for_query(data) {
+        Ok(_) => DataState::Exists,
+        Err(c) => classify_data_error(c),
+    }
+}
+
 /// Quita el `$I` que la shell dejó huérfano tras purgar el elemento `item` (cuyo `$R` ya no existe). Es lo único que este
 /// módulo hace por ruta dentro de `$Recycle.Bin`, y solo con TODAS estas condiciones:
-/// * el `$R` (el `id` del elemento) ya no existe, se llama `$R<token>[.ext]` y está en `<unidad>:\$Recycle.Bin\<SID del
-///   usuario actual>\`;
-/// * existe el hermano EXACTO `$I<token>[.ext]`, es un archivo normal pequeño (sin reparse point) y su contenido es un `$I`
-///   válido cuya ruta original cuelga de la misma carpeta que dice el elemento y con la misma extensión;
-/// * se abre en exclusiva y se lee, se interpreta y se borra por ese mismo handle.
+/// * el `$R` (el `id` del elemento) se llama `$R<token>[.ext]` y está en `<unidad>:\$Recycle.Bin\<SID del usuario
+///   actual>\`, y de verdad NO existe (un error de acceso no cuenta como "no existe": ver [`remove_orphan_meta_at`]);
+/// * existe el hermano EXACTO `$I<token>[.ext]`, con la misma identidad que al enumerar.
+///
+/// El resto de comprobaciones (contenido y borrado) están en [`remove_orphan_meta_at`], que no depende de dónde esté la
+/// carpeta y por eso se prueba con archivos sintéticos.
 fn remove_orphan_meta(item: &BinItem) -> bool {
     use crate::paths::PathKey;
     let data = PathBuf::from(&item.id);
-    if std::fs::symlink_metadata(&data).is_ok() {
-        return false;
-    }
     let (Some(name), Some(sid_dir)) = (data.file_name().and_then(|n| n.to_str()), data.parent())
     else {
         return false;
@@ -847,16 +956,34 @@ fn remove_orphan_meta(item: &BinItem) -> bool {
     if !(mine && root_ok && bin_name.eq_ignore_ascii_case("$Recycle.Bin")) {
         return false;
     }
-    let meta_path = sid_dir.join(format!("$I{}", &name[2..]));
+    let Some(meta_path) = meta_sibling(&data) else {
+        return false;
+    };
+    remove_orphan_meta_at(item, &data, &meta_path)
+}
+
+/// Las condiciones sobre el contenido (M3), con las rutas del `$R` y del `$I` dadas:
+/// * el `$R` no existe de verdad: solo "no encontrado" cuenta; cualquier otro error (acceso, uso compartido...) es
+///   "se desconoce" y el `$I` NO se borra;
+/// * el `$I` es un archivo normal pequeño (sin reparse point) con la MISMA identidad que se capturó al enumerar
+///   (`item.meta_id`), se abre en exclusiva y se lee, se interpreta y se borra por ese mismo handle;
+/// * su contenido coincide con lo aprobado: carpeta de origen, nombre, tamaño (si la shell lo da) y momento del borrado.
+fn remove_orphan_meta_at(item: &BinItem, data: &Path, meta_path: &Path) -> bool {
+    if data_state(data) != DataState::Gone {
+        return false;
+    }
+    let Some(want_id) = item.meta_id else {
+        return false;
+    };
     // Se abre en EXCLUSIVA primero y se lee, se interpreta y se borra por ese MISMO handle: lo que se lee es lo que se
     // borra.
-    let Ok(h) = crate::sys::open_path_exclusive_read(&meta_path) else {
+    let Ok(h) = crate::sys::open_path_exclusive_read(meta_path) else {
         return false;
     };
     let Ok(m) = crate::sys::meta(&h) else {
         return false;
     };
-    if m.is_dir || m.is_reparse() || m.logical > 70_000 {
+    if m.is_dir || m.is_reparse() || m.logical > 70_000 || m.identity != want_id {
         return false;
     }
     let Ok(bytes) = crate::sys::read_small(&h, 70_000) else {
@@ -865,16 +992,7 @@ fn remove_orphan_meta(item: &BinItem) -> bool {
     let Some(info) = parse_meta(&bytes) else {
         return false;
     };
-    let same_folder = info
-        .original
-        .parent()
-        .is_some_and(|p| PathKey::new(p) == PathKey::new(&item.original_parent));
-    let ext = |p: &Path| {
-        p.extension()
-            .map(|e| e.to_string_lossy().to_lowercase())
-            .unwrap_or_default()
-    };
-    if !same_folder || ext(&info.original) != ext(&data) {
+    if !meta_matches(&info, item, data) {
         return false;
     }
     crate::sys::delete_on_handle(&h).is_ok()
@@ -1091,17 +1209,27 @@ mod tests {
         assert_eq!(ids(), before, "la Papelera queda exactamente como estaba");
     }
 
-    fn meta_v2(original: &str) -> Vec<u8> {
+    /// Un `$I` de versión 2 con el tamaño, el instante de borrado (FILETIME) y la ruta original dados.
+    fn meta_v2_with(original: &str, size: u64, deleted_ft: i64) -> Vec<u8> {
         let wide: Vec<u16> = original.encode_utf16().chain(Some(0)).collect();
         let mut b = Vec::new();
         b.extend_from_slice(&2u64.to_le_bytes());
-        b.extend_from_slice(&1234u64.to_le_bytes());
-        b.extend_from_slice(&0u64.to_le_bytes());
+        b.extend_from_slice(&size.to_le_bytes());
+        b.extend_from_slice(&(deleted_ft as u64).to_le_bytes());
         b.extend_from_slice(&(wide.len() as u32).to_le_bytes());
         for u in wide {
             b.extend_from_slice(&u.to_le_bytes());
         }
         b
+    }
+
+    fn meta_v2(original: &str) -> Vec<u8> {
+        meta_v2_with(original, 1234, 0)
+    }
+
+    /// FILETIME de un instante Unix.
+    fn ft_of(unix: i64) -> i64 {
+        (unix + 11_644_473_600) * 10_000_000
     }
 
     #[test]
@@ -1112,20 +1240,25 @@ mod tests {
             MetaInfo {
                 version: 2,
                 size: 1234,
+                deleted_ft: 0,
                 original: PathBuf::from(r"C:\a\b\uno.txt")
             }
         );
+        // El instante del borrado sale del desplazamiento 16.
+        let con_fecha =
+            parse_meta(&meta_v2_with(r"C:\a\b\uno.txt", 7, ft_of(1_700_000_000))).unwrap();
+        assert_eq!(con_fecha.deleted_ft, ft_of(1_700_000_000));
         let mut v1 = Vec::new();
         v1.extend_from_slice(&1u64.to_le_bytes());
         v1.extend_from_slice(&99u64.to_le_bytes());
-        v1.extend_from_slice(&0u64.to_le_bytes());
+        v1.extend_from_slice(&5u64.to_le_bytes());
         let mut path: Vec<u16> = r"C:\x\y.bin".encode_utf16().collect();
         path.resize(260, 0);
         for u in path {
             v1.extend_from_slice(&u.to_le_bytes());
         }
         let v1 = parse_meta(&v1).unwrap();
-        assert_eq!((v1.version, v1.size), (1, 99));
+        assert_eq!((v1.version, v1.size, v1.deleted_ft), (1, 99, 5));
         assert_eq!(v1.original, PathBuf::from(r"C:\x\y.bin"));
         // Basura, versiones desconocidas, truncados y rutas vacías.
         assert!(parse_meta(&[]).is_none());
@@ -1138,36 +1271,263 @@ mod tests {
         assert!(parse_meta(&meta_v2(r"C:\a\b")[..30]).is_none());
     }
 
-    #[test]
-    fn el_i_huerfano_solo_se_quita_si_todo_cuadra() {
-        let sb = Sandbox::new();
-        // Fuera de `$Recycle.Bin\<mi SID>\`: nunca se toca, aunque el nombre y el contenido parezcan los de un `$I`.
-        let fake_dir = sb.mkdir(&format!(
-            "$Recycle.Bin/{}",
-            ["S-1-5", "-21-1-2-3-1001"].concat()
-        ));
-        std::fs::write(
-            fake_dir.join("$IABC123.txt"),
-            meta_v2(&format!("{}\\p\\uno.txt", sb.long_root().display())),
+    const UNIX_T: i64 = 1_700_000_000;
+
+    /// Un "elemento de la Papelera" SINTÉTICO en una carpeta de la prueba (no la real): `$R<token>.txt` ya no existe y el
+    /// `$I<token>.txt` hermano tiene el contenido dado. Devuelve el elemento tal como lo habría enumerado `list_bin`
+    /// (identidades del `$R` y del `$I`), y las rutas.
+    struct Orphan {
+        item: BinItem,
+        data: PathBuf,
+        meta: PathBuf,
+    }
+
+    fn orphan(sb: &Sandbox, token: &str, content: &[u8]) -> Orphan {
+        let dir = sb.mkdir("bin/S-synthetic");
+        let data = dir.join(format!("$R{token}.txt"));
+        let meta = dir.join(format!("$I{token}.txt"));
+        std::fs::write(&data, b"datos del elemento").unwrap();
+        std::fs::write(&meta, content).unwrap();
+        let data_id = identity_at(&data);
+        let meta_id = identity_at(&meta);
+        // El `$R` ya fue purgado por la shell.
+        std::fs::remove_file(&data).unwrap();
+        Orphan {
+            item: BinItem {
+                id: data.clone().into_os_string(),
+                name: OsString::from("uno.txt"),
+                original_parent: sb.long("p"),
+                time_deleted: UNIX_T,
+                size: 1234,
+                data_id,
+                meta_id,
+            },
+            data,
+            meta,
+        }
+    }
+
+    fn good_meta(sb: &Sandbox) -> Vec<u8> {
+        meta_v2_with(
+            &format!("{}\\p\\uno.txt", sb.long_root().display()),
+            1234,
+            ft_of(UNIX_T),
         )
-        .unwrap();
-        let item = BinItem {
-            id: fake_dir.join("$RABC123.txt").into_os_string(),
-            name: OsString::from("uno.txt"),
-            original_parent: sb.long("p"),
-            time_deleted: 0,
-            size: 0,
-        };
-        assert!(!remove_orphan_meta(&item));
-        assert!(fake_dir.join("$IABC123.txt").exists());
-        // Un id que no es un `$R`, o cuyo `$R` sigue existiendo.
+    }
+
+    /// M3: el `$I` huérfano solo se quita si TODO cuadra con lo aprobado: con archivos sintéticos (la función toma las
+    /// rutas), cada discrepancia deja el `$I` intacto.
+    #[test]
+    fn el_i_huerfano_solo_se_quita_si_todo_cuadra_con_lo_aprobado() {
+        let sb = Sandbox::new();
+        // El caso bueno: se quita (y solo el `$I`).
+        let o = orphan(&sb, "GOOD01", &good_meta(&sb));
+        assert!(remove_orphan_meta_at(&o.item, &o.data, &o.meta));
+        assert!(!o.meta.exists());
+        // La shell oculta la extensión (`HideFileExt`): el nombre aprobado es `uno` y sigue valiendo.
+        let mut o = orphan(&sb, "HIDEXT", &good_meta(&sb));
+        o.item.name = OsString::from("uno");
+        assert!(remove_orphan_meta_at(&o.item, &o.data, &o.meta));
+        // En las carpetas la shell no da tamaño (0): no se compara.
+        let mut o = orphan(&sb, "DIR001", &good_meta(&sb));
+        o.item.size = 0;
+        assert!(remove_orphan_meta_at(&o.item, &o.data, &o.meta));
+
+        // Cada discrepancia: el `$I` se queda.
+        type Tamper = Box<dyn Fn(&mut BinItem, &Sandbox)>;
+        let cases: Vec<(&str, Tamper)> = vec![
+            (
+                "nombre",
+                Box::new(|i, _| i.name = OsString::from("otro.txt")),
+            ),
+            ("tamano", Box::new(|i, _| i.size = 999)),
+            ("fecha", Box::new(|i, _| i.time_deleted += 1)),
+            (
+                "carpeta",
+                Box::new(|i, sb| i.original_parent = sb.long("otra")),
+            ),
+            ("sin identidad del $I", Box::new(|i, _| i.meta_id = None)),
+            (
+                "identidad del $I distinta",
+                Box::new(|i, _| {
+                    i.meta_id = Some(FileIdentity {
+                        volume_serial: 1,
+                        file_id: 2,
+                    })
+                }),
+            ),
+        ];
+        for (n, (why, f)) in cases.iter().enumerate() {
+            let mut o = orphan(&sb, &format!("BAD{n:03}"), &good_meta(&sb));
+            f(&mut o.item, &sb);
+            assert!(!remove_orphan_meta_at(&o.item, &o.data, &o.meta), "{why}");
+            assert!(o.meta.exists(), "{why}: el $I debe seguir");
+        }
+        // Una extensión distinta de la del `$R`.
+        let o = orphan(
+            &sb,
+            "EXT001",
+            &meta_v2_with(
+                &format!("{}\\p\\uno.doc", sb.long_root().display()),
+                1234,
+                ft_of(UNIX_T),
+            ),
+        );
+        assert!(!remove_orphan_meta_at(&o.item, &o.data, &o.meta));
+        assert!(o.meta.exists());
+        // Un `$I` cuyo contenido no es un `$I`.
+        let o = orphan(&sb, "JUNK01", b"esto no es un $I");
+        assert!(!remove_orphan_meta_at(&o.item, &o.data, &o.meta));
+        assert!(o.meta.exists());
+    }
+
+    /// Fuera de `<unidad>:\$Recycle.Bin\<mi SID>\` el `$I` nunca se toca, aunque el nombre y el contenido (e incluso las
+    /// identidades y los metadatos) parezcan los de un elemento de la Papelera.
+    #[test]
+    fn el_i_huerfano_fuera_de_la_papelera_del_usuario_nunca_se_toca() {
+        let sb = Sandbox::new();
+        let o = orphan(&sb, "LOC001", &good_meta(&sb));
+        // El contenido y las identidades cuadran (se quitaría con `remove_orphan_meta_at`), pero la ruta no es la de la
+        // Papelera del usuario.
+        assert!(!remove_orphan_meta(&o.item));
+        assert!(o.meta.exists());
+        // Un id que no es un `$R`.
         let not_r = BinItem {
-            id: fake_dir.join("otra.txt").into_os_string(),
-            ..item.clone()
+            id: o.data.with_file_name("otra.txt").into_os_string(),
+            ..o.item.clone()
         };
         assert!(!remove_orphan_meta(&not_r));
-        std::fs::write(fake_dir.join("$RABC123.txt"), b"datos").unwrap();
-        assert!(!remove_orphan_meta(&item));
+        assert!(o.meta.exists());
+    }
+
+    /// M3: si el `$R` existe todavía, o si preguntar por él da un error que NO es "no encontrado" (acceso, nombre no
+    /// válido...), el `$I` NO se borra: un error es "se desconoce", no "no existe".
+    #[test]
+    fn un_error_al_consultar_el_r_no_cuenta_como_que_no_existe() {
+        for c in [2, 3] {
+            assert_eq!(classify_data_error(c), DataState::Gone, "{c}");
+        }
+        for c in [1, 5, 32, 87, 123, 1920] {
+            assert_eq!(classify_data_error(c), DataState::Unknown, "{c}");
+        }
+        let sb = Sandbox::new();
+        // Existe -> Exists.
+        let o = orphan(&sb, "STATE1", &good_meta(&sb));
+        std::fs::write(&o.data, b"x").unwrap();
+        assert_eq!(data_state(&o.data), DataState::Exists);
+        assert!(!remove_orphan_meta_at(&o.item, &o.data, &o.meta));
+        assert!(o.meta.exists());
+        std::fs::remove_file(&o.data).unwrap();
+        assert_eq!(data_state(&o.data), DataState::Gone);
+        // Una ruta que da un error distinto de "no encontrado" (nombre no válido): desconocido, el `$I` se queda.
+        let invalid = o.data.with_file_name("$RSTATE1*.txt");
+        assert_eq!(data_state(&invalid), DataState::Unknown);
+        assert!(!remove_orphan_meta_at(&o.item, &invalid, &o.meta));
+        assert!(o.meta.exists());
+        // Y con el `$R` realmente ausente, sí.
+        assert!(remove_orphan_meta_at(&o.item, &o.data, &o.meta));
+    }
+
+    /// M3: al purgar, el `$R` y el `$I` tienen que seguir siendo los mismos objetos que al enumerar.
+    #[test]
+    fn un_elemento_de_la_papelera_cuyo_r_o_i_cambiaron_no_es_el_aprobado() {
+        let sb = Sandbox::new();
+        let dir = sb.mkdir("bin/S-synthetic");
+        let (data, meta) = (dir.join("$RTOKEN1.txt"), dir.join("$ITOKEN1.txt"));
+        std::fs::write(&data, b"datos").unwrap();
+        std::fs::write(&meta, b"meta").unwrap();
+        let item = BinItem {
+            id: data.clone().into_os_string(),
+            name: OsString::from("uno.txt"),
+            original_parent: sb.long("p"),
+            time_deleted: UNIX_T,
+            size: 5,
+            data_id: identity_at(&data),
+            meta_id: identity_at(&meta),
+        };
+        assert!(bin_item_unchanged(&item));
+        // Sin identidades capturadas: no se puede verificar.
+        assert!(!bin_item_unchanged(&BinItem {
+            data_id: None,
+            ..item.clone()
+        }));
+        assert!(!bin_item_unchanged(&BinItem {
+            meta_id: None,
+            ..item.clone()
+        }));
+        // El `$I` sustituido por otro archivo con el mismo nombre (otra identidad).
+        std::fs::remove_file(&meta).unwrap();
+        std::fs::write(&meta, b"meta").unwrap();
+        assert!(!bin_item_unchanged(&item), "el $I ya no es el mismo objeto");
+        // El `$R` sustituido.
+        let item2 = BinItem {
+            meta_id: identity_at(&meta),
+            ..item.clone()
+        };
+        assert!(bin_item_unchanged(&item2));
+        std::fs::remove_file(&data).unwrap();
+        std::fs::write(&data, b"datos").unwrap();
+        assert!(
+            !bin_item_unchanged(&item2),
+            "el $R ya no es el mismo objeto"
+        );
+        // Y si desaparece, tampoco.
+        std::fs::remove_file(&data).unwrap();
+        assert!(!bin_item_unchanged(&item2));
+    }
+
+    /// M3 con la shell REAL: un elemento PROPIO cuya identidad capturada ya no cuadra se SALTA al purgar (no se toca y
+    /// consta como cambiado); con la identidad buena se purga. La Papelera de después es la de antes.
+    #[test]
+    fn purgar_salta_un_elemento_propio_cuya_identidad_no_cuadra() {
+        let _lock = bin_lock();
+        if !bin_usable() {
+            return;
+        }
+        let before = ids();
+        let sb = Sandbox::new();
+        let _guard = BinGuard { uuid: sb.uuid() };
+        sb.write("q/uno.txt", 600);
+        recycle_paths(&send_items(&[sb.long("q/uno.txt")]), RecycleMode::Normal).unwrap();
+        let mine: Vec<BinItem> = list_bin()
+            .unwrap()
+            .into_iter()
+            .filter(|i| is_mine(i, &sb.uuid()))
+            .collect();
+        assert_eq!(mine.len(), 1, "{mine:?}");
+        let good = mine[0].clone();
+        assert!(good.data_id.is_some() && good.meta_id.is_some(), "{good:?}");
+        // Identidad del `$R` falseada: se salta.
+        let tampered = BinItem {
+            data_id: Some(FileIdentity {
+                volume_serial: 1,
+                file_id: 2,
+            }),
+            ..good.clone()
+        };
+        let r = purge_items(std::slice::from_ref(&tampered), &AtomicBool::new(false)).unwrap();
+        assert_eq!(r.changed_bin, vec![tampered.id.clone()]);
+        assert!(r.events.is_empty(), "la shell no vio nada: {:?}", r.events);
+        assert!(PathBuf::from(&good.id).exists(), "el $R sigue ahí");
+        // Lo mismo con el `$I`.
+        let tampered_meta = BinItem {
+            meta_id: None,
+            ..good.clone()
+        };
+        let r = purge_items(
+            std::slice::from_ref(&tampered_meta),
+            &AtomicBool::new(false),
+        )
+        .unwrap();
+        assert_eq!(r.changed_bin.len(), 1);
+        assert!(PathBuf::from(&good.id).exists());
+        // Con las identidades buenas, se purga y no queda ni el `$I` huérfano.
+        let meta_path = meta_sibling(Path::new(&good.id)).unwrap();
+        let r = purge_items(std::slice::from_ref(&good), &AtomicBool::new(false)).unwrap();
+        assert!(r.changed_bin.is_empty());
+        assert!(r.events.iter().any(|e| e.item == good.id && e.succeeded()));
+        assert!(!PathBuf::from(&good.id).exists() && !meta_path.exists());
+        assert_eq!(ids(), before);
     }
 
     #[test]

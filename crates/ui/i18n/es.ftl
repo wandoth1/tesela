@@ -454,6 +454,11 @@ sum-bin-failed =
         [one] La Papelera no se pudo vaciar del todo: { $count } elemento sigue ahí.
        *[other] La Papelera no se pudo vaciar del todo: { $count } elementos siguen ahí.
     }
+sum-bin-changed =
+    { $n ->
+        [one] { $count } elemento de la Papelera cambió desde la confirmación y no se tocó.
+       *[other] { $count } elementos de la Papelera cambiaron desde la confirmación y no se tocaron.
+    }
 sum-cancelled = Cancelaste la limpieza: lo que ya estaba hecho se queda.
 sum-diverge = "Eliminado definitivamente" y "liberado ahora" no coinciden: puede ser por enlaces duros, archivos que otro programa tenía abiertos o cambios del propio Windows.
 

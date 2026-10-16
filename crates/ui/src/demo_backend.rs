@@ -346,6 +346,8 @@ impl Backend for DemoBackend {
                             )),
                             time_deleted: DEMO_NOW as i64 - 86_400 * (i as i64 % 60),
                             size: 0,
+                            data_id: None,
+                            meta_id: None,
                         })
                         .collect();
                     plan.bin = Some(BinPlan {
@@ -388,6 +390,7 @@ impl Backend for DemoBackend {
                 requested: b.items.len() as u64,
                 purged: b.items.len() as u64,
                 still_there: 0,
+                changed: 0,
                 bytes_hint: b.bytes_hint,
                 failed: false,
             });

@@ -453,6 +453,11 @@ sum-bin-failed =
         [one] The Recycle Bin could not be emptied completely: { $count } item is still there.
        *[other] The Recycle Bin could not be emptied completely: { $count } items are still there.
     }
+sum-bin-changed =
+    { $n ->
+        [one] { $count } Recycle Bin item changed since you confirmed and was not touched.
+       *[other] { $count } Recycle Bin items changed since you confirmed and were not touched.
+    }
 sum-cancelled = You cancelled the cleanup: what was already done stays done.
 sum-diverge = "Deleted permanently" and "freed now" differ: this can be because of hard links, files another program had open, or changes made by Windows itself.
 

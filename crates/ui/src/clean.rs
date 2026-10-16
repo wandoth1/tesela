@@ -1045,10 +1045,13 @@ fn summary_lines(env: &Env, s: &Summary) -> Vec<(String, bool)> {
     if t.shared_files > 0 {
         v.push((n("sum-shared", t.shared_files), false));
     }
-    if let Some(b) = &r.bin
-        && b.still_there > 0
-    {
-        v.push((n("sum-bin-failed", b.still_there), true));
+    if let Some(b) = &r.bin {
+        if b.changed > 0 {
+            v.push((n("sum-bin-changed", b.changed), true));
+        }
+        if b.still_there > b.changed {
+            v.push((n("sum-bin-failed", b.still_there - b.changed), true));
+        }
     }
     // Si "liberado ahora" y "eliminado" divergen, se dice por qué en una línea.
     if let Some(f) = r.freed_now {

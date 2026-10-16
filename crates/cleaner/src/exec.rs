@@ -189,6 +189,9 @@ pub struct BinReport {
     pub purged: u64,
     /// Elementos de la lista que siguen.
     pub still_there: u64,
+    /// De ellos, los que NO se tocaron porque su `$R` o su `$I` ya no eran los de la enumeración (cambiaron desde la
+    /// confirmación) o no se pudieron verificar.
+    pub changed: u64,
     /// Tamaño aproximado de la Papelera al confirmar.
     pub bytes_hint: u64,
     /// La shell no pudo hacer la operación.
@@ -538,6 +541,7 @@ impl Cleaner {
                     .collect();
                 rep.purged = purged.len() as u64;
                 rep.still_there = rep.requested - rep.purged;
+                rep.changed = out.changed_bin.len() as u64;
                 rep.failed = out.error.is_some();
             }
             Err(_) => {
