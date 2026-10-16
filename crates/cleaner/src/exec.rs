@@ -711,6 +711,8 @@ impl Cleaner {
         let shell: &dyn RecycleShell = self.shell.as_ref();
         let mut results: HashMap<usize, (ItemStatus, StatsSnapshot)> = HashMap::new();
         let cancel = &progress.cancel;
+        // Para las comprobaciones POSTERIORES a la shell (¿intacto el contenido?): no se cancelan.
+        let verify_cancel = Arc::new(AtomicBool::new(false));
         let emit = |it: &PlanItem, id: Option<FileIdentity>, links: u32, o: Outcome| {
             if let Some(s) = &sink {
                 s(Event {
@@ -971,16 +973,16 @@ impl Cleaner {
                         } else {
                             judge(p, ev, shell, outcome.any_aborted, outcome.sink_aborted)
                         };
-                        // R6: "la shell no tocó nada" de un DIRECTORIO solo vale si tampoco tocó lo que contiene: el
-                        // objeto carpeta intacto no dice nada de sus hijos. Se vuelve a medir (mismo recorrido relativo) y
-                        // tamaño y número de entradas tienen que ser los de justo antes del envío; si no (o si no se puede
-                        // medir) es un borrado definitivo, aunque sea parcial.
-                        if matches!(status, ItemStatus::NotRecycled(RecycleFail::Shell(_)))
+                        // R6 + A-M1: "no se envió y sigue donde estaba" de un DIRECTORIO solo vale si tampoco se tocó lo
+                        // que contiene: el objeto carpeta intacto no dice nada de sus hijos. Vale para CUALQUIER resultado
+                        // de "no enviado" tras pasar por la shell (la shell dijo "eliminado" sin tocar, falló, no lo
+                        // procesó...): un fallo puede llegar después de perder un hijo. Se vuelve a medir (mismo recorrido
+                        // relativo, COMPLETO) y la huella del contenido tiene que ser la de justo antes del envío; si no (o
+                        // si no se puede medir) es un borrado definitivo, aunque sea parcial. La comprobación NO se
+                        // interrumpe por la cancelación: debe terminar para poder decir la verdad del informe.
+                        if matches!(status, ItemStatus::NotRecycled(_))
                             && it.is_dir()
-                            && ev.is_some_and(|e| {
-                                e.succeeded() && e.state == recycle::BinState::Deleted
-                            })
-                            && !self.dir_untouched(it, p, cancel)
+                            && !self.dir_untouched(it, p, &verify_cancel)
                         {
                             status = ItemStatus::DeletedUnexpectedly;
                             o = Outcome::DeletedUnexpectedly;
@@ -1341,8 +1343,10 @@ struct Pending {
     snapshot: Option<DirSnap>,
 }
 
-/// Lo que se compara de un directorio antes y después: bytes en disco, tamaño lógico, archivos, directorios y lo compartido.
-type DirSnap = (u64, u64, u64, u64, u64, u64);
+/// Lo que se compara de un directorio antes y después: bytes en disco, tamaño lógico, archivos, directorios, lo compartido y
+/// la HUELLA del contenido (independiente del orden: identidad, tamaños y enlaces de cada entrada). Los totales solos no
+/// bastan: quitar un hijo y crear otro del mismo tamaño los deja iguales (A-M1).
+type DirSnap = (u64, u64, u64, u64, u64, u64, u64, u64);
 
 fn snap_of(s: &StatsSnapshot) -> DirSnap {
     (
@@ -1352,6 +1356,8 @@ fn snap_of(s: &StatsSnapshot) -> DirSnap {
         s.dirs,
         s.shared_files,
         s.shared_bytes,
+        s.fp_sum,
+        s.fp_xor,
     )
 }
 
@@ -1485,18 +1491,24 @@ fn judge(
 ) -> (ItemStatus, Outcome) {
     use recycle::BinState;
     let Some(ev) = ev else {
-        // La shell no llegó a procesarlo: si sigue ahí, no se envió; si no, no se puede saber qué pasó.
-        return if std::fs::symlink_metadata(&p.path).is_ok() {
-            let why = if sink_aborted {
-                RecycleFail::Stopped
-            } else if aborted {
-                RecycleFail::Aborted
-            } else {
-                RecycleFail::NotProcessed
-            };
-            (ItemStatus::NotRecycled(why), Outcome::NotRecycled)
-        } else {
-            (ItemStatus::Unverified, Outcome::Unverified)
+        // La shell no llegó a procesarlo. "No se envió" solo se afirma si el OBJETO aprobado sigue intacto en su sitio (A-M1);
+        // si su guarda está pendiente de borrar, la shell lo eliminó sin avisar; si no se puede saber, no se afirma nada.
+        return match in_place(p) {
+            InPlace::Intact => {
+                let why = if sink_aborted {
+                    RecycleFail::Stopped
+                } else if aborted {
+                    RecycleFail::Aborted
+                } else {
+                    RecycleFail::NotProcessed
+                };
+                (ItemStatus::NotRecycled(why), Outcome::NotRecycled)
+            }
+            InPlace::Deleted => (
+                ItemStatus::DeletedUnexpectedly,
+                Outcome::DeletedUnexpectedly,
+            ),
+            InPlace::Unknown => (ItemStatus::Unverified, Outcome::Unverified),
         };
     };
     if !ev.succeeded() {
@@ -1506,7 +1518,17 @@ fn judge(
             RecycleFail::Denied => Outcome::Denied,
             _ => Outcome::NotRecycled,
         };
-        return (ItemStatus::NotRecycled(fail), o);
+        // A-M1: un resultado de FALLO no prueba que la shell no tocara nada (puede haber perdido un hijo antes de fallar).
+        // Se aplica el mismo juicio que a un borrado: el objeto aprobado, intacto en su sitio. (Si es un directorio, quien
+        // llama comprueba además su contenido.)
+        return match in_place(p) {
+            InPlace::Intact => (ItemStatus::NotRecycled(fail), o),
+            InPlace::Deleted => (
+                ItemStatus::DeletedUnexpectedly,
+                Outcome::DeletedUnexpectedly,
+            ),
+            InPlace::Unknown => (ItemStatus::Unverified, Outcome::Unverified),
+        };
     }
     match &ev.state {
         BinState::Deleted => {
@@ -1566,6 +1588,26 @@ fn untouched_by_shell(p: &Pending) -> bool {
         .and_then(|h| sys::meta(&h))
         .is_ok_and(|m| m.identity == p.identity);
     not_pending && same_object
+}
+
+/// Dónde está el objeto aprobado tras una operación de la shell que no lo envió (A-M1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum InPlace {
+    /// El handle de guarda no está pendiente de borrar Y la ruta, reabierta, da la misma identidad: sigue donde estaba.
+    Intact,
+    /// El handle de guarda está pendiente de borrar: la shell lo eliminó (el nombre sigue visible hasta soltar la guarda).
+    Deleted,
+    /// Ni intacto ni pendiente de borrar (la ruta ya no es el objeto, o no se pudo leer): no se puede afirmar nada.
+    Unknown,
+}
+
+/// Juicio por OBJETO de un elemento que no llegó a la Papelera (ver [`InPlace`]).
+fn in_place(p: &Pending) -> InPlace {
+    match sys::meta(&p.held) {
+        Ok(m) if m.delete_pending => InPlace::Deleted,
+        Ok(_) if untouched_by_shell(p) => InPlace::Intact,
+        _ => InPlace::Unknown,
+    }
 }
 
 /// Traduce el `HRESULT` de una eliminación fallida de la shell.

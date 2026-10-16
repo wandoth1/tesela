@@ -696,3 +696,78 @@ fn los_nombres_con_unidades_sueltas_se_protegen_y_se_borran_por_separado() {
     assert!(!sb.path("R").join(&b).exists(), "el otro se borra");
     assert_eq!(r.stats().protected, 1);
 }
+
+// ---- A-M1: la huella del contenido ----------------------------------------------------------------------------------
+
+/// La huella no depende del ORDEN ni del número de hilos (la suma y el XOR son conmutativos), y es la misma entre dos
+/// recorridos del mismo árbol.
+#[test]
+fn la_huella_no_depende_del_orden_ni_de_los_hilos() {
+    let sb = Sandbox::new();
+    for i in 0..60 {
+        sb.write(&format!("R/d{}/f{i:02}.bin", i % 7), 100 + i * 37);
+    }
+    sb.write("R/raiz.bin", 4_000);
+    let fp = |threads: usize| {
+        let s = run_contents(&sb, "R", Mode::Measure, 0, no_protection(), threads).stats();
+        (s.fp_sum, s.fp_xor)
+    };
+    let base = fp(1);
+    assert_ne!(base, (0, 0));
+    for t in [2, 4, 8, 8] {
+        assert_eq!(fp(t), base, "{t} hilos");
+    }
+}
+
+/// Quitar un hijo y poner otro del MISMO nombre y tamaño deja los totales iguales y cambia la huella (otro `FileId`); también
+/// la cambia el número de enlaces de un archivo y que una entrada pase a estar protegida.
+#[test]
+fn la_huella_cambia_si_se_sustituye_un_hijo_por_otro_del_mismo_tamano() {
+    let sb = Sandbox::new();
+    sb.write("R/a.bin", 3_000);
+    sb.write("R/b.bin", 3_000);
+    let measure = |prot: Arc<Protection>| run_contents(&sb, "R", Mode::Measure, 0, prot, 2).stats();
+    let before = measure(no_protection());
+    fs::remove_file(sb.path("R/a.bin")).unwrap();
+    sb.write("R/a.bin", 3_000);
+    let after = measure(no_protection());
+    assert_eq!(
+        (before.bytes, before.logical, before.files, before.dirs),
+        (after.bytes, after.logical, after.files, after.dirs),
+        "los totales no lo delatan"
+    );
+    assert_ne!((before.fp_sum, before.fp_xor), (after.fp_sum, after.fp_xor));
+    // Un enlace duro más al mismo archivo: otros `links`.
+    let b0 = measure(no_protection());
+    sb.hard_link("R/b.bin", "R/b2.bin");
+    let b1 = measure(no_protection());
+    assert_ne!((b0.fp_sum, b0.fp_xor), (b1.fp_sum, b1.fp_xor));
+    fs::remove_file(sb.path("R/b2.bin")).unwrap();
+    assert_eq!(
+        {
+            let s = measure(no_protection());
+            (s.fp_sum, s.fp_xor)
+        },
+        (b0.fp_sum, b0.fp_xor),
+        "vuelta al principio: la misma huella"
+    );
+    // La misma entrada tratada de otra forma (aquí, protegida) también cambia la huella.
+    let prot = measure(protection(&sb, &["R/a.bin"], &[]));
+    assert_ne!((prot.fp_sum, prot.fp_xor), (b0.fp_sum, b0.fp_xor));
+}
+
+#[test]
+fn el_hash_de_una_entrada_depende_de_todos_sus_campos() {
+    let base = entry_fingerprint(1, 7, 10, 20, 1);
+    assert_eq!(base, entry_fingerprint(1, 7, 10, 20, 1));
+    for other in [
+        entry_fingerprint(2, 7, 10, 20, 1),
+        entry_fingerprint(1, 8, 10, 20, 1),
+        entry_fingerprint(1, 7 | (1u128 << 100), 10, 20, 1),
+        entry_fingerprint(1, 7, 11, 20, 1),
+        entry_fingerprint(1, 7, 10, 21, 1),
+        entry_fingerprint(1, 7, 10, 20, 2),
+    ] {
+        assert_ne!(other, base);
+    }
+}

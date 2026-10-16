@@ -409,38 +409,38 @@ sum-shared =
     }
 sum-unexpected =
     { $n ->
-        [one] { $count } item did not fit in the Recycle Bin and was deleted permanently.
-       *[other] { $count } items did not fit in the Recycle Bin and were deleted permanently.
+        [one] { $count } item was deleted permanently (all or part of it) instead of going to the Recycle Bin, for example because it did not fit.
+       *[other] { $count } items were deleted permanently (all or part of them) instead of going to the Recycle Bin, for example because they did not fit.
     }
-sum-shell-error = The Windows Recycle Bin returned an error (0x{ $code }). Whatever could not be sent is still where it was.
+sum-shell-error = The Windows Recycle Bin returned an error (0x{ $code }). Each item that could not be sent was checked: whatever is still intact in place was not touched and the rest is counted separately.
 sum-recycle-stopped =
     { $n ->
-        [0] Sending to the Recycle Bin was stopped: Windows permanently deleted an item that did not fit. As a precaution nothing else was touched.
-        [one] Sending to the Recycle Bin was stopped: Windows permanently deleted an item that did not fit. As a precaution { $count } more item was not sent: it is still where it was.
-       *[other] Sending to the Recycle Bin was stopped: Windows permanently deleted an item that did not fit. As a precaution { $count } more items were not sent: they are still where they were.
+        [0] Sending to the Recycle Bin was stopped: Windows permanently deleted an item (or part of it). As a precaution nothing else was touched.
+        [one] Sending to the Recycle Bin was stopped: Windows permanently deleted an item (or part of it). As a precaution { $count } more item was not sent: it was not touched.
+       *[other] Sending to the Recycle Bin was stopped: Windows permanently deleted an item (or part of it). As a precaution { $count } more items were not sent: they were not touched.
     }
 sum-recycle-stopped-unverified =
     { $n ->
         [0] Sending to the Recycle Bin was stopped: what happened to one item could not be verified. As a precaution nothing else was touched.
-        [one] Sending to the Recycle Bin was stopped: what happened to one item could not be verified. As a precaution { $count } more item was not sent: it is still where it was.
-       *[other] Sending to the Recycle Bin was stopped: what happened to one item could not be verified. As a precaution { $count } more items were not sent: they are still where they were.
+        [one] Sending to the Recycle Bin was stopped: what happened to one item could not be verified. As a precaution { $count } more item was not sent: it was not touched.
+       *[other] Sending to the Recycle Bin was stopped: what happened to one item could not be verified. As a precaution { $count } more items were not sent: they were not touched.
     }
 sum-recycle-stopped-changed =
     { $n ->
         [0] Sending to the Recycle Bin was stopped: one item changed right before it was sent and was not sent. As a precaution nothing else was touched.
-        [one] Sending to the Recycle Bin was stopped: one item changed right before it was sent and was not sent. As a precaution { $count } more item was not sent: it is still where it was.
-       *[other] Sending to the Recycle Bin was stopped: one item changed right before it was sent and was not sent. As a precaution { $count } more items were not sent: they are still where they were.
+        [one] Sending to the Recycle Bin was stopped: one item changed right before it was sent and was not sent. As a precaution { $count } more item was not sent: it was not touched.
+       *[other] Sending to the Recycle Bin was stopped: one item changed right before it was sent and was not sent. As a precaution { $count } more items were not sent: they were not touched.
     }
 sum-recycle-stopped-declined =
     { $n ->
-        [0] Sending to the Recycle Bin was stopped: Windows could not send one item (it did not fit) and left it where it was. As a precaution nothing else was touched.
-        [one] Sending to the Recycle Bin was stopped: Windows could not send one item (it did not fit) and left it where it was. As a precaution { $count } more item was not sent: it is still where it was.
-       *[other] Sending to the Recycle Bin was stopped: Windows could not send one item (it did not fit) and left it where it was. As a precaution { $count } more items were not sent: they are still where they were.
+        [0] Sending to the Recycle Bin was stopped: Windows could not send one item and it was checked that it left it intact in place. As a precaution nothing else was touched.
+        [one] Sending to the Recycle Bin was stopped: Windows could not send one item and it was checked that it left it intact in place. As a precaution { $count } more item was not sent: it was not touched.
+       *[other] Sending to the Recycle Bin was stopped: Windows could not send one item and it was checked that it left it intact in place. As a precaution { $count } more items were not sent: they were not touched.
     }
 sum-no-room =
     { $n ->
-        [one] { $count } item was not sent because there is no room in the Recycle Bin: empty it or free up space. It is still where it was.
-       *[other] { $count } items were not sent because there is no room in the Recycle Bin: empty it or free up space. They are still where they were.
+        [one] { $count } item was not sent because there is no room in the Recycle Bin: empty it or free up space. It was not touched.
+       *[other] { $count } items were not sent because there is no room in the Recycle Bin: empty it or free up space. They were not touched.
     }
 sum-recycled-other =
     { $n ->
@@ -454,8 +454,8 @@ sum-unverified =
     }
 sum-not-recycled =
     { $n ->
-        [one] { $count } item could not be moved to the Recycle Bin (in use or no permission): it is still where it was.
-       *[other] { $count } items could not be moved to the Recycle Bin (in use or no permission): they are still where they were.
+        [one] { $count } item was not moved to the Recycle Bin (in use, no permission or another Windows reason) and was checked to be still intact in place.
+       *[other] { $count } items were not moved to the Recycle Bin (in use, no permission or another Windows reason) and were checked to be still intact in place.
     }
 sum-skipped-unfit =
     { $n ->

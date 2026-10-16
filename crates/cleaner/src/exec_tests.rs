@@ -2209,6 +2209,7 @@ impl RecycleShell for FakeShell {
             let intact = p
                 .file_name()
                 .is_some_and(|n| n.to_string_lossy().contains("intacto"));
+            let mut hr = 0;
             let state = if nuke {
                 // La shell borra con la semántica clásica: con el handle de guarda abierto, el nombre queda "pendiente de
                 // borrar" hasta soltarlo (R1). `fs::remove_file` usa semántica POSIX y no lo reproduciría.
@@ -2221,6 +2222,28 @@ impl RecycleShell for FakeShell {
                 // R6: la shell elimina definitivamente UN hijo y notifica "eliminado" de la carpeta, que sigue en su sitio.
                 let child = fs::read_dir(p).unwrap().flatten().next().unwrap().path();
                 sys::delete_legacy_for_test(&child).unwrap();
+                BinState::Deleted
+            } else if p.is_dir()
+                && p.file_name()
+                    .is_some_and(|n| n.to_string_lossy().contains("falla"))
+            {
+                // A-M1 (caso 1): la shell elimina definitivamente UN hijo y DESPUÉS falla con acceso denegado: el resultado es
+                // un error, pero la carpeta ya perdió algo. Con un fallo el receptor no corta el lote (solo corta con éxito).
+                let child = fs::read_dir(p).unwrap().flatten().next().unwrap().path();
+                sys::delete_legacy_for_test(&child).unwrap();
+                hr = 0x8007_0005u32 as i32;
+                BinState::Deleted
+            } else if p.is_dir()
+                && p.file_name()
+                    .is_some_and(|n| n.to_string_lossy().contains("sustituye"))
+            {
+                // A-M1 (caso 2): la shell elimina un hijo y deja otro NUEVO del mismo nombre y tamaño (otro objeto): totales
+                // idénticos, contenido distinto. Notifica "eliminado" con éxito sin enviar nada.
+                let child = fs::read_dir(p).unwrap().flatten().next().unwrap().path();
+                let len = fs::metadata(&child).unwrap().len() as usize;
+                sys::delete_legacy_for_test(&child).unwrap();
+                // Mismo nombre, mismo tamaño, OTRO objeto (otro `FileId`).
+                fs::write(&child, vec![9u8; len]).unwrap();
                 BinState::Deleted
             } else if intact {
                 // La shell notifica "eliminado" (nulo, con éxito) SIN haber tocado nada (medido con un archivo disperso).
@@ -2239,10 +2262,12 @@ impl RecycleShell for FakeShell {
                     BinState::InBin(dest)
                 }
             };
-            let unsafe_outcome = matches!(state, BinState::Deleted | BinState::InBinUnknownPath);
+            // El receptor real solo corta tras un EXITO sin Papelera verificable (`post_delete_aborts`).
+            let unsafe_outcome =
+                hr >= 0 && matches!(state, BinState::Deleted | BinState::InBinUnknownPath);
             events.push(DeleteEvent {
                 item: p.clone().into_os_string(),
-                hr: 0,
+                hr,
                 state,
             });
             // El receptor registra el evento y DESPUÉS devuelve E_ABORT: la shell no procesa el resto.
@@ -2482,6 +2507,86 @@ fn una_carpeta_que_pierde_hijos_no_es_shell_declined() {
             assert_eq!(sb.count_entries("Docs/intacto"), 2);
         }
     }
+}
+
+/// A-M1 (caso 1): la shell pierde un hijo de una carpeta y DESPUÉS falla con `E_ACCESSDENIED`. Antes, un resultado de fallo
+/// se devolvía tal cual (`NotRecycled`), sin mirar los efectos: `deleted_unexpectedly` quedaba a 0 y el elemento siguiente se
+/// enviaba igualmente. Ahora un fallo se juzga como un borrado (objeto intacto y, en una carpeta, contenido intacto): consta
+/// la pérdida parcial y el envío se detiene.
+#[test]
+fn un_fallo_de_la_shell_tras_perder_un_hijo_es_un_borrado_parcial_y_corta_el_envio() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(10_000), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    sb.write("Docs/pierde-y-falla/a.bin", 3_000);
+    sb.write("Docs/pierde-y-falla/b.bin", 3_000);
+    sb.write("Docs/otro.txt", 100);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/pierde-y-falla"), c.protection());
+    b.add_path(sb.long("Docs/otro.txt"), c.protection());
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 2, "{:?}", plan.rejected);
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    let st = |n: &str| {
+        rep.items
+            .iter()
+            .find(|i| i.path.ends_with(n))
+            .unwrap()
+            .status
+    };
+    assert_eq!(st("pierde-y-falla"), ItemStatus::DeletedUnexpectedly);
+    assert_eq!(
+        st("otro.txt"),
+        ItemStatus::NotRecycled(RecycleFail::Stopped)
+    );
+    assert_eq!(rep.deleted_unexpectedly, 1);
+    assert!(rep.recycle_stopped);
+    assert_eq!(rep.stop_reason, Some(StopReason::DeletedUnexpectedly));
+    assert_eq!(
+        fake.names(),
+        vec![vec!["pierde-y-falla"]],
+        "no se envió nada más"
+    );
+    assert!(sb.path("Docs/otro.txt").exists());
+    assert_eq!(sb.count_entries("Docs/pierde-y-falla"), 1, "perdió un hijo");
+}
+
+/// A-M1 (caso 2): la shell elimina un hijo y deja otro del mismo nombre y del mismo tamaño. Los totales (tamaño y número de
+/// entradas) son idénticos, así que antes se daba por "la shell no tocó nada" (`ShellDeclined`). Ahora la HUELLA del contenido
+/// (identidad, tamaño y enlaces de cada entrada) lo distingue: es un borrado parcial.
+#[test]
+fn quitar_un_hijo_y_poner_otro_del_mismo_tamano_no_pasa_por_intacto() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    sb.write("Docs/sustituye/a.bin", 3_000);
+    sb.write("Docs/sustituye/b.bin", 3_000);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/sustituye"), c.protection());
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 1, "{:?}", plan.rejected);
+    let before = plan.items[0].estimate;
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    assert_eq!(rep.items[0].status, ItemStatus::DeletedUnexpectedly);
+    assert_eq!(rep.stop_reason, Some(StopReason::DeletedUnexpectedly));
+    assert_eq!(rep.deleted_unexpectedly, 1);
+    // Y de verdad los totales no habrían delatado nada: misma cantidad, mismos bytes.
+    let after = {
+        let it = &plan.items[0];
+        let Remeasure::Now(s) = c.remeasure(it, &cancel()) else {
+            panic!("la medida debía ser completa");
+        };
+        s
+    };
+    assert_eq!(
+        (before.bytes, before.logical, before.files, before.dirs),
+        (after.bytes, after.logical, after.files, after.dirs)
+    );
+    assert_ne!(
+        (before.fp_sum, before.fp_xor),
+        (after.fp_sum, after.fp_xor),
+        "la huella sí cambia"
+    );
 }
 
 /// R6 con la shell REAL (solo cosas propias, tras `TESELA_REAL_RECYCLE_TESTS=1`): una carpeta con un disperso enorme (que no
@@ -3484,11 +3589,13 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
         judge(&p, Some(&nada), shell, false, false).0,
         ItemStatus::Unverified
     );
-    // Errores: en uso, sin permiso y otros, con su HRESULT.
+    // Errores: en uso, sin permiso y otros, con su HRESULT. A-M1: un fallo solo es "no se envió" si el objeto aprobado sigue
+    // intacto en su sitio (aquí lo está: la guarda y el nombre son el mismo archivo).
+    let fallo = pending(id, &bin_file, &bin_file);
     let hr_win32 = |c: u32| (0x8007_0000u32 | c) as i32;
     assert_eq!(
         judge(
-            &p,
+            &fallo,
             Some(&ev(hr_win32(32), BinState::Deleted)),
             shell,
             false,
@@ -3499,7 +3606,7 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
     );
     assert_eq!(
         judge(
-            &p,
+            &fallo,
             Some(&ev(hr_win32(5), BinState::Deleted)),
             shell,
             false,
@@ -3510,7 +3617,7 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
     );
     assert_eq!(
         judge(
-            &p,
+            &fallo,
             Some(&ev(0x8000_4005u32 as i32, BinState::Deleted)),
             shell,
             false,
@@ -3523,7 +3630,7 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
     // de uso compartido.
     assert_eq!(
         judge(
-            &p,
+            &fallo,
             Some(&ev(0x8027_0021u32 as i32, BinState::Deleted)),
             shell,
             false,
@@ -3534,7 +3641,7 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
     );
     assert_eq!(
         judge(
-            &p,
+            &fallo,
             Some(&ev(0x8027_0027u32 as i32, BinState::Deleted)),
             shell,
             false,
@@ -3542,6 +3649,56 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
         )
         .0,
         ItemStatus::NotRecycled(RecycleFail::InUse)
+    );
+    // A-M1: un fallo con el objeto YA eliminado (guarda pendiente de borrar) no es "no se envió": es un borrado. Y si ni
+    // siquiera se puede decir dónde está el objeto, no se afirma nada.
+    let borrado_con_fallo = {
+        let f = sb.write("Docs/borrado-con-fallo.bin", 100);
+        let fid = sys::meta(&sys::open_for_query(&f).unwrap())
+            .unwrap()
+            .identity;
+        let pf = pending(fid, &f, &f);
+        sys::delete_legacy_for_test(&f).unwrap();
+        pf
+    };
+    assert_eq!(
+        judge(
+            &borrado_con_fallo,
+            Some(&ev(hr_win32(5), BinState::Deleted)),
+            shell,
+            false,
+            false
+        )
+        .0,
+        ItemStatus::DeletedUnexpectedly
+    );
+    assert_eq!(
+        judge(
+            &borrado_con_fallo,
+            Some(&ev(0, BinState::Deleted)),
+            shell,
+            false,
+            false
+        )
+        .0,
+        ItemStatus::DeletedUnexpectedly
+    );
+    assert_eq!(
+        judge(&borrado_con_fallo, None, shell, false, true).0,
+        ItemStatus::DeletedUnexpectedly,
+        "sin aviso pero la guarda dice que se eliminó"
+    );
+    assert_eq!(
+        judge(
+            &p,
+            Some(&ev(hr_win32(5), BinState::Deleted)),
+            shell,
+            false,
+            false
+        )
+        .0,
+        ItemStatus::Unverified,
+        "el nombre aprobado no existe y la guarda no está pendiente: no se puede afirmar nada"
     );
     // Sin aviso: sigue en su sitio -> no procesado (o abortado, si la shell dijo que abortó); ya no está -> no verificado.
     let here = pending(id, &bin_file, &bin_file);

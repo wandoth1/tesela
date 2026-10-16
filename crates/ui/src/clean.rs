@@ -1066,8 +1066,11 @@ fn summary_lines(env: &Env, s: &Summary) -> Vec<(String, bool)> {
     if r.unverified > 0 {
         v.push((n("sum-unverified", r.unverified), true));
     }
-    if r.not_recycled > 0 {
-        v.push((n("sum-not-recycled", r.not_recycled), true));
+    // `not_recycled` también cuenta los que no tuvieron sitio y los del corte de seguridad (que ya tienen su línea): aquí
+    // solo el resto, los que Windows no movió y se comprobó que siguen intactos en su sitio.
+    let checked_in_place = r.not_recycled.saturating_sub(r.no_room + r.stopped_items);
+    if checked_in_place > 0 {
+        v.push((n("sum-not-recycled", checked_in_place), true));
     }
     if r.skipped_unfit > 0 {
         v.push((n("sum-skipped-unfit", r.skipped_unfit), false));
