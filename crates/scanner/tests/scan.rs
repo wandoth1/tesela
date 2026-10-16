@@ -694,3 +694,33 @@ fn una_ruta_prioritaria_que_es_un_junction_se_descarta() {
     );
     assert_eq!(r.tree.stats().reparse_dirs, 2);
 }
+
+#[test]
+fn una_ruta_prioritaria_que_es_un_junction_roto_se_descarta_sin_errores() {
+    // Seguir el enlace daría `NotFound`; no seguirlo lo descarta por ser un enlace. En los dos casos la candidata no
+    // cuenta, pero el escaneo no puede dar ningún error ni caerse por ella.
+    let mut t = TempTree::new();
+    t.write("real/f.bin", 10_000);
+    let dest = TempTree::new();
+    dest.write("fuera/h.bin", 10_000);
+    t.junction_to("Roto", &dest.path("fuera"));
+    std::fs::remove_dir_all(dest.path("fuera")).unwrap();
+    settle(&t);
+    let mut o = opts(&t);
+    o.priority_paths = Some(vec![t.path("Roto"), t.path("real")]);
+    let r = scan(o).unwrap();
+    r.tree.check_invariants().unwrap();
+    assert!(
+        r.summary.errors_by_code.is_empty(),
+        "{:?}",
+        r.summary.errors_by_code
+    );
+    let paths: Vec<_> = r
+        .summary
+        .priority
+        .iter()
+        .map(|p| dunce::simplified(&p.path).to_path_buf())
+        .collect();
+    assert_eq!(paths, vec![t.long_root().join("real")]);
+    assert_eq!(r.tree.stats().reparse_dirs, 1);
+}

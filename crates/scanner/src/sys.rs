@@ -1080,6 +1080,18 @@ mod tests {
     }
 
     #[test]
+    fn open_resolved_de_la_raiz_de_una_unidad() {
+        // El caso real más común: la raíz de la unidad del propio proyecto.
+        let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let drive = manifest.components().next().unwrap();
+        let root = PathBuf::from(format!("{}\\", drive.as_os_str().to_string_lossy()));
+        let o = open_resolved(&root).unwrap();
+        assert_ne!(o.meta.attrs & 0x10, 0, "es un directorio");
+        assert_eq!(o.meta.attrs & FILE_ATTRIBUTE_REPARSE_POINT, 0);
+        assert_eq!(dunce::simplified(&o.path), dunce::simplified(&root));
+    }
+
+    #[test]
     fn open_resolved_de_una_carpeta_normal_da_su_ruta_canonica() {
         let t = Tmp::new();
         let sub = t.0.join("Sub Carpeta");

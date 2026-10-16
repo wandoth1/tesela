@@ -56,7 +56,7 @@ puede escribir; el riesgo es de quien elige la carpeta: si **otro usuario puede 
 nombre de una que `tesela.exe` carga por nombre, y se cargaría con los permisos de quien ejecute Tesela. Lo que carga el programa
 por nombre (revisado en el código de `wgpu-hal` 30.0.1 y `libloading` 0.8.9, que usa para ello `LoadLibraryExW(nombre, NULL, 0)`: orden de
 búsqueda **predeterminado**, con la carpeta del `.exe` la primera y sin `LOAD_LIBRARY_SEARCH_SYSTEM32`): `d3d12.dll`, `dxgi.dll`,
-`dcomp.dll` y `d3dcompiler_47.dll`; ninguna está en la lista `KnownDLLs` de Windows. `dbghelp.dll` no la carga `wgpu`: la carga, si hace falta,
+`dcomp.dll`, `d3dcompiler_47.dll` y **`dxcompiler.dll`**; ninguna está en la lista `KnownDLLs` de Windows. La que más importa es `dxcompiler.dll`: `tesela.exe` no fija el compilador de sombreadores de DX12 y `wgpu` usa por defecto `Dx12Compiler::Auto`, que **intenta cargar `dxcompiler.dll` por nombre antes de caer a `d3dcompiler_47.dll`**; esa DLL **no existe en una instalación normal de Windows**, así que una copia dejada junto al `.exe` (o en una carpeta del `PATH`) no compite con ninguna de `System32` (DXC carga además `dxil.dll`). La variable de entorno `WGPU_DX12_COMPILER` también cambia esta elección. `dbghelp.dll` no la carga `wgpu`: la carga, si hace falta,
 la biblioteca estándar de Rust al generar un *backtrace* (esto último no se ha comprobado en el código fuente de Rust). **Es un riesgo sospechado, no demostrado.**
 
 **Decisión: no se añade ninguna regla al MSI; se documenta.** Se evaluó una `LaunchCondition` que rechazase un `INSTALLFOLDER` fuera del
