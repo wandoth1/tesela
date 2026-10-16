@@ -19,7 +19,8 @@
 //! movimiento real de la shell (la shell abre y mueve por ruta: no hay forma de atarla a un handle); (c) lo que llega a la
 //! Papelera se comprueba por IDENTIDAD, y además `Recycled` exige que el nombre aprobado ya no exista y que el objeto de
 //! la guarda esté ahora dentro de una Papelera (otro nombre del mismo objeto, p. ej. un enlace duro, no cuenta); (d)
-//! cualquier otra cosa que llegue a la Papelera es recuperable y se informa (`RecycledOther`): se detecta y es restaurable.
+//! lo que NO es el objeto aprobado y llega a la Papelera con su ruta conocida se informa como `RecycledOther` (está en la
+//! Papelera: se puede restaurar). Esto NO es una garantía de que un sustituto acabe ahí: ver el residual de más abajo.
 //!
 //! Banderas (decididas por las pruebas, ver `tests::wantnukewarning_*`):
 //! * enviar: `FOF_NO_UI | FOF_ALLOWUNDO | FOFX_RECYCLEONDELETE | FOF_NO_CONNECTED_ELEMENTS`;
@@ -30,8 +31,11 @@
 //! # El receptor de eventos vigila (M1 y M2)
 //! * `PreDeleteItem` (M1) abre cada elemento por su ruta, sin seguir enlaces, y compara su IDENTIDAD con la aprobada; si no
 //!   coincide (o no se puede abrir, o no es lo aprobado), registra un [`Veto`] y devuelve `E_ABORT`: la shell cancela lo
-//!   pendiente y NO envía el sustituto (falla cerrado). Residual: entre esa comprobación y el movimiento real una
-//!   sustitución enviaría un objeto no aprobado, que el paso 3 detecta como `RecycledOther` (recuperable).
+//!   pendiente y NO envía el sustituto (falla cerrado). RESIDUAL, dicho con precisión: entre esa comprobación y el
+//!   movimiento real la shell actúa por ruta y un sustituto puesto exactamente ahí SÍ llega a la shell. Si cabe en la
+//!   Papelera y la shell da su ruta, el paso 3 lo detecta como `RecycledOther` (recuperable). Si no (el reparto y la
+//!   capacidad se calcularon para el objeto APROBADO, no para el sustituto; o la shell no da ruta, o el movimiento falla), se
+//!   informa como `DeletedUnexpectedly` o `Unverified` y un borrado definitivo del sustituto NO se puede deshacer.
 //! * `PostDeleteItem` (M2) registra el evento PRIMERO y, si la shell eliminó definitivamente (`psiNewlyCreated` nulo) o no
 //!   dijo dónde quedó, devuelve `E_ABORT`: el primer borrado inesperado ya no arrastra al resto del lote.
 //!   Solo al ENVIAR; al purgar la Papelera el borrado definitivo es lo esperado y no corta.
@@ -875,8 +879,8 @@ pub(crate) fn purge_flags() -> FILEOPERATION_FLAGS {
 
 /// Envía las rutas (una operación `IFileOperation` con todas) a la Papelera POR SU RUTA ORIGINAL. La shell abre cada
 /// elemento por su cuenta: entre que quien llama cierra su handle y ese momento hay una ventana, acotada por el destino
-/// (una sustitución hecha por el mismo usuario solo puede mandar OTRO objeto a la Papelera, recuperable). Por eso el
-/// resultado trae, por elemento, la ruta real del elemento en la Papelera: quien llama compara su IDENTIDAD con la
+/// (un sustituto puesto por el mismo usuario puede llegar a la shell, que lo mueve a la Papelera si cabe, o lo elimina). Por
+/// eso el resultado trae, por elemento, la ruta real del elemento en la Papelera: quien llama compara su IDENTIDAD con la
 /// aprobada.
 pub fn recycle_paths(items: &[SendItem], mode: RecycleMode) -> Result<BatchOutcome> {
     if items.is_empty() {

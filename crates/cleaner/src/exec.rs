@@ -8,7 +8,8 @@
 //!   permitida), se CIERRA el handle y se entrega la RUTA ORIGINAL a `IFileOperation` con un receptor de eventos propio.
 //!   La shell dice, por elemento, el resultado y la ruta real del elemento ya en la Papelera; se abre y se compara su
 //!   IDENTIDAD con la aprobada: igual = enviado; distinta = "se movió a la Papelera un objeto distinto del aprobado"
-//!   (recuperable); sin elemento en la Papelera = eliminado definitivamente (no cabía); error = omitido con su motivo.
+//!   (recuperable: está en la Papelera); sin elemento en la Papelera = eliminado definitivamente (no cabía, o un sustituto
+//!   que no cabía); error = omitido con su motivo, solo si el objeto aprobado sigue intacto en su sitio (A-M1).
 //!   Un directorio con algo abierto dentro falla en seguro (mover es renombrar) y se informa como "en uso". El receptor
 //!   vigila la entrega (devuelve `E_ABORT`): `PreDeleteItem` compara la identidad de lo que hay en la ruta con la aprobada
 //!   y veta el sustituto (M1); `PostDeleteItem` corta tras el primer borrado definitivo o la primera ruta sin verificar
@@ -250,7 +251,7 @@ pub struct Report {
     pub volumes: Vec<VolumeDelta>,
     /// Elementos que desaparecieron sin llegar a la Papelera.
     pub deleted_unexpectedly: u64,
-    /// Elementos cuyo destino en la Papelera es un objeto distinto del aprobado (recuperables).
+    /// Elementos cuyo destino en la Papelera es un objeto distinto del aprobado (están en la Papelera: se pueden restaurar).
     pub recycled_other: u64,
     /// Elementos de los que no se pudo comprobar qué pasó.
     pub unverified: u64,
@@ -726,7 +727,9 @@ impl Cleaner {
     ///    protección) y se deja abierto un handle de GUARDA hasta después de juzgarlo (ver `prepare_recycle`);
     /// 2. los elementos de un volumen se reparten en OPERACIONES de la shell según el espacio que queda en su Papelera
     ///    ([`take_op`]): la shell decide POR OPERACIÓN si lo que va cabe, y un elemento que no cabe arrastra a todos los
-    ///    de su operación. Se lee la ocupación antes de cada operación;
+    ///    de su operación. Se lee la ocupación antes de cada operación y, JUSTO ANTES de entregarla, se vuelve a medir cada
+    ///    candidato (A-B1: un archivo por su handle de guarda, un directorio con un recorrido COMPLETO, A-B2) y se vuelve a
+    ///    comprobar el presupuesto con esos tamaños y la ocupación de ese instante;
     /// 3. se entregan las rutas ORIGINALES a la shell y se juzga cada elemento con lo que la propia shell notificó;
     /// 4. CORTE DE SEGURIDAD: si un elemento acaba eliminado definitivamente (`DeletedUnexpectedly`), se DETIENE el resto
     ///    del envío: los siguientes quedan `NotRecycled(Stopped)` y el resumen lo dice. Nada se pierde en cadena.
