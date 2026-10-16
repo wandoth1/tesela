@@ -246,6 +246,48 @@ pub enum RootStatus {
     Cancelled,
 }
 
+/// Lo eliminado (de verdad) bajo una entrada de primer nivel de una unidad: la interfaz lo usa para actualizar el árbol
+/// sin reescanear (overlay, PLAN.md §3.6).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TopResult {
+    /// Nombre de la entrada (hija de la raíz de un `Contents`; o el propio elemento de un `Entry`).
+    pub name: OsString,
+    pub is_dir: bool,
+    /// La entrada desapareció entera (si no, solo una parte de su contenido).
+    pub removed: bool,
+    /// Bytes en disco eliminados dentro de ella (sin enlaces duros compartidos).
+    pub bytes: u64,
+    /// Tamaño lógico eliminado.
+    pub logical: u64,
+    /// Archivos eliminados.
+    pub files: u64,
+    /// Directorios eliminados (incluida ella si `removed`).
+    pub dirs: u64,
+}
+
+/// Acumulador de lo eliminado bajo un directorio.
+#[derive(Default)]
+struct Acc {
+    bytes: AtomicU64,
+    logical: AtomicU64,
+    files: AtomicU64,
+    dirs: AtomicU64,
+}
+
+impl Acc {
+    fn add_file(&self, bytes: u64, logical: u64) {
+        self.bytes.fetch_add(bytes, Ordering::Relaxed);
+        self.logical.fetch_add(logical, Ordering::Relaxed);
+        self.files.fetch_add(1, Ordering::Relaxed);
+    }
+    fn add_all(&self, t: &TopResult) {
+        self.bytes.fetch_add(t.bytes, Ordering::Relaxed);
+        self.logical.fetch_add(t.logical, Ordering::Relaxed);
+        self.files.fetch_add(t.files, Ordering::Relaxed);
+        self.dirs.fetch_add(t.dirs, Ordering::Relaxed);
+    }
+}
+
 /// Una unidad de trabajo con sus contadores y su resultado.
 pub struct Unit {
     pub id: usize,
@@ -253,6 +295,8 @@ pub struct Unit {
     pub env: Arc<Env>,
     pub stats: Stats,
     status: Mutex<Option<RootStatus>>,
+    tops: Mutex<Vec<TopResult>>,
+    root_result: Mutex<Option<TopResult>>,
 }
 
 impl Unit {
@@ -263,7 +307,20 @@ impl Unit {
             env,
             stats: Stats::default(),
             status: Mutex::new(None),
+            tops: Mutex::new(Vec::new()),
+            root_result: Mutex::new(None),
         })
+    }
+    /// Lo eliminado bajo cada entrada de primer nivel (solo en una unidad `Contents` ejecutada en modo `Delete`).
+    pub fn tops(&self) -> Vec<TopResult> {
+        self.tops.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+    /// Lo eliminado del propio elemento (una unidad `Entry` ejecutada en modo `Delete`).
+    pub fn root_result(&self) -> Option<TopResult> {
+        self.root_result
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
     /// Cómo terminó la raíz (`None` si no llegó a procesarse).
     pub fn status(&self) -> Option<RootStatus> {
@@ -290,6 +347,10 @@ struct DirNode {
     /// La fecha más reciente del propio directorio al abrirlo ya cumple `min_age`.
     old_enough: bool,
     volume_serial: u64,
+    /// Es la raíz de una unidad `Contents` (sus hijos son las entradas de primer nivel).
+    contents_root: bool,
+    /// Lo eliminado hasta ahora bajo este directorio.
+    acc: Acc,
 }
 
 impl DirNode {
@@ -465,20 +526,64 @@ fn finish_one(mut node: Arc<DirNode>) {
     }
 }
 
+/// Cuenta lo eliminado bajo `node` en su padre y, si es una entrada de primer nivel de un `Contents` (o el elemento de un
+/// `Entry`), lo deja anotado para el overlay de la interfaz.
+fn propagate(node: &DirNode, removed: bool) {
+    let me = TopResult {
+        name: node
+            .path
+            .file_name()
+            .map(OsString::from)
+            .unwrap_or_default(),
+        is_dir: true,
+        removed,
+        bytes: node.acc.bytes.load(Ordering::Relaxed),
+        logical: node.acc.logical.load(Ordering::Relaxed),
+        files: node.acc.files.load(Ordering::Relaxed),
+        dirs: node.acc.dirs.load(Ordering::Relaxed) + u64::from(removed),
+    };
+    match &node.parent {
+        Some(p) => {
+            p.acc.add_all(&me);
+            if p.contents_root {
+                node.unit
+                    .tops
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(me);
+            }
+        }
+        None => {
+            *node
+                .unit
+                .root_result
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(me)
+        }
+    }
+}
+
 /// Borra el directorio (vacío) por SU propio handle. Lo que no se borra mantiene vivos a sus ancestros.
 fn finalize(node: &DirNode) {
     let unit = &node.unit;
+    let real = node.env().mode == Mode::Delete;
     if !node.deletable
         || node.env().cancel.load(Ordering::Relaxed)
         || node.kept.load(Ordering::Acquire)
     {
         // Se queda (protegido, cancelado, o con algo dentro que se respetó o falló): su padre tampoco puede quedar vacío.
         node.mark_parent_kept();
+        if real {
+            propagate(node, false);
+        }
         return;
     }
     if !node.old_enough {
         Stats::add(&unit.stats.young, 1);
         node.mark_parent_kept();
+        if real {
+            propagate(node, false);
+        }
         return;
     }
     match node.env().mode {
@@ -499,16 +604,19 @@ fn finalize(node: &DirNode) {
             Ok(()) => {
                 Stats::add(&unit.stats.dirs, 1);
                 emit(unit, node.path.clone(), true, None, 0, 0, Outcome::Deleted);
+                propagate(node, true);
             }
             Err(sys::DIR_NOT_EMPTY) => {
                 Stats::add(&unit.stats.not_empty, 1);
                 node.mark_parent_kept();
                 emit(unit, node.path.clone(), true, None, 0, 0, Outcome::NotEmpty);
+                propagate(node, false);
             }
             Err(code) => {
                 let o = count_error(unit, code);
                 node.mark_parent_kept();
                 emit(unit, node.path.clone(), true, None, 0, 0, o);
+                propagate(node, false);
             }
         },
     }
@@ -676,6 +784,8 @@ fn verify_root(
         kept: AtomicBool::new(false),
         old_enough: true,
         volume_serial: m.identity.volume_serial,
+        contents_root: contents,
+        acc: Acc::default(),
     }))
 }
 
@@ -765,6 +875,15 @@ fn entry_file(unit: &Arc<Unit>, path: &Path, approved: &FileIdentity, approved_t
         Mode::Delete => match sys::delete_on_handle(&h) {
             Ok(()) => {
                 Stats::add(&unit.stats.files, 1);
+                *unit.root_result.lock().unwrap_or_else(|e| e.into_inner()) = Some(TopResult {
+                    name: path.file_name().map(OsString::from).unwrap_or_default(),
+                    is_dir: false,
+                    removed: true,
+                    bytes: if m.links > 1 { 0 } else { m.alloc },
+                    logical: m.logical,
+                    files: 1,
+                    dirs: 0,
+                });
                 emit(
                     unit,
                     path.to_path_buf(),
@@ -902,6 +1021,8 @@ fn process_child(
             kept: AtomicBool::new(false),
             old_enough,
             volume_serial: parent.volume_serial,
+            contents_root: false,
+            acc: Acc::default(),
         });
         list_and_spawn(shared, local, node);
         return false;
@@ -1006,6 +1127,22 @@ fn process_child(
         Mode::Delete => match sys::delete_on_handle(&h) {
             Ok(()) => {
                 account(&unit.stats);
+                let bytes = if m.links > 1 { 0 } else { m.alloc };
+                parent.acc.add_file(bytes, m.logical);
+                if parent.contents_root {
+                    unit.tops
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner())
+                        .push(TopResult {
+                            name: OsString::from_wide(name),
+                            is_dir: false,
+                            removed: true,
+                            bytes,
+                            logical: m.logical,
+                            files: 1,
+                            dirs: 0,
+                        });
+                }
                 emit(
                     unit,
                     child_path,

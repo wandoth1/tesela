@@ -212,6 +212,8 @@ pub struct Cleaner {
     /// Alcance de "vaciar la Papelera": por defecto TODA la del usuario; se puede restringir (las pruebas lo limitan a
     /// elementos propios para no tocar nunca los ajenos).
     pub(crate) bin_filter: Option<BinFilter>,
+    /// `%LOCALAPPDATA%\Tesela`: registro local e historial.
+    pub(crate) data_dir: Option<PathBuf>,
 }
 
 /// Filtro del alcance de "vaciar la Papelera".
@@ -235,13 +237,25 @@ const MAX_BIN_PATH: usize = 258;
 impl Cleaner {
     pub fn new(roots: Roots) -> Cleaner {
         let protection = Arc::new(roots.protection());
+        let data_dir = roots
+            .browser
+            .local_appdata
+            .as_ref()
+            .map(|l| l.join("Tesela"));
         Cleaner {
             rules: rules(),
             roots,
             protection,
             threads: default_threads(),
             bin_filter: None,
+            data_dir,
         }
+    }
+
+    /// Cambia la carpeta del registro y del historial (las pruebas usan la suya).
+    pub fn with_data_dir(mut self, dir: PathBuf) -> Cleaner {
+        self.data_dir = Some(dir);
+        self
     }
 
     /// Restringe el alcance de "vaciar la Papelera" a los elementos que cumplan el filtro.

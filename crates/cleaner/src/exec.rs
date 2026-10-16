@@ -136,6 +136,22 @@ pub struct ItemReport {
     pub destination: Destination,
     pub status: ItemStatus,
     pub stats: StatsSnapshot,
+    /// Lo que desapareció de verdad (rutas completas): la interfaz actualiza el árbol con esto, sin reescanear. Vacío en
+    /// simulación y en lo que no se tocó.
+    pub removed: Vec<Removed>,
+}
+
+/// Una entrada que desapareció del disco, o una parte de su contenido (ver [`ItemReport::removed`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Removed {
+    pub path: PathBuf,
+    pub is_dir: bool,
+    /// Desapareció entera (si no, se eliminó solo parte de su contenido).
+    pub removed: bool,
+    /// Bytes en disco eliminados (sin enlaces compartidos), tamaño lógico y archivos.
+    pub bytes: u64,
+    pub logical: u64,
+    pub files: u64,
 }
 
 /// Resultado de vaciar la Papelera.
@@ -291,6 +307,7 @@ impl Cleaner {
                         destination: Destination::Recycle,
                         status: ItemStatus::SkippedUnfit,
                         stats: StatsSnapshot::default(),
+                        removed: Vec::new(),
                     });
                 }
             }
@@ -365,6 +382,11 @@ impl Cleaner {
                         other => ItemStatus::Root(other),
                     },
                     stats: u.stats.snapshot(),
+                    removed: if opts.dry_run {
+                        Vec::new()
+                    } else {
+                        removed_of(it, u)
+                    },
                 });
                 progress.items_done.fetch_add(1, Ordering::Relaxed);
             }
@@ -377,6 +399,7 @@ impl Cleaner {
                     destination: Destination::Permanent,
                     status: ItemStatus::Root(RootStatus::Cancelled),
                     stats: StatsSnapshot::default(),
+                    removed: Vec::new(),
                 });
             }
         }
@@ -664,6 +687,18 @@ impl Cleaner {
                 stats.protected = it.estimate.protected;
                 stats.reparse = it.estimate.reparse;
             }
+            let removed = if status == ItemStatus::Recycled {
+                vec![Removed {
+                    path: it.path.clone(),
+                    is_dir: it.is_dir(),
+                    removed: true,
+                    bytes: it.estimate.bytes,
+                    logical: it.estimate.logical,
+                    files: it.estimate.files,
+                }]
+            } else {
+                Vec::new()
+            };
             report.items.push(ItemReport {
                 id: it.id,
                 category: it.category,
@@ -671,6 +706,7 @@ impl Cleaner {
                 destination: Destination::Recycle,
                 status,
                 stats,
+                removed,
             });
             progress.items_done.fetch_add(1, Ordering::Relaxed);
         }
@@ -786,6 +822,36 @@ fn map_open_error(c: sys::Win32, st: &mut StatsSnapshot) -> Prepared {
                 Outcome::Failed(other),
             )
         }
+    }
+}
+
+/// Lo que desapareció de un elemento definitivo, con rutas completas.
+fn removed_of(it: &PlanItem, u: &Unit) -> Vec<Removed> {
+    match &it.spec {
+        UnitSpec::Contents { path, .. } => u
+            .tops()
+            .into_iter()
+            .map(|t| Removed {
+                path: path.join(&t.name),
+                is_dir: t.is_dir,
+                removed: t.removed,
+                bytes: t.bytes,
+                logical: t.logical,
+                files: t.files,
+            })
+            .collect(),
+        UnitSpec::Entry { path, .. } => u
+            .root_result()
+            .into_iter()
+            .map(|t| Removed {
+                path: path.clone(),
+                is_dir: t.is_dir,
+                removed: t.removed,
+                bytes: t.bytes,
+                logical: t.logical,
+                files: t.files,
+            })
+            .collect(),
     }
 }
 

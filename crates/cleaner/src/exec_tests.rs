@@ -792,3 +792,43 @@ fn la_lapida_conserva_nombre_y_extension_y_es_unica() {
             <= 200 + ".tesela-".len() + 12 + 4
     );
 }
+
+#[test]
+fn el_informe_dice_que_desaparecio_de_verdad_para_actualizar_el_arbol() {
+    let sb = Sandbox::new();
+    let c = cleaner_for(&sb);
+    sb.write_aged("Temp/viejo.tmp", 20_000, 72);
+    sb.write_aged("Temp/dir-entero/a.tmp", 10_000, 72);
+    sb.set_age(&sb.path("Temp/dir-entero"), 72);
+    // Una carpeta vieja con un archivo viejo y otro nuevo: se queda y solo encoge.
+    sb.write_aged("Temp/dir-parcial/viejo.tmp", 30_000, 72);
+    sb.write("Temp/dir-parcial/nuevo.tmp", 5_000);
+    sb.set_age(&sb.path("Temp/dir-parcial"), 72);
+    let mut b = Basket::new();
+    b.set_category(CategoryId::UserTemp, true);
+    let plan = approve(&c, &b);
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    let removed = &rep.items[0].removed;
+    let get = |n: &str| {
+        removed
+            .iter()
+            .find(|r| r.path.ends_with(n))
+            .unwrap_or_else(|| panic!("{n}: {removed:?}"))
+    };
+    assert!(
+        get("viejo.tmp").removed && !get("viejo.tmp").is_dir && get("viejo.tmp").bytes >= 20_000
+    );
+    assert!(get("dir-entero").removed && get("dir-entero").is_dir && get("dir-entero").files == 1);
+    let p = get("dir-parcial");
+    assert!(!p.removed && p.is_dir, "{p:?}");
+    assert!(p.bytes >= 30_000 && p.files == 1);
+    // Y en simulación no se anota nada (no desapareció nada).
+    let sb2 = Sandbox::new();
+    let c2 = cleaner_for(&sb2);
+    sb2.write_aged("Temp/x.tmp", 1_000, 72);
+    let mut b2 = Basket::new();
+    b2.set_category(CategoryId::UserTemp, true);
+    let rep2 = exec(&c2, &approve(&c2, &b2), true, false, None).unwrap();
+    assert!(rep2.items[0].removed.is_empty());
+    assert!(sb2.path("Temp/x.tmp").exists());
+}
