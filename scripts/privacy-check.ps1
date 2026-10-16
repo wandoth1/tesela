@@ -31,8 +31,10 @@
        negra local NO versionada: `<git-common-dir>/privacy-denylist` (un termino por linea, sin distinguir
        mayusculas, coincidencia literal; las lineas vacias y las que empiezan por `#` se ignoran).
     3. Los NOMBRES de los archivos pasan por las mismas reglas.
-    4. Cualquier texto se decodifica antes de revisarlo (UTF-8, UTF-8 con BOM, UTF-16 con o sin BOM). Los binarios se
-       revisan buscando cadenas ASCII y UTF-16 (los de mas de 8 MiB se rechazan); las imagenes se rechazan SALVO `docs/img/<nombre>.png` generadas con --demo (ver la excepcion mas abajo).
+    4. Cualquier texto se decodifica antes de revisarlo (UTF-8, UTF-8 con BOM, UTF-16 con o sin BOM y, si los bytes no son
+       UTF-8 valido, tambien como Latin-1/ANSI, cada decodificacion por separado con sus propios numeros de linea: un
+       valor local con acentos guardado asi se vera). Los binarios se revisan buscando cadenas de texto (solo ASCII y,
+       ademas, ASCII con letras de cualquier alfabeto) en Latin-1 y UTF-16, ambas alineaciones (los de mas de 8 MiB se rechazan); las imagenes se rechazan SALVO `docs/img/<nombre>.png` generadas con --demo (ver la excepcion mas abajo).
        Los formatos OPACOS o comprimidos (ZIP y derivados docx/xlsx/jar/apk, gzip, 7z, rar, xz, bz2, zstd, lz4, lzip,
        compress, cab, OLE/msi, pdf, sqlite) se rechazan por su FIRMA con cualquier extension (el ZIP tambien por su
        registro de fin en los ultimos 64 KiB): su contenido no se puede revisar, y un SID dentro de un ZIP pasaria.
@@ -155,7 +157,12 @@ if (-not $GenericOnly) {
                 $alt = [regex]::Escape($val.Trim().Replace('\', '/'))
                 $pattern = "(?i)($esc|$alt)"
             } else {
-                $pattern = "(?i)(?<![A-Za-z0-9_])$esc(?![A-Za-z0-9_])"
+                # Limites de palabra: ASCII, guion bajo y letras latinas acentuadas (U+00C0-U+024F sin U+00D7 ni U+00F7), NO
+                # \p{L}\p{N}: en las cadenas UTF-16 de un binario el vecino de una cadena es un par de bytes cualquiera, que casi
+                # siempre es una letra Unicode (CJK...), y con \p{L} el valor pegado a ese vecino no se veria. Un valor como "Ren"
+                # no coincide con una palabra latina con acentos que lo contiene. Coste aceptado y del lado seguro: un valor pegado a
+                # una letra cirilica, griega o CJK SI cuenta como coincidencia.
+                $pattern = "(?i)(?<![0-9A-Za-z_\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u024F])$esc(?![0-9A-Za-z_\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u024F])"
             }
             $localRules += @{ Name = "Valor local de `$env:$($pair[0])"; Path = $false; Pattern = $pattern }
         }
@@ -174,48 +181,77 @@ if (-not $GenericOnly) {
 $rules = @($generic) + @($localRules)
 
 # --- Decodificacion de contenido ------------------------------------------------------------------------------------
+function Get-TextsWithAnsiFallback {
+    # Devuelve una LISTA de textos a revisar por separado (cada uno con sus propios numeros de linea): la decodificacion UTF-8
+    # (permisiva) y, si hay bytes que no son UTF-8 valido (U+FFFD), tambien la de Latin-1 de los mismos bytes: el archivo puede
+    # estar en Latin-1/ANSI (un bloc de notas antiguo, un `>` de Windows PowerShell 5.1 con otra pagina de codigos...) y un valor
+    # con acentos no puede esconderse tras el U+FFFD. Los saltos de linea son los mismos en las dos: las lineas coinciden.
+    param([byte[]]$Bytes, [int]$Offset)
+    $count = $Bytes.Length - $Offset
+    $text = [System.Text.Encoding]::UTF8.GetString($Bytes, $Offset, $count)
+    if ($text.IndexOf([char]0xFFFD) -lt 0) { return , @($text) }
+    return , @($text, [System.Text.Encoding]::GetEncoding(28591).GetString($Bytes, $Offset, $count))
+}
+
 function ConvertTo-ScanText {
-    # Devuelve el texto a revisar para unos bytes, o $null si hay que rechazar (se indica en $reject).
+    # Devuelve la LISTA de textos a revisar para unos bytes (cada uno se revisa por separado), o $null si hay que rechazar (se
+    # indica en $reject).
     param([byte[]]$Bytes, [ref]$Reject)
     $Reject.Value = $null
     $n = $Bytes.Length
-    if ($n -eq 0) { return '' }
-    if ($n -ge 3 -and $Bytes[0] -eq 0xEF -and $Bytes[1] -eq 0xBB -and $Bytes[2] -eq 0xBF) { return [System.Text.Encoding]::UTF8.GetString($Bytes, 3, $n - 3) }
+    if ($n -eq 0) { return , @('') }
+    if ($n -ge 3 -and $Bytes[0] -eq 0xEF -and $Bytes[1] -eq 0xBB -and $Bytes[2] -eq 0xBF) { return (Get-TextsWithAnsiFallback $Bytes 3) }
     # UTF-32 con BOM (el de little endian, FF FE 00 00, empieza como el de UTF-16: se comprueba ANTES).
-    if ($n -ge 4 -and $Bytes[0] -eq 0xFF -and $Bytes[1] -eq 0xFE -and $Bytes[2] -eq 0 -and $Bytes[3] -eq 0) { return (New-Object System.Text.UTF32Encoding($false, $false)).GetString($Bytes, 4, (($n - 4) -band -4)) }
-    if ($n -ge 4 -and $Bytes[0] -eq 0 -and $Bytes[1] -eq 0 -and $Bytes[2] -eq 0xFE -and $Bytes[3] -eq 0xFF) { return (New-Object System.Text.UTF32Encoding($true, $false)).GetString($Bytes, 4, (($n - 4) -band -4)) }
-    if ($n -ge 2 -and $Bytes[0] -eq 0xFF -and $Bytes[1] -eq 0xFE) { return [System.Text.Encoding]::Unicode.GetString($Bytes, 2, $n - 2) }
-    if ($n -ge 2 -and $Bytes[0] -eq 0xFE -and $Bytes[1] -eq 0xFF) { return [System.Text.Encoding]::BigEndianUnicode.GetString($Bytes, 2, $n - 2) }
+    if ($n -ge 4 -and $Bytes[0] -eq 0xFF -and $Bytes[1] -eq 0xFE -and $Bytes[2] -eq 0 -and $Bytes[3] -eq 0) { return , @((New-Object System.Text.UTF32Encoding($false, $false)).GetString($Bytes, 4, (($n - 4) -band -4))) }
+    if ($n -ge 4 -and $Bytes[0] -eq 0 -and $Bytes[1] -eq 0 -and $Bytes[2] -eq 0xFE -and $Bytes[3] -eq 0xFF) { return , @((New-Object System.Text.UTF32Encoding($true, $false)).GetString($Bytes, 4, (($n - 4) -band -4))) }
+    if ($n -ge 2 -and $Bytes[0] -eq 0xFF -and $Bytes[1] -eq 0xFE) { return , @([System.Text.Encoding]::Unicode.GetString($Bytes, 2, $n - 2)) }
+    if ($n -ge 2 -and $Bytes[0] -eq 0xFE -and $Bytes[1] -eq 0xFF) { return , @([System.Text.Encoding]::BigEndianUnicode.GetString($Bytes, 2, $n - 2)) }
     # UTF-16 sin BOM o binario: cualquier NUL en TODO el archivo (no solo en los primeros 4 KiB: un texto ASCII largo
     # delante no puede esconder lo que viene despues).
-    if ([System.Array]::IndexOf($Bytes, [byte]0) -lt 0) { return [System.Text.Encoding]::UTF8.GetString($Bytes) }
-    # Con NUL y sin BOM: el archivo entero como UTF-8 (las partes de texto con acentos) MAS las cadenas ASCII y UTF-16
-    # (de ambas alineaciones) del resto.
+    if ([System.Array]::IndexOf($Bytes, [byte]0) -lt 0) { return (Get-TextsWithAnsiFallback $Bytes 0) }
+    # Con NUL y sin BOM: el archivo entero como UTF-8 (las partes de texto con acentos) MAS las cadenas de texto en Latin-1
+    # y en UTF-16 (de ambas alineaciones) del resto, en un segundo texto. De cada decodificacion se sacan DOS clases de
+    # cadena de 6 o mas caracteres, y se emiten las dos: (1) solo ASCII imprimible: es la de siempre y no la contamina el
+    # vecino de la cadena (un par de bytes cualquiera leido como UTF-16 suele ser una letra CJK, que pegada a la cadena haria
+    # fallar un `\b`); (2) ASCII mas letras y digitos de cualquier alfabeto (\p{L}\p{N}): con solo la (1), un valor local con
+    # acentos (en Latin-1 o en UTF-16 sin BOM) partiria la cadena y no coincidiria con nada.
     if ($n -gt 8MB) { $Reject.Value = 'binario de mas de 8 MiB (no se puede revisar)'; return $null }
+    $runClasses = @('[\x20-\x7E]{6,}', '[\x20-\x7E\p{L}\p{N}]{6,}')
     $sb = New-Object System.Text.StringBuilder
-    [void]$sb.AppendLine([System.Text.Encoding]::UTF8.GetString($Bytes))
     $latin = [System.Text.Encoding]::GetEncoding(28591).GetString($Bytes)
-    foreach ($m in [regex]::Matches($latin, '[\x20-\x7E]{6,}')) { [void]$sb.AppendLine($m.Value) }
-    foreach ($off in 0, 1) {
-        $u = [System.Text.Encoding]::Unicode.GetString($Bytes, $off, (($n - $off) -band -2))
-        foreach ($m in [regex]::Matches($u, '[\x20-\x7E]{6,}')) { [void]$sb.AppendLine($m.Value) }
+    $decodes = @($latin)
+    foreach ($off in 0, 1) { $decodes += [System.Text.Encoding]::Unicode.GetString($Bytes, $off, (($n - $off) -band -2)) }
+    foreach ($d in $decodes) {
+        foreach ($cls in $runClasses) {
+            foreach ($m in [regex]::Matches($d, $cls)) { [void]$sb.AppendLine($m.Value) }
+        }
     }
-    return $sb.ToString()
+    return , @([System.Text.Encoding]::UTF8.GetString($Bytes), $sb.ToString())
 }
 
 function Test-Rules {
-    # Devuelve la lista de (regla, linea) que coinciden en $Text. No devuelve la coincidencia (podria ser el dato).
-    param([string]$Text, $RuleSet)
+    # Devuelve la lista de (regla, linea) que coinciden en $Text (un texto, o una lista de textos que se revisan POR SEPARADO:
+    # cada uno con sus numeros de linea). No devuelve la coincidencia (podria ser el dato).
+    param([string[]]$Text, $RuleSet)
     $found = New-Object System.Collections.Generic.List[object]
-    $Text = $Text.Replace("`r", '')
-    foreach ($rule in $RuleSet) {
-        if ([regex]::IsMatch($Text, $rule.Pattern, 'Multiline')) {
-            $lines = $Text -split "`n"
-            $any = $false
-            for ($i = 0; $i -lt $lines.Count; $i++) {
-                if ([regex]::IsMatch($lines[$i], $rule.Pattern)) { $found.Add(@($rule.Name, ($i + 1))); $any = $true }
+    $seen = New-Object System.Collections.Generic.HashSet[string]
+    # CultureInvariant: el (?i) no puede depender de la cultura del proceso (la i turca con y sin punto).
+    $multi = [System.Text.RegularExpressions.RegexOptions]::Multiline -bor [System.Text.RegularExpressions.RegexOptions]::CultureInvariant
+    $single = [System.Text.RegularExpressions.RegexOptions]::CultureInvariant
+    foreach ($one in $Text) {
+        $one = $one.Replace("`r", '')
+        foreach ($rule in $RuleSet) {
+            if ([regex]::IsMatch($one, $rule.Pattern, $multi)) {
+                $lines = $one -split "`n"
+                $any = $false
+                for ($i = 0; $i -lt $lines.Count; $i++) {
+                    if ([regex]::IsMatch($lines[$i], $rule.Pattern, $single)) {
+                        if ($seen.Add("$($rule.Name)|$($i + 1)")) { $found.Add(@($rule.Name, ($i + 1))) }
+                        $any = $true
+                    }
+                }
+                if (-not $any -and $seen.Add("$($rule.Name)|0")) { $found.Add(@($rule.Name, 0)) }
             }
-            if (-not $any) { $found.Add(@($rule.Name, 0)) }
         }
     }
     return ,$found

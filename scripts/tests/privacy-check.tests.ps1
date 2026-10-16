@@ -206,6 +206,21 @@ try {
     PutBytes 'b.bin' ([byte[]](0, 1, 2, 0, 255) + [System.Text.Encoding]::Unicode.GetBytes($profilePath) + [byte[]](0, 0, 9))
     Stage-All
     Expect 'binario con cadena UTF-16 de perfil' $true
+    # Cadena UTF-16 de un fabricante de hardware (regla generica, tambien en -GenericOnly/CI) con un vecino que, leido como UTF-16,
+    # es una letra: U+4E2D delante, o dos letras ASCII alineadas delante ('ab' = U+6261). El vecino no puede taparla.
+    $gpuU16 = [System.Text.Encoding]::Unicode.GetBytes($misc['gpu-word'])
+    foreach ($case in @(
+            @('precedido de U+4E2D', [System.Text.Encoding]::Unicode.GetBytes([string][char]0x4E2D)),
+            @('precedido de dos letras ASCII alineadas', [System.Text.Encoding]::ASCII.GetBytes('ab')),
+            @('precedido de U+4E2D y seguido de U+6587', [System.Text.Encoding]::Unicode.GetBytes([string][char]0x4E2D))
+        )) {
+        $tail = if ($case[0] -like '*seguido*') { [System.Text.Encoding]::Unicode.GetBytes([string][char]0x6587) } else { [byte[]]@() }
+        Reset-Repo
+        PutBytes 'g.bin' ([byte[]](0, 1, 2, 0, 255, 7, 0) + $case[1] + $gpuU16 + $tail + [byte[]](0, 0, 9))
+        Stage-All
+        Expect "binario con cadena UTF-16 de hardware $($case[0])" $true
+        Expect "binario con cadena UTF-16 de hardware $($case[0]) con -GenericOnly" $true @('-GenericOnly')
+    }
     Reset-Repo
     PutBytes 'c.bin' ([byte[]](0, 1, 2, 0, 255, 7, 8, 9, 0, 0, 1))
     Stage-All
@@ -803,6 +818,116 @@ try {
     Invoke-Git -C $repo commit -q -m malo
     Expect '-All encuentra lo ya commiteado' $true @('-All')
     Expect 'staging vacio no falla' $false
+    # --- Valores locales con letras NO ASCII (acentos, enes) en cualquier codificacion -----------------------------------------
+    # El usuario y el equipo son SINTETICOS y se fijan solo para los procesos hijo (se restauran al terminar); se construyen con
+    # [char]0x...: este archivo es solo ASCII (Windows PowerShell 5.1 lee los .ps1 sin BOM como ANSI).
+    $uUser = ([string][char]0x00CD) + ([string][char]0x00F1) + 'igo-Prueba'
+    $uPc = 'EQUIPO-' + ([string][char]0x00D1) + 'AND' + ([string][char]0x00DA)
+    $eAcute = [string][char]0x00E9
+    $latin1 = [System.Text.Encoding]::GetEncoding(28591)
+    $oldUser = $env:USERNAME
+    $oldPc = $env:COMPUTERNAME
+    $env:USERNAME = $uUser
+    $env:COMPUTERNAME = $uPc
+    try {
+        # Cada contenido se escribe en: UTF-8, UTF-8 con BOM, UTF-16 con BOM, UTF-16 SIN BOM, Latin-1 y dos binarios (con
+        # NUL y sin BOM: una cadena Latin-1 y una cadena UTF-16 dentro).
+        function Put-Encodings([string]$Text) {
+            $u16 = [System.Text.Encoding]::Unicode.GetBytes($Text)
+            PutBytes 'e/utf8.txt' ($utf8.GetBytes($Text))
+            PutBytes 'e/utf8bom.txt' ([byte[]](0xEF, 0xBB, 0xBF) + $utf8.GetBytes($Text))
+            PutBytes 'e/utf16bom.txt' ([System.Text.Encoding]::Unicode.GetPreamble() + $u16)
+            PutBytes 'e/utf16.txt' $u16
+            PutBytes 'e/latin1.txt' ($latin1.GetBytes($Text))
+            PutBytes 'e/bin-latin1.bin' ([byte[]](0, 1, 2, 0, 255) + $latin1.GetBytes($Text) + [byte[]](0, 0, 9))
+            PutBytes 'e/bin-utf16.bin' ([byte[]](0, 1, 2, 0, 255, 7) + $u16 + [byte[]](0, 0, 9))
+        }
+        $encNames = @('utf8.txt', 'utf8bom.txt', 'utf16bom.txt', 'utf16.txt', 'latin1.txt', 'bin-latin1.bin', 'bin-utf16.bin')
+        # Los siete archivos de un caso van JUNTOS en una sola ejecucion (un proceso por formato tardaba minutos): la salida del
+        # check lista cada archivo con problemas ("e/<archivo>:<linea>: <regla>"), asi que cada formato se comprueba por
+        # separado (un positivo exige que SU archivo salga; un negativo, que NINGUNO salga) y el fallo dice cual formato fue.
+        function Expect-Each([string]$Case, [string]$Text, [bool]$ShouldFail, [string[]]$CheckArgs = @()) {
+            Reset-Repo
+            Put-Encodings $Text
+            Stage-All
+            $r = Run-Check $CheckArgs
+            foreach ($n in $encNames) {
+                $script:total++
+                $listed = [regex]::IsMatch($r.Out, '(?m)^\s*' + [regex]::Escape("e/$n") + ':')
+                if ($listed -ne $ShouldFail) {
+                    $want = if ($ShouldFail) { 'DETECTADO' } else { 'LIMPIO' }
+                    $script:failures.Add("$Case [$n] (esperado: $want, codigo $($r.Code))")
+                }
+            }
+            $script:total++
+            if (($r.Code -ne 0) -ne $ShouldFail) { $script:failures.Add("$Case (codigo de salida $($r.Code), esperado " + $(if ($ShouldFail) { 'distinto de 0' } else { '0' }) + ")") }
+        }
+        Expect-Each 'usuario local con letras no ASCII, suelto' ("hola`nusuario $uUser fin`n") $true
+        Expect-Each 'usuario local con letras no ASCII, entre parentesis' ("(" + $uUser + ")`n") $true
+        Expect-Each 'usuario local con letras no ASCII, en mayusculas' ("hola " + $uUser.ToUpperInvariant() + " fin`n") $true
+        Expect-Each 'equipo local con letras no ASCII' ("host=" + $uPc + ";`n") $true
+        # Pegado a otras letras o digitos NO es una fuga (ni ASCII ni acentuadas).
+        Expect-Each 'usuario pegado a letras ASCII no cuenta' ("zz" + $uUser + "zz`n") $false
+        Expect-Each 'usuario con una letra acentuada delante no cuenta' ($eAcute + $uUser + "`n") $false
+        Expect-Each 'usuario con una letra acentuada detras no cuenta' ($uUser + $eAcute + "`n") $false
+        Expect-Each 'equipo con una letra acentuada delante no cuenta' ($eAcute + $uPc + "`n") $false
+        Expect-Each 'otro valor parecido (otra letra acentuada) no cuenta' (([string][char]0x00D3) + ([string][char]0x00F1) + "igo-Prueba`n") $false
+        Expect-Each 'contenido limpio en cualquier codificacion' "nada que ver con la maquina`n" $false
+        # Con -GenericOnly (CI) los valores locales no rigen.
+        Expect-Each 'usuario con letras no ASCII con -GenericOnly' ("hola " + $uUser + " fin`n") $false @('-GenericOnly')
+        # Los numeros de linea: un hallazgo que solo esta en el texto Latin-1 se informa en SU linea (no desplazado por un texto
+        # concatenado delante). Archivo de 3 lineas con el usuario en la 2.
+        Reset-Repo
+        PutBytes 'ln/lat.txt' ($latin1.GetBytes("uno`nusuario $uUser fin`ntres`n"))
+        Stage-All
+        $r = Run-Check @()
+        $lineNos = @([regex]::Matches($r.Out, 'ln/lat\.txt:(\d+):') | ForEach-Object { $_.Groups[1].Value })
+        $script:total++
+        if ($r.Code -eq 0 -or $lineNos.Count -lt 1 -or @($lineNos | Where-Object { $_ -ne '2' }).Count -gt 0) {
+            $script:failures.Add("numero de linea de un hallazgo solo Latin-1: se esperaba solo la linea 2, salio: $($lineNos -join ',') ($($r.Out))")
+        }
+        # Un valor ASCII sintetico entre dos caracteres CJK en UTF-16 SIN BOM (binario): el vecino no tapa el valor.
+        $env:USERNAME = 'Zorbaq'
+        $cjkL = [string][char]0x4E2D
+        $cjkR = [string][char]0x6587
+        Reset-Repo
+        PutBytes 'ln/cjk.bin' ([byte[]](0, 1, 2, 0, 255, 7) + [System.Text.Encoding]::Unicode.GetBytes($cjkL + 'Zorbaq' + $cjkR) + [byte[]](0, 0, 9))
+        Stage-All
+        Expect 'valor local en UTF-16 de un binario entre dos caracteres CJK' $true
+        Reset-Repo
+        PutBytes 'ln/cjk-ok.bin' ([byte[]](0, 1, 2, 0, 255, 7) + [System.Text.Encoding]::Unicode.GetBytes($cjkL + 'Zorbaqx' + $cjkR) + [byte[]](0, 0, 9))
+        Stage-All
+        Expect 'valor local pegado a una letra ASCII en UTF-16 de un binario no cuenta' $false
+        # La comparacion sin distinguir mayusculas no depende de la cultura del proceso (i turca): con tr-TR 'IQZORB' y 'iqzorb'
+        # tienen que coincidir.
+        $env:USERNAME = 'IQZORB'
+        Reset-Repo
+        Put 'ln/tr.txt' ("hola iqzorb fin`n")
+        Stage-All
+        Expect 'IQZORB frente a iqzorb con la cultura por defecto' $true
+        $script:total++
+        $cmd = "[System.Threading.Thread]::CurrentThread.CurrentCulture = [System.Globalization.CultureInfo]'tr-TR'; & '$scriptPath'; exit `$LASTEXITCODE"
+        Push-Location $repo
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try { $null = & $Shell -NoProfile -Command $cmd 2>&1; $trCode = $LASTEXITCODE } finally { $ErrorActionPreference = $prevEap; Pop-Location }
+        if ($trCode -eq 0) { $script:failures.Add('IQZORB frente a iqzorb con la cultura tr-TR: no se detecto (la i turca)') }
+        $env:USERNAME = $uUser
+        # El mensaje de commit pasa por la misma decodificacion.
+        foreach ($case in @(
+                @('UTF-8', $utf8.GetBytes("fix: caso de $uUser`n")),
+                @('Latin-1', $latin1.GetBytes("fix: caso de $uUser`n")),
+                @('UTF-16 sin BOM', [System.Text.Encoding]::Unicode.GetBytes("fix: caso de $uUser`n"))
+            )) {
+            [System.IO.File]::WriteAllBytes($msg, $case[1])
+            Expect "mensaje con el usuario local no ASCII ($($case[0]))" $true @('-MessageFile', $msg)
+            Expect "mensaje con el usuario local no ASCII ($($case[0])) con -GenericOnly" $false @('-GenericOnly', '-MessageFile', $msg)
+        }
+        Remove-Item -LiteralPath $msg -Force
+    } finally {
+        $env:USERNAME = $oldUser
+        $env:COMPUTERNAME = $oldPc
+    }
     # --- CI definido y -Local, USERDOMAIN --------------------------------------------------------------------------------
     if ($env:USERNAME -and $env:USERNAME.Length -ge 3) {
         Reset-Repo

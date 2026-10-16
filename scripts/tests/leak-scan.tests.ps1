@@ -71,6 +71,114 @@ if ($user -and $user.Length -ge 3) {
     Check 'el usuario suelto' (@($l | Where-Object { $_ -like "*'USERNAME'*" }).Count -eq 1)
 }
 
+# --- Valores con letras NO ASCII (nombres de usuario/equipo con acentos o enes) -----------------------------------------------
+# Sinteticos y construidos con [char]0x...: este archivo es solo ASCII (Windows PowerShell 5.1 lee los .ps1 sin BOM como ANSI).
+# Aqui no hay ningun dato de la maquina: el usuario "Inigo-Prueba" (I y n acentuadas) y el equipo "EQUIPO-NANDU" (N y U
+# acentuadas) no existen.
+$uUser = ([string][char]0x00CD) + ([string][char]0x00F1) + 'igo-Prueba'
+$uPc = 'EQUIPO-' + ([string][char]0x00D1) + 'AND' + ([string][char]0x00DA)
+$uProfile = ('Q' + ':\' + 'Users\') + $uUser
+$eAcute = [string][char]0x00E9
+$uNeedles = @{ 'USERNAME' = $uUser; 'COMPUTERNAME' = $uPc; 'USERPROFILE' = $uProfile }
+$utf8nb = New-Object System.Text.UTF8Encoding($false)
+function Leaks($Bytes, [string]$Key) {
+    $l = Find-LocalValueLeaks -Bytes $Bytes -Needles $uNeedles -Name 'a.exe'
+    return @($l | Where-Object { $_ -like "*'$Key'*" }).Count
+}
+# Cada texto se prueba en cuatro codificaciones: Latin-1 (ANSI de Windows), UTF-8 (lo que escribe el compilador de Rust),
+# UTF-16 LE alineado y UTF-16 LE desalineado (un byte de mas delante).
+function Encodings([string]$Text) {
+    $u16 = [System.Text.Encoding]::Unicode.GetBytes($Text)
+    return [ordered]@{
+        'Latin-1'            = Pad (Latin1 $Text)
+        'UTF-8'              = Pad ($utf8nb.GetBytes($Text))
+        'UTF-16 alineado'    = Pad $u16
+        'UTF-16 desalineado' = [byte[]](7) + (Pad $u16)
+    }
+}
+foreach ($case in @(
+        @('USERNAME', "usuario=$uUser;"),
+        @('USERNAME', "x $uUser"),
+        @('USERNAME', (('Q' + ':\' + 'Users\') + $uUser + '\.cargo\registry')),
+        @('COMPUTERNAME', "host=$uPc;"),
+        @('USERPROFILE', "ruta: $uProfile\src\main.rs"),
+        @('USERPROFILE', ("ruta: $uProfile\src\main.rs").Replace('\', '/'))
+    )) {
+    $encs = Encodings $case[1]
+    foreach ($e in $encs.Keys) {
+        Check "no ASCII: $($case[0]) en $e ('$($case[1].Length) caracteres')" ((Leaks $encs[$e] $case[0]) -ge 1)
+    }
+}
+# Sin distinguir mayusculas, tambien con letras acentuadas.
+$encs = Encodings ("usuario=" + $uUser.ToLowerInvariant() + ';')
+foreach ($e in $encs.Keys) { Check "no ASCII: minusculas en $e" ((Leaks $encs[$e] 'USERNAME') -ge 1) }
+$encs = Encodings ("usuario=" + $uUser.ToUpperInvariant() + ';')
+foreach ($e in $encs.Keys) { Check "no ASCII: mayusculas en $e" ((Leaks $encs[$e] 'USERNAME') -ge 1) }
+# UTF-8 permisivo: bytes invalidos alrededor (y en medio de un binario) no impiden ver el valor ni inventan otro.
+$bin = [byte[]](0xFF, 0xFE, 0xC3, 0x28, 0x80) + $utf8nb.GetBytes("host=$uPc;") + [byte[]](0xC3, 0xFF, 0x00)
+Check 'UTF-8 con bytes invalidos alrededor sigue encontrando el equipo' ((Leaks $bin 'COMPUTERNAME') -ge 1)
+# Negativos: pegado a otras letras o digitos NO cuenta (ASCII o acentuadas), con cualquier codificacion.
+foreach ($glued in @(
+        @('letras ASCII a los dos lados', ('zz' + $uUser + 'zz')),
+        @('un digito delante', ('7' + $uUser)),
+        @('una letra acentuada delante', ($eAcute + $uUser)),
+        @('una letra acentuada detras', ($uUser + $eAcute)),
+        @('el equipo con una letra ASCII detras', ($uPc + 'x')),
+        @('el equipo con una letra acentuada delante', ($eAcute + $uPc))
+    )) {
+    $key = if ($glued[1].Contains($uPc)) { 'COMPUTERNAME' } else { 'USERNAME' }
+    $encs = Encodings $glued[1]
+    foreach ($e in $encs.Keys) { Check "no ASCII pegado ($($glued[0])) en $e no cuenta" ((Leaks $encs[$e] $key) -eq 0) }
+}
+# Separado por un signo o un espacio SI cuenta.
+$encs = Encodings ("(" + $uUser + ")")
+foreach ($e in $encs.Keys) { Check "no ASCII entre parentesis en $e" ((Leaks $encs[$e] 'USERNAME') -ge 1) }
+# Un binario sin el valor no da fuga, con ninguna codificacion.
+$encs = Encodings 'nada que ver con la maquina, ni con ninguna otra'
+foreach ($e in $encs.Keys) { Check "no ASCII: texto limpio en $e" ((Leaks $encs[$e] 'USERNAME') -eq 0 -and (Leaks $encs[$e] 'COMPUTERNAME') -eq 0 -and (Leaks $encs[$e] 'USERPROFILE') -eq 0) }
+# Y el valor "casi" (otra letra acentuada) tampoco.
+$near = ([string][char]0x00D3) + ([string][char]0x00F1) + 'igo-Prueba'
+$encs = Encodings ("usuario=" + $near + ';')
+foreach ($e in $encs.Keys) { Check "no ASCII: valor parecido (otra letra) en $e no cuenta" ((Leaks $encs[$e] 'USERNAME') -eq 0) }
+
+# --- UTF-16 con vecinos arbitrarios (los limites de palabra NO pueden depender de \p{L}) -----------------------------------------
+# Un par de bytes cualquiera leido como UTF-16 casi siempre es una letra Unicode (CJK, hangul...): si el limite de palabra contase
+# esas letras, un valor pegado a un vecino al azar no se veria nunca. Valor SINTETICO "Zorbaq" (no se parece a ningun usuario).
+$zNeedles = @{ 'USERNAME' = 'Zorbaq'; 'COMPUTERNAME' = 'ZORBAQ-PC' }
+function ZLeaks($Bytes, [string]$Key) {
+    $l = Find-LocalValueLeaks -Bytes $Bytes -Needles $zNeedles -Name 'a.exe'
+    return @($l | Where-Object { $_ -like "*'$Key'*" }).Count
+}
+$cjkL = [string][char]0x4E2D
+$cjkR = [string][char]0x6587
+foreach ($case in @(@('USERNAME', 'Zorbaq'), @('COMPUTERNAME', 'ZORBAQ-PC'))) {
+    $u16 = [System.Text.Encoding]::Unicode.GetBytes($cjkL + $case[1] + $cjkR)
+    Check "UTF-16 alineado: $($case[0]) entre dos caracteres CJK" ((ZLeaks (Pad $u16) $case[0]) -ge 1)
+    Check "UTF-16 desalineado: $($case[0]) entre dos caracteres CJK" ((ZLeaks ([byte[]](7) + (Pad $u16)) $case[0]) -ge 1)
+}
+# Vecinos al azar (semilla fija: determinista): al menos el 95 % tiene que verse en UTF-16, alineado y desalineado.
+$rnd = New-Object System.Random 20261016
+$hits = 0
+$tries = 400
+for ($i = 0; $i -lt $tries; $i++) {
+    $left = New-Object byte[] 2
+    $right = New-Object byte[] 2
+    $rnd.NextBytes($left)
+    $rnd.NextBytes($right)
+    $body = [System.Text.Encoding]::Unicode.GetBytes('Zorbaq')
+    $bytes = $left + $body + $right
+    if ($i % 2 -eq 1) { $bytes = [byte[]](7) + $bytes }
+    if ((ZLeaks $bytes 'USERNAME') -ge 1) { $hits++ }
+}
+Check "UTF-16 con vecinos al azar: $hits de $tries" ($hits -ge ($tries * 0.95))
+# Un valor ASCII con una letra latina acentuada DETRAS no cuenta en las decodificaciones nativas UTF-8 y UTF-16. Es lo unico que
+# garantiza el limite: con la acentuada delante, o detras en Latin-1, SIGUE contando (falso positivo del lado seguro; ver el
+# comentario de leak-scan.ps1), y por eso aqui solo se prueba UTF-8 y UTF-16.
+$zAcc = 'Zorbaq' + $eAcute
+foreach ($pair in @(@('UTF-8', (Pad ($utf8nb.GetBytes($zAcc)))), @('UTF-16', (Pad ([System.Text.Encoding]::Unicode.GetBytes($zAcc)))))) {
+    Check "ASCII pegado a una letra acentuada no cuenta ($($pair[0]))" ((ZLeaks $pair[1] 'USERNAME') -eq 0)
+}
+
 if ($failures.Count -gt 0) {
     Write-Host "leak-scan.tests: $($failures.Count) de $total pruebas FALLAN" -ForegroundColor Red
     $failures | ForEach-Object { Write-Host "  - $_" }

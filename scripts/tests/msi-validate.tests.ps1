@@ -37,8 +37,13 @@ $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ('tesela-test-' + [guid]::New
 New-Item -ItemType Directory -Path $tmp | Out-Null
 
 function Invoke-Sql($db, [string]$Sql) {
-    $view = [System.__ComObject].InvokeMember('OpenView', 'InvokeMethod', $null, $db, @($Sql))
-    [System.__ComObject].InvokeMember('Execute', 'InvokeMethod', $null, $view, $null) | Out-Null
+    # Si la sentencia es invalida el error dice CUAL (un caso de prueba mal escrito no se confunde con un fallo del validador).
+    try {
+        $view = [System.__ComObject].InvokeMember('OpenView', 'InvokeMethod', $null, $db, @($Sql))
+        [System.__ComObject].InvokeMember('Execute', 'InvokeMethod', $null, $view, $null) | Out-Null
+    } catch {
+        throw "sentencia SQL invalida: $Sql ($($_.Exception.Message))"
+    }
     [System.__ComObject].InvokeMember('Close', 'InvokeMethod', $null, $view, $null) | Out-Null
     [void][System.Runtime.InteropServices.Marshal]::ReleaseComObject($view)
 }
@@ -128,6 +133,124 @@ try {
 
     $path = New-Mutant 'reglocator-type2' @('UPDATE `RegLocator` SET `Type`=2')
     Check 'RegLocator con Type=2 (vista de 32 bits) en lugar de 18' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*busqueda de registro*tipo 18*')
+
+    # --- Arbol de carpetas EXACTO (Directory_Parent y DefaultDir) -------------------------------------------------------------
+    foreach ($case in @(
+            @('INSTALLFOLDER colgando de TARGETDIR (padre equivocado)', 'INSTALLFOLDER', "UPDATE ``Directory`` SET ``Directory_Parent``='TARGETDIR' WHERE ``Directory``='INSTALLFOLDER'", '*carpeta INSTALLFOLDER*Directory_Parent*ProgramsFolder*'),
+            @('ProgramsFolder colgando de TARGETDIR', 'ProgramsFolder', "UPDATE ``Directory`` SET ``Directory_Parent``='TARGETDIR' WHERE ``Directory``='ProgramsFolder'", '*carpeta ProgramsFolder*Directory_Parent*LocalAppDataFolder*'),
+            @('LocalAppDataFolder colgando de ProgramMenuFolder', 'LocalAppDataFolder', "UPDATE ``Directory`` SET ``Directory_Parent``='ProgramMenuFolder' WHERE ``Directory``='LocalAppDataFolder'", '*carpeta LocalAppDataFolder*Directory_Parent*TARGETDIR*'),
+            @('ProgramMenuFolder colgando de LocalAppDataFolder', 'ProgramMenuFolder', "UPDATE ``Directory`` SET ``Directory_Parent``='LocalAppDataFolder' WHERE ``Directory``='ProgramMenuFolder'", '*carpeta ProgramMenuFolder*Directory_Parent*TARGETDIR*'),
+            @('TARGETDIR con padre', 'TARGETDIR', "UPDATE ``Directory`` SET ``Directory_Parent``='INSTALLFOLDER' WHERE ``Directory``='TARGETDIR'", '*carpeta TARGETDIR*Directory_Parent*'),
+            @('INSTALLFOLDER con otro nombre (DefaultDir)', 'INSTALLFOLDER', "UPDATE ``Directory`` SET ``DefaultDir``='OtraCarpeta' WHERE ``Directory``='INSTALLFOLDER'", '*carpeta INSTALLFOLDER*DefaultDir*Tesela*'),
+            @('ProgramsFolder con otro nombre (DefaultDir)', 'ProgramsFolder', "UPDATE ``Directory`` SET ``DefaultDir``='Prog' WHERE ``Directory``='ProgramsFolder'", '*carpeta ProgramsFolder*DefaultDir*Programs*')
+        )) {
+        $path = New-Mutant ('dir-' + $case[1] + '-' + [guid]::NewGuid().ToString('N').Substring(0, 6)) @($case[2])
+        Check ('carpetas: ' + $case[0]) (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) $case[3])
+    }
+    # DefaultDir en la forma "corto|largo": vale si el nombre largo es el esperado.
+    $path = New-Mutant 'dir-shortlong' @("UPDATE ``Directory`` SET ``DefaultDir``='Tesela|Tesela' WHERE ``Directory``='INSTALLFOLDER'")
+    Check 'carpetas: DefaultDir corto|largo con el nombre largo esperado es valido' (-not (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*DefaultDir*'))
+    $path = New-Mutant 'dir-extra' @("INSERT INTO ``Directory`` (``Directory``, ``Directory_Parent``, ``DefaultDir``) VALUES ('EvilDir', 'TARGETDIR', 'Evil')")
+    Check 'carpetas: una carpeta de mas' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*carpeta fuera del perfil*EvilDir*')
+    $path = New-Mutant 'dir-missing' @("DELETE FROM ``Directory`` WHERE ``Directory``='ProgramMenuFolder'")
+    Check 'carpetas: falta una carpeta esperada' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*carpeta ProgramMenuFolder*0 filas*')
+
+    # --- MajorUpgrade y bloqueo de versiones posteriores: valores exactos -----------------------------------------------------
+    $upgCodeValue = '{7E8F4B67-A7D4-415B-9F8F-2E0B88AA88BB}'
+    $upCols = '`UpgradeCode`, `VersionMin`, `VersionMax`, `Language`, `Attributes`, `Remove`, `ActionProperty`'
+    $delDown = "DELETE FROM ``Upgrade`` WHERE ``ActionProperty``='WIX_DOWNGRADE_DETECTED'"
+    $delUp = "DELETE FROM ``Upgrade`` WHERE ``ActionProperty``='WIX_UPGRADE_DETECTED'"
+    function Down-Row([string]$Min, [string]$Lang, [int]$Attr, [string]$Prop = 'WIX_DOWNGRADE_DETECTED', [string]$UCode = $upgCodeValue) {
+        return "INSERT INTO ``Upgrade`` ($upCols) VALUES ('$UCode', '$Min', '', '$Lang', $Attr, '', '$Prop')"
+    }
+    function Up-Row([string]$Max, [string]$Lang, [int]$Attr, [string]$Prop = 'WIX_UPGRADE_DETECTED') {
+        return "INSERT INTO ``Upgrade`` ($upCols) VALUES ('$upgCodeValue', '', '$Max', '$Lang', $Attr, '', '$Prop')"
+    }
+    # Control: reponer las dos filas tal cual con estas funciones da un MSI valido (las manipulaciones de abajo son fiables).
+    $path = New-Mutant 'upgrade-control' @($delDown, $delUp, (Down-Row $version '1033' 2), (Up-Row $version '1033' 513))
+    Check 'Upgrade: reponer las dos filas tal cual sigue siendo valido' ((Test-MsiPackage -Path $path -ExpectedVersion $version).Count -eq 0)
+
+    $path = New-Mutant 'upgrade-nodown' @($delDown)
+    Check 'Upgrade: falta la fila de bloqueo de versiones posteriores' ((Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*falta la fila de Upgrade*bloquear*WIX_DOWNGRADE_DETECTED*') -and (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*tabla Upgrade tiene 1 filas*'))
+    $path = New-Mutant 'upgrade-noup' @($delUp)
+    Check 'Upgrade: falta la fila de reemplazo de versiones anteriores' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*falta la fila de Upgrade*reemplazar*WIX_UPGRADE_DETECTED*')
+    $path = New-Mutant 'upgrade-noneatall' @($delDown, $delUp)
+    Check 'Upgrade: sin MajorUpgrade (tabla vacia)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*tabla Upgrade tiene 0 filas*')
+    $path = New-Mutant 'upgrade-down-attr0' @($delDown, (Down-Row $version '1033' 0))
+    Check 'Upgrade: bloqueo sin OnlyDetect (Attributes = 0: desinstalaria la version posterior)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*bloquear*Attributes = ''0''*se esperaba ''2''*')
+    $path = New-Mutant 'upgrade-down-attr258' @($delDown, (Down-Row $version '1033' 258))
+    Check 'Upgrade: bloqueo con VersionMin inclusivo (Attributes = 258)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*bloquear*Attributes = ''258''*')
+    $path = New-Mutant 'upgrade-up-attr1' @($delUp, (Up-Row $version '1033' 1))
+    Check 'Upgrade: reemplazo sin VersionMax inclusivo (Attributes = 1)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*reemplazar*Attributes = ''1''*se esperaba ''513''*')
+    $path = New-Mutant 'upgrade-up-attr512' @($delUp, (Up-Row $version '1033' 512))
+    Check 'Upgrade: reemplazo sin MigrateFeatures (Attributes = 512)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*reemplazar*Attributes = ''512''*')
+    $path = New-Mutant 'upgrade-down-min' @($delDown, (Down-Row '0.0.1' '1033' 2))
+    Check 'Upgrade: bloqueo con otro VersionMin' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*bloquear*VersionMin = ''0.0.1''*')
+    $path = New-Mutant 'upgrade-up-max' @($delUp, (Up-Row '99.0.0' '1033' 513))
+    Check 'Upgrade: reemplazo con otro VersionMax' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*reemplazar*VersionMax = ''99.0.0''*')
+    $path = New-Mutant 'upgrade-down-lang' @($delDown, (Down-Row $version '3082' 2))
+    Check 'Upgrade: bloqueo con otro idioma' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*bloquear*Language = ''3082''*')
+    $path = New-Mutant 'upgrade-down-prop' @($delDown, (Down-Row $version '1033' 2 'OTRA_PROPIEDAD'))
+    Check 'Upgrade: bloqueo con otra ActionProperty' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*falta la fila de Upgrade*WIX_DOWNGRADE_DETECTED*')
+    $path = New-Mutant 'upgrade-down-code' @($delDown, (Down-Row $version '1033' 2 'WIX_DOWNGRADE_DETECTED' '{11111111-2222-3333-4444-555555555555}'))
+    Check 'Upgrade: bloqueo con otro UpgradeCode' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*bloquear*UpgradeCode*')
+    $path = New-Mutant 'upgrade-extra' @((Down-Row '0.0.1' '1033' 2 'OTRA_PROPIEDAD'))
+    Check 'Upgrade: una fila de mas' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*tabla Upgrade tiene 3 filas*')
+    # Contra otra version esperada, VersionMin/VersionMax ya no cuadran.
+    $p = Test-MsiPackage -Path $Msi -ExpectedVersion '9.9.9'
+    Check 'Upgrade: otra version esperada (VersionMax y VersionMin siguen a la version del producto)' ((Has-Problem $p '*reemplazar*VersionMax*9.9.9*') -and (Has-Problem $p '*bloquear*VersionMin*9.9.9*'))
+
+    # LaunchCondition: la condicion exacta, y UNA sola, con mensaje (Condition es clave primaria: se borra y se inserta).
+    $lcMsg = 'Mensaje de prueba'
+    $path = New-Mutant 'lc-nonot' @("DELETE FROM ``LaunchCondition``", "INSERT INTO ``LaunchCondition`` (``Condition``, ``Description``) VALUES ('WIX_DOWNGRADE_DETECTED', '$lcMsg')")
+    Check 'LaunchCondition sin NOT (bloquearia a quien NO instala una anterior)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*UNA LaunchCondition*NOT WIX_DOWNGRADE_DETECTED*')
+    $path = New-Mutant 'lc-other' @("DELETE FROM ``LaunchCondition``", "INSERT INTO ``LaunchCondition`` (``Condition``, ``Description``) VALUES ('NOT WIX_UPGRADE_DETECTED', '$lcMsg')")
+    Check 'LaunchCondition sobre otra propiedad' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*UNA LaunchCondition*')
+    $path = New-Mutant 'lc-none' @("DELETE FROM ``LaunchCondition``")
+    Check 'sin LaunchCondition' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*UNA LaunchCondition*')
+    $path = New-Mutant 'lc-extra' @("INSERT INTO ``LaunchCondition`` (``Condition``, ``Description``) VALUES ('1=1', '$lcMsg')")
+    Check 'una LaunchCondition de mas' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*UNA LaunchCondition*')
+    $path = New-Mutant 'lc-nomsg' @("DELETE FROM ``LaunchCondition``", "INSERT INTO ``LaunchCondition`` (``Condition``, ``Description``) VALUES ('NOT WIX_DOWNGRADE_DETECTED', ' ')")
+    Check 'LaunchCondition con el mensaje en blanco' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*LaunchCondition*no tiene mensaje*')
+
+    # Que todo esto SURTA EFECTO: las acciones que lo evaluan, presentes, incondicionales y bien colocadas.
+    $path = New-Mutant 'seq-noremove' @("DELETE FROM ``InstallExecuteSequence`` WHERE ``Action``='RemoveExistingProducts'")
+    Check 'sin RemoveExistingProducts en InstallExecuteSequence' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*falta RemoveExistingProducts*')
+    $path = New-Mutant 'seq-removecond' @("UPDATE ``InstallExecuteSequence`` SET ``Condition``='0' WHERE ``Action``='RemoveExistingProducts'")
+    Check 'RemoveExistingProducts con condicion' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*RemoveExistingProducts lleva la condicion*')
+    $path = New-Mutant 'seq-removelate' @("UPDATE ``InstallExecuteSequence`` SET ``Sequence``=6500 WHERE ``Action``='RemoveExistingProducts'")
+    Check 'RemoveExistingProducts fuera de InstallValidate..InstallInitialize' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*RemoveExistingProducts*entre InstallValidate e InstallInitialize*')
+    foreach ($t in 'InstallExecuteSequence', 'InstallUISequence') {
+        foreach ($a in 'FindRelatedProducts', 'LaunchConditions') {
+            $path = New-Mutant "seq-no-$a-$t" @("DELETE FROM ``$t`` WHERE ``Action``='$a'")
+            Check "sin $a en $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*falta $a en $t*")
+            $path = New-Mutant "seq-cond-$a-$t" @("UPDATE ``$t`` SET ``Condition``='0' WHERE ``Action``='$a'")
+            Check "$a con condicion en $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*$a en $t lleva la condicion*")
+        }
+    }
+    # FindRelatedProducts ANTES de LaunchConditions en las dos secuencias (si no, la propiedad esta vacia cuando se evalua la
+    # condicion y el bloqueo no hace nada, aunque todas las filas esten).
+    foreach ($t in 'InstallExecuteSequence', 'InstallUISequence') {
+        $path = New-Mutant "seq-order-frp-after-$t" @("UPDATE ``$t`` SET ``Sequence``=200 WHERE ``Action``='FindRelatedProducts'")
+        Check "FindRelatedProducts (200) despues de LaunchConditions (100) en $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*FindRelatedProducts*antes de LaunchConditions*$t*")
+        $path = New-Mutant "seq-order-lc-before-$t" @("UPDATE ``$t`` SET ``Sequence``=10 WHERE ``Action``='LaunchConditions'")
+        Check "LaunchConditions (10) antes de FindRelatedProducts (25) en $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*FindRelatedProducts*antes de LaunchConditions*$t*")
+        $path = New-Mutant "seq-order-equal-$t" @("UPDATE ``$t`` SET ``Sequence``=100 WHERE ``Action``='FindRelatedProducts'")
+        Check "FindRelatedProducts y LaunchConditions con el mismo numero de secuencia en $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*FindRelatedProducts*antes de LaunchConditions*$t*")
+    }
+
+    # Identificadores y propiedades DISTINGUEN mayusculas (Windows Installer lo hace asi).
+    $path = New-Mutant 'case-parent' @("UPDATE ``Directory`` SET ``Directory_Parent``='programsfolder' WHERE ``Directory``='INSTALLFOLDER'")
+    Check 'Directory_Parent en minusculas (programsfolder)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*carpeta INSTALLFOLDER*Directory_Parent*')
+    $path = New-Mutant 'case-actionproperty' @($delDown, (Down-Row $version '1033' 2 'wix_downgrade_detected'))
+    Check 'ActionProperty del bloqueo en minusculas (wix_downgrade_detected)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*falta la fila de Upgrade*WIX_DOWNGRADE_DETECTED*')
+    $path = New-Mutant 'case-launchcondition' @("DELETE FROM ``LaunchCondition``", "INSERT INTO ``LaunchCondition`` (``Condition``, ``Description``) VALUES ('NOT wix_downgrade_detected', '$lcMsg')")
+    Check 'LaunchCondition con la propiedad en minusculas' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*UNA LaunchCondition*')
+    $path = New-Mutant 'case-secure' @("UPDATE ``Property`` SET ``Value``='wix_upgrade_detected;wix_downgrade_detected' WHERE ``Property``='SecureCustomProperties'")
+    Check 'SecureCustomProperties en minusculas' ((Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*SecureCustomProperties no incluye WIX_DOWNGRADE_DETECTED*') -and (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*SecureCustomProperties no incluye WIX_UPGRADE_DETECTED*'))
+
+    $path = New-Mutant 'secure-props' @("UPDATE ``Property`` SET ``Value``='WIX_UPGRADE_DETECTED' WHERE ``Property``='SecureCustomProperties'")
+    Check 'SecureCustomProperties sin WIX_DOWNGRADE_DETECTED' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*SecureCustomProperties no incluye WIX_DOWNGRADE_DETECTED*')
 
     # --- Un error de la API no es una tabla vacia ------------------------------------------------------------------------
     $m = Open-MsiDatabase $Msi
