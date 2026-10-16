@@ -4,7 +4,7 @@
 
 use crate::args;
 use crate::i18n::Tr;
-use crate::platform::RevealError;
+use crate::platform::{RevealError, RevealOutcome};
 use tesela_scanner::ScanError;
 
 /// Por qué no pudo empezar (o acabar) un análisis.
@@ -52,6 +52,16 @@ pub fn reveal_message(tr: &Tr, e: &RevealError) -> String {
     tr.ta("error-open-explorer", args!["error" => reason])
 }
 
+/// El aviso (toast) de cómo acabó una petición de abrir el Explorador; `None` si salió bien.
+pub fn reveal_outcome_message(tr: &Tr, o: &RevealOutcome) -> Option<String> {
+    match o {
+        RevealOutcome::Done => None,
+        RevealOutcome::Failed(e) => Some(reveal_message(tr, e)),
+        RevealOutcome::NoResponse => Some(tr.t("error-reveal-timeout")),
+        RevealOutcome::Busy => Some(tr.t("error-reveal-busy")),
+    }
+}
+
 /// `HRESULT` en hexadecimal (`0x80070002`), el detalle técnico que se enseña aparte.
 fn hresult_text(h: i32) -> String {
     format!("{:#010X}", h as u32)
@@ -79,6 +89,38 @@ mod tests {
 
     fn io(code: i32) -> std::io::Error {
         std::io::Error::from_raw_os_error(code)
+    }
+
+    #[test]
+    fn los_desenlaces_de_abrir_el_explorador_se_traducen() {
+        let es = Tr::new(Lang::Es);
+        let en = Tr::new(Lang::En);
+        assert_eq!(reveal_outcome_message(&es, &RevealOutcome::Done), None);
+        assert!(
+            reveal_outcome_message(&es, &RevealOutcome::NoResponse)
+                .unwrap()
+                .contains("no responde")
+        );
+        assert!(
+            reveal_outcome_message(&en, &RevealOutcome::NoResponse)
+                .unwrap()
+                .contains("not responding")
+        );
+        assert!(
+            reveal_outcome_message(&es, &RevealOutcome::Busy)
+                .unwrap()
+                .contains("ocupado")
+        );
+        assert!(
+            reveal_outcome_message(&en, &RevealOutcome::Busy)
+                .unwrap()
+                .contains("busy")
+        );
+        assert!(
+            reveal_outcome_message(&es, &RevealOutcome::Failed(RevealError::InvalidPath))
+                .unwrap()
+                .starts_with("No se pudo abrir el Explorador")
+        );
     }
 
     #[test]

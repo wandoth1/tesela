@@ -60,6 +60,8 @@ error-open-explorer = Explorer could not be opened: { $error }
 error-reveal-invalid = the path is not valid
 error-reveal-parse = Windows does not recognize the path ({ $detail })
 error-reveal-open = Explorer could not show it ({ $detail })
+error-reveal-timeout = Explorer is not responding: it may take a while to open
+error-reveal-busy = Explorer is still busy with a previous request
 
 # Scan
 scan-title = While we scan your disk…

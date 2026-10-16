@@ -268,13 +268,8 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
                 } else {
                     r
                 };
-                if r.clicked()
-                    && let Err(e) = platform::reveal_in_explorer(&tree.path(id))
-                {
-                    ex.toast = Some((
-                        crate::error::reveal_message(env.tr, &e),
-                        ui.input(|i| i.time) + 3.0,
-                    ));
+                if r.clicked() {
+                    ex.reveal(&tree.path(id), env.tr, ui.input(|i| i.time));
                 }
                 let r = widgets::button(
                     ui,

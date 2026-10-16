@@ -997,12 +997,7 @@ pub(crate) fn menu_items(ui: &mut Ui, env: &mut Env, ex: &mut Explore, sel: Sel)
     }
     if b.clicked() {
         let p = tree.path(node);
-        if let Err(e) = platform::reveal_in_explorer(&p) {
-            ex.toast = Some((
-                crate::error::reveal_message(tr, &e),
-                ui.input(|i| i.time) + 3.0,
-            ));
-        }
+        ex.reveal(&p, tr, ui.input(|i| i.time));
         ui.close();
     }
     let b = ui.add_enabled(!is_system, egui::Button::new(tr.t("menu-copy-path")));

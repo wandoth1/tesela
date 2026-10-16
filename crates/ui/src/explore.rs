@@ -86,6 +86,8 @@ pub struct Explore {
     /// Elemento sobre el que se abrió el menú contextual.
     pub(crate) ctx_target: Option<Sel>,
     pub(crate) toast: Option<(String, f64)>,
+    /// Petición de abrir el Explorador en curso (nunca bloquea: se consulta en cada frame).
+    reveal: Option<crate::platform::RevealHandle>,
     focus_search: bool,
     /// El buscador tiene el foco del teclado (las teclas de navegación no actúan mientras se escribe).
     search_focused: bool,
@@ -145,6 +147,7 @@ impl Explore {
             animate,
             ctx_target: None,
             toast: None,
+            reveal: None,
             focus_search: false,
             search_focused: false,
             nav_focus: None,
@@ -404,6 +407,18 @@ impl Explore {
                 View::Map => crate::map::show(ui, env, self),
                 View::List => list::show(ui, env, self),
             });
+        // Desenlace de "Abrir en el Explorador": el hilo suelto responde por el manejador; un shell que no responde o un
+        // error salen como aviso.
+        if let Some(h) = &mut self.reveal {
+            if let Some(outcome) = h.poll() {
+                self.reveal = None;
+                if let Some(msg) = crate::error::reveal_outcome_message(env.tr, &outcome) {
+                    self.toast = Some((msg, ctx.input(|i| i.time) + 4.0));
+                }
+            } else {
+                ctx.request_repaint_after(Duration::from_millis(100));
+            }
+        }
         // Aviso temporal ("Ruta copiada").
         if let Some((msg, until)) = &self.toast {
             let now = ctx.input(|i| i.time);
@@ -423,7 +438,28 @@ impl Explore {
         }
     }
 
+    /// Abre el Explorador con `path` seleccionado SIN bloquear la interfaz. Si ya hay una petición sin terminar o se
+    /// alcanzó el tope de hilos, avisa con un toast en vez de lanzar otra.
+    pub(crate) fn reveal(&mut self, path: &std::path::Path, tr: &crate::i18n::Tr, now: f64) {
+        use crate::platform::{RevealOutcome, RevealStart, reveal_in_explorer_async};
+        let busy = || {
+            crate::error::reveal_outcome_message(tr, &RevealOutcome::Busy).map(|m| (m, now + 4.0))
+        };
+        if self.reveal.is_some() {
+            self.toast = busy();
+            return;
+        }
+        match reveal_in_explorer_async(path) {
+            RevealStart::Started(h) => self.reveal = Some(h),
+            RevealStart::Busy => self.toast = busy(),
+        }
+    }
+
     fn handle_keys(&mut self, ctx: &egui::Context, env: &mut Env) {
+        // Con una ventana modal abierta ("Acerca de") NINGÚN atajo de la exploración actúa, tampoco Ctrl+F ni F5.
+        if env.modal_open {
+            return;
+        }
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::F)) {
             self.focus_search = true;
         }
@@ -433,8 +469,8 @@ impl Explore {
         if self.search_focused {
             return;
         }
-        // Una ventana modal o un menú abierto se quedan con el teclado (Escape lo cierra, Intro activa su opción).
-        if env.modal_open || egui::Popup::is_any_open(ctx) {
+        // Un menú abierto se queda con el teclado (Escape lo cierra, Intro activa su opción).
+        if egui::Popup::is_any_open(ctx) {
             return;
         }
         // Intro, Retroceso y las flechas son de la navegación SOLO si el foco está en el mapa, en una fila de la lista

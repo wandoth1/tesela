@@ -117,6 +117,11 @@ fn errores_de_uso_y_de_ruta_dan_codigos_de_salida() {
     let (code, _, err) = run(&[]);
     assert_eq!(code, 2);
     assert!(err.contains("falta la ruta"));
+    // El uso documenta `--overwrite` y `--json -`.
+    assert!(
+        err.contains("--overwrite") && err.contains("--json -"),
+        "{err}"
+    );
     let (code, _, _) = run(&[Path::new("--nada")]);
     assert_eq!(code, 2);
     let t = TempTree::new();

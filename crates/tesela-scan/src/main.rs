@@ -49,8 +49,10 @@ struct Args {
     verbose: bool,
 }
 
-const USAGE: &str = "uso: tesela-scan <ruta> [--threads N] [--top N] [--json archivo] [--no-priority] [--fallback] \
-                     [--stop-after SEGUNDOS] [--mem] [--verbose]";
+const USAGE: &str = "uso: tesela-scan <ruta> [--threads N] [--top N] [--json archivo|-] [--overwrite] [--no-priority] [--fallback] [--stop-after SEGUNDOS] [--mem] [--verbose]
+  --json archivo   escribe el resumen en JSON; NO pisa un archivo que ya exista
+  --json -         escribe el JSON por la salida estandar (el informe legible va a la de errores)
+  --overwrite      con --json archivo: reemplaza el archivo si ya existe";
 
 fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
     let mut a = Args {
@@ -478,14 +480,6 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    // Falla ANTES de escanear (puede tardar mucho) si el archivo ya existe y no se pidió reemplazarlo.
-    if let Some(JsonTarget::File(p)) = &args.json
-        && !args.overwrite
-        && p.exists()
-    {
-        eprintln!("error: {}", exists_error(p));
-        return ExitCode::from(1);
-    }
     // Falla ANTES de escanear (puede tardar mucho) si el archivo ya existe y no se pidió reemplazarlo.
     if let Some(JsonTarget::File(p)) = &args.json
         && !args.overwrite

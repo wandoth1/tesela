@@ -403,31 +403,130 @@ fn reveal_on_this_thread(path: &Path) -> Result<(), RevealError> {
     Ok(())
 }
 
-/// Plazo que se espera al shell antes de darlo por bueno (abrir un Explorador puede tardar).
-const REVEAL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
+/// Plazo tras el cual se avisa de que el shell no responde.
+pub const REVEAL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Tope de hilos de apertura vivos a la vez: con un shell colgado no se acumulan hilos.
+pub const MAX_LIVE_REVEALS: usize = 2;
+
+/// Hilos de apertura vivos ahora mismo.
+static LIVE_REVEALS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Cómo acabó una petición de abrir el Explorador.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RevealOutcome {
+    /// El shell aceptó la petición.
+    Done,
+    /// El shell la rechazó (error tipado, con su `HRESULT`).
+    Failed(RevealError),
+    /// Pasó el plazo sin respuesta: el hilo sigue por su cuenta y ya no se espera.
+    NoResponse,
+    /// Ya hay demasiadas peticiones sin terminar (el shell no responde): esta ni se intentó.
+    Busy,
+}
+
+/// Una petición en curso. NUNCA bloquea: la interfaz la consulta con [`RevealHandle::poll`] en cada frame.
+pub struct RevealHandle {
+    rx: crossbeam_channel::Receiver<Result<(), RevealError>>,
+    started: std::time::Instant,
+    deadline: std::time::Duration,
+}
+
+/// Resultado de lanzar la petición.
+pub enum RevealStart {
+    Started(RevealHandle),
+    /// El tope de hilos vivos está alcanzado.
+    Busy,
+}
+
+impl RevealHandle {
+    /// `Some` cuando hay un desenlace: el resultado del shell, o `NoResponse` si pasó el plazo (tras lo cual el
+    /// llamador suelta el manejador). `None` si sigue esperándose.
+    pub fn poll(&mut self) -> Option<RevealOutcome> {
+        use crossbeam_channel::TryRecvError;
+        match self.rx.try_recv() {
+            Ok(Ok(())) => Some(RevealOutcome::Done),
+            Ok(Err(e)) => Some(RevealOutcome::Failed(e)),
+            // El hilo terminó sin dejar resultado (un pánico): E_FAIL.
+            Err(TryRecvError::Disconnected) => Some(RevealOutcome::Failed(RevealError::Open(
+                0x8000_4005u32 as i32,
+            ))),
+            Err(TryRecvError::Empty) => {
+                (self.started.elapsed() >= self.deadline).then_some(RevealOutcome::NoResponse)
+            }
+        }
+    }
+}
+
+/// Descuenta un hilo de apertura vivo al terminar (también si entra en pánico).
+struct LiveGuard(&'static std::sync::atomic::AtomicUsize);
+
+impl Drop for LiveGuard {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+/// Lanza `work` en un hilo suelto con un tope de `max` hilos vivos en `live`.
+fn spawn_reveal<F>(
+    work: F,
+    live: &'static std::sync::atomic::AtomicUsize,
+    max: usize,
+    deadline: std::time::Duration,
+) -> RevealStart
+where
+    F: FnOnce() -> Result<(), RevealError> + Send + 'static,
+{
+    use std::sync::atomic::Ordering;
+    if live.fetch_add(1, Ordering::SeqCst) >= max {
+        live.fetch_sub(1, Ordering::SeqCst);
+        return RevealStart::Busy;
+    }
+    let guard = LiveGuard(live);
+    let (tx, rx) = crossbeam_channel::bounded(1);
+    let spawned = std::thread::Builder::new()
+        .name("tesela-reveal".into())
+        .spawn(move || {
+            let _guard = guard;
+            let _ = tx.send(work());
+        });
+    if spawned.is_err() {
+        // `guard` se soltó con el cierre descartado: el contador ya está al día.
+        return RevealStart::Busy;
+    }
+    RevealStart::Started(RevealHandle {
+        rx,
+        started: std::time::Instant::now(),
+        deadline,
+    })
+}
+
+/// El trabajo de abrir el Explorador: este hilo inicializa COM (el shell lo necesita) y hace la llamada.
+fn reveal_work(path: &Path) -> Result<(), RevealError> {
+    // SAFETY: `CoInitializeEx` no recibe punteros (nulo = reservado) y se empareja con `CoUninitialize` solo si tuvo éxito
+    // (un `HRESULT` negativo significa que no se inicializó en este hilo).
+    let hr = unsafe { CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32) };
+    let out = reveal_on_this_thread(path);
+    if hr >= 0 {
+        // SAFETY: la llamada anterior inicializó COM en ESTE hilo.
+        unsafe { CoUninitialize() };
+    }
+    out
+}
 
 /// Abre el Explorador con `path` seleccionado (o su carpeta, si es un directorio) con `SHOpenFolderAndSelectItems` y un
 /// PIDL creado desde la ruta UTF-16 EXACTA: funciona con nombres que no se pueden escribir como texto (unidades de código
-/// sueltas), que con `explorer.exe /select,"…"` se perdían. El shell necesita COM: se usa un hilo propio que lo
-/// inicializa, y si no responde en 5 s se da por abierto (el hilo sigue por su cuenta).
-pub fn reveal_in_explorer(path: &Path) -> Result<(), RevealError> {
+/// sueltas), que con `explorer.exe /select,"…"` se perdían. NO bloquea el hilo de la interfaz: va en un hilo suelto (con un
+/// tope de [`MAX_LIVE_REVEALS`] vivos a la vez) y el resultado se recoge con [`RevealHandle::poll`]; si el shell no
+/// responde en [`REVEAL_DEADLINE`], `poll` da `NoResponse` y la interfaz avisa.
+pub fn reveal_in_explorer_async(path: &Path) -> RevealStart {
     let path = path.to_path_buf();
-    type Job = Box<dyn FnOnce() -> Option<Result<(), RevealError>> + Send>;
-    let jobs: Vec<Job> = vec![Box::new(move || {
-        // SAFETY: `CoInitializeEx` no recibe punteros (nulo = reservado) y se empareja con `CoUninitialize` solo si
-        // tuvo éxito (un `HRESULT` negativo significa que no se inicializó en este hilo).
-        let hr = unsafe { CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32) };
-        let out = reveal_on_this_thread(&path);
-        if hr >= 0 {
-            // SAFETY: la llamada anterior inicializó COM en ESTE hilo.
-            unsafe { CoUninitialize() };
-        }
-        Some(out)
-    })];
-    match collect_with_deadline(jobs, REVEAL_DEADLINE).pop().flatten() {
-        Some(r) => r,
-        None => Ok(()),
-    }
+    spawn_reveal(
+        move || reveal_work(&path),
+        &LIVE_REVEALS,
+        MAX_LIVE_REVEALS,
+        REVEAL_DEADLINE,
+    )
 }
 
 /// La ventana principal como padre de los diálogos del sistema (selector de carpeta): así el diálogo es modal de ELLA
@@ -538,7 +637,7 @@ mod tests {
         assert!(!show_properties(&p));
     }
 
-    /// Inicializa COM en este hilo (como hace `reveal_in_explorer` en el suyo) y ejecuta `f`.
+    /// Inicializa COM en este hilo (como hace `reveal_work` en el suyo) y ejecuta `f`.
     fn with_com<T>(f: impl FnOnce() -> T) -> T {
         // SAFETY: `CoInitializeEx` no recibe punteros (nulo = reservado); se empareja con `CoUninitialize` si tuvo éxito.
         let hr = unsafe { CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32) };
@@ -569,7 +668,7 @@ mod tests {
     fn abrir_el_explorador_con_una_ruta_inexistente_da_el_error_tipado_sin_abrir_nada() {
         let t = Temp::new();
         let missing = t.0.join("no-existe");
-        match reveal_in_explorer(&missing) {
+        match reveal_work(&missing) {
             Err(RevealError::ParsePath(hr)) => {
                 assert!(hr < 0);
                 assert_eq!(RevealError::ParsePath(hr).hresult(), Some(hr));
@@ -577,16 +676,13 @@ mod tests {
             other => panic!("se esperaba ParsePath, salió {other:?}"),
         }
         // Rutas inservibles: ni se llama al shell.
-        assert_eq!(
-            reveal_in_explorer(Path::new("")),
-            Err(RevealError::InvalidPath)
-        );
+        assert_eq!(reveal_work(Path::new("")), Err(RevealError::InvalidPath));
         let with_nul = PathBuf::from(std::ffi::OsString::from_wide(&[
             b'a' as u16,
             0,
             b'b' as u16,
         ]));
-        assert_eq!(reveal_in_explorer(&with_nul), Err(RevealError::InvalidPath));
+        assert_eq!(reveal_work(&with_nul), Err(RevealError::InvalidPath));
         // El texto del error es técnico y neutro (la interfaz lo traduce).
         let text = RevealError::ParsePath(-2147024894).to_string();
         assert!(text.contains("0x80070002"), "{text}");
@@ -680,5 +776,114 @@ mod tests {
         assert_eq!(q.used_percent(), 75);
         let z = DriveInfo { total: 0, ..d };
         assert_eq!(z.used_percent(), 0);
+    }
+
+    static TEST_LIVE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    fn wait_for<T>(mut f: impl FnMut() -> Option<T>) -> T {
+        let t0 = std::time::Instant::now();
+        loop {
+            if let Some(v) = f() {
+                return v;
+            }
+            assert!(t0.elapsed().as_secs() < 20, "tiempo agotado");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
+    #[test]
+    fn abrir_el_explorador_no_bloquea_y_devuelve_el_error_tipado_por_el_manejador() {
+        let t = Temp::new();
+        let t0 = std::time::Instant::now();
+        let RevealStart::Started(mut h) = reveal_in_explorer_async(&t.0.join("no-existe")) else {
+            panic!("no debería estar ocupado");
+        };
+        // Lanzar es inmediato (la E/S del shell va en otro hilo).
+        assert!(t0.elapsed() < std::time::Duration::from_millis(500));
+        let out = wait_for(|| h.poll());
+        assert!(
+            matches!(out, RevealOutcome::Failed(RevealError::ParsePath(hr)) if hr < 0),
+            "{out:?}"
+        );
+    }
+
+    #[test]
+    fn con_el_shell_colgado_no_se_acumulan_hilos_y_se_avisa_de_que_no_responde() {
+        use std::sync::atomic::Ordering;
+        let (release_tx, release_rx) = crossbeam_channel::unbounded::<()>();
+        let mk = |rx: crossbeam_channel::Receiver<()>| {
+            move || {
+                let _ = rx.recv(); // "el shell no responde" hasta que se suelte
+                Ok(())
+            }
+        };
+        let short = std::time::Duration::from_millis(60);
+        // Dos hilos vivos (el tope de la prueba) y un tercero rechazado sin lanzar nada.
+        let RevealStart::Started(mut a) =
+            spawn_reveal(mk(release_rx.clone()), &TEST_LIVE, 2, short)
+        else {
+            panic!()
+        };
+        let RevealStart::Started(mut b) =
+            spawn_reveal(mk(release_rx.clone()), &TEST_LIVE, 2, short)
+        else {
+            panic!()
+        };
+        assert_eq!(TEST_LIVE.load(Ordering::SeqCst), 2);
+        assert!(matches!(
+            spawn_reveal(mk(release_rx.clone()), &TEST_LIVE, 2, short),
+            RevealStart::Busy
+        ));
+        assert_eq!(
+            TEST_LIVE.load(Ordering::SeqCst),
+            2,
+            "el rechazado no deja rastro"
+        );
+        // Pasado el plazo sin respuesta, `poll` avisa (no antes).
+        assert_eq!(a.poll(), None);
+        assert_eq!(wait_for(|| a.poll()), RevealOutcome::NoResponse);
+        assert_eq!(wait_for(|| b.poll()), RevealOutcome::NoResponse);
+        // Los hilos siguen vivos (colgados): el tope sigue aplicándose.
+        assert_eq!(TEST_LIVE.load(Ordering::SeqCst), 2);
+        assert!(matches!(
+            spawn_reveal(mk(release_rx.clone()), &TEST_LIVE, 2, short),
+            RevealStart::Busy
+        ));
+        // Al responder el shell, los hilos terminan y el contador vuelve a 0.
+        drop(release_tx);
+        wait_for(|| (TEST_LIVE.load(Ordering::SeqCst) == 0).then_some(()));
+        // Con sitio libre se vuelve a poder lanzar; y un trabajo que acaba bien da `Done`.
+        let RevealStart::Started(mut ok) =
+            spawn_reveal(|| Ok(()), &TEST_LIVE, 2, std::time::Duration::from_secs(5))
+        else {
+            panic!()
+        };
+        assert_eq!(wait_for(|| ok.poll()), RevealOutcome::Done);
+        // Un trabajo que falla da el error; un pánico en el hilo no deja el contador subido.
+        let RevealStart::Started(mut bad) = spawn_reveal(
+            || Err(RevealError::Open(-5)),
+            &TEST_LIVE,
+            2,
+            std::time::Duration::from_secs(5),
+        ) else {
+            panic!()
+        };
+        assert_eq!(
+            wait_for(|| bad.poll()),
+            RevealOutcome::Failed(RevealError::Open(-5))
+        );
+        let RevealStart::Started(mut boom) = spawn_reveal(
+            || -> Result<(), RevealError> { panic!("fallo de prueba") },
+            &TEST_LIVE,
+            2,
+            std::time::Duration::from_secs(5),
+        ) else {
+            panic!()
+        };
+        assert!(matches!(
+            wait_for(|| boom.poll()),
+            RevealOutcome::Failed(RevealError::Open(_))
+        ));
+        wait_for(|| (TEST_LIVE.load(Ordering::SeqCst) == 0).then_some(()));
     }
 }

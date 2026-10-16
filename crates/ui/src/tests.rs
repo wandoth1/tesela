@@ -1922,3 +1922,48 @@ fn sin_animaciones_el_progreso_indeterminado_y_los_spinners_son_estaticos() {
         "con animaciones el spinner repinta: {busy:?}"
     );
 }
+
+#[test]
+fn con_una_ventana_modal_abierta_f5_y_ctrl_f_no_actuan() {
+    let mut h = harness(opts(StartScreen::Home));
+    h.get_by_label("Analizar Sistema (C:)").click();
+    h.run_steps(3);
+    h.get_by_label("Parar y ver lo que hay").click();
+    h.run_steps(5);
+    assert_eq!(h.state().ui().screen_name(), "explore");
+    h.get_by_label("Ajustes").click();
+    h.run_steps(3);
+    h.get_by_label("Acerca de Tesela").click();
+    h.run_steps(4);
+    h.get_by_label(&format!("Versión {}", crate::about::VERSION));
+    // F5 no reescanea y Ctrl+F no enfoca el buscador bajo la ventana modal.
+    h.key_press(Key::F5);
+    h.run_steps(3);
+    assert_eq!(
+        h.state().ui().screen_name(),
+        "explore",
+        "F5 actuó bajo el modal"
+    );
+    h.key_press_modifiers(Modifiers::COMMAND, Key::F);
+    h.run_steps(3);
+    assert!(
+        !h.get_by_label("Buscar").is_focused(),
+        "Ctrl+F actuó bajo el modal"
+    );
+    // Escape cierra la ventana y entonces los atajos vuelven.
+    h.key_press(Key::Escape);
+    h.run_steps(3);
+    assert!(h.query_by_label_contains("Versión ").is_none());
+    h.key_press_modifiers(Modifiers::COMMAND, Key::F);
+    h.run_steps(3);
+    assert!(h.get_by_label("Buscar").is_focused());
+    h.key_press(Key::Escape);
+    h.run_steps(2);
+    h.key_press(Key::F5);
+    h.run_steps(3);
+    assert_eq!(
+        h.state().ui().screen_name(),
+        "scan",
+        "F5 vuelve a funcionar"
+    );
+}

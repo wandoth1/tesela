@@ -61,6 +61,8 @@ error-open-explorer = No se pudo abrir el Explorador: { $error }
 error-reveal-invalid = la ruta no es válida
 error-reveal-parse = Windows no reconoce la ruta ({ $detail })
 error-reveal-open = el Explorador no pudo mostrarla ({ $detail })
+error-reveal-timeout = El Explorador no responde: puede tardar en abrirse
+error-reveal-busy = El Explorador sigue ocupado con una petición anterior
 
 # Escaneo
 scan-title = Mientras analizamos tu disco…

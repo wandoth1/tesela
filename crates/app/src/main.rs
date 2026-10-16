@@ -38,16 +38,9 @@ fn main() -> eframe::Result {
 
     // Una captura que no se puede guardar se descubre ANTES de abrir la ventana, no después de pintar.
     if let Some(path) = &cli.screenshot
-        && !cli.overwrite
-        && path.exists()
+        && let Err(e) = output::preflight(path, cli.overwrite)
     {
-        console::print(&format!(
-            "tesela: {}",
-            output::describe_error(
-                path,
-                &std::io::Error::from(std::io::ErrorKind::AlreadyExists)
-            )
-        ));
+        console::print(&format!("tesela: {e}"));
         std::process::exit(1);
     }
 
@@ -147,7 +140,7 @@ fn main() -> eframe::Result {
     let persist = !tool_mode;
     let persist_size = cli.size.is_none();
 
-    eframe::run_native(
+    let result = eframe::run_native(
         "Tesela",
         native,
         Box::new(move |cc| {
@@ -175,5 +168,10 @@ fn main() -> eframe::Result {
                 wait_explore,
             }))
         }),
-    )
+    );
+    // Una captura pedida que no se pudo guardar es un fallo: código de salida distinto de 0.
+    if output::failed() {
+        std::process::exit(1);
+    }
+    result
 }

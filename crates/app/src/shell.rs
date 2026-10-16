@@ -281,6 +281,7 @@ impl Shell {
                         crate::output::describe_error(&path, &e)
                     ));
                     self.screenshot = None;
+                    crate::output::mark_failed();
                     ctx.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
                     return;
                 }
@@ -289,10 +290,17 @@ impl Shell {
             enc.set_color(png::ColorType::Rgba);
             enc.set_depth(png::BitDepth::Eight);
             // Sin fragmentos de texto: ni software, ni autor, ni fecha.
-            enc.write_header()
+            match enc
+                .write_header()
                 .and_then(|mut wr| wr.write_image_data(&rgba))
-                .expect("no se pudo escribir la captura");
-            crate::console::print(&format!("captura guardada ({w}x{h})"));
+            {
+                Ok(()) => crate::console::print(&format!("captura guardada ({w}x{h})")),
+                Err(e) => {
+                    crate::console::print(&format!("tesela: no se pudo escribir la captura: {e}"));
+                    crate::output::mark_failed();
+                }
+            }
+            self.screenshot = None;
             ctx.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
         }
     }
