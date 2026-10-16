@@ -2408,6 +2408,13 @@ mod tests {
                 "{user}"
             );
         }
+        // R-6b: una carpeta de origen que SOLO empieza como `tesela-test-<uuid>` (con algo detrás) no es de una prueba.
+        let extra_dir = format!(r"{}\tesela-test-{UUID}-extra\x", temp.display());
+        assert!(!sweep_candidate(
+            &item(&extra_dir, "a.txt", old),
+            now,
+            &temp
+        ));
         // Un elemento SUELTO en `%TEMP%`: solo con la forma `tesela-test-<uuid>`.
         let temp_s = temp.display().to_string();
         assert!(sweep_candidate(
