@@ -210,3 +210,17 @@ pub fn sparse_file(path: &Path, len: u64) {
     );
     f.set_len(len).expect("fija la longitud lógica");
 }
+
+/// Forma corta 8.3 de una ruta EXISTENTE (`GetShortPathNameW`); sin nombres 8.3 activos devuelve la ruta sin cambios.
+pub fn short_path(path: &Path) -> PathBuf {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
+    let w: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
+    let mut buf = vec![0u16; 2048];
+    // SAFETY: `w` termina en NUL; `buf` es escribible con `buf.len()` unidades UTF-16.
+    let n = unsafe { GetShortPathNameW(w.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) } as usize;
+    if n == 0 || n >= buf.len() {
+        return path.to_path_buf();
+    }
+    PathBuf::from(std::ffi::OsString::from_wide(&buf[..n]))
+}

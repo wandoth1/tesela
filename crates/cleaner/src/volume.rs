@@ -6,9 +6,20 @@ use std::ffi::OsString;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 use windows_sys::Win32::Storage::FileSystem::{
-    GetDriveTypeW, GetVolumeNameForVolumeMountPointW, GetVolumePathNameW,
+    GetDriveTypeW, GetTempPathW, GetVolumeNameForVolumeMountPointW, GetVolumePathNameW,
 };
 use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
+
+/// `%TEMP%` según Windows (`GetTempPathW`).
+pub fn temp_path() -> Option<PathBuf> {
+    let mut buf = vec![0u16; 1024];
+    // SAFETY: `buf` es escribible con `buf.len()` unidades UTF-16.
+    let n = unsafe { GetTempPathW(buf.len() as u32, buf.as_mut_ptr()) } as usize;
+    if n == 0 || n >= buf.len() {
+        return None;
+    }
+    Some(OsString::from_wide(&buf[..n]).into())
+}
 
 /// Tipo de unidad (`GetDriveTypeW`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

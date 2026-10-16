@@ -1,0 +1,89 @@
+# Reglas de limpieza del MVP (PLAN.md §2.6). Cada categoria tiene riesgo, destino y, si procede, antiguedad minima.
+#
+#   risk        safe (se puede preseleccionar) | review (nunca se preselecciona) | info (solo informar, sin casilla)
+#   destination permanent (se borra y se vuelve a crear sola: SOLO lo regenerable que clasifica una regla) | recycle
+#   action      contents   = borra los HIJOS de las raices de la categoria (la raiz no se borra)
+#               empty-bin  = vaciar la Papelera con alcance enumerado (la propia accion es el borrado)
+#               none       = no hay accion (se informa o se ofrece "Ver")
+#   min_age_hours  solo se tocan los archivos mas antiguos que esto (la mas reciente de creacion, escritura y cambio)
+#   selectable  tiene casilla en Recomendaciones
+#
+# Los textos ("por que") viven en la interfaz (es.ftl / en.ftl), con el identificador `rule-<id>-why`.
+# Un test comprueba las invariantes: lo seguro es regenerable y borra con una regla, lo "revisar" nunca se preselecciona
+# y lo "solo informar" no lleva destino ni accion.
+
+[[rule]]
+id = "user-temp"
+risk = "safe"
+destination = "permanent"
+action = "contents"
+min_age_hours = 24
+selectable = true
+
+[[rule]]
+id = "windows-temp"
+risk = "safe"
+destination = "permanent"
+action = "contents"
+min_age_hours = 24
+selectable = true
+
+[[rule]]
+id = "chrome-cache"
+risk = "safe"
+destination = "permanent"
+action = "contents"
+min_age_hours = 0
+selectable = true
+
+[[rule]]
+id = "edge-cache"
+risk = "safe"
+destination = "permanent"
+action = "contents"
+min_age_hours = 0
+selectable = true
+
+[[rule]]
+id = "firefox-cache"
+risk = "safe"
+destination = "permanent"
+action = "contents"
+min_age_hours = 0
+selectable = true
+
+[[rule]]
+id = "recycle-bin"
+risk = "review"
+destination = "permanent"
+action = "empty-bin"
+min_age_hours = 0
+selectable = true
+
+# Descargas: informativo (Revisar). Se ofrece "Ver" para entrar en la carpeta; lo que el usuario elija va a la cesta como
+# "Tu archivo" (Papelera). Nunca es "seguro".
+[[rule]]
+id = "downloads"
+risk = "review"
+destination = "recycle"
+action = "none"
+min_age_hours = 0
+selectable = false
+
+[[rule]]
+id = "pagefile"
+risk = "info"
+action = "none"
+selectable = false
+
+[[rule]]
+id = "hiberfil"
+risk = "info"
+action = "none"
+selectable = false
+
+[[rule]]
+id = "swapfile"
+risk = "info"
+action = "none"
+selectable = false
