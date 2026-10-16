@@ -425,6 +425,12 @@ sum-recycle-stopped-changed =
         [one] Se detuvo el envío a la Papelera: un elemento cambió justo antes de enviarlo y no se envió. Por precaución no se envió { $count } elemento más: sigue donde estaba.
        *[other] Se detuvo el envío a la Papelera: un elemento cambió justo antes de enviarlo y no se envió. Por precaución no se enviaron { $count } elementos más: siguen donde estaban.
     }
+sum-recycle-stopped-declined =
+    { $n ->
+        [0] Se detuvo el envío a la Papelera: Windows no pudo enviar un elemento (no cabía) y lo dejó donde estaba. Por precaución no se tocó nada más.
+        [one] Se detuvo el envío a la Papelera: Windows no pudo enviar un elemento (no cabía) y lo dejó donde estaba. Por precaución no se envió { $count } elemento más: sigue donde estaba.
+       *[other] Se detuvo el envío a la Papelera: Windows no pudo enviar un elemento (no cabía) y lo dejó donde estaba. Por precaución no se enviaron { $count } elementos más: siguen donde estaban.
+    }
 sum-no-room =
     { $n ->
         [one] { $count } elemento no se envió porque no hay sitio en la Papelera: vacíala o libera espacio. Sigue donde estaba.

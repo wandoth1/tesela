@@ -1963,8 +1963,14 @@ impl RecycleShell for FakeShell {
             let unknown = p
                 .file_name()
                 .is_some_and(|n| n.to_string_lossy().contains("unknown"));
+            let intact = p
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().contains("intacto"));
             let state = if nuke {
                 fs::remove_file(p).unwrap();
+                BinState::Deleted
+            } else if intact {
+                // La shell notifica "eliminado" (nulo, con éxito) SIN haber tocado nada (medido con un archivo disperso).
                 BinState::Deleted
             } else {
                 let dest = self.bin.join(format!(
@@ -2120,6 +2126,44 @@ fn el_primer_borrado_inesperado_corta_el_lote_en_curso() {
         rep.shell_error, None,
         "el E_ABORT propio no es un error de la shell"
     );
+}
+
+/// H2: la shell notifica `psiNewlyCreated` nulo con éxito pero NO tocó el elemento (medido con una carpeta que contiene un
+/// archivo disperso enorme: `hr = 0x00270003` y la carpeta sigue en el disco). No se afirma que se eliminó nada
+/// (`DeletedUnexpectedly` solo si el nombre ya no está), pero el corte de seguridad se mantiene.
+#[test]
+fn una_eliminacion_notificada_sin_tocar_nada_no_se_cuenta_como_borrado_y_sigue_cortando() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    let plan = plan_de(
+        &sb,
+        &c,
+        &[
+            ("intacto.txt", 100, 100),
+            ("b.txt", 100, 100),
+            ("c.txt", 100, 100),
+        ],
+    );
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    let st = |n: &str| {
+        rep.items
+            .iter()
+            .find(|i| i.path.ends_with(n))
+            .unwrap()
+            .status
+    };
+    assert!(matches!(
+        st("intacto.txt"),
+        ItemStatus::NotRecycled(RecycleFail::Shell(0))
+    ));
+    assert_eq!(st("b.txt"), ItemStatus::NotRecycled(RecycleFail::Stopped));
+    assert_eq!(st("c.txt"), ItemStatus::NotRecycled(RecycleFail::Stopped));
+    assert!(sb.path("Docs/intacto.txt").exists());
+    assert_eq!(rep.deleted_unexpectedly, 0, "no se borró nada");
+    assert!(rep.recycle_stopped, "el corte se mantiene");
+    assert_eq!(rep.stop_reason, Some(StopReason::ShellDeclined));
+    assert_eq!(rep.stopped_items, 2);
 }
 
 /// M2: una ruta sin verificar (`InBinUnknownPath` con éxito) también corta el lote, y `Unverified` provoca
@@ -2621,10 +2665,21 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
         judge(&p3, Some(&e), shell, false, false).0,
         ItemStatus::RecycledOther
     );
-    // La shell lo eliminó definitivamente (`psiNewlyCreated` nulo).
+    // La shell lo eliminó definitivamente (`psiNewlyCreated` nulo) y el nombre ya no está.
     assert_eq!(
         judge(&p, Some(&ev(0, BinState::Deleted)), shell, false, false).0,
         ItemStatus::DeletedUnexpectedly
+    );
+    // H2: nulo con éxito pero el elemento SIGUE en su sitio: la shell no tocó nada (no se dice que se eliminó).
+    let here_ev = DeleteEvent {
+        item: OsString::from(bin_file.as_os_str()),
+        hr: 0x0027_0003,
+        state: BinState::Deleted,
+    };
+    let p_here = pending(id, &bin_file, &bin_file);
+    assert_eq!(
+        judge(&p_here, Some(&here_ev), shell, false, false).0,
+        ItemStatus::NotRecycled(RecycleFail::Shell(0x0027_0003))
     );
     // No dio ruta, o la ruta no se puede abrir -> no verificado.
     assert_eq!(

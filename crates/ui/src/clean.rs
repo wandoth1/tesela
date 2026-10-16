@@ -1030,6 +1030,7 @@ fn summary_lines(env: &Env, s: &Summary) -> Vec<(String, bool)> {
         let key = match r.stop_reason {
             Some(StopReason::Unverified) => "sum-recycle-stopped-unverified",
             Some(StopReason::Changed) => "sum-recycle-stopped-changed",
+            Some(StopReason::ShellDeclined) => "sum-recycle-stopped-declined",
             _ => "sum-recycle-stopped",
         };
         v.push((n(key, r.stopped_items), true));

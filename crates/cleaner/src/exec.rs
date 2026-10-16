@@ -261,6 +261,9 @@ pub enum StopReason {
     DeletedUnexpectedly,
     /// No se pudo comprobar qué pasó con un elemento (la shell no dijo dónde quedó, o no se pudo abrir).
     Unverified,
+    /// La shell dijo que "eliminó" el elemento sin enviarlo a la Papelera (no cabía) pero NO lo tocó: sigue en su sitio. Se
+    /// detiene el envío igual (la shell se comporta de forma inesperada), pero no se afirma que se haya borrado nada.
+    ShellDeclined,
     /// Lo que había en la ruta justo antes de que la shell actuara no era lo aprobado (`PreDeleteItem` lo vetó): se detuvo
     /// el envío y no se mandó nada más.
     Changed,
@@ -868,6 +871,16 @@ impl Cleaner {
                                 },
                             );
                         }
+                        // La shell dijo "eliminado" pero el elemento sigue ahí (ver `judge`): el envío se detiene igual.
+                        if matches!(status, ItemStatus::NotRecycled(RecycleFail::Shell(_)))
+                            && ev.is_some_and(|e| {
+                                e.succeeded() && e.state == recycle::BinState::Deleted
+                            })
+                        {
+                            stopped = true;
+                            report.recycle_stopped = true;
+                            report.stop_reason.get_or_insert(StopReason::ShellDeclined);
+                        }
                         emit(it, Some(p.identity), p.links, o);
                         if let Some(l) = &opts.log {
                             l.write_note(
@@ -1268,10 +1281,22 @@ fn judge(
         return (ItemStatus::NotRecycled(fail), o);
     }
     match &ev.state {
-        BinState::Deleted => (
-            ItemStatus::DeletedUnexpectedly,
-            Outcome::DeletedUnexpectedly,
-        ),
+        BinState::Deleted => {
+            // `psiNewlyCreated` nulo con éxito suele ser un borrado definitivo, pero la shell también lo notifica sin
+            // haber tocado nada (medido: una carpeta con un archivo disperso enorme da `hr = 0x00270003`, nulo, y la
+            // carpeta sigue en el disco). Si el nombre aprobado sigue ahí, no se eliminó nada: no se dice que sí.
+            if std::fs::symlink_metadata(&p.path).is_ok() {
+                (
+                    ItemStatus::NotRecycled(RecycleFail::Shell(ev.hr)),
+                    Outcome::NotRecycled,
+                )
+            } else {
+                (
+                    ItemStatus::DeletedUnexpectedly,
+                    Outcome::DeletedUnexpectedly,
+                )
+            }
+        }
         BinState::InBinUnknownPath => (ItemStatus::Unverified, Outcome::Unverified),
         BinState::InBin(bin_path) => {
             let found = sys::open_for_query(bin_path)

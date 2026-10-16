@@ -424,6 +424,12 @@ sum-recycle-stopped-changed =
         [one] Sending to the Recycle Bin was stopped: one item changed right before it was sent and was not sent. As a precaution { $count } more item was not sent: it is still where it was.
        *[other] Sending to the Recycle Bin was stopped: one item changed right before it was sent and was not sent. As a precaution { $count } more items were not sent: they are still where they were.
     }
+sum-recycle-stopped-declined =
+    { $n ->
+        [0] Sending to the Recycle Bin was stopped: Windows could not send one item (it did not fit) and left it where it was. As a precaution nothing else was touched.
+        [one] Sending to the Recycle Bin was stopped: Windows could not send one item (it did not fit) and left it where it was. As a precaution { $count } more item was not sent: it is still where it was.
+       *[other] Sending to the Recycle Bin was stopped: Windows could not send one item (it did not fit) and left it where it was. As a precaution { $count } more items were not sent: they are still where they were.
+    }
 sum-no-room =
     { $n ->
         [one] { $count } item was not sent because there is no room in the Recycle Bin: empty it or free up space. It is still where it was.
