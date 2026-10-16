@@ -203,6 +203,14 @@ $uBytes = $utf8nb.GetBytes('usuario=' + $uUser + ';')
 $at = 9   # tras "usuario=" y el primer byte (0xC3) de la primera letra acentuada
 $cutBytes = [byte[]]($uBytes[0..$at]) + [byte[]](0) + [byte[]]($uBytes[($at + 1)..($uBytes.Length - 1)])
 Check 'valor con acentos en UTF-8 partido por un NUL' ((Leaks (Pad $cutBytes) 'USERNAME') -ge 1)
+# El mismo valor en Latin-1/ANSI (una letra acentuada es UN byte) partido por un NUL, en tres puntos: no es UTF-8 valido, asi que solo
+# lo ve el Latin-1 de los bytes sin NUL.
+foreach ($cut in 1, 2, 5) {
+    $latCut = Pad (Nul (Latin1 ('usuario=' + $uUser.Substring(0, $cut))) (Latin1 ($uUser.Substring($cut) + ';')))
+    Check "valor con acentos en Latin-1 partido por un NUL (corte $cut)" ((Leaks $latCut 'USERNAME') -ge 1)
+}
+$latCutPc = Pad (Nul (Latin1 ('host=' + $uPc.Substring(0, 9))) (Latin1 ($uPc.Substring(9) + ';')))
+Check 'equipo con acentos en Latin-1 partido por un NUL' ((Leaks $latCutPc 'COMPUTERNAME') -ge 1)
 # El UTF-16 sigue funcionando con sus NUL (el texto sin NUL es ADICIONAL): alineado, desalineado y con NUL extra dentro del valor.
 $u16z = [System.Text.Encoding]::Unicode.GetBytes('usuario=Zorbaq;')
 Check 'UTF-16 alineado sigue viendose' ((ZLeaks (Pad $u16z) 'USERNAME') -ge 1)
