@@ -44,6 +44,11 @@ pub trait Backend: Send + Sync {
     fn is_demo(&self) -> bool {
         false
     }
+    /// ¿Se ejecuta el proceso elevado (como administrador)? Entonces la limpieza real no se hace (el análisis y la simulación,
+    /// sí): la interfaz lo avisa antes de ejecutar. El respaldo simulado nunca lo está.
+    fn is_elevated(&self) -> bool {
+        false
+    }
 }
 
 impl Backend for Cleaner {
@@ -78,5 +83,8 @@ impl Backend for Cleaner {
     }
     fn data_dir(&self) -> Option<PathBuf> {
         self.data_dir.clone()
+    }
+    fn is_elevated(&self) -> bool {
+        Cleaner::is_elevated(self)
     }
 }

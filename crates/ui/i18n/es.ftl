@@ -269,6 +269,7 @@ confirm-subtitle =
         [one] { $count } elemento · { $size } · comprobamos cada ruta otra vez justo antes de borrar
        *[other] { $count } elementos · { $size } · comprobamos cada ruta otra vez justo antes de borrar
     }
+confirm-elevated = Tesela se está ejecutando como administrador; por seguridad la limpieza solo funciona sin elevar. Ciérrala y ábrela normalmente.
 confirm-no-log = No se pudo crear el registro de la limpieza, así que no se ha hecho nada. Comprueba que se puede escribir en la carpeta de datos de Tesela (en tu carpeta de datos locales) y vuelve a intentarlo. La simulación sigue funcionando sin registro.
 confirm-empty = No hay nada que limpiar con esta cesta.
 confirm-dry-banner = Modo simulación: no se borrará ni se moverá nada; solo se registra lo que se haría.

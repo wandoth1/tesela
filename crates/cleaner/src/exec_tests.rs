@@ -3532,6 +3532,129 @@ fn una_carpeta_que_no_se_puede_leer_entera_no_se_aprueba_para_la_papelera() {
     );
 }
 
+/// E1: una elevación inyectada para probar las dos ramas (el CI no se puede elevar).
+struct FakeElevation(bool);
+
+impl Elevation for FakeElevation {
+    fn is_elevated(&self) -> bool {
+        self.0
+    }
+}
+
+/// E1: ELEVADO no se limpia. La limpieza real (definitivo y Papelera) devuelve `ExecError::Elevated` sin tocar nada y sin
+/// dejar registro; el análisis (aprobar) y la simulación siguen permitidos. Sin elevar, el mismo plan se ejecuta.
+#[test]
+fn elevado_no_se_limpia_pero_si_se_analiza_y_se_simula() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = cleaner_for(&sb)
+        .with_shell(fake.clone())
+        .with_elevation(Arc::new(FakeElevation(true)));
+    assert!(c.is_elevated());
+    sb.write_aged("Temp/viejo.tmp", 10_000, 72);
+    sb.write("Docs/b.txt", 1_000);
+    let mut b = Basket::new();
+    b.set_category(CategoryId::UserTemp, true);
+    b.add_path(sb.long("Docs/b.txt"), c.protection());
+    // El análisis (aprobar) se permite elevado.
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 2, "{:?}", plan.rejected);
+    // La simulación también.
+    let dry = exec(&c, &plan, true, false, None).unwrap();
+    assert!(dry.dry_run);
+    // La limpieza real, no: error tipado, nada tocado, el registro de la ejecución descartado.
+    let log = Arc::new(LogWriter::create(&sb.path("Tesela"), false).unwrap());
+    let log_path = log.path().to_path_buf();
+    let r = c.execute(
+        &plan,
+        &ExecOptions {
+            log: Some(log),
+            ..ExecOptions::default()
+        },
+        &Progress::new(),
+    );
+    assert_eq!(r.err(), Some(ExecError::Elevated));
+    assert!(sb.path("Temp/viejo.tmp").exists() && sb.path("Docs/b.txt").exists());
+    assert!(fake.names().is_empty(), "la shell no vio nada");
+    assert!(
+        !log_path.exists(),
+        "una ejecución rechazada no deja registro"
+    );
+    // También con el helper de las pruebas (que añade su propio registro).
+    assert_eq!(
+        exec(&c, &plan, false, false, None).err(),
+        Some(ExecError::Elevated)
+    );
+    assert!(sb.path("Docs/b.txt").exists());
+    // Sin elevar, el mismo plan se ejecuta.
+    let c2 = cleaner_for(&sb)
+        .with_shell(fake.clone())
+        .with_elevation(Arc::new(FakeElevation(false)));
+    assert!(!c2.is_elevated());
+    let rep = exec(&c2, &plan, false, false, None).unwrap();
+    assert!(
+        rep.items
+            .iter()
+            .all(|i| matches!(i.status, ItemStatus::Done | ItemStatus::Recycled)),
+        "{:?}",
+        rep.items
+    );
+    assert!(!sb.path("Temp/viejo.tmp").exists() && !sb.path("Docs/b.txt").exists());
+}
+
+/// E1: vaciar la Papelera tampoco se hace elevado, ni por `execute` (rechazo completo) ni llamando directamente a `empty_bin`
+/// (segunda línea de defensa): no se purga nada y consta como fallo.
+#[test]
+fn elevado_no_se_vacia_la_papelera() {
+    let sb = Sandbox::new();
+    let c = cleaner_for(&sb).with_elevation(Arc::new(FakeElevation(true)));
+    let item = BinItem {
+        id: OsString::from("no-existe-en-ninguna-parte"),
+        name: OsString::from("x.txt"),
+        original_parent: sb.long("origen"),
+        time_deleted: 0,
+        size: 1,
+        data_id: None,
+        meta_id: None,
+        no_identity: false,
+    };
+    let cancel = Arc::new(AtomicBool::new(false));
+    let rep = c.empty_bin(std::slice::from_ref(&item), 1, false, &cancel, None, None);
+    assert_eq!((rep.requested, rep.purged, rep.still_there), (1, 0, 1));
+    assert!(rep.failed, "elevado: no se pudo vaciar");
+    // La simulación (dry) sigue contando lo que se purgaría.
+    let dry = c.empty_bin(std::slice::from_ref(&item), 1, true, &cancel, None, None);
+    assert_eq!((dry.purged, dry.failed), (1, false));
+    // Y `execute` con un plan que SOLO vacía la Papelera: rechazado entero.
+    let mut plan = Plan::default();
+    plan.bin = Some(crate::plan::BinPlan {
+        items: vec![item],
+        bytes_hint: 1,
+    });
+    assert_eq!(
+        exec(&c, &plan, false, false, None).err(),
+        Some(ExecError::Elevated)
+    );
+}
+
+/// E1: la consulta REAL del token da `false` en un proceso normal (el CI y esta máquina no están elevados); si lo estuviera,
+/// la prueba se salta con un mensaje (no se puede asegurar nada). Nunca es `None` en un proceso normal.
+#[test]
+fn el_proceso_de_pruebas_no_esta_elevado_segun_el_token() {
+    let state = crate::sys::process_elevation();
+    assert!(state.is_some(), "el token del proceso se puede consultar");
+    if state == Some(true) {
+        eprintln!("el proceso de pruebas está ELEVADO: la prueba se salta");
+        return;
+    }
+    assert_eq!(state, Some(false));
+    // Falla cerrado: sin poder consultar el token, elevado.
+    assert!(elevated_from(None));
+    assert!(elevated_from(Some(true)) && !elevated_from(Some(false)));
+    assert!(!RealElevation.is_elevated());
+    assert!(!Cleaner::new(Roots::default()).is_elevated());
+}
+
 /// A-B2: una medida incompleta es siempre "NO intacto" en el juicio R6 (`dir_untouched`), y `remeasure` la distingue de una
 /// completa por cualquiera de sus causas: una subcarpeta que no se puede listar, un hijo que desaparece entre el listado y la
 /// apertura, o la cancelación a mitad del recorrido.

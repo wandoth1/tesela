@@ -88,6 +88,8 @@ pub(crate) enum Note {
     NoLog,
     /// Lo que cabe en la Papelera cambió desde la confirmación: hay que revisar y confirmar otra vez.
     Reconfirm,
+    /// La aplicación se ejecuta como administrador: la limpieza real no se hace (E1). No se ha tocado nada.
+    Elevated,
 }
 
 impl Drop for CleanFlow {
@@ -224,6 +226,7 @@ impl CleanFlow {
             // El error no se traga: se enseña con el mismo aviso que en el flujo normal (H6.7).
             Err(ExecError::LogRequired) => self.note = Some(Note::NoLog),
             Err(ExecError::NeedsReconfirm(_)) => self.note = Some(Note::Reconfirm),
+            Err(ExecError::Elevated) => self.note = Some(Note::Elevated),
         }
     }
 
@@ -294,6 +297,11 @@ impl CleanFlow {
                     // El ejecutor exige un registro utilizable: no se ha tocado nada.
                     self.stage = Stage::Idle;
                     self.note = Some(Note::NoLog);
+                }
+                Ok(Err(ExecError::Elevated)) => {
+                    // Elevado: no se ha tocado nada (el `cleaner` lo rechaza antes de empezar).
+                    self.stage = Stage::Idle;
+                    self.note = Some(Note::Elevated);
                 }
                 Ok(Err(ExecError::NeedsReconfirm(_))) => {
                     // Lo que cabe en la Papelera cambió desde la confirmación: se vuelve a aprobar y a confirmar.
@@ -381,6 +389,8 @@ impl CleanFlow {
                 // Más larga: explica por qué no pasó nada.
                 Note::NoLog => ("confirm-no-log", 12.0),
                 Note::Reconfirm => ("confirm-reconfirm", 8.0),
+                // Larga: dice qué hacer.
+                Note::Elevated => ("confirm-elevated", 12.0),
             };
             let msg = env.tr.t(key);
             toast(ctx, &msg);
@@ -408,6 +418,12 @@ impl CleanFlow {
             && let Stage::Confirm(c) = &self.stage
         {
             let plan = c.plan.clone();
+            // E1: elevado no se limpia (también lo rechaza el `cleaner`; aquí se avisa antes de crear el registro).
+            if blocked_by_elevation(backend.is_elevated(), dry, backend.is_demo()) {
+                self.note = Some(Note::Elevated);
+                ctx.request_repaint();
+                return;
+            }
             // SIN REGISTRO NO HAY ACCIÓN DESTRUCTIVA (M4): si el registro local no se puede crear, no se ejecuta nada y se
             // dice por qué. La simulación (y la demostración, que nunca toca el disco) puede seguir sin él.
             let log = backend
@@ -451,6 +467,12 @@ impl CleanFlow {
 /// (que no toca nada) y la demostración (que nunca toca el disco) pueden seguir sin él.
 fn abort_without_log(has_log: bool, dry: bool, is_demo: bool) -> bool {
     !has_log && !dry && !is_demo
+}
+
+/// ¿Hay que negarse a limpiar porque el proceso está elevado (E1)? Solo la limpieza REAL: la simulación y la demostración
+/// (que nunca toca el disco) siguen, y el análisis no pasa por aquí.
+fn blocked_by_elevation(elevated: bool, dry: bool, is_demo: bool) -> bool {
+    elevated && !dry && !is_demo
 }
 
 fn toast(ctx: &egui::Context, msg: &str) {
@@ -1331,6 +1353,16 @@ mod log_gate_tests {
             .into_iter()
         ));
         assert!(!has_capacity_unknown(std::iter::empty()));
+    }
+
+    /// E1: elevado, solo la limpieza REAL se niega; la simulación y la demostración siguen.
+    #[test]
+    fn elevado_solo_se_niega_la_limpieza_real() {
+        use super::blocked_by_elevation;
+        assert!(blocked_by_elevation(true, false, false));
+        assert!(!blocked_by_elevation(true, true, false), "simulación");
+        assert!(!blocked_by_elevation(true, false, true), "demostración");
+        assert!(!blocked_by_elevation(false, false, false), "sin elevar");
     }
 
     /// M4: sin registro, una ejecución REAL se aborta; la simulación y la demostración siguen.

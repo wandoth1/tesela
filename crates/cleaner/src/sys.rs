@@ -30,6 +30,9 @@ use windows_sys::Win32::Foundation::{
     ERROR_INVALID_PARAMETER, ERROR_NO_MORE_FILES, ERROR_NOT_SUPPORTED, GetLastError, HANDLE,
     INVALID_HANDLE_VALUE, RtlNtStatusToDosError, UNICODE_STRING,
 };
+use windows_sys::Win32::Security::{
+    GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation,
+};
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
     FILE_ATTRIBUTE_TAG_INFO, FILE_BASIC_INFO, FILE_DISPOSITION_FLAG_DELETE,
@@ -43,6 +46,34 @@ use windows_sys::Win32::Storage::FileSystem::{
     SetFileInformationByHandle, VOLUME_NAME_DOS,
 };
 use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
+use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+/// ¿Se ejecuta ESTE proceso con privilegios elevados (el token tiene `TokenElevation`)? `None` si no se pudo consultar. El
+/// manifiesto es `asInvoker`: un proceso elevado que lance Tesela se lo pasa al hijo.
+pub fn process_elevation() -> Option<bool> {
+    let mut token: HANDLE = std::ptr::null_mut();
+    // SAFETY: `token` es escribible; `GetCurrentProcess` devuelve un pseudo-handle que no hay que cerrar.
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return None;
+    }
+    // Se cierra al soltarlo, pase lo que pase.
+    let token = Handle(token);
+    // SAFETY: `TOKEN_ELEVATION` es un POD (un entero): todo-ceros es válido.
+    let mut elevation: TOKEN_ELEVATION = unsafe { std::mem::zeroed() };
+    let mut returned = 0u32;
+    // SAFETY: `token.0` es un token válido abierto con `TOKEN_QUERY`; el puntero apunta a `elevation` y se pasa su tamaño
+    // exacto; `returned` es escribible.
+    let ok = unsafe {
+        GetTokenInformation(
+            token.0,
+            TokenElevation,
+            &mut elevation as *mut TOKEN_ELEVATION as *mut c_void,
+            size_of::<TOKEN_ELEVATION>() as u32,
+            &mut returned,
+        )
+    };
+    (ok != 0).then_some(elevation.TokenIsElevated != 0)
+}
 
 /// Código de error de Windows (`GetLastError` / `RtlNtStatusToDosError`).
 pub type Win32 = u32;

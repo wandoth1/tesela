@@ -238,6 +238,8 @@ pub struct Cleaner {
     pub(crate) data_dir: Option<PathBuf>,
     /// La shell para enviar a la Papelera (la real; las pruebas ponen una simulada).
     pub(crate) shell: Arc<dyn crate::exec::RecycleShell>,
+    /// ¿Está elevado el proceso? (la real consulta el token; las pruebas inyectan el estado).
+    pub(crate) elevation: Arc<dyn crate::exec::Elevation>,
 }
 
 /// Filtro del alcance de "vaciar la Papelera".
@@ -272,7 +274,20 @@ impl Cleaner {
             bin_filter: None,
             data_dir,
             shell: Arc::new(crate::exec::RealShell),
+            elevation: Arc::new(crate::exec::RealElevation),
         }
+    }
+
+    /// ¿Se ejecuta el proceso elevado? En ese caso la limpieza real no se hace ([`crate::ExecError::Elevated`]).
+    pub fn is_elevated(&self) -> bool {
+        self.elevation.is_elevated()
+    }
+
+    /// SOLO PARA PRUEBAS: inyecta el estado de elevación.
+    #[cfg(test)]
+    pub(crate) fn with_elevation(mut self, e: Arc<dyn crate::exec::Elevation>) -> Cleaner {
+        self.elevation = e;
+        self
     }
 
     /// SOLO PARA PRUEBAS: otra shell para enviar a la Papelera (reparto en operaciones y corte de seguridad).

@@ -306,6 +306,28 @@ pub enum ExecError {
     /// No hay registro local utilizable (no se pudo crear, o ya había fallado) y no es una simulación: sin registro no hay
     /// acción destructiva (M4). No se ha tocado nada.
     LogRequired,
+    /// El proceso se ejecuta ELEVADO (como administrador): la limpieza real y vaciar la Papelera no se hacen (PLAN.md §3.9: la
+    /// aplicación nunca limpia elevada). El análisis y la simulación sí se permiten. No se ha tocado nada.
+    Elevated,
+}
+
+/// ¿Está elevado el proceso? Un rasgo para poder probar las dos ramas sin elevar nada (el CI no se puede elevar).
+pub(crate) trait Elevation: Send + Sync {
+    fn is_elevated(&self) -> bool;
+}
+
+/// La consulta real al token del proceso. FALLA CERRADO: si no se puede consultar, se trata como elevado (sin limpieza).
+pub(crate) struct RealElevation;
+
+impl Elevation for RealElevation {
+    fn is_elevated(&self) -> bool {
+        elevated_from(sys::process_elevation())
+    }
+}
+
+/// Falla cerrado: sin poder consultar el token se trata como elevado.
+fn elevated_from(state: Option<bool>) -> bool {
+    state.unwrap_or(true)
 }
 
 impl Cleaner {
@@ -317,6 +339,15 @@ impl Cleaner {
         progress: &Arc<Progress>,
     ) -> Result<Report, ExecError> {
         progress.set_phase(Phase::Preparing);
+        // E1: ELEVADO NO SE LIMPIA (ni se vacía la Papelera). La simulación sí puede seguir. Se comprueba ANTES que nada y
+        // aquí, en el `cleaner` (no solo en la interfaz): el manifiesto es `asInvoker` y un proceso elevado que lance Tesela
+        // le pasa sus privilegios.
+        if !opts.dry_run && self.elevation.is_elevated() {
+            if let Some(l) = &opts.log {
+                let _ = l.discard();
+            }
+            return Err(ExecError::Elevated);
+        }
         // M4: SIN REGISTRO UTILIZABLE NO HAY ACCIÓN DESTRUCTIVA. La simulación sí puede seguir sin él.
         if !opts.dry_run && opts.log.as_ref().is_none_or(|l| !l.ok()) {
             if let Some(l) = &opts.log {
@@ -614,8 +645,10 @@ impl Cleaner {
             rep.purged = rep.requested;
             return rep;
         }
-        if cancel.load(Ordering::Relaxed) {
+        if cancel.load(Ordering::Relaxed) || self.elevation.is_elevated() {
+            // Cancelado, o elevado (E1: segunda línea de defensa; `execute` ya lo rechaza antes): no se purga nada.
             rep.still_there = rep.requested;
+            rep.failed = !cancel.load(Ordering::Relaxed);
             return rep;
         }
         // Se purga a través de la carpeta shell de la Papelera (ver `recycle::purge_items`): la shell borra `$R` y `$I` a la

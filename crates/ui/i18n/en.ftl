@@ -268,6 +268,7 @@ confirm-subtitle =
         [one] { $count } item · { $size } · we check every path again right before deleting
        *[other] { $count } items · { $size } · we check every path again right before deleting
     }
+confirm-elevated = Tesela is running as administrator; for safety, cleaning only works without elevation. Close it and open it normally.
 confirm-no-log = The cleaning log could not be created, so nothing was done. Check that the Tesela data folder (in your local app data) is writable and try again. Simulation still works without a log.
 confirm-empty = There is nothing to clean with this basket.
 confirm-dry-banner = Simulation mode: nothing will be deleted or moved; only what would be done is logged.
