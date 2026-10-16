@@ -21,6 +21,9 @@ serde_json.workspace = true
 workspace = true
 features = ["Win32_Foundation", "Win32_System_ProcessStatus", "Win32_System_Threading"]
 
+[build-dependencies]
+winresource.workspace = true
+
 [dev-dependencies]
 uuid.workspace = true
 

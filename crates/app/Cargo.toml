@@ -30,6 +30,9 @@ features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_ProcessSta
 
 [build-dependencies]
 embed-manifest.workspace = true
+# El icono se dibuja en build.rs (el repositorio no versiona imagenes).
+png.workspace = true
+winresource.workspace = true
 
 [dev-dependencies]
 uuid.workspace = true
