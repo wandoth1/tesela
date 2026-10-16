@@ -5,6 +5,11 @@
 //!   últimos [`KEEP_LOGS`] y cada uno tiene un tope de líneas ([`MAX_LINES`]) y de bytes ([`MAX_BYTES`]). "Borrar el
 //!   historial" de Ajustes los borra también ([`history_clear`]).
 //!
+//! # Nombres y retención (A-M2)
+//! `limpieza-<AAAAMMDD>-<HHMMSS>-<secuencia de 3 cifras>[-simulacion].jsonl`. La poda ordena por fecha, hora y secuencia leídas
+//! como números (no por el texto del nombre: un sufijo `-1` ordena ANTES que el nombre base y la poda podía borrar el registro
+//! recién creado), nunca borra el registro que acaba de crear y, tras crearlo, comprueba que existe.
+//!
 //! # Retención (m2)
 //! Hay dos clases de registro, con retención PROPIA e independiente: los reales ([`KEEP_LOGS`]) y los de simulación
 //! (`-simulacion`, [`KEEP_SIM_LOGS`]). Al crear su registro, cada ejecución poda SOLO su clase: una limpieza real, los
@@ -203,22 +208,33 @@ impl LogWriter {
         dry_run: bool,
         wrap: impl FnOnce(File) -> LogFile,
     ) -> std::io::Result<LogWriter> {
+        Self::create_at(dir, dry_run, wrap, unix_now())
+    }
+
+    /// Como `create_with`, con el reloj (segundos Unix) dado: las pruebas fijan el segundo para probar las colisiones.
+    fn create_at(
+        dir: &Path,
+        dry_run: bool,
+        wrap: impl FnOnce(File) -> LogFile,
+        now: u64,
+    ) -> std::io::Result<LogWriter> {
         fs::create_dir_all(dir)?;
-        let (y, mo, d, h, mi, s) = utc_parts(unix_now());
-        let mut name = format!("limpieza-{y:04}{mo:02}{d:02}-{h:02}{mi:02}{s:02}");
-        if dry_run {
-            name.push_str("-simulacion");
-        }
-        let mut path = dir.join(format!("{name}.jsonl"));
-        let mut n = 1;
-        while path.exists() {
-            path = dir.join(format!("{name}-{n}.jsonl"));
-            n += 1;
-        }
-        let f = OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(&path)?;
+        let (y, mo, d, h, mi, sec) = utc_parts(now);
+        let stamp = format!("{y:04}{mo:02}{d:02}-{h:02}{mi:02}{sec:02}");
+        // El nombre ORDENA bien como texto y como número (A-M2): `limpieza-<fecha>-<hora>-<secuencia de 3 cifras>[-simulacion]`.
+        // La secuencia es la mayor que ya haya en ese segundo más uno (no el primer hueco: si se podó el 001, el nuevo no puede
+        // volver a ser 001 y quedar por debajo de uno anterior). Antes la colisión añadía `-1` al nombre, que ordena ANTES
+        // que el nombre base (`-` < `.`): la poda podía borrar el registro recién creado.
+        let mut n = next_sequence(dir, &stamp);
+        let sim = if dry_run { "-simulacion" } else { "" };
+        let (path, f) = loop {
+            let path = dir.join(format!("limpieza-{stamp}-{n:03}{sim}.jsonl"));
+            match OpenOptions::new().create_new(true).write(true).open(&path) {
+                Ok(f) => break (path, f),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => n += 1,
+                Err(e) => return Err(e),
+            }
+        };
         let w = LogWriter {
             path,
             out: Mutex::new(BufWriter::new(wrap(f))),
@@ -238,12 +254,21 @@ impl LogWriter {
         // La línea de arranque ya está en disco (con `sync_all`): aunque la aplicación muera enseguida, consta que hubo
         // una limpieza.
         w.sync()?;
-        // Cada ejecución poda SOLO su clase: una simulación nunca toca un registro real (m2).
+        // Cada ejecución poda SOLO su clase: una simulación nunca toca un registro real (m2). El registro que acaba de crearse
+        // se EXCLUYE de la poda (A-M2): nunca puede borrarse a sí mismo, ni por una fecha posterior (reloj adelantado) ni por
+        // un nombre que ordene mal.
         prune(
             dir,
             dry_run,
             if dry_run { KEEP_SIM_LOGS } else { KEEP_LOGS },
+            Some(&w.path),
         );
+        // Y se comprueba: un registro que no existe no es un registro, y sin registro no se limpia.
+        if !w.path.is_file() {
+            return Err(std::io::Error::other(
+                "el registro recién creado ya no existe",
+            ));
+        }
         Ok(w)
     }
 
@@ -459,9 +484,54 @@ fn is_sim_log(name: &str) -> bool {
     name.contains("-simulacion")
 }
 
-/// Deja los `keep` registros más recientes de UNA clase (`sim`: simulaciones; si no, reales) de `dir` (por nombre, que
-/// lleva la fecha). La otra clase no se toca.
-fn prune(dir: &Path, sim: bool, keep: usize) {
+/// Clave de orden de un registro por su NOMBRE: (fecha, hora, secuencia) leídas como NÚMEROS. Entiende
+/// `limpieza-<AAAAMMDD>-<HHMMSS>[-<secuencia>][-simulacion].jsonl` (la secuencia de los registros antiguos era `-1`, `-2`...
+/// y la de los nuevos, `-001`). Lo que no se entiende ordena como el más antiguo (y entre sí, por nombre).
+fn log_key(name: &str) -> (u64, u64, u64, String) {
+    let parsed = (|| {
+        let rest = name.strip_prefix("limpieza-")?;
+        let (date, rest) = rest.split_once('-')?;
+        let time = rest.get(..6)?;
+        let rest = &rest[6..];
+        if date.len() != 8
+            || !date.bytes().all(|b| b.is_ascii_digit())
+            || !time.bytes().all(|b| b.is_ascii_digit())
+        {
+            return None;
+        }
+        let seq = rest
+            .strip_prefix('-')
+            .map(|r| {
+                r.bytes()
+                    .take_while(u8::is_ascii_digit)
+                    .collect::<Vec<u8>>()
+            })
+            .filter(|d| !d.is_empty())
+            .and_then(|d| String::from_utf8(d).ok()?.parse::<u64>().ok())
+            .unwrap_or(0);
+        Some((date.parse::<u64>().ok()?, time.parse::<u64>().ok()?, seq))
+    })();
+    let (d, t, q) = parsed.unwrap_or((0, 0, 0));
+    (d, t, q, name.to_lowercase())
+}
+
+/// La secuencia siguiente para el segundo `stamp` (`AAAAMMDD-HHMMSS`): la mayor que haya en `dir` más uno (1 si no hay).
+fn next_sequence(dir: &Path, stamp: &str) -> u64 {
+    let Ok(rd) = fs::read_dir(dir) else { return 1 };
+    let prefix = format!("limpieza-{stamp}");
+    rd.flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().into_owned();
+            name.starts_with(&prefix).then(|| log_key(&name).2)
+        })
+        .max()
+        .map_or(1, |m| m + 1)
+}
+
+/// Deja los `keep` registros más recientes de UNA clase (`sim`: simulaciones; si no, reales) de `dir`, ordenados por la fecha,
+/// la hora y la secuencia de su nombre ([`log_key`]). La otra clase no se toca y `active` (el registro que se acaba de crear,
+/// que cuenta como uno de los `keep`) NUNCA se borra.
+fn prune(dir: &Path, sim: bool, keep: usize, active: Option<&Path>) {
     let Ok(rd) = fs::read_dir(dir) else { return };
     let mut logs: Vec<PathBuf> = rd
         .flatten()
@@ -472,11 +542,18 @@ fn prune(dir: &Path, sim: bool, keep: usize) {
                     let n = n.to_string_lossy();
                     n.starts_with("limpieza-") && is_sim_log(&n) == sim
                 })
+                && active != Some(p.as_path())
         })
         .collect();
-    logs.sort();
-    if logs.len() > keep {
-        for old in &logs[..logs.len() - keep] {
+    logs.sort_by_key(|p| log_key(&p.file_name().unwrap_or_default().to_string_lossy()));
+    // El activo ocupa una plaza: de los demás se conservan `keep - 1` (o `keep`, si no hay activo).
+    let allowed = if active.is_some() {
+        keep.saturating_sub(1)
+    } else {
+        keep
+    };
+    if logs.len() > allowed {
+        for old in &logs[..logs.len() - allowed] {
             let _ = fs::remove_file(old);
         }
     }
@@ -669,6 +746,174 @@ mod tests {
         let _real = LogWriter::create(&dir, false).unwrap();
         assert_eq!(count(&dir, false), KEEP_LOGS);
         assert_eq!(count(&dir, true), KEEP_SIM_LOGS);
+    }
+
+    fn real_logs(dir: &Path) -> Vec<String> {
+        let mut v: Vec<String> = fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("limpieza-") && !n.contains("-simulacion"))
+            .collect();
+        v.sort();
+        v
+    }
+
+    /// A-M2: con registros FECHADOS DESPUÉS (reloj adelantado, copia de otra máquina) el registro recién creado ordenaba el
+    /// primero y la poda, que corría tras crearlo, lo borraba: la limpieza seguía con un archivo desvinculado y `ok()` a
+    /// `true`. Ahora la poda lo excluye, y tras crearlo se comprueba que existe.
+    #[test]
+    fn el_registro_nuevo_no_se_borra_a_si_mismo_aunque_haya_otros_fechados_despues() {
+        let sb = Sandbox::new();
+        let dir = sb.mkdir("Tesela");
+        for i in 0..KEEP_LOGS + 5 {
+            fs::write(
+                dir.join(format!("limpieza-29990101-0000{i:02}-001.jsonl")),
+                b"{}",
+            )
+            .unwrap();
+        }
+        let log = LogWriter::create(&dir, false).unwrap();
+        assert!(log.ok());
+        assert!(log.path().is_file(), "el registro nuevo existe");
+        log.write_note("summary", "sigue escribiéndose en el archivo del disco");
+        log.flush();
+        assert!(
+            fs::read_to_string(log.path()).unwrap().contains("summary"),
+            "lo escrito llega al archivo que hay en el disco"
+        );
+        // La retención se cumple (30 reales contando el nuevo) y el nuevo es uno de ellos.
+        let names = real_logs(&dir);
+        assert_eq!(names.len(), KEEP_LOGS, "{names:?}");
+        assert!(
+            names.contains(
+                &log.path()
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned()
+            )
+        );
+        // Lo que se poda son los MÁS ANTIGUOS de los demás (por fecha leída como número): los primeros fechados.
+        assert!(!dir.join("limpieza-29990101-000000-001.jsonl").exists());
+        assert!(dir.join("limpieza-29990101-000034-001.jsonl").exists());
+    }
+
+    /// A-M2: dos registros en el MISMO segundo. Antes el segundo se llamaba `...-1.jsonl`, que ordena ANTES que el nombre base
+    /// (`-` < `.`), y la poda lo borraba en cuanto había que podar. Ahora llevan una secuencia de 3 cifras que ordena bien, y
+    /// la secuencia es la mayor del segundo más uno (no el primer hueco). Con el reloj fijo, para que sea determinista.
+    #[test]
+    fn varios_registros_en_el_mismo_segundo_ordenan_bien_y_se_podan_los_mas_antiguos() {
+        let sb = Sandbox::new();
+        let dir = sb.mkdir("Tesela");
+        const NOW: u64 = 1_760_000_000;
+        let mut made: Vec<PathBuf> = Vec::new();
+        for i in 0..KEEP_LOGS + 6 {
+            let w = LogWriter::create_at(&dir, false, LogFile::Real, NOW).unwrap();
+            assert!(w.path().is_file(), "el registro {i} existe tras crearlo");
+            assert!(w.ok());
+            made.push(w.path().to_path_buf());
+        }
+        let mut sorted = made.clone();
+        sorted.sort_by_key(|p| log_key(&p.file_name().unwrap().to_string_lossy()));
+        assert_eq!(sorted, made, "se crean en el orden en que ordenan");
+        let names = real_logs(&dir);
+        assert_eq!(names.len(), KEEP_LOGS, "{names:?}");
+        // Sobreviven los KEEP_LOGS más recientes, no los más antiguos.
+        for p in &made[..6] {
+            assert!(!p.exists(), "{p:?}");
+        }
+        for p in &made[6..] {
+            assert!(p.exists(), "{p:?}");
+        }
+        // Y la secuencia continúa tras una poda: el siguiente es el mayor más uno, no un hueco.
+        let w = LogWriter::create_at(&dir, false, LogFile::Real, NOW).unwrap();
+        let seq = log_key(&w.path().file_name().unwrap().to_string_lossy()).2;
+        assert_eq!(seq as usize, KEEP_LOGS + 6 + 1);
+    }
+
+    /// A-M2: el orden por nombre lee fecha, hora y secuencia como números: el nombre base va antes que `-1`, `-2` y `-10`
+    /// (los nombres de las versiones anteriores) y que `-001`; lo que no se entiende, el más antiguo.
+    #[test]
+    fn el_orden_de_los_registros_lee_fecha_hora_y_secuencia_como_numeros() {
+        let k = |n: &str| log_key(n);
+        let ordered = [
+            "limpieza-2000-001.jsonl", // no se entiende: el más antiguo
+            "limpieza-20260101-115959-001.jsonl",
+            "limpieza-20260101-120000.jsonl",
+            "limpieza-20260101-120000-1.jsonl",
+            "limpieza-20260101-120000-2.jsonl",
+            "limpieza-20260101-120000-10.jsonl",
+            "limpieza-20260101-120000-011.jsonl",
+            "limpieza-20260101-120001.jsonl",
+            "limpieza-20260102-000000-001.jsonl",
+        ];
+        for w in ordered.windows(2) {
+            assert!(k(w[0]) < k(w[1]), "{} < {}", w[0], w[1]);
+        }
+        assert!(k("limpieza-20260101-120000.jsonl") < k("limpieza-20260101-120000-1.jsonl"));
+        assert!(k("limpieza-20260101-120000-2.jsonl") < k("limpieza-20260101-120000-10.jsonl"));
+        assert_eq!(k("limpieza-20260101-120000-007.jsonl").2, 7);
+        assert_eq!(k("limpieza-20260101-120000-001-simulacion.jsonl").2, 1);
+        assert_eq!(k("limpieza-20260101-120000.jsonl").2, 0);
+    }
+
+    /// A-M2: los registros de la versión anterior (`...-1.jsonl`, `...-2.jsonl`, `...-10.jsonl`) conviven con los nuevos: se podan
+    /// por su orden NUMÉRICO (el base, `-1`, `-2`... `-34`), no por el del texto (`-1`, `-10`, `-11`... `-2`, que borraba los
+    /// recientes), y el nuevo sigue la secuencia (35).
+    #[test]
+    fn los_registros_de_la_version_anterior_se_podan_por_su_orden_numerico() {
+        let sb = Sandbox::new();
+        let dir = sb.mkdir("Tesela");
+        const NOW: u64 = 1_767_268_800; // 2026-01-01 12:00:00 UTC
+        let stamp = "20260101-120000";
+        assert_eq!(utc_parts(NOW), (2026, 1, 1, 12, 0, 0));
+        fs::write(dir.join(format!("limpieza-{stamp}.jsonl")), b"{}").unwrap();
+        for n in 1..=34 {
+            fs::write(dir.join(format!("limpieza-{stamp}-{n}.jsonl")), b"{}").unwrap();
+        }
+        let w = LogWriter::create_at(&dir, false, LogFile::Real, NOW).unwrap();
+        assert!(w.path().is_file());
+        assert!(w.path().to_string_lossy().ends_with("-035.jsonl"));
+        assert_eq!(real_logs(&dir).len(), KEEP_LOGS);
+        for gone in std::iter::once(format!("limpieza-{stamp}.jsonl"))
+            .chain((1..=5).map(|n| format!("limpieza-{stamp}-{n}.jsonl")))
+        {
+            assert!(!dir.join(&gone).exists(), "{gone} era de los más antiguos");
+        }
+        for kept in (6..=34).map(|n| format!("limpieza-{stamp}-{n}.jsonl")) {
+            assert!(dir.join(&kept).exists(), "{kept} es de los más recientes");
+        }
+    }
+
+    /// A-M2: `prune` nunca borra el registro activo, aunque ordene el primero, y le reserva una plaza.
+    #[test]
+    fn la_poda_excluye_siempre_el_registro_activo() {
+        let sb = Sandbox::new();
+        let dir = sb.mkdir("Tesela");
+        for i in 0..KEEP_LOGS + 10 {
+            fs::write(
+                dir.join(format!("limpieza-29990101-0000{i:02}-001.jsonl")),
+                b"{}",
+            )
+            .unwrap();
+        }
+        let active = dir.join("limpieza-20000101-000000-001.jsonl");
+        fs::write(&active, b"{}").unwrap();
+        prune(&dir, false, KEEP_LOGS, Some(&active));
+        assert!(active.exists(), "el activo ordena el primero y no se borra");
+        assert_eq!(
+            real_logs(&dir).len(),
+            KEEP_LOGS,
+            "el activo cuenta como uno"
+        );
+        // Sin activo, se conservan KEEP_LOGS de los demás.
+        prune(&dir, false, KEEP_LOGS - 1, None);
+        assert_eq!(real_logs(&dir).len(), KEEP_LOGS - 1);
+        assert!(
+            !active.exists(),
+            "sin la exclusión, el más antiguo sí se poda"
+        );
     }
 
     fn event(i: usize, path_len: usize) -> Event {
