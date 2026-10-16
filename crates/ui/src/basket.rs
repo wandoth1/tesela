@@ -16,6 +16,9 @@ use tesela_cleaner::paths::PathKey;
 use tesela_cleaner::{AddOutcome, Browser, CategoryId, Source, Verdict};
 use tesela_model::{NodeId, flags};
 
+/// Ancho que se reserva a la derecha del titular de Recomendaciones para el botón "Limpiar lo seguro (X)" (unos 215 px) y su hueco.
+const RECS_BUTTON_RESERVE: f32 = 250.0;
+
 impl Explore {
     /// Clave de comparación de la ruta de un nodo.
     pub(crate) fn node_key(&self, id: NodeId) -> PathKey {
@@ -390,6 +393,9 @@ impl Explore {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
+                        // R-1: el titular (largo: "Hasta X en candidatos de bajo riesgo...") se limita al ancho que deja el botón
+                        // principal y pasa a varias líneas; con la ventana mínima (960 px) ocupaba su sitio y lo pisaba.
+                        ui.set_max_width((ui.available_width() - RECS_BUTTON_RESERVE).max(240.0));
                         let title = if safe > 0 {
                             env.tr
                                 .ta("recs-title-safe", args!["size" => env.tr.size(safe)])

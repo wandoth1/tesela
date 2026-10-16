@@ -40,6 +40,51 @@ fn basket_count(h: &Harness<'static, App>) -> usize {
     explore(h).flow.basket.len()
 }
 
+/// R-1: con la ventana MÍNIMA real (960x600) la pantalla de Recomendaciones no pisa nada: el titular largo ("Hasta X en
+/// candidatos de bajo riesgo...") pasa a varias líneas junto al botón principal sin cubrirlo, ni al subtítulo, ni al texto
+/// (largo) de hiberfil.sys. En español y en inglés.
+#[test]
+fn con_la_ventana_minima_recomendaciones_no_pisa_titular_boton_ni_textos() {
+    for (lang, items) in [
+        (
+            LangPref::Es,
+            vec![
+                "candidatos de bajo riesgo",
+                "más que conviene que mires tú",
+                "Limpiar lo seguro",
+                "powercfg /h /type reduced",
+            ],
+        ),
+        (
+            LangPref::En,
+            vec![
+                "low-risk candidates",
+                "you should look at yourself",
+                "Clean the safe items",
+                "powercfg /h /type reduced",
+            ],
+        ),
+    ] {
+        let mut o = clean_opts(CleanStart::Recommendations);
+        o.settings.language = lang;
+        let mut h = harness_sized(o, egui::vec2(960.0, 600.0));
+        h.run_steps(4);
+        let rects = rects_of(&h, &items);
+        for (i, (a, ra)) in rects.iter().enumerate() {
+            assert!(
+                ra.left() >= -0.5 && ra.right() <= 960.5,
+                "{lang:?}: `{a}` fuera de la ventana por los lados: {ra:?}"
+            );
+            for (b, rb) in &rects[i + 1..] {
+                assert!(
+                    !ra.intersects(*rb),
+                    "{lang:?}: `{a}` y `{b}` se solapan: {ra:?} {rb:?}"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn recomendaciones_ensenan_el_titular_las_tarjetas_y_preseleccionan_lo_seguro() {
     let mut h = harness(clean_opts(CleanStart::Recommendations));

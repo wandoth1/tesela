@@ -1464,6 +1464,22 @@ mod summary_tests {
                 assert!(!text.contains(b), "{name}: no debe decir `{b}`");
             }
         }
+        // R-3: los botones de la confirmación tampoco prometen la cifra exacta: es una estimación ("hasta").
+        for (key, es_txt, en_txt) in [
+            (
+                "confirm-go-free",
+                "Liberar hasta { $free }",
+                "Free up to { $free }",
+            ),
+            (
+                "confirm-go-both",
+                "Liberar hasta { $free } y mover",
+                "Free up to { $free } and move",
+            ),
+        ] {
+            assert!(es.contains(&format!("{key} = {es_txt}")), "{key}");
+            assert!(en.contains(&format!("{key} = {en_txt}")), "{key}");
+        }
         // Y lo que sí dicen: un tope y que se comprueba al limpiar; el cambio medido con su aviso.
         for key in ["scan-known-sum", "recs-title-safe"] {
             assert!(es.contains(&format!("{key} = Hasta {{ $size }}")), "{key}");
@@ -1472,6 +1488,40 @@ mod summary_tests {
         assert!(es.contains("sum-freed = Cambio medido del espacio libre"));
         assert!(en.contains("sum-freed = Measured change in free space"));
         assert!(es.contains("sum-freed-hint =") && en.contains("sum-freed-hint ="));
+    }
+
+    /// E3: la nota de `hiberfil.sys` dice lo que hay que saber antes de tocarlo: que hace falta un símbolo del sistema como
+    /// administrador, que desactivar la hibernación quita también la suspensión híbrida y el inicio rápido, la alternativa
+    /// menos drástica (`/type reduced`) y que Tesela no ejecuta nada (es/en en paridad).
+    #[test]
+    fn la_nota_de_hiberfil_dice_lo_necesario_antes_de_tocarlo() {
+        let line = |text: &'static str| {
+            text.lines()
+                .find(|l| l.starts_with("info-hiberfil ="))
+                .expect("la clave existe")
+        };
+        let es = line(include_str!("../i18n/es.ftl"));
+        let en = line(include_str!("../i18n/en.ftl"));
+        for needle in [
+            "como administrador",
+            "powercfg /h /type reduced",
+            "powercfg /h off",
+            "suspensión híbrida",
+            "inicio rápido",
+            "Tesela no ejecuta nada",
+        ] {
+            assert!(es.contains(needle), "es: falta `{needle}`");
+        }
+        for needle in [
+            "as administrator",
+            "powercfg /h /type reduced",
+            "powercfg /h off",
+            "hybrid sleep",
+            "fast startup",
+            "Tesela runs nothing",
+        ] {
+            assert!(en.contains(needle), "en: falta `{needle}`");
+        }
     }
 
     #[test]
