@@ -32,6 +32,9 @@ pub enum AddOutcome {
     AlreadyCovered,
     /// No se puede añadir (intocable, denegada, o es una carpeta conocida que solo admite "Contenido de").
     Rejected(Verdict),
+    /// No es una ruta de una unidad local con letra (UNC, también hacia un disco propio por su compartición
+    /// administrativa): el `cleaner` solo limpia unidades locales y lo dice ya al añadir, no solo al aprobar.
+    NotLocal,
 }
 
 #[derive(Clone, Debug)]
@@ -125,6 +128,9 @@ impl Basket {
     /// [`Basket::add_contents_of`]; los intocables y los denegados rebotan.
     pub fn add_path(&mut self, path: PathBuf, prot: &Protection) -> AddOutcome {
         let key = PathKey::new(&path);
+        if !key.is_drive_path() {
+            return AddOutcome::NotLocal;
+        }
         match prot.target_verdict(&key) {
             Verdict::Allowed => {}
             other => return AddOutcome::Rejected(other),
@@ -149,6 +155,9 @@ impl Basket {
     /// Añade "Contenido de X" para una carpeta conocida (`Verdict::ContentsOnly`).
     pub fn add_contents_of(&mut self, path: PathBuf, prot: &Protection) -> AddOutcome {
         let key = PathKey::new(&path);
+        if !key.is_drive_path() {
+            return AddOutcome::NotLocal;
+        }
         match prot.target_verdict(&key) {
             Verdict::ContentsOnly => {}
             other => return AddOutcome::Rejected(other),
@@ -268,6 +277,42 @@ mod tests {
         // Su contenido sí.
         assert_eq!(
             b.add_path(p(r"C:\Users\<usuario>\Videos\viaje"), &pr),
+            AddOutcome::Added { absorbed: 0 }
+        );
+    }
+
+    #[test]
+    fn las_rutas_de_red_se_rechazan_al_anadir_con_su_motivo() {
+        let pr = prot();
+        let mut b = Basket::new();
+        let sep = '\\';
+        // Hacia un disco del propio equipo por su compartición administrativa, por IP, por un servidor y en forma verbatim.
+        for host in ["localhost", "127.0.0.1", "servidor"] {
+            for q in [
+                format!("{sep}{sep}{host}{sep}c${sep}datos{sep}x.bin"),
+                format!("{sep}{sep}?{sep}UNC{sep}{host}{sep}c${sep}datos{sep}x.bin"),
+            ] {
+                assert_eq!(b.add_path(p(&q), &pr), AddOutcome::NotLocal, "{q}");
+                assert_eq!(b.add_contents_of(p(&q), &pr), AddOutcome::NotLocal, "{q}");
+            }
+        }
+        // Un volumen sin letra y una ruta relativa tampoco.
+        assert_eq!(
+            b.add_path(
+                p(r"\\?\Volume{00000000-0000-0000-0000-000000000000}\x"),
+                &pr
+            ),
+            AddOutcome::NotLocal
+        );
+        assert_eq!(b.add_path(p(r"datos\x.bin"), &pr), AddOutcome::NotLocal);
+        assert!(b.is_empty());
+        // La misma ruta con letra de unidad sí se acepta (y la forma verbatim con letra también).
+        assert_eq!(
+            b.add_path(p(r"C:\datos\x.bin"), &pr),
+            AddOutcome::Added { absorbed: 0 }
+        );
+        assert_eq!(
+            b.add_path(p(r"\\?\C:\datos\y.bin"), &pr),
             AddOutcome::Added { absorbed: 0 }
         );
     }

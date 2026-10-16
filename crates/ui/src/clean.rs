@@ -989,6 +989,12 @@ fn summary_lines(env: &Env, s: &Summary) -> Vec<(String, bool)> {
     if r.deleted_unexpectedly > 0 {
         v.push((n("sum-unexpected", r.deleted_unexpectedly), true));
     }
+    if r.recycle_stopped {
+        v.push((n("sum-recycle-stopped", r.stopped_items), true));
+    }
+    if r.no_room > 0 {
+        v.push((n("sum-no-room", r.no_room), true));
+    }
     if r.recycled_other > 0 {
         v.push((n("sum-recycled-other", r.recycled_other), true));
     }

@@ -75,6 +75,13 @@ impl PathKey {
         &self.0
     }
 
+    /// ¿Tiene la forma de una unidad con letra (letra, dos puntos y barra)? UNC (también hacia un disco propio) y volúmenes sin letra, no.
+    /// Es una comprobación de forma, sin consultar al sistema: el tipo de unidad se mira al aprobar.
+    pub fn is_drive_path(&self) -> bool {
+        let b = self.0.as_bytes();
+        b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\'
+    }
+
     /// ¿Es la raíz de una unidad (`c:\`)?
     pub fn is_drive_root(&self) -> bool {
         self.0.len() == 3 && self.0.as_bytes()[1] == b':' && self.0.ends_with('\\')

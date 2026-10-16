@@ -403,6 +403,17 @@ sum-unexpected =
         [one] { $count } elemento no cabía en la Papelera y se eliminó definitivamente.
        *[other] { $count } elementos no cabían en la Papelera y se eliminaron definitivamente.
     }
+sum-recycle-stopped =
+    { $n ->
+        [0] Se detuvo el envío a la Papelera: Windows eliminó definitivamente un elemento que no cabía. Por precaución no se tocó nada más.
+        [one] Se detuvo el envío a la Papelera: Windows eliminó definitivamente un elemento que no cabía. Por precaución no se envió { $count } elemento más: sigue donde estaba.
+       *[other] Se detuvo el envío a la Papelera: Windows eliminó definitivamente un elemento que no cabía. Por precaución no se enviaron { $count } elementos más: siguen donde estaban.
+    }
+sum-no-room =
+    { $n ->
+        [one] { $count } elemento no se envió porque no hay sitio en la Papelera: vacíala o libera espacio. Sigue donde estaba.
+       *[other] { $count } elementos no se enviaron porque no hay sitio en la Papelera: vacíala o libera espacio. Siguen donde estaban.
+    }
 sum-recycled-other =
     { $n ->
         [one] { $count } elemento cambió justo antes de enviarlo: a la Papelera llegó algo distinto de lo que aprobaste. Está en la Papelera y puedes restaurarlo.

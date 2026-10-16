@@ -130,6 +130,8 @@ impl LogWriter {
             "{{\"t\":\"start\",\"dry_run\":{dry_run},\"unix\":{}}}",
             unix_now()
         ));
+        // La línea de arranque ya está en disco: aunque la aplicación muera enseguida, consta que hubo una limpieza.
+        w.flush();
         prune(dir, KEEP_LOGS);
         Ok(w)
     }
@@ -180,6 +182,17 @@ impl LogWriter {
     /// Una línea de texto libre del propio registro (resumen, avisos).
     pub fn write_note(&self, kind: &str, text: &str) {
         let v = serde_json::json!({ "t": kind, "text": text });
+        self.raw(&v.to_string());
+    }
+
+    /// Una nota con una lista de rutas (las que se van a entregar a la shell en una operación). Se llama justo antes y se
+    /// vuelca: tras un cierre forzoso se sabe qué pudo moverse.
+    pub fn write_paths(&self, kind: &str, paths: &[PathBuf]) {
+        let list: Vec<String> = paths
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        let v = serde_json::json!({ "t": kind, "paths": list });
         self.raw(&v.to_string());
     }
 
@@ -356,6 +369,27 @@ mod tests {
             links: 1,
             outcome: Outcome::Deleted,
         }
+    }
+
+    #[test]
+    fn la_linea_de_arranque_y_las_rutas_de_cada_operacion_estan_en_disco_sin_esperar() {
+        let sb = Sandbox::new();
+        let dir = sb.path("Tesela");
+        let log = LogWriter::create(&dir, false).unwrap();
+        // Nada de `flush()` explícito de quien llama: la línea de arranque ya está en el archivo.
+        assert!(
+            fs::read_to_string(log.path())
+                .unwrap()
+                .contains("\"start\""),
+            "falta la línea de arranque"
+        );
+        let paths = vec![PathBuf::from("a.txt"), PathBuf::from("b c.txt")];
+        log.write_paths("recycle-begin", &paths);
+        log.flush();
+        let text = fs::read_to_string(log.path()).unwrap();
+        let line = text.lines().find(|l| l.contains("recycle-begin")).unwrap();
+        let v: serde_json::Value = serde_json::from_str(line).unwrap();
+        assert_eq!(v["paths"], serde_json::json!(["a.txt", "b c.txt"]));
     }
 
     #[test]

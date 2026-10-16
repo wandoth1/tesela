@@ -402,6 +402,17 @@ sum-unexpected =
         [one] { $count } item did not fit in the Recycle Bin and was deleted permanently.
        *[other] { $count } items did not fit in the Recycle Bin and were deleted permanently.
     }
+sum-recycle-stopped =
+    { $n ->
+        [0] Sending to the Recycle Bin was stopped: Windows permanently deleted an item that did not fit. As a precaution nothing else was touched.
+        [one] Sending to the Recycle Bin was stopped: Windows permanently deleted an item that did not fit. As a precaution { $count } more item was not sent: it is still where it was.
+       *[other] Sending to the Recycle Bin was stopped: Windows permanently deleted an item that did not fit. As a precaution { $count } more items were not sent: they are still where they were.
+    }
+sum-no-room =
+    { $n ->
+        [one] { $count } item was not sent because there is no room in the Recycle Bin: empty it or free up space. It is still where it was.
+       *[other] { $count } items were not sent because there is no room in the Recycle Bin: empty it or free up space. They are still where they were.
+    }
 sum-recycled-other =
     { $n ->
         [one] { $count } item changed right before it was sent: something different from what you approved reached the Recycle Bin. It is in the Recycle Bin and you can restore it.

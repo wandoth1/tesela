@@ -222,6 +222,8 @@ pub struct Cleaner {
     pub(crate) bin_filter: Option<BinFilter>,
     /// `%LOCALAPPDATA%\Tesela`: registro local e historial.
     pub(crate) data_dir: Option<PathBuf>,
+    /// La shell para enviar a la Papelera (la real; las pruebas ponen una simulada).
+    pub(crate) shell: Arc<dyn crate::exec::RecycleShell>,
 }
 
 /// Filtro del alcance de "vaciar la Papelera".
@@ -255,7 +257,15 @@ impl Cleaner {
             threads: default_threads(),
             bin_filter: None,
             data_dir,
+            shell: Arc::new(crate::exec::RealShell),
         }
+    }
+
+    /// SOLO PARA PRUEBAS: otra shell para enviar a la Papelera (reparto en operaciones y corte de seguridad).
+    #[cfg(test)]
+    pub(crate) fn with_shell(mut self, shell: Arc<dyn crate::exec::RecycleShell>) -> Cleaner {
+        self.shell = shell;
+        self
     }
 
     /// Cambia la carpeta del registro y del historial (las pruebas usan la suya).

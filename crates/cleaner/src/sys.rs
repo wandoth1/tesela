@@ -26,9 +26,9 @@ use windows_sys::Wdk::Storage::FileSystem::{
     FILE_SYNCHRONOUS_IO_NONALERT, NtCreateFile,
 };
 use windows_sys::Win32::Foundation::{
-    CloseHandle, ERROR_INVALID_DATA, ERROR_INVALID_FUNCTION, ERROR_INVALID_PARAMETER,
-    ERROR_NO_MORE_FILES, ERROR_NOT_SUPPORTED, GetLastError, HANDLE, INVALID_HANDLE_VALUE,
-    RtlNtStatusToDosError, UNICODE_STRING,
+    CloseHandle, ERROR_FILE_TOO_LARGE, ERROR_INVALID_DATA, ERROR_INVALID_FUNCTION,
+    ERROR_INVALID_PARAMETER, ERROR_NO_MORE_FILES, ERROR_NOT_SUPPORTED, GetLastError, HANDLE,
+    INVALID_HANDLE_VALUE, RtlNtStatusToDosError, UNICODE_STRING,
 };
 use windows_sys::Win32::Storage::FileSystem::{
     CreateFileW, DELETE, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
@@ -36,10 +36,10 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
     FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX, FILE_FLAG_BACKUP_SEMANTICS,
     FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_EXTD_DIR_INFO, FILE_ID_INFO, FILE_LIST_DIRECTORY,
-    FILE_NAME_NORMALIZED, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+    FILE_NAME_NORMALIZED, FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_DELETE, FILE_SHARE_READ,
     FILE_SHARE_WRITE, FILE_STANDARD_INFO, FileAttributeTagInfo, FileBasicInfo, FileDispositionInfo,
     FileDispositionInfoEx, FileIdExtdDirectoryInfo, FileIdInfo, FileStandardInfo,
-    GetFileInformationByHandleEx, GetFinalPathNameByHandleW, OPEN_EXISTING,
+    GetFileInformationByHandleEx, GetFinalPathNameByHandleW, OPEN_EXISTING, ReadFile,
     SetFileInformationByHandle, VOLUME_NAME_DOS,
 };
 use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
@@ -326,6 +326,42 @@ pub fn open_path_for_rename(path: &Path) -> Result<Handle, Win32> {
 /// la cesta que es un archivo).
 pub fn open_path_exclusive(path: &Path) -> Result<Handle, Win32> {
     open_path(path, DELETE | FILE_READ_ATTRIBUTES, 0)
+}
+
+/// Abre por ruta un archivo en exclusiva (`dwShareMode = 0`) para LEERLO y borrarlo por el mismo handle.
+pub fn open_path_exclusive_read(path: &Path) -> Result<Handle, Win32> {
+    open_path(path, DELETE | FILE_READ_ATTRIBUTES | FILE_READ_DATA, 0)
+}
+
+/// Lee el contenido de un archivo pequeño (hasta `max` bytes) por un handle abierto con `FILE_READ_DATA`. Falla con
+/// `ERROR_FILE_TOO_LARGE` si hay más de `max` bytes.
+pub fn read_small(h: &Handle, max: usize) -> Result<Vec<u8>, Win32> {
+    let mut out = Vec::new();
+    let mut buf = [0u8; 4096];
+    loop {
+        let mut got = 0u32;
+        // SAFETY: `h.0` es un handle válido abierto con `FILE_READ_DATA`; `buf` es escribible con `buf.len()` bytes y
+        // `got` también; no hay estructura OVERLAPPED (lectura síncrona).
+        let ok = unsafe {
+            ReadFile(
+                h.0,
+                buf.as_mut_ptr().cast(),
+                buf.len() as u32,
+                &mut got,
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            return Err(last_error());
+        }
+        if got == 0 {
+            return Ok(out);
+        }
+        if out.len() + got as usize > max {
+            return Err(ERROR_FILE_TOO_LARGE);
+        }
+        out.extend_from_slice(&buf[..got as usize]);
+    }
 }
 
 /// Abre por ruta un DIRECTORIO para listarlo y borrarlo (vacío) por este mismo handle.
@@ -749,6 +785,28 @@ mod tests {
         delete_on_handle(&dh).unwrap();
         drop(dh);
         assert!(!sb.path("b/dir").exists());
+    }
+
+    #[test]
+    fn leer_un_archivo_pequeno_por_el_handle_exclusivo_y_borrarlo_por_el_mismo() {
+        let sb = Sandbox::new();
+        let f = sb.write("r/pequeno.bin", 9_000);
+        let h = open_path_exclusive_read(&f).unwrap();
+        // Con el handle abierto en exclusiva nadie más lo abre (ni para leer).
+        assert_eq!(
+            fs::File::open(&f).err().and_then(|e| e.raw_os_error()),
+            Some(SHARING_VIOLATION as i32)
+        );
+        let bytes = read_small(&h, 70_000).unwrap();
+        assert_eq!(bytes.len(), 9_000);
+        assert_eq!(bytes[0], 1);
+        // Pasarse del tope falla.
+        let g = sb.write("r/otro.bin", 5_000);
+        let h2 = open_path_exclusive_read(&g).unwrap();
+        assert_eq!(read_small(&h2, 100).err(), Some(ERROR_FILE_TOO_LARGE));
+        delete_on_handle(&h).unwrap();
+        drop(h);
+        assert!(!f.exists());
     }
 
     #[test]

@@ -6,10 +6,18 @@
 //!    registra, por elemento, `hrDelete` y la ruta real del elemento ya en la Papelera (`psiNewlyCreated`);
 //! 3. quien llama abre ESA ruta (`$R…`) y compara su identidad con la aprobada.
 //!
-//! Entre cerrar el handle y que la shell abra el elemento hay una ventana. Está ACOTADA POR EL DESTINO: una sustitución
-//! hecha por el mismo usuario solo puede mandar OTRO objeto de esa misma ruta a la Papelera; el paso 3 lo detecta (la
-//! identidad no es la aprobada), se informa y el usuario puede restaurarlo desde la Papelera. Nunca puede alcanzar nada
-//! protegido sin pasar por la verificación de la ruta (que se repite en el paso 1) y, si algo se cuela, es recuperable.
+//! Entre la comprobación del paso 1 y que la shell abra el elemento hay una ventana. Se cierra con un handle de GUARDA
+//! (`DELETE | READ_ATTRIBUTES`, compartiéndolo todo) que quien llama conserva abierto hasta después del paso 3: mientras
+//! está abierto Windows no deja renombrar el padre ni el abuelo del elemento (error 5), así que no se puede cambiar un
+//! ancestro por un junction hacia otra carpeta (medido por la auditoría; cubierto por las pruebas) y la shell recicla
+//! igual. Lo que NO puede impedir el handle es la sustitución del propio nombre por otro objeto (sí se puede renombrar el
+//! elemento: el handle comparte `DELETE`): ese caso cae en el paso 3.
+//!
+//! La garantía real es, pues: (a) la comprobación de ruta y protección es previa y se mantiene con el handle de guarda;
+//! (b) lo que llega a la Papelera se comprueba por IDENTIDAD, y además `Recycled` exige que el nombre aprobado ya no
+//! exista y que el objeto de la guarda esté ahora dentro de una Papelera (otro nombre del mismo objeto, p. ej. un enlace
+//! duro, no cuenta); (c) cualquier otra cosa que llegue a la Papelera es recuperable y se informa (`RecycledOther`), pero
+//! NO se garantiza que "nunca" pueda ser un objeto no aprobado: solo que se detecta y es restaurable.
 //!
 //! Banderas (decididas por las pruebas, ver `tests::wantnukewarning_*`):
 //! * enviar: `FOF_NO_UI | FOF_ALLOWUNDO | FOFX_RECYCLEONDELETE`;
@@ -241,6 +249,29 @@ impl DeleteEvent {
     pub fn succeeded(&self) -> bool {
         self.hr >= 0
     }
+}
+
+/// Lo que ocupa la Papelera del usuario EN UN VOLUMEN (`root`, p. ej. la raíz de la unidad), según la shell.
+pub fn bin_size_on(root: &Path) -> Result<u64> {
+    let mut info = SHQUERYRBINFO {
+        cbSize: size_of::<SHQUERYRBINFO>() as u32,
+        ..SHQUERYRBINFO::default()
+    };
+    let w = parsing_name(root);
+    // SAFETY: `w` termina en NUL y vive durante la llamada; `info` es escribible y trae su `cbSize`.
+    unsafe { SHQueryRecycleBinW(PCWSTR(w.as_ptr()), &mut info)? };
+    Ok(info.i64Size.max(0) as u64)
+}
+
+/// ¿Está `p` dentro de una Papelera (`<unidad>:\$Recycle.Bin\...`)? Mira la forma de la ruta (carpeta de primer nivel
+/// de la raíz de una unidad llamada `$Recycle.Bin`), sin consultar al sistema.
+pub fn is_recycle_bin_path(p: &Path) -> bool {
+    use crate::paths::PathKey;
+    let key = PathKey::new(p);
+    let is_bin = |k: &PathKey| {
+        k.file_name() == "$recycle.bin" && k.parent().is_some_and(|q| q.is_drive_root())
+    };
+    is_bin(&key) || key.ancestors().iter().any(is_bin)
 }
 
 /// Resultado de una operación por lotes de la shell.
@@ -633,7 +664,7 @@ fn parse_meta(b: &[u8]) -> Option<MetaInfo> {
 ///   usuario actual>\`;
 /// * existe el hermano EXACTO `$I<token>[.ext]`, es un archivo normal pequeño (sin reparse point) y su contenido es un `$I`
 ///   válido cuya ruta original cuelga de la misma carpeta que dice el elemento y con la misma extensión;
-/// * se abre en exclusiva, se comprueba que es el mismo objeto que se leyó y se borra por ese handle.
+/// * se abre en exclusiva y se lee, se interpreta y se borra por ese mismo handle.
 fn remove_orphan_meta(item: &BinItem) -> bool {
     use crate::paths::PathKey;
     let data = PathBuf::from(&item.id);
@@ -660,7 +691,9 @@ fn remove_orphan_meta(item: &BinItem) -> bool {
         return false;
     }
     let meta_path = sid_dir.join(format!("$I{}", &name[2..]));
-    let Ok(h) = crate::sys::open_for_query(&meta_path) else {
+    // Se abre en EXCLUSIVA primero y se lee, se interpreta y se borra por ese MISMO handle: lo que se lee es lo que se
+    // borra.
+    let Ok(h) = crate::sys::open_path_exclusive_read(&meta_path) else {
         return false;
     };
     let Ok(m) = crate::sys::meta(&h) else {
@@ -669,7 +702,7 @@ fn remove_orphan_meta(item: &BinItem) -> bool {
     if m.is_dir || m.is_reparse() || m.logical > 70_000 {
         return false;
     }
-    let Ok(bytes) = std::fs::read(&meta_path) else {
+    let Ok(bytes) = crate::sys::read_small(&h, 70_000) else {
         return false;
     };
     let Some(info) = parse_meta(&bytes) else {
@@ -687,14 +720,7 @@ fn remove_orphan_meta(item: &BinItem) -> bool {
     if !same_folder || ext(&info.original) != ext(&data) {
         return false;
     }
-    drop(h);
-    let Ok(ex) = crate::sys::open_path_exclusive(&meta_path) else {
-        return false;
-    };
-    if crate::sys::meta(&ex).map(|x| x.identity).ok() != Some(m.identity) {
-        return false;
-    }
-    crate::sys::delete_on_handle(&ex).is_ok()
+    crate::sys::delete_on_handle(&h).is_ok()
 }
 
 #[cfg(test)]
