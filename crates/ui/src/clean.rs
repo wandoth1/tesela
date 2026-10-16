@@ -84,6 +84,8 @@ enum Stage {
 /// Aviso breve (toast) pendiente de pintar.
 pub(crate) enum Note {
     NothingToClean,
+    /// No se pudo crear el registro local: sin registro no se limpia (M4). No se ha tocado nada.
+    NoLog,
 }
 
 impl Drop for CleanFlow {
@@ -283,6 +285,11 @@ impl CleanFlow {
                     let _ = (allow_unfit, dry);
                     self.finish(backend, report, dry_run, used_before);
                 }
+                Ok(Err(ExecError::LogRequired)) => {
+                    // El ejecutor exige un registro utilizable: no se ha tocado nada.
+                    self.stage = Stage::Idle;
+                    self.note = Some(Note::NoLog);
+                }
                 Ok(Err(ExecError::NeedsReconfirm(_))) => {
                     // Lo que cabe en la Papelera cambió desde la confirmación: se vuelve a aprobar y a confirmar.
                     self.stage = Stage::Idle;
@@ -364,15 +371,17 @@ impl CleanFlow {
             _ => {}
         }
         if let Some(note) = &self.note {
-            let key = match note {
-                Note::NothingToClean => "confirm-empty",
+            let (key, secs) = match note {
+                Note::NothingToClean => ("confirm-empty", 4.0),
+                // Más larga: explica por qué no pasó nada.
+                Note::NoLog => ("confirm-no-log", 12.0),
             };
             let msg = env.tr.t(key);
             toast(ctx, &msg);
             // El aviso dura unos segundos.
             let until = ctx.data_mut(|d| {
                 *d.get_temp_mut_or_insert_with(egui::Id::new("tesela-note-until"), || {
-                    ctx.input(|i| i.time) + 4.0
+                    ctx.input(|i| i.time) + secs
                 })
             });
             if ctx.input(|i| i.time) > until {
@@ -393,13 +402,20 @@ impl CleanFlow {
             && let Stage::Confirm(c) = &self.stage
         {
             let plan = c.plan.clone();
-            self.vol = vol;
-            let progress = Progress::new();
-            let (tx, rx) = crossbeam_channel::bounded(1);
+            // SIN REGISTRO NO HAY ACCIÓN DESTRUCTIVA (M4): si el registro local no se puede crear, no se ejecuta nada y se
+            // dice por qué. La simulación (y la demostración, que nunca toca el disco) puede seguir sin él.
             let log = backend
                 .data_dir()
                 .and_then(|d| LogWriter::create(&d, dry).ok())
                 .map(Arc::new);
+            if abort_without_log(log.is_some(), dry, backend.is_demo()) {
+                self.note = Some(Note::NoLog);
+                ctx.request_repaint();
+                return;
+            }
+            self.vol = vol;
+            let progress = Progress::new();
+            let (tx, rx) = crossbeam_channel::bounded(1);
             let opts = ExecOptions {
                 dry_run: dry,
                 allow_unfit_permanent: allow_unfit,
@@ -423,6 +439,12 @@ impl CleanFlow {
             }));
         }
     }
+}
+
+/// ¿Hay que abortar la limpieza por falta de registro (M4)? Sin registro no hay acción destructiva: solo la simulación
+/// (que no toca nada) y la demostración (que nunca toca el disco) pueden seguir sin él.
+fn abort_without_log(has_log: bool, dry: bool, is_demo: bool) -> bool {
+    !has_log && !dry && !is_demo
 }
 
 fn toast(ctx: &egui::Context, msg: &str) {
@@ -986,7 +1008,10 @@ fn summary_lines(env: &Env, s: &Summary) -> Vec<(String, bool)> {
     let tr = env.tr;
     let mut v: Vec<(String, bool)> = Vec::new();
     let n = |k: &str, n: u64| tr.ta(k, args!["n" => n, "count" => tr.int(n)]);
-    if r.cancelled {
+    if r.log_failed {
+        // El registro falló al escribir: la limpieza se detuvo sola (no es una cancelación del usuario).
+        v.push((tr.t("sum-log-failed"), true));
+    } else if r.cancelled {
         v.push((tr.t("sum-cancelled"), true));
     }
     if r.deleted_unexpectedly > 0 {
@@ -1244,4 +1269,19 @@ fn summary_ui(ui: &mut Ui, env: &mut Env, s: &Summary) -> Option<SummaryClick> {
             });
         });
     click
+}
+
+#[cfg(test)]
+mod log_gate_tests {
+    use super::abort_without_log;
+
+    /// M4: sin registro, una ejecución REAL se aborta; la simulación y la demostración siguen.
+    #[test]
+    fn sin_registro_solo_la_simulacion_y_la_demostracion_siguen() {
+        assert!(abort_without_log(false, false, false));
+        assert!(!abort_without_log(false, true, false), "simulación");
+        assert!(!abort_without_log(false, false, true), "demostración");
+        assert!(!abort_without_log(true, false, false), "con registro");
+        assert!(!abort_without_log(true, true, true));
+    }
 }

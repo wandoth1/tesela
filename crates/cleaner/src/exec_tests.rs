@@ -49,6 +49,20 @@ fn cancel() -> Arc<AtomicBool> {
     Arc::new(AtomicBool::new(false))
 }
 
+/// Un registro de prueba para `c`: en su carpeta de datos (dentro del sandbox) o, si no tiene, en una carpeta propia de
+/// la prueba que `exec` borra al terminar.
+fn log_for(c: &Cleaner) -> (Arc<LogWriter>, Option<PathBuf>) {
+    match c.data_dir.clone() {
+        Some(d) => (Arc::new(LogWriter::create(&d, false).unwrap()), None),
+        None => {
+            let d = std::env::temp_dir().join(format!("tesela-test-log-{}", uuid::Uuid::new_v4()));
+            (Arc::new(LogWriter::create(&d, false).unwrap()), Some(d))
+        }
+    }
+}
+
+/// Ejecuta el plan. Sin registro explícito, una ejecución REAL usa uno de prueba (M4: sin registro no se limpia; la
+/// simulación sí puede ir sin él).
 fn exec(
     c: &Cleaner,
     plan: &Plan,
@@ -56,7 +70,14 @@ fn exec(
     allow_unfit: bool,
     log: Option<Arc<LogWriter>>,
 ) -> Result<Report, ExecError> {
-    c.execute(
+    let (log, tmp) = match log {
+        None if !dry => {
+            let (l, tmp) = log_for(c);
+            (Some(l), tmp)
+        }
+        other => (other, None),
+    };
+    let r = c.execute(
         plan,
         &ExecOptions {
             dry_run: dry,
@@ -64,7 +85,11 @@ fn exec(
             log,
         },
         &Progress::new(),
-    )
+    );
+    if let Some(d) = tmp {
+        let _ = fs::remove_dir_all(d);
+    }
+    r
 }
 
 fn approve(c: &Cleaner, b: &Basket) -> Plan {
@@ -346,10 +371,38 @@ fn vaciar_la_papelera_purga_solo_la_lista_capturada() {
             .count(),
         3
     );
-    let rep = exec(&c, &plan, false, false, None).unwrap();
+    let log = Arc::new(LogWriter::create(&sb.path("Tesela"), false).unwrap());
+    let rep = exec(&c, &plan, false, false, Some(log.clone())).unwrap();
     let bin = rep.bin.unwrap();
     assert_eq!((bin.requested, bin.purged, bin.still_there), (2, 2, 0));
     assert!(!bin.failed);
+    // M4: cada elemento purgado consta POR SEPARADO en el registro, tras la intención del trozo; el que entró después no.
+    let text = fs::read_to_string(log.path()).unwrap();
+    let lines: Vec<serde_json::Value> = text
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let begin = lines
+        .iter()
+        .position(|v| v["t"] == "bin-begin")
+        .expect("falta la intención de la purga");
+    let items: Vec<(usize, &serde_json::Value)> = lines
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| v["t"] == "bin-item")
+        .collect();
+    assert_eq!(items.len(), 2, "{text}");
+    for (i, v) in &items {
+        assert!(*i > begin);
+        assert_eq!(v["out"], "purged");
+        let path = v["path"].as_str().unwrap();
+        assert!(
+            path.ends_with("uno.txt") || path.ends_with("dos.txt"),
+            "{path}"
+        );
+        assert_eq!(v["bytes"], 2_000);
+    }
+    assert!(!text.contains("tres.txt"));
     let left: Vec<BinItem> = recycle::list_bin()
         .unwrap()
         .into_iter()
@@ -369,6 +422,62 @@ fn vaciar_la_papelera_purga_solo_la_lista_capturada() {
         .map(|i| i.id)
         .collect();
     assert_eq!(foreign, before);
+}
+
+/// M3 + M4 con la Papelera real (solo elementos propios): si la identidad capturada al confirmar de un elemento ya no
+/// cuadra (aquí, falseada en el plan), se SALTA al vaciar: la shell no lo ve, consta como cambiado en el informe y en el
+/// registro, y los demás se purgan.
+#[test]
+fn vaciar_salta_el_elemento_cuya_identidad_cambio_y_lo_deja_en_el_registro() {
+    let _lock = bin_lock();
+    if !bin_usable() {
+        return;
+    }
+    let before = ids();
+    let sb = Sandbox::new();
+    let _guard = BinGuard { uuid: sb.uuid() };
+    let c = cleaner_for(&sb);
+    for n in ["uno.txt", "dos.txt"] {
+        sb.write(&format!("Docs/{n}"), 2_000);
+    }
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/uno.txt"), c.protection());
+    b.add_path(sb.long("Docs/dos.txt"), c.protection());
+    exec(&c, &approve(&c, &b), false, false, None).unwrap();
+    let mut v = Basket::new();
+    v.set_empty_bin(true);
+    let mut plan = c.approve(&v, &ApproveOptions::default(), &cancel());
+    let bp = plan.bin.as_mut().unwrap();
+    assert_eq!(bp.items.len(), 2);
+    // Falsear la identidad del `$R` del primero: ya no es lo que se aprobó.
+    bp.items[0].data_id = Some(FileIdentity {
+        volume_serial: 1,
+        file_id: 2,
+    });
+    let skipped_name = bp.items[0].original_path();
+    let log = Arc::new(LogWriter::create(&sb.path("Tesela"), false).unwrap());
+    let rep = exec(&c, &plan, false, false, Some(log.clone())).unwrap();
+    let bin = rep.bin.unwrap();
+    assert_eq!(
+        (bin.requested, bin.purged, bin.still_there, bin.changed),
+        (2, 1, 1, 1)
+    );
+    let text = fs::read_to_string(log.path()).unwrap();
+    let changed_lines = text
+        .lines()
+        .filter(|l| l.contains("\"bin-item\"") && l.contains("\"changed\""))
+        .count();
+    assert_eq!(changed_lines, 1, "{text}");
+    assert!(text.contains("\"purged\""));
+    let left: Vec<BinItem> = recycle::list_bin()
+        .unwrap()
+        .into_iter()
+        .filter(|i| is_mine(i, &sb.uuid()))
+        .collect();
+    assert_eq!(left.len(), 1, "{left:?}");
+    assert_eq!(left[0].original_path(), skipped_name);
+    recycle::purge_items(&left, &AtomicBool::new(false)).unwrap();
+    assert_eq!(ids(), before);
 }
 
 #[test]
@@ -793,7 +902,14 @@ fn cancelar_antes_de_empezar_no_toca_nada() {
     let progress = Progress::new();
     progress.cancel();
     let rep = c
-        .execute(&plan, &ExecOptions::default(), &progress)
+        .execute(
+            &plan,
+            &ExecOptions {
+                log: Some(log_for(&c).0),
+                ..ExecOptions::default()
+            },
+            &progress,
+        )
         .unwrap();
     assert!(rep.cancelled);
     assert!(sb.path("Temp/a.tmp").exists() && sb.path("Docs/b.txt").exists());
@@ -1457,6 +1573,180 @@ fn un_enlace_duro_sustituto_ya_no_da_un_recycled_falso() {
         .collect();
     recycle::purge_items(&mine, &AtomicBool::new(false)).unwrap();
     assert_eq!(ids(), before);
+}
+
+// ---- M4: el registro es condición de la limpieza ------------------------------------------------------------------------
+
+/// M4: sin registro NO hay ninguna acción destructiva (ni definitiva ni a la Papelera ni vaciar): la ejecución real sin
+/// registro, o con uno que ya falló, devuelve `LogRequired` y no toca nada. La simulación sí puede ir sin registro.
+#[test]
+fn sin_registro_no_hay_ninguna_accion_destructiva() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    sb.write_aged("Temp/viejo.tmp", 10_000, 72);
+    sb.write("Docs/b.txt", 1_000);
+    let mut b = Basket::new();
+    b.set_category(CategoryId::UserTemp, true);
+    b.add_path(sb.long("Docs/b.txt"), c.protection());
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 2, "{:?}", plan.rejected);
+    // Sin registro: nada.
+    let opts = ExecOptions::default();
+    assert_eq!(
+        c.execute(&plan, &opts, &Progress::new()).err(),
+        Some(ExecError::LogRequired)
+    );
+    assert!(sb.path("Temp/viejo.tmp").exists() && sb.path("Docs/b.txt").exists());
+    assert!(fake.names().is_empty());
+    // Con un registro que ya falló: tampoco.
+    let failed = Arc::new(
+        LogWriter::create_failing_after(&sb.path("LogMalo"), false, 400).expect("arranca"),
+    );
+    for i in 0..60 {
+        failed.write_note(
+            "x",
+            &format!("relleno largo para agotar el presupuesto {i}"),
+        );
+    }
+    failed.flush();
+    assert!(!failed.ok(), "el registro debería haber fallado");
+    assert_eq!(
+        c.execute(
+            &plan,
+            &ExecOptions {
+                log: Some(failed),
+                ..ExecOptions::default()
+            },
+            &Progress::new()
+        )
+        .err(),
+        Some(ExecError::LogRequired)
+    );
+    assert!(sb.path("Temp/viejo.tmp").exists() && sb.path("Docs/b.txt").exists());
+    // La simulación va sin registro.
+    let dry = exec(&c, &plan, true, false, None).unwrap();
+    assert!(dry.dry_run && !dry.log_failed);
+    assert!(sb.path("Temp/viejo.tmp").exists() && sb.path("Docs/b.txt").exists());
+}
+
+/// M4: un registro que no se puede crear es un error (la interfaz no ejecuta nada): aquí, la carpeta de datos es un archivo.
+#[test]
+fn un_registro_que_no_se_puede_crear_es_un_error() {
+    let sb = Sandbox::new();
+    sb.write("Tesela", 10); // un archivo donde debería ir la carpeta
+    assert!(LogWriter::create(&sb.path("Tesela"), false).is_err());
+    assert!(LogWriter::create(&sb.path("Tesela/sub"), false).is_err());
+    // Y uno que falla ya en la línea de arranque.
+    assert!(LogWriter::create_failing_after(&sb.path("L0"), false, 0).is_err());
+}
+
+/// M4: la INTENCIÓN antes del resultado, para cada operación: el lote que se entrega a la shell lista sus elementos, y el
+/// lote definitivo, sus raíces, ANTES de cualquier resultado.
+#[test]
+fn el_registro_lleva_la_intencion_de_cada_operacion_antes_de_sus_resultados() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    sb.write_aged("Temp/viejo.tmp", 10_000, 72);
+    let mut plan = plan_de(&sb, &c, &[("a.txt", 100, 100), ("b.txt", 100, 100)]);
+    // Más un elemento definitivo (la categoría de temporales).
+    let mut b = Basket::new();
+    b.set_category(CategoryId::UserTemp, true);
+    let perm = approve(&c, &b);
+    plan.items.extend(perm.items.into_iter().map(|mut i| {
+        i.id = 2;
+        i
+    }));
+    let log = Arc::new(LogWriter::create(&sb.path("Tesela"), false).unwrap());
+    exec(&c, &plan, false, false, Some(log.clone())).unwrap();
+    let text = fs::read_to_string(log.path()).unwrap();
+    let lines: Vec<serde_json::Value> = text
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let pos = |kind: &str| lines.iter().position(|v| v["t"] == kind);
+    let (del_begin, rec_begin) = (
+        pos("delete-begin").expect("falta la intención del lote definitivo"),
+        pos("recycle-begin").expect("falta la intención del lote de la Papelera"),
+    );
+    // La intención del lote definitivo, antes de cualquier resultado de sus entradas.
+    let first_entry = pos("entry").expect("hay entradas");
+    assert!(del_begin < first_entry, "{del_begin} < {first_entry}");
+    // La del envío, antes de los resultados `recycle`.
+    let first_recycle = pos("recycle").expect("hay resultados de la Papelera");
+    assert!(rec_begin < first_recycle);
+    // Lista los elementos del lote.
+    let paths = lines[rec_begin]["paths"].as_array().unwrap();
+    let names: Vec<&str> = paths.iter().map(|p| p.as_str().unwrap()).collect();
+    assert!(
+        names.iter().any(|n| n.ends_with("a.txt")) && names.iter().any(|n| n.ends_with("b.txt"))
+    );
+    let roots = lines[del_begin]["paths"].as_array().unwrap();
+    assert!(roots[0].as_str().unwrap().ends_with("Temp"));
+    assert!(pos("delete-end").is_some() && pos("summary").is_some());
+    assert!(log.ok());
+}
+
+/// M4: un error de escritura del registro DETIENE la limpieza en el siguiente punto seguro: si falla la intención del
+/// lote definitivo, no se borra nada; si falla a mitad, el resto no se procesa. El informe lo dice (`log_failed`) y no se
+/// presenta como una cancelación del usuario.
+#[test]
+fn un_error_de_escritura_del_registro_detiene_la_limpieza() {
+    // (1) Falla ya en la intención: no se borra NADA.
+    let sb = Sandbox::new();
+    let c = cleaner_for(&sb);
+    for i in 0..30 {
+        sb.write_aged(&format!("Temp/f{i:02}.tmp"), 1_000, 72);
+    }
+    let mut b = Basket::new();
+    b.set_category(CategoryId::UserTemp, true);
+    let plan = approve(&c, &b);
+    // El presupuesto alcanza para la línea de arranque (≈ 50 bytes) pero no para la intención.
+    let log = Arc::new(LogWriter::create_failing_after(&sb.path("L1"), false, 80).unwrap());
+    let rep = exec(&c, &plan, false, false, Some(log.clone())).unwrap();
+    assert!(rep.log_failed && !rep.cancelled, "{rep:?}");
+    assert!(!log.ok());
+    assert_eq!(sb.count_entries("Temp"), 30, "no se borró nada");
+    assert!(matches!(
+        rep.items[0].status,
+        ItemStatus::Root(crate::engine::RootStatus::Cancelled)
+    ));
+
+    // (2) Falla a mitad (la intención cabe, los resultados por entrada no): se detiene en el siguiente punto seguro, con
+    // trabajo sin hacer.
+    let sb2 = Sandbox::new();
+    let c2 = cleaner_for(&sb2).with_threads(2);
+    for i in 0..400 {
+        sb2.write_aged(&format!("Temp/g{i:03}.tmp"), 100, 72);
+    }
+    let mut b2 = Basket::new();
+    b2.set_category(CategoryId::UserTemp, true);
+    let plan2 = approve(&c2, &b2);
+    let log2 = Arc::new(LogWriter::create_failing_after(&sb2.path("L2"), false, 1_500).unwrap());
+    let rep2 = exec(&c2, &plan2, false, false, Some(log2.clone())).unwrap();
+    assert!(rep2.log_failed && !rep2.cancelled, "{rep2:?}");
+    let left = sb2.count_entries("Temp");
+    assert!(left > 0, "la limpieza debía detenerse antes de terminar");
+    assert!(left < 400, "algo se había hecho antes del fallo: {left}");
+    assert!(log2.error().is_some());
+
+    // (3) Falla la intención del lote de la Papelera: la shell NO ve nada.
+    let sb3 = Sandbox::new();
+    let fake = FakeShell::new(&sb3, Some(1 << 40), 0, "nunca");
+    let c3 = cleaner_for(&sb3).with_shell(fake.clone());
+    let plan3 = plan_de(&sb3, &c3, &[("a.txt", 100, 100), ("b.txt", 100, 100)]);
+    let log3 = Arc::new(LogWriter::create_failing_after(&sb3.path("L3"), false, 80).unwrap());
+    let rep3 = exec(&c3, &plan3, false, false, Some(log3)).unwrap();
+    assert!(rep3.log_failed);
+    assert!(fake.names().is_empty(), "no se entregó nada a la shell");
+    assert!(sb3.path("Docs/a.txt").exists() && sb3.path("Docs/b.txt").exists());
+    for it in &rep3.items {
+        assert_eq!(
+            it.status,
+            ItemStatus::Root(crate::engine::RootStatus::Cancelled)
+        );
+    }
 }
 
 // ---- m1: el número de enlaces aprobado es EXACTO ------------------------------------------------------------------------

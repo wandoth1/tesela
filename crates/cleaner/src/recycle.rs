@@ -730,19 +730,42 @@ pub fn recycle_paths(items: &[SendItem], mode: RecycleMode) -> Result<BatchOutco
     Ok(op.perform())
 }
 
+/// Un paso de la purga, para el registro local (M4): lo que se va a hacer, lo que se saltó y lo que pasó, ELEMENTO A
+/// ELEMENTO.
+pub enum PurgeStep<'a> {
+    /// Antes de cada trozo: los elementos que se van a entregar a la shell (la INTENCIÓN). Si quien observa no puede
+    /// dejarla escrita, cancela (`cancel`) y el trozo NO se entrega.
+    Begin(&'a [&'a BinItem]),
+    /// Elementos que se saltaron porque su `$R` o su `$I` ya no eran los de la enumeración.
+    Skipped(&'a [&'a BinItem]),
+    /// Después de cada trozo: cada elemento con el `HRESULT` que notificó la shell (`None` = sin aviso).
+    Done(&'a [(&'a BinItem, Option<i32>)]),
+}
+
 /// Purga (borra definitivamente) SOLO los elementos de la lista, PASANDO POR LA CARPETA SHELL de la Papelera: se
 /// enumera la Papelera y se llama a `IFileOperation::DeleteItem` sobre los `IShellItem` enumerados, de modo que la shell
 /// elimina a la vez el `$R` (los datos) y el `$I` (sus metadatos). Nunca por la ruta `$R`: eso dejaba el `$I` huérfano.
 /// Quien llama pasa una lista enumerada al confirmar y los elementos se casan por su `id` estable: lo que haya entrado
-/// después no se toca. La cancelación se mira entre trozos de 500.
+/// después no se toca. Antes de tocar un elemento se comprueba que su `$R` y su `$I` siguen teniendo la identidad que
+/// tenían al enumerar (M3). La cancelación se mira entre trozos de 500.
 pub fn purge_items(items: &[BinItem], cancel: &AtomicBool) -> Result<BatchOutcome> {
-    purge_items_flags(items, cancel, purge_flags())
+    purge_items_flags(items, cancel, purge_flags(), &mut |_| {})
+}
+
+/// Como [`purge_items`], pero avisa de cada paso (ver [`PurgeStep`]) para dejarlo en el registro.
+pub fn purge_items_observed(
+    items: &[BinItem],
+    cancel: &AtomicBool,
+    obs: &mut dyn FnMut(PurgeStep<'_>),
+) -> Result<BatchOutcome> {
+    purge_items_flags(items, cancel, purge_flags(), obs)
 }
 
 fn purge_items_flags(
     items: &[BinItem],
     cancel: &AtomicBool,
     flags: FILEOPERATION_FLAGS,
+    obs: &mut dyn FnMut(PurgeStep<'_>),
 ) -> Result<BatchOutcome> {
     if items.is_empty() {
         return Ok(BatchOutcome::default());
@@ -750,8 +773,8 @@ fn purge_items_flags(
     let _com = Com::init()?;
     let by_id: std::collections::HashMap<&OsString, &BinItem> =
         items.iter().map(|i| (&i.id, i)).collect();
-    let mut changed: Vec<OsString> = Vec::new();
-    let mut found: Vec<IShellItem> = Vec::with_capacity(items.len());
+    let mut changed: Vec<&BinItem> = Vec::new();
+    let mut found: Vec<(IShellItem, &BinItem)> = Vec::with_capacity(items.len());
     // SAFETY: COM está inicializado en este hilo; todas las interfaces y cadenas son propias de esta función y se
     // liberan con el RAII de `windows` o con `take_pwstr`.
     unsafe {
@@ -767,14 +790,14 @@ fn purge_items_flags(
             }
             let Some(item) = arr[0].take() else { break };
             if let Some(id) = display(&item, SIGDN_DESKTOPABSOLUTEPARSING)
-                && let Some(approved) = by_id.get(&id)
+                && let Some(approved) = by_id.get(&id).copied()
             {
                 // M3: el elemento se identifica por `id` (un nombre), pero antes de tocarlo se comprueba que el `$R` y el
                 // `$I` son los mismos objetos que al enumerar.
                 if bin_item_unchanged(approved) {
-                    found.push(item);
+                    found.push((item, approved));
                 } else {
-                    changed.push(id);
+                    changed.push(approved);
                 }
                 if found.len() + changed.len() == by_id.len() {
                     break;
@@ -783,16 +806,26 @@ fn purge_items_flags(
         }
     }
     let mut out = BatchOutcome {
-        changed_bin: changed,
+        changed_bin: changed.iter().map(|i| i.id.clone()).collect(),
         ..BatchOutcome::default()
     };
+    if !changed.is_empty() {
+        obs(PurgeStep::Skipped(&changed));
+    }
     for chunk in found.chunks(500) {
+        if cancel.load(Ordering::Relaxed) {
+            break;
+        }
+        // La INTENCIÓN antes de entregar nada a la shell: si quien observa no pudo dejarla escrita, cancela y este trozo no
+        // se entrega.
+        let chunk_items: Vec<&BinItem> = chunk.iter().map(|(_, i)| *i).collect();
+        obs(PurgeStep::Begin(&chunk_items));
         if cancel.load(Ordering::Relaxed) {
             break;
         }
         let op = Operation::new(flags, None)?;
         let mut added = 0usize;
-        for it in chunk {
+        for (it, _) in chunk {
             // SAFETY: `op.op` y `it` son interfaces vivas.
             if unsafe { op.op.DeleteItem(it, None) }.is_ok() {
                 added += 1;
@@ -813,6 +846,11 @@ fn purge_items_flags(
                 out.meta_removed += 1;
             }
         }
+        let done: Vec<(&BinItem, Option<i32>)> = chunk_items
+            .iter()
+            .map(|i| (*i, r.events.iter().find(|e| e.item == i.id).map(|e| e.hr)))
+            .collect();
+        obs(PurgeStep::Done(&done));
         out.events.extend(r.events);
         if let Some(e) = r.error {
             out.error = Some(e);

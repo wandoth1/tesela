@@ -2,14 +2,27 @@
 //!
 //! * `%LOCALAPPDATA%\Tesela\limpieza-<fecha>.jsonl`: una línea JSON por entrada procesada (ruta, identidad, tamaño,
 //!   resultado). SOLO en la máquina del usuario: contiene rutas reales y nunca se sube ni se versiona. Se conservan los
-//!   últimos [`KEEP_LOGS`] y cada uno tiene un tope de líneas ([`MAX_LINES`]) y de bytes ([`MAX_BYTES`]). Se vuelca a disco
-//!   cada pocas líneas y tras cada elemento (si la aplicación se cierra a mitad, consta hasta dónde llegó). "Borrar el
+//!   últimos [`KEEP_LOGS`] y cada uno tiene un tope de líneas ([`MAX_LINES`]) y de bytes ([`MAX_BYTES`]). "Borrar el
 //!   historial" de Ajustes los borra también ([`history_clear`]).
+//!
+//! # Garantías del registro (M4)
+//! * **Sin registro no hay acción destructiva.** Quien ejecuta exige un registro (salvo en simulación) y lo comprueba.
+//! * **Un error de escritura no se traga.** El primer error de escritura o de volcado MARCA el registro como fallido
+//!   ([`LogWriter::ok`]) y activa la bandera de cancelación del ejecutor: la limpieza se detiene en el siguiente punto
+//!   seguro (entre entradas, entre operaciones, entre trozos de la Papelera) y no se toca nada más.
+//! * **Intención antes, resultado después.** Antes de cada operación se escribe y se VUELCA una línea de intención
+//!   ([`LogWriter::write_intent`]: en cada lote entregado a la shell lista sus elementos); después, el resultado.
+//!   Los resultados por entrada del recorrido por handle se vuelcan cada [`FLUSH_EVERY`] líneas y al terminar cada operación.
+//! * **Volcado y `sync_all`.** `flush` (los bytes llegan a la caché del sistema, que sobrevive a que el proceso muera o la
+//!   ventana se cierre a la fuerza: la amenaza que se modela) tras cada intención y cada elemento; `sync_all` (a disco) solo
+//!   al crear el registro y al terminar, para no frenar cada elemento con un `fsync` (milisegundos por llamada, miles de
+//!   llamadas) cuando el riesgo de un corte de corriente a mitad no justifica ese coste.
 //! * `%LOCALAPPDATA%\Tesela\history.jsonl`: SOLO resúmenes (fecha, unidad, usado, liberado ahora, enviado a la
 //!   Papelera). Nunca el árbol ni rutas. Se puede borrar desde Ajustes.
 
 use crate::engine::{Event, EventSink, Outcome};
 use serde::{Deserialize, Serialize};
+use std::ffi::OsStr;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
@@ -54,15 +67,66 @@ fn unix_now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// El archivo del registro. En las pruebas puede fallar a propósito después de `left` bytes.
+enum LogFile {
+    Real(File),
+    #[cfg(test)]
+    FailAfter {
+        file: File,
+        left: usize,
+    },
+}
+
+impl Write for LogFile {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        match self {
+            LogFile::Real(f) => f.write(buf),
+            #[cfg(test)]
+            LogFile::FailAfter { file, left } => {
+                if *left == 0 {
+                    return Err(std::io::Error::other("fallo de escritura simulado"));
+                }
+                let n = buf.len().min(*left);
+                let w = file.write(&buf[..n])?;
+                *left -= w;
+                Ok(w)
+            }
+        }
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        match self {
+            LogFile::Real(f) => f.flush(),
+            #[cfg(test)]
+            LogFile::FailAfter { file, .. } => file.flush(),
+        }
+    }
+}
+
+impl LogFile {
+    fn sync_all(&self) -> std::io::Result<()> {
+        match self {
+            LogFile::Real(f) => f.sync_all(),
+            #[cfg(test)]
+            LogFile::FailAfter { file, .. } => file.sync_all(),
+        }
+    }
+}
+
 /// El escritor del registro de una ejecución.
 pub struct LogWriter {
     path: PathBuf,
-    out: Mutex<BufWriter<File>>,
+    out: Mutex<BufWriter<LogFile>>,
     lines: AtomicU64,
     bytes: AtomicU64,
     truncated: AtomicBool,
     /// Tope de bytes (las pruebas lo bajan).
     max_bytes: AtomicU64,
+    /// El primer error de escritura o de volcado marca el registro como fallido para siempre.
+    failed: AtomicBool,
+    first_error: Mutex<Option<String>>,
+    /// Bandera de cancelación del ejecutor: un error de escritura la activa (la limpieza se detiene en el siguiente punto
+    /// seguro).
+    cancel_on_error: Mutex<Option<Arc<AtomicBool>>>,
 }
 
 #[derive(Serialize)]
@@ -100,8 +164,30 @@ fn outcome_name(o: Outcome) -> String {
 }
 
 impl LogWriter {
-    /// Crea el registro de una ejecución en `dir` (se crea si no existe) y poda los antiguos.
+    /// Crea el registro de una ejecución en `dir` (se crea si no existe) y poda los antiguos. Si no se puede crear o no se
+    /// puede escribir y volcar la línea de arranque (con `sync_all`), es un error: sin registro no se limpia.
     pub fn create(dir: &Path, dry_run: bool) -> std::io::Result<LogWriter> {
+        Self::create_with(dir, dry_run, LogFile::Real)
+    }
+
+    /// SOLO PARA PRUEBAS: un registro cuyo archivo falla al escribir pasados `bytes` bytes.
+    #[cfg(test)]
+    pub(crate) fn create_failing_after(
+        dir: &Path,
+        dry_run: bool,
+        bytes: usize,
+    ) -> std::io::Result<LogWriter> {
+        Self::create_with(dir, dry_run, move |file| LogFile::FailAfter {
+            file,
+            left: bytes,
+        })
+    }
+
+    fn create_with(
+        dir: &Path,
+        dry_run: bool,
+        wrap: impl FnOnce(File) -> LogFile,
+    ) -> std::io::Result<LogWriter> {
         fs::create_dir_all(dir)?;
         let (y, mo, d, h, mi, s) = utc_parts(unix_now());
         let mut name = format!("limpieza-{y:04}{mo:02}{d:02}-{h:02}{mi:02}{s:02}");
@@ -120,18 +206,22 @@ impl LogWriter {
             .open(&path)?;
         let w = LogWriter {
             path,
-            out: Mutex::new(BufWriter::new(f)),
+            out: Mutex::new(BufWriter::new(wrap(f))),
             lines: AtomicU64::new(0),
             bytes: AtomicU64::new(0),
             truncated: AtomicBool::new(false),
             max_bytes: AtomicU64::new(MAX_BYTES),
+            failed: AtomicBool::new(false),
+            first_error: Mutex::new(None),
+            cancel_on_error: Mutex::new(None),
         };
         w.raw(&format!(
             "{{\"t\":\"start\",\"dry_run\":{dry_run},\"unix\":{}}}",
             unix_now()
-        ));
-        // La línea de arranque ya está en disco: aunque la aplicación muera enseguida, consta que hubo una limpieza.
-        w.flush();
+        ))?;
+        // La línea de arranque ya está en disco (con `sync_all`): aunque la aplicación muera enseguida, consta que hubo
+        // una limpieza.
+        w.sync()?;
         prune(dir, KEEP_LOGS);
         Ok(w)
     }
@@ -140,11 +230,102 @@ impl LogWriter {
         &self.path
     }
 
-    fn raw(&self, line: &str) {
-        let mut g = self.out.lock().unwrap_or_else(|e| e.into_inner());
-        let _ = writeln!(g, "{line}");
+    /// Marca el registro como fallido (la primera vez guarda el error) y activa la cancelación del ejecutor.
+    fn poison(&self, e: &std::io::Error) {
+        self.failed.store(true, Ordering::SeqCst);
+        self.first_error
+            .lock()
+            .unwrap_or_else(|x| x.into_inner())
+            .get_or_insert_with(|| e.to_string());
+        if let Some(c) = self
+            .cancel_on_error
+            .lock()
+            .unwrap_or_else(|x| x.into_inner())
+            .as_ref()
+        {
+            c.store(true, Ordering::SeqCst);
+        }
+    }
+
+    fn checked<T>(&self, r: std::io::Result<T>) -> std::io::Result<T> {
+        if let Err(e) = &r {
+            self.poison(e);
+        }
+        r
+    }
+
+    fn raw(&self, line: &str) -> std::io::Result<()> {
+        let r = {
+            let mut g = self.out.lock().unwrap_or_else(|e| e.into_inner());
+            writeln!(g, "{line}")
+        };
         self.bytes
             .fetch_add(line.len() as u64 + 1, Ordering::Relaxed);
+        self.checked(r)
+    }
+
+    /// ¿Va bien el registro? `false` en cuanto falló una escritura o un volcado (ya no se puede confiar en que conste lo
+    /// que se haga).
+    pub fn ok(&self) -> bool {
+        !self.failed.load(Ordering::SeqCst)
+    }
+
+    /// El primer error de escritura o de volcado, si lo hubo.
+    pub fn error(&self) -> Option<String> {
+        self.first_error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    /// Hace que un error de escritura active `flag` (la cancelación del ejecutor). Si ya había fallado, la activa ya.
+    pub fn cancel_on_error(&self, flag: Arc<AtomicBool>) {
+        if !self.ok() {
+            flag.store(true, Ordering::SeqCst);
+        }
+        *self
+            .cancel_on_error
+            .lock()
+            .unwrap_or_else(|e| e.into_inner()) = Some(flag);
+    }
+
+    /// Vuelca lo escrito al sistema (y `sync_all` a disco). Un error marca el registro como fallido.
+    pub fn sync(&self) -> std::io::Result<()> {
+        let r = {
+            let mut g = self.out.lock().unwrap_or_else(|e| e.into_inner());
+            g.flush().and_then(|()| g.get_ref().sync_all())
+        };
+        self.checked(r)
+    }
+
+    /// Escribe una LÍNEA DE INTENCIÓN y la vuelca antes de que se haga la operación: `kind` con la lista de rutas que se van
+    /// a tocar. Si no se puede escribir o volcar, es un error y la operación NO debe hacerse.
+    pub fn write_intent(&self, kind: &str, paths: &[PathBuf]) -> std::io::Result<()> {
+        let list: Vec<String> = paths
+            .iter()
+            .map(|p| p.to_string_lossy().into_owned())
+            .collect();
+        let v = serde_json::json!({ "t": kind, "paths": list });
+        self.raw(&v.to_string())?;
+        self.flush_checked()
+    }
+
+    /// Un elemento de la Papelera purgado (o saltado), individualmente: ruta de origen, `id`, tamaño y resultado.
+    pub fn write_bin_item(&self, original: &Path, id: &OsStr, size: u64, out: &str) {
+        let v = serde_json::json!({
+            "t": "bin-item",
+            "path": original.to_string_lossy(),
+            "id": id.to_string_lossy(),
+            "bytes": size,
+            "out": out,
+        });
+        let _ = self.raw(&v.to_string());
+    }
+
+    /// Como [`LogWriter::flush`], pero devuelve el error.
+    pub fn flush_checked(&self) -> std::io::Result<()> {
+        let r = self.out.lock().unwrap_or_else(|e| e.into_inner()).flush();
+        self.checked(r)
     }
 
     /// Escribe una entrada procesada.
@@ -155,7 +336,7 @@ impl LogWriter {
         {
             // Una sola marca de truncado; después no se escribe más (el tope en líneas y en bytes).
             if !self.truncated.swap(true, Ordering::Relaxed) {
-                self.raw("{\"t\":\"truncated\"}");
+                let _ = self.raw("{\"t\":\"truncated\"}");
                 self.flush();
             }
             return;
@@ -175,25 +356,14 @@ impl LogWriter {
             out: outcome_name(ev.outcome),
         };
         if let Ok(s) = serde_json::to_string(&line) {
-            self.raw(&s);
+            let _ = self.raw(&s);
         }
     }
 
     /// Una línea de texto libre del propio registro (resumen, avisos).
     pub fn write_note(&self, kind: &str, text: &str) {
         let v = serde_json::json!({ "t": kind, "text": text });
-        self.raw(&v.to_string());
-    }
-
-    /// Una nota con una lista de rutas (las que se van a entregar a la shell en una operación). Se llama justo antes y se
-    /// vuelca: tras un cierre forzoso se sabe qué pudo moverse.
-    pub fn write_paths(&self, kind: &str, paths: &[PathBuf]) {
-        let list: Vec<String> = paths
-            .iter()
-            .map(|p| p.to_string_lossy().into_owned())
-            .collect();
-        let v = serde_json::json!({ "t": kind, "paths": list });
-        self.raw(&v.to_string());
+        let _ = self.raw(&v.to_string());
     }
 
     /// El receptor de eventos para el recorrido.
@@ -202,8 +372,9 @@ impl LogWriter {
         Arc::new(move |ev| me.write_event(&ev))
     }
 
+    /// Vuelca lo escrito al sistema. Un error marca el registro como fallido (ver [`LogWriter::ok`]).
     pub fn flush(&self) {
-        let _ = self.out.lock().unwrap_or_else(|e| e.into_inner()).flush();
+        let _ = self.flush_checked();
     }
 }
 
@@ -384,7 +555,7 @@ mod tests {
             "falta la línea de arranque"
         );
         let paths = vec![PathBuf::from("a.txt"), PathBuf::from("b c.txt")];
-        log.write_paths("recycle-begin", &paths);
+        log.write_intent("recycle-begin", &paths).unwrap();
         log.flush();
         let text = fs::read_to_string(log.path()).unwrap();
         let line = text.lines().find(|l| l.contains("recycle-begin")).unwrap();

@@ -263,6 +263,7 @@ confirm-subtitle =
         [one] { $count } item · { $size } · we check every path again right before deleting
        *[other] { $count } items · { $size } · we check every path again right before deleting
     }
+confirm-no-log = The cleaning log could not be created, so nothing was done. Check that the Tesela data folder (in your local app data) is writable and try again. Simulation still works without a log.
 confirm-empty = There is nothing to clean with this basket.
 confirm-dry-banner = Simulation mode: nothing will be deleted or moved; only what would be done is logged.
 confirm-reconfirm = Something changed since you confirmed (what fits in the Recycle Bin). Review again before cleaning.
@@ -458,6 +459,7 @@ sum-bin-changed =
         [one] { $count } Recycle Bin item changed since you confirmed and was not touched.
        *[other] { $count } Recycle Bin items changed since you confirmed and were not touched.
     }
+sum-log-failed = The cleaning log could not be written, so the cleaning stopped at the next safe point and nothing else was touched. What was already done stays and may not be fully recorded in the log.
 sum-cancelled = You cancelled the cleanup: what was already done stays done.
 sum-diverge = "Deleted permanently" and "freed now" differ: this can be because of hard links, files another program had open, or changes made by Windows itself.
 

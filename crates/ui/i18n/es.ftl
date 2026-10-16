@@ -264,6 +264,7 @@ confirm-subtitle =
         [one] { $count } elemento · { $size } · comprobamos cada ruta otra vez justo antes de borrar
        *[other] { $count } elementos · { $size } · comprobamos cada ruta otra vez justo antes de borrar
     }
+confirm-no-log = No se pudo crear el registro de la limpieza, así que no se ha hecho nada. Comprueba que se puede escribir en la carpeta de datos de Tesela (en tu carpeta de datos locales) y vuelve a intentarlo. La simulación sigue funcionando sin registro.
 confirm-empty = No hay nada que limpiar con esta cesta.
 confirm-dry-banner = Modo simulación: no se borrará ni se moverá nada; solo se registra lo que se haría.
 confirm-reconfirm = Algo cambió desde que lo confirmaste (lo que cabe en la Papelera). Revisa de nuevo antes de limpiar.
@@ -459,6 +460,7 @@ sum-bin-changed =
         [one] { $count } elemento de la Papelera cambió desde la confirmación y no se tocó.
        *[other] { $count } elementos de la Papelera cambiaron desde la confirmación y no se tocaron.
     }
+sum-log-failed = No se pudo escribir el registro de la limpieza, así que se detuvo en el siguiente punto seguro y no se tocó nada más. Lo que ya estaba hecho se queda y puede no constar entero en el registro.
 sum-cancelled = Cancelaste la limpieza: lo que ya estaba hecho se queda.
 sum-diverge = "Eliminado definitivamente" y "liberado ahora" no coinciden: puede ser por enlaces duros, archivos que otro programa tenía abiertos o cambios del propio Windows.
 

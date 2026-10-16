@@ -42,7 +42,8 @@ pub struct ExecOptions {
     pub dry_run: bool,
     /// El usuario marcó la casilla del grupo ámbar: lo que no cabe en la Papelera se elimina definitivamente.
     pub allow_unfit_permanent: bool,
-    /// Registro local de la ejecución.
+    /// Registro local de la ejecución. OBLIGATORIO salvo en simulación (M4): sin un registro utilizable no hay ninguna
+    /// acción destructiva ([`ExecError::LogRequired`]).
     pub log: Option<Arc<LogWriter>>,
 }
 
@@ -248,6 +249,9 @@ pub struct Report {
     pub skipped_unfit: u64,
     /// Ruta del registro local.
     pub log_path: Option<PathBuf>,
+    /// El registro local FALLÓ al escribir o volcar (M4): la limpieza se detuvo en el siguiente punto seguro y no se tocó
+    /// nada más. Lo que ya estaba hecho se queda (y puede no constar entero en el registro).
+    pub log_failed: bool,
 }
 
 /// Por qué se detuvo el envío a la Papelera (corte de seguridad).
@@ -267,6 +271,9 @@ pub enum StopReason {
 pub enum ExecError {
     /// Lo que cabe en la Papelera cambió desde la confirmación: hay que volver a confirmar (PLAN.md §2.5). Lleva los ids.
     NeedsReconfirm(Vec<usize>),
+    /// No hay registro local utilizable (no se pudo crear, o ya había fallado) y no es una simulación: sin registro no hay
+    /// acción destructiva (M4). No se ha tocado nada.
+    LogRequired,
 }
 
 impl Cleaner {
@@ -278,6 +285,14 @@ impl Cleaner {
         progress: &Arc<Progress>,
     ) -> Result<Report, ExecError> {
         progress.set_phase(Phase::Preparing);
+        // M4: SIN REGISTRO UTILIZABLE NO HAY ACCIÓN DESTRUCTIVA. La simulación sí puede seguir sin él.
+        if !opts.dry_run && opts.log.as_ref().is_none_or(|l| !l.ok()) {
+            return Err(ExecError::LogRequired);
+        }
+        // Un error de escritura del registro activa la cancelación: la limpieza se detiene en el siguiente punto seguro.
+        if let Some(l) = &opts.log {
+            l.cancel_on_error(progress.cancel.clone());
+        }
         // 0. Lo que cabe en la Papelera se recalcula AL EJECUTAR; si cambió, se pide confirmar otra vez ANTES de tocar nada.
         let changed: Vec<usize> = plan
             .items
@@ -371,12 +386,20 @@ impl Cleaner {
                 opts.dry_run,
                 cancel,
                 sink.as_deref(),
+                opts.log.as_deref(),
             ));
             progress.items_done.fetch_add(1, Ordering::Relaxed);
         }
 
-        // 2. Lo definitivo: el recorrido por handle.
-        if !perm.is_empty() && !cancel.load(Ordering::Relaxed) {
+        // 2. Lo definitivo: el recorrido por handle. Antes, la INTENCIÓN (los elementos de la operación) escrita y volcada: si
+        // no se puede, no se borra nada.
+        let can_delete = !perm.is_empty()
+            && !cancel.load(Ordering::Relaxed)
+            && opts.log.as_ref().is_none_or(|l| {
+                let roots: Vec<PathBuf> = perm.iter().map(|it| it.path.clone()).collect();
+                l.write_intent("delete-begin", &roots).is_ok()
+            });
+        if can_delete {
             progress.set_phase(Phase::Deleting);
             let units: Vec<Arc<Unit>> = perm
                 .iter()
@@ -391,6 +414,10 @@ impl Cleaner {
             engine::run(&units, self.threads);
             for (it, u) in perm.iter().zip(&units) {
                 let st = u.status().unwrap_or(RootStatus::Cancelled);
+                // El resultado de cada raíz, tras la intención (las entradas ya constan una a una).
+                if let Some(l) = &opts.log {
+                    l.write_note("delete-end", &format!("{} -> {:?}", it.path.display(), st));
+                }
                 report.items.push(ItemReport {
                     id: it.id,
                     category: it.category,
@@ -408,6 +435,9 @@ impl Cleaner {
                     },
                 });
                 progress.items_done.fetch_add(1, Ordering::Relaxed);
+            }
+            if let Some(l) = &opts.log {
+                l.flush();
             }
         } else {
             for it in &perm {
@@ -487,8 +517,12 @@ impl Cleaner {
                     report.permanent_bytes, report.recycled_bytes, report.freed_now, report.totals.in_use, report.totals.denied
                 ),
             );
-            l.flush();
+            // Al terminar, `sync_all` a disco (una vez; ver el módulo `log`).
+            let _ = l.sync();
         }
+        report.log_failed = opts.log.as_ref().is_some_and(|l| !l.ok());
+        // La cancelación que provoca el propio fallo del registro no es una cancelación del usuario.
+        report.cancelled = report.cancelled && !report.log_failed;
         progress.set_phase(Phase::Done);
         Ok(report)
     }
@@ -501,6 +535,7 @@ impl Cleaner {
         dry: bool,
         cancel: &Arc<AtomicBool>,
         sink: Option<&engine::EventSink>,
+        log: Option<&LogWriter>,
     ) -> BinReport {
         let mut rep = BinReport {
             requested: items.len() as u64,
@@ -530,7 +565,36 @@ impl Cleaner {
         }
         // Se purga a través de la carpeta shell de la Papelera (ver `recycle::purge_items`): la shell borra `$R` y `$I` a la
         // vez. El resultado sale de lo que la propia shell notificó por elemento (no se vuelve a enumerar la Papelera).
-        match recycle::purge_items(items, cancel) {
+        // Cada elemento consta POR SEPARADO en el registro: la intención de cada trozo antes de entregarlo a la shell y, tras
+        // él, el resultado de cada uno (purgado, error o sin aviso); los saltados por haber cambiado, también.
+        let mut observe = |step: recycle::PurgeStep<'_>| {
+            let Some(l) = log else { return };
+            match step {
+                recycle::PurgeStep::Begin(items) => {
+                    let paths: Vec<PathBuf> = items.iter().map(|i| i.original_path()).collect();
+                    // Un error aquí marca el registro y activa la cancelación: el trozo no se entrega.
+                    let _ = l.write_intent("bin-begin", &paths);
+                }
+                recycle::PurgeStep::Skipped(items) => {
+                    for i in items {
+                        l.write_bin_item(&i.original_path(), &i.id, i.size, "changed");
+                    }
+                    l.flush();
+                }
+                recycle::PurgeStep::Done(done) => {
+                    for (i, hr) in done {
+                        let out = match hr {
+                            Some(h) if *h >= 0 => "purged".to_string(),
+                            Some(h) => format!("error-0x{:08X}", *h as u32),
+                            None => "not-processed".to_string(),
+                        };
+                        l.write_bin_item(&i.original_path(), &i.id, i.size, &out);
+                    }
+                    l.flush();
+                }
+            }
+        };
+        match recycle::purge_items_observed(items, cancel, &mut observe) {
             Ok(out) => {
                 let wanted: HashSet<&OsString> = items.iter().map(|i| &i.id).collect();
                 let purged: HashSet<&OsString> = out
@@ -720,11 +784,23 @@ impl Cleaner {
                     for p in &paths {
                         crate::engine::test_hooks::before_shell(p);
                     }
-                    // Antes de entregarlas a la shell se anotan las rutas y se vuelca: tras un cierre forzoso se sabe qué
-                    // pudo moverse.
-                    if let Some(l) = &opts.log {
-                        l.write_paths("recycle-begin", &paths);
-                        l.flush();
+                    // Antes de entregarlas a la shell se anota la INTENCIÓN (la lista de rutas del lote) y se vuelca: tras un
+                    // cierre forzoso se sabe qué pudo moverse. Si no se puede dejar escrita, NO se entrega nada a la shell.
+                    if let Some(l) = &opts.log
+                        && l.write_intent("recycle-begin", &paths).is_err()
+                    {
+                        for (it, _) in &entries {
+                            emit(it, None, 0, Outcome::NotRecycled);
+                            results.insert(
+                                it.id,
+                                (
+                                    ItemStatus::Root(RootStatus::Cancelled),
+                                    StatsSnapshot::default(),
+                                ),
+                            );
+                        }
+                        drop(entries);
+                        continue;
                     }
                     let outcome = shell.recycle(&send);
                     // Un error de la shell o de COM no se pierde: consta en el registro local y en el resumen. El `E_ABORT`
