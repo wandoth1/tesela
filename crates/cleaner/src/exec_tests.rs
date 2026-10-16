@@ -2384,8 +2384,9 @@ impl RecycleShell for FakeShell {
 }
 
 /// Un plan de elementos de `Docs/<nombre>` con el tamaño dado: el archivo real mide `len` bytes y la ESTIMACIÓN aprobada es
-/// `est`. Desde A-B1 lo que se reparte es lo que mide el handle de guarda justo antes de la operación, no la estimación: `est`
-/// debe corresponderse con lo que ocupa el archivo (sin archivos enormes: los umbrales se escalan con la capacidad simulada).
+/// `est` (nunca por debajo de lo que de verdad ocupa). Desde A-B1 lo que se reparte es lo que mide el handle de guarda justo
+/// antes de la operación, no la estimación: `est` debe corresponderse con lo que ocupa el archivo (sin archivos enormes: los
+/// umbrales se escalan con la capacidad simulada).
 fn plan_de(sb: &Sandbox, c: &Cleaner, items: &[(&str, usize, u64)]) -> Plan {
     let mut b = Basket::new();
     for (name, len, _) in items {
@@ -2395,9 +2396,11 @@ fn plan_de(sb: &Sandbox, c: &Cleaner, items: &[(&str, usize, u64)]) -> Plan {
     let mut plan = approve(c, &b);
     assert_eq!(plan.items.len(), items.len(), "{:?}", plan.rejected);
     for (it, (_, _, est)) in plan.items.iter_mut().zip(items) {
-        it.estimate.bytes = *est;
-        it.estimate.logical = *est;
-        it.fit = c.fit(&it.path, *est);
+        // Nunca por debajo de lo que de verdad ocupa el archivo (A-B1: lo que crece frente a lo aprobado no se envía).
+        it.estimate.bytes = (*est).max(it.estimate.bytes);
+        it.estimate.logical = (*est).max(it.estimate.logical);
+        let size = it.estimate.bytes.max(it.estimate.logical);
+        it.fit = c.fit(&it.path, size);
         assert_eq!(it.fit, Fit::Fits);
     }
     plan
@@ -3056,14 +3059,11 @@ fn el_directorio_se_mide_justo_antes_de_su_operacion_no_al_preparar_el_trozo() {
     let mut b = Basket::new();
     b.add_path(sb.long("Docs/a.bin"), c.protection());
     b.add_path(sb.long("Docs/crece"), c.protection());
-    let mut plan = approve(&c, &b);
+    let plan = approve(&c, &b);
     assert_eq!(plan.items.len(), 2);
-    // Estimaciones coherentes con la capacidad simulada (cada uno > 10 % de 10 000 y cabe).
-    for it in &mut plan.items {
-        it.estimate.bytes = 5_000;
-        it.estimate.logical = 5_000;
-        it.fit = c.fit(&it.path, 5_000);
-        assert_eq!(it.fit, Fit::Fits);
+    // Las estimaciones son las reales (~8 KiB cada uno: más del 10 % de 10 000 y caben).
+    for it in &plan.items {
+        assert!(it.estimate.bytes > 1_000 && it.fit == Fit::Fits);
     }
     // El directorio crece cuando se va a entregar `a.bin` (después de preparar el trozo, antes de su propia operación).
     // Con una medida hecha al preparar, el directorio se habría repartido con el tamaño viejo.
@@ -3187,11 +3187,19 @@ fn un_archivo_que_encoge_se_mide_con_su_tamano_nuevo() {
     p.last = Some(50_000);
     c.fresh_size(it, &mut p, &mut st, &cancel()).unwrap();
     assert_eq!((p.size, p.last), (real, Some(real)));
-    // Y si ahora crece un byte por encima de la última medida: ya no se envía.
+    // Si crece por encima de lo APROBADO (aunque no pase de la última medida, que aquí se finge enorme): no se envía.
     fs::write(sb.path("Docs/a.bin"), vec![1u8; 30_000]).unwrap();
+    p.last = Some(u64::MAX);
     let err = c.fresh_size(it, &mut p, &mut st, &cancel()).unwrap_err();
     assert_eq!(err.0, ItemStatus::Root(crate::engine::RootStatus::Changed));
     assert_eq!(st.changed, 1);
+    // Y si pasa de la última medida sin pasar de lo aprobado (se finge una aprobación enorme): tampoco.
+    let mut big = plan.items[0].clone();
+    big.estimate.bytes = 1 << 30;
+    p.last = Some(20_480);
+    let err = c.fresh_size(&big, &mut p, &mut st, &cancel()).unwrap_err();
+    assert_eq!(err.0, ItemStatus::Root(crate::engine::RootStatus::Changed));
+    assert_eq!(st.changed, 2);
 }
 
 /// Una shell simulada cuya ocupación de la Papelera cambia entre una lectura y la siguiente (otra aplicación llenándola):
@@ -3454,9 +3462,9 @@ fn take_op_es_una_funcion_pura_con_las_reglas_del_reparto() {
 }
 
 /// M-C con la shell REAL, de forma segura: un archivo disperso de miles de GiB lógicos (no ocupa nada) entre dos pequeños.
-/// Lo que ocupa de verdad (su tamaño lógico) manda sobre la estimación: no se envía (`NoRoom`) y los pequeños llegan
-/// bien a la Papelera, cada uno en su operación. La shell real nunca ve el enorme, así que no puede eliminarlo ni
-/// expulsar nada ajeno.
+/// Lo que ocupa de verdad (su tamaño lógico) manda sobre la estimación: como pasa de lo aprobado no se envía ("cambió desde la
+/// confirmación", A-B1; antes `NoRoom`: ambas lo dejan sin tocar) y los pequeños llegan bien a la Papelera, cada uno en su
+/// operación. La shell real nunca ve el enorme, así que no puede eliminarlo ni expulsar nada ajeno.
 #[test]
 fn con_la_shell_real_un_disperso_enorme_no_se_envia_y_los_pequenos_llegan_bien() {
     let _lock = bin_lock();
@@ -3511,7 +3519,7 @@ fn con_la_shell_real_un_disperso_enorme_no_se_envia_y_los_pequenos_llegan_bien()
     assert_eq!(st("tres.txt"), ItemStatus::Recycled);
     assert_eq!(
         st("enorme.bin"),
-        ItemStatus::NotRecycled(RecycleFail::NoRoom)
+        ItemStatus::Root(crate::engine::RootStatus::Changed)
     );
     assert!(sb.path("Docs/enorme.bin").exists(), "el enorme no se tocó");
     assert!(!rep.recycle_stopped && rep.deleted_unexpectedly == 0);

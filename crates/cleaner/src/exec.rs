@@ -1277,11 +1277,14 @@ impl Cleaner {
                 return changed(st);
             }
             let fresh = m.alloc.max(m.logical);
-            // Frente a la última medida real (la de `prepare_recycle`, tomada ya después de la aprobación, y las
-            // posteriores): lo que creció entre aquella medida y ahora no se envía. El crecimiento ENTRE la aprobación y
-            // `prepare_recycle` no se rechaza (el mayor manda): ese tamaño entra en el reparto y el presupuesto de la
-            // Papelera lo comprueba contra su capacidad.
-            if p.last.is_some_and(|l| fresh > l) {
+            // Si creció frente a lo APROBADO o frente a la última medida real (la de `prepare_recycle` y las posteriores),
+            // no se envía: el reparto de la operación se decidió con un tamaño que ya no es cierto.
+            let approved = it
+                .estimate
+                .bytes
+                .max(it.estimate.logical)
+                .max(it.estimate.shared_bytes);
+            if fresh > approved || p.last.is_some_and(|l| fresh > l) {
                 return changed(st);
             }
             p.size = fresh;
