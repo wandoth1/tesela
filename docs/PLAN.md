@@ -104,7 +104,7 @@ Al terminar de limpiar **no se reescanea**: los bloques se encogen con una anima
 | Categoría | Riesgo | Destino | Versión |
 |---|---|---|---|
 | Temporales (`%TEMP%`, `Windows\Temp` si hay acceso), **solo los de más de 24 h** (`min_age` en la regla; "por qué": "Archivos temporales de hace más de un día; los recientes se dejan por si un instalador los está usando") | 🟢 | Definitivo (se saltan los archivos en uso) | MVP |
-| Caché de navegadores (Chrome, Edge, Firefox): **solo directorios concretos de caché** (Chromium: `Cache`, `Code Cache`, `GPUCache`, `Service Worker\CacheStorage` por perfil, y `ShaderCache`/`GrShaderCache`; Firefox: `cache2` y `startupCache` bajo `%LOCALAPPDATA%`). **El perfil del navegador nunca es caché**: historial, marcadores, cookies, credenciales y almacenamiento persistente jamás son candidatos | 🟢 | Definitivo | MVP |
+| Caché de navegadores (Chrome, Edge, Firefox): **solo directorios concretos de caché** (Chromium: `Cache`, `Code Cache`, `GPUCache`, `ShaderCache`/`GrShaderCache`; Firefox: `cache2` y `startupCache` bajo `%LOCALAPPDATA%`). **El perfil del navegador nunca es caché**: historial, marcadores, cookies, credenciales y almacenamiento persistente jamás son candidatos | 🟢 | Definitivo | MVP |
 | Papelera ("Vaciar") | 🟠 | Definitivo (es la acción en sí). **Alcance enumerado:** se purga solo la lista de elementos capturada al confirmar; lo que entre después no se toca y se informa | MVP |
 | `pagefile.sys`, `hiberfil.sys` (con el consejo de `powercfg /h off`) | 🔺 | — | MVP |
 | `node_modules`, `target`, `.venv`, `__pycache__`, `.gradle`, detectados por un archivo vecino (`package.json`, `Cargo.toml`, `pyvenv.cfg`…) | 🟢 | **Papelera** por defecto ("Se puede reinstalar con un comando. Va a la Papelera por si tenías cambios locales"). **Destino definitivo DIFERIDO a la v0.2:** la fase 0 midió ~2× el umbral de 10 s para 100k archivos, pero en una sola medición. En la v0.2 se repite ≥ 3 veces con un árbol realista, y se prueba **"renombrar primero"**: renombrar la carpeta a un nombre lápida hermano falla si hay archivos abiertos (cierra en seguro) y después se borra la renombrada | v0.2 |
@@ -322,6 +322,8 @@ Principio: **verificar y actuar sobre el mismo handle**, nunca "comprobar por ru
 
 ## 4. Hoja de ruta
 
+> **Vigente desde el 2026-10-16: [ROADMAP.md](ROADMAP.md)** (tesis de producto, segmento, reglas, catálogo, fase de validación de 3 meses y su métrica de decisión). La tabla de abajo queda como histórico del diseño original; lo posterior a la v0.1 lo decide ROADMAP.md.
+
 Referencia de diseño: un SSD con un volumen de ~1 M de archivos. La memoria se mide siempre como **private working set** (§3.5).
 
 | Fase | Contenido | Hito medible |
@@ -375,7 +377,7 @@ Pendientes (las tres primeras las hace el usuario):
 - [ ] Marcas registradas del nombre "Tesela" sin revisar.
 
 ## 7. Siguiente paso
-**Publicar la v0.1.1** con las correcciones de la auditoría externa (ronda 10). La v0.1.0 queda como prerelease con un aviso de problemas conocidos. Después de la primera versión estable: el repositorio pasa entero al inglés (la aplicación sigue en español e inglés) y luego la v0.2 (§4).
+**Publicar la v0.1.2** (correcciones de la segunda auditoría externa y textos honestos) y empezar la **fase de validación de 3 meses** de [ROADMAP.md](ROADMAP.md) §5: evidencia pública de seguridad, recorridos completos a partir de casos reales y un piloto sin ayuda del autor. El resto de la hoja de ruta depende de su métrica de decisión. Después de la primera versión estable, el repositorio pasa entero al inglés (la aplicación sigue en español e inglés).
 
 ## 8. Fuera del alcance (explícito)
 Limpiador de registro, "optimizar" o desfragmentar, desinstalar programas, análisis de red o nube en v1, cuentas, telemetría o anuncios, sunburst o 3D, triturado o recuperación, editor o gestor de archivos completo, reglas automáticas sin intervención del usuario.
