@@ -130,7 +130,7 @@ Al terminar de limpiar **no se reescanea**: los bloques se encogen con una anima
 - Los archivos en uso o sin permiso se saltan, se cuentan y se explican en el resumen.
 
 ### 2.8 Espacio no explicado
-- Hay un bloque gris sintético, ordenado por tamaño como un hijo más de la raíz: "**Windows y otros datos del sistema · 40 GB**", con un icono ⓘ. Se calcula como `total − libre − escaneado` (`GetDiskFreeSpaceExW`), medido al terminar.
+- Hay un bloque gris sintético, ordenado por tamaño como un hijo más de la raíz: "**Windows y otros datos del sistema · 40 GB**", con un icono ⓘ. Se calcula como `total − libre − escaneado` con magnitudes **del volumen** (`NtQueryVolumeInformationFile(FileFsFullSizeInformation)`), medido al terminar. La cuota del usuario se muestra aparte ("Disponible para tu cuenta") y nunca se mezcla en el residuo; sin la consulta y con cuota, no hay bloque.
 - Se recorta a ≥ 0 y se oculta si es menor del 1 %. Solo aparece en el escaneo de un volumen completo y se marca "aproximado".
 - Tooltip: "Incluye archivos de Windows, hibernación, puntos de restauración y carpetas que tu usuario no puede ver. Es normal y no se puede borrar desde aquí". Enlace "Ver el detalle (modo administrador)".
 - Si el hueco supera el 5 %, la barra de estado muestra "El mapa explica 360 de 400 GB. ¿Y el resto?". Aparte se indica "N carpetas sin permiso".
@@ -171,7 +171,7 @@ Al terminar de limpiar **no se reescanea**: los bloques se encogen con una anima
   - DPI PerMonitorV2.
   - Foco visible de 2 px y treemap navegable con flechas.
   - AccessKit en la lista.
-  - Se respeta "reducir animaciones" (`SPI_GETCLIENTAREAANIMATION`).
+  - Se respeta "reducir animaciones" (`SPI_GETCLIENTAREAANIMATION`), también en el progreso indeterminado y los indicadores de espera.
   - Contraste AA.
 
 ### 2.11 Persistencia
@@ -214,7 +214,7 @@ MFT ────┘   (Batch por dir)       └─ ordena hijos por tamaño ─�
   - El worker enumera el directorio y obtiene `base_id` con un `AtomicU32::fetch_add(n)`, así los subdirectorios ya tienen id antes de encolarse.
   - Envía el `Batch { base_id, entries, names }` a un hilo colector que solo hace `push`.
   - Sin `unsafe` ni arena compartida. Es un mensaje por directorio (~0,3 M por cada millón de archivos).
-- **Cola prioritaria:** un `Injector` que los workers consultan antes de robar trabajo. Contiene `%TEMP%`, `Windows\Temp`, perfiles de navegador, `$Recycle.Bin\<SID>` y Descargas.
+- **Cola prioritaria:** un `Injector` que los workers consultan antes de robar trabajo. Contiene `%TEMP%`, `Windows\Temp`, **directorios concretos de caché de los navegadores (nunca el perfil)**, `$Recycle.Bin\<SID>` y Descargas. La clasificación exacta y conservadora vive en `classify_browser_path` (`scanner/src/known.rs`) y la reutilizará el `cleaner`; los nombres de caché deben estar verificados contra el código fuente oficial de Chromium y Firefox antes de borrar nada.
   - Sus ids se reservan de antemano, **junto con la cadena de ancestros** (p. ej. `C:\Users\<usuario>\AppData\Local`), creada como nodos `INCOMPLETE`. Así "Parar y ver" nunca enseña huérfanos.
   - Cuando el recorrido general llega a uno de esos directorios, **adopta** el id existente en vez de volver a escanearlo. La comparación se hace **por `FileId`** del directorio y no por la ruta en minúsculas, porque NTFS admite carpetas que distinguen mayúsculas.
 - **Hilos:** por defecto `min(16, 2 × núcleos)`; los ociosos esperan con backoff creciente. Se ajustan midiendo el rendimiento real; `IncursSeekPenalty` es solo una pista. Observación de la fase 0 (un solo equipo de pruebas, una ejecución por valor): la mejora se satura pronto y es de varias veces frente a 1 hilo. HDD, USB y red siguen sin medir.
@@ -224,7 +224,8 @@ MFT ────┘   (Batch por dir)       └─ ordena hijos por tamaño ─�
 - **Datos de directorio del listado del padre:** el `mtime` puede ir atrasado ~1 s justo tras escribir (no sirve para un reescaneo incremental) y el tamaño propio del directorio sale 0 (va al bloque de datos del sistema).
 - **Mayúsculas:** la cola prioritaria y la búsqueda de entradas comparan nombres exactos; la comparación insensible solo es respaldo si es única.
 - **Rutas largas:** `\\?\` + `longPathAware` desde el primer commit. Los nombres se guardan en WTF-8.
-- Cancelación con un `AtomicBool`. Los errores de permiso se cuentan sin abortar.
+- Cancelación con un `AtomicBool` que nace **antes** del hilo de arranque y se consulta entre fases. Los errores de permiso se cuentan sin abortar. Los errores son tipados y la UI los traduce con Fluent.
+- La raíz pasa por la misma clasificación de nube y reparse que los descendientes; su `FileIdInfo` es opcional (si el volumen no lo soporta se sigue con el respaldo).
 - **Progreso en vivo:** contadores atómicos más acumuladores atómicos por carpeta de primer nivel.
 - **"Parar y ver":** el builder trabaja con los batches recibidos y marca `INCOMPLETE` los directorios que aún tenían tareas pendientes, e `INCOMPLETE_BELOW` en todos sus ancestros (para el "≥" de la UI). Si hay directorios incompletos el escaneo cuenta como detenido y **no se calcula el bloque de espacio no explicado**.
 - Un pánico en un hilo activa la cancelación (no se cuelga el coordinador); agotar los ids cancela y se informa.
@@ -288,6 +289,7 @@ Principio: **verificar y actuar sobre el mismo handle**, nunca "comprobar por ru
 - Algoritmo squarified de Bruls et al., lineal porque los hijos ya vienen ordenados.
 - Layout de profundidad 2 (un nivel con etiquetas y uno insinuado).
 - Caché por `(raíz, viewport, profundidad, versión del overlay)`. El hover se pinta como overlay y la detección usa una rejilla espacial.
+- **Presupuesto de celdas:** `max_rects` es único para los dos niveles y se aplica antes del primer squarify (el exceso va a un "Otros" sufijo).
 - **Dibujo:** el layout se tesela una vez en un `Mesh` que se reutiliza mientras no cambie la clave de caché. Objetivo: **p99 de CPU por frame < 8 ms**. Medido: con `Mesh`, ~1–2 ms por frame; con una `RectShape` por celda no se cumple ni con 15k celdas.
 
 ### 3.9 Manifiesto y elevación
@@ -300,7 +302,9 @@ Principio: **verificar y actuar sobre el mismo handle**, nunca "comprobar por ru
 
 ### 3.11 Calidad y distribución
 - **CI** en `windows-latest` (acciones fijadas por SHA, `timeout-minutes`, Dependabot): `fmt --check`, `clippy -D warnings`, `cargo test`, `cargo deny` (también semanal), MSRV 1.95, `cargo check` ARM64, build release y **job de privacidad** (`scripts/privacy-check.ps1 -All -GenericOnly` y sus pruebas). En local, hooks `pre-commit` y `commit-msg` con el mismo check y valores locales.
-- **Todo binario publicado se compila con `scripts/build-release.ps1`** (`--remap-path-prefix`), que además verifica que el `.exe` no contiene rutas ni nombres de la máquina.
+- **Todo binario publicado se compila con `scripts/build-release.ps1`** (`--remap-path-prefix` y **CRT estático**, `+crt-static` en `.cargo/config.toml`), que exige el conjunto exacto de ejecutables (salida JSON de Cargo), verifica que no contienen rutas ni nombres de la máquina y, con `scripts/check-pe.py`, que la tabla de imports no depende del runtime de C (`VCRUNTIME*`, `MSVCP*`, `api-ms-win-crt-*`).
+- El CI revisa además el mensaje y **todos los blobs de cada commit** del push o PR (job `privacy-history`); `privacy-check` rechaza por firma los formatos opacos o comprimidos y las rutas UNC. Las herramientas `--json` y `--screenshot` no pisan archivos sin `--overwrite`.
+- "Abrir en el Explorador" usa `SHParseDisplayName` con UTF-16 exacto + `SHOpenFolderAndSelectItems`; ninguna ruta pasa por `str`/`display()` (regla también para el `cleaner`).
 - **Tests:**
   - El builder (agregación, orden, dedup de hard links, histogramas y umbrales), el layout y las reglas, todo puro.
   - Árboles sintéticos con semilla.
@@ -415,6 +419,8 @@ Limpiador de registro, "optimizar" o desfragmentar, desinstalar programas, anál
 - **M4:** se generalizan las menciones al equipo de medición en la documentación (versión del SO y tipo de disco). No se reescribe el historial: no identifican el equipo.
 - **N2:** el bloque de espacio no explicado se ordena por tamaño; no hay fuentes de reserva de egui.
 - **Incremento 4:** CRT estático (`+crt-static`) y requisitos de MSI/SignPath añadidos a §6.
+- **Ciclo de endurecimiento** (13 commits, construcción Sonnet + auditoría Sonnet + revisión con el asesor): M1–M6, m1–m11 y N1 corregidos; exe ≈ 11,0 MiB con el CRT estático. Por decisión del usuario NO se añaden patrones genéricos de versión de Windows ni de capacidad de disco: lo que importa es la información personal (nombres de carpetas y archivos, usuario, rutas del perfil, capturas reales).
+- **Distribución:** decisión del usuario: **solo MSI** (no MSIX ni Microsoft Store). Firma con SignPath Foundation (gratis para open source) cuando el usuario la solicite; la v0.1 sale sin firmar con el aviso de SmartScreen explicado.
 
 **Ronda 6** (incremento 2 del MVP: construcción Sonnet, 2 auditorías Sonnet, verificación propia y asesor):
 - Memoria: el objetivo pasa a ~85 B por entrada en régimen (≈ 155 MiB con 1 M); **decisión del usuario**, no se recorta. En reposo con el mapa: ~68 MiB.
