@@ -5,3 +5,8 @@
 /scripts/build-release.ps1 @wandoth1
 /scripts/tests/ @wandoth1
 /deny.toml @wandoth1
+/installer/ @wandoth1
+/scripts/build-msi.ps1 @wandoth1
+/scripts/extract-ico.py @wandoth1
+/CODE_SIGNING.md @wandoth1
+/SECURITY.md @wandoth1

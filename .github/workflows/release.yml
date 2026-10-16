@@ -1,0 +1,201 @@
+name: Release
+
+# Se dispara al empujar una etiqueta `v*`. NUNCA publica nada por sí solo: crea una GitHub Release en BORRADOR (draft) con
+# el MSI, el zip portable y SHA256SUMS.txt. La publica una persona, después de verificarla (descargar, comprobar el
+# SHA-256, `gh attestation verify`, probar el MSI) con "Publish release" o `gh release edit vX.Y.Z --draft=false`.
+#
+# Diseño (dos jobs, permisos separados):
+#   build    contents: read + id-token: write + attestations: write. Comprueba etiqueta y privacidad, construye con
+#            scripts/build-msi.ps1, atesta la procedencia (SLSA) de los tres archivos y los sube como artefacto.
+#   release  SOLO este job tiene contents: write. No ejecuta código del repositorio (ni siquiera lo descarga): baja el
+#            artefacto y crea el borrador con `gh release create --draft` (sin acciones de terceros).
+#
+# Cómo se publica una versión:
+#   1. Cambia la versión en Cargo.toml ([workspace.package]) y añade su sección a CHANGELOG.md; commit y merge a main.
+#   2. git tag vX.Y.Z <commit de main> && git push origin vX.Y.Z      (la etiqueta tiene que coincidir con Cargo.toml)
+#   3. Revisa el borrador, y publícalo.
+
+on:
+  push:
+    tags: ["v*"]
+
+# Nada por defecto: cada job pide lo que necesita.
+permissions: {}
+
+env:
+  CARGO_TERM_COLOR: always
+  # Versión FIJADA de WiX (la misma que scripts/build-msi.ps1 y ci.yml; scripts/tests/wix-version.tests.ps1 lo comprueba).
+  WIX_VERSION: "5.0.2"
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      id-token: write # firma de la attestation con Sigstore (OIDC)
+      attestations: write # guardar la attestation en el repositorio
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      # Sin argumentos instala el toolchain de rust-toolchain.toml (no se fía de la autoinstalación de la primera cargo).
+      - name: Instalar el toolchain de rust-toolchain.toml
+        run: rustup toolchain install
+
+      # La etiqueta (vX.Y.Z) tiene que ser la versión de Cargo.toml, y apuntar a un commit de main.
+      - name: La etiqueta coincide con Cargo.toml y está en main
+        shell: pwsh
+        env:
+          TAG: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+        run: |
+          if ($env:TAG -notmatch '^v(\d+\.\d+\.\d+)$') { throw "la etiqueta '$env:TAG' no tiene la forma vX.Y.Z (los sufijos como -rc1 no caben en un MSI)" }
+          $tagVersion = $Matches[1]
+          $meta = cargo metadata --format-version 1 --no-deps | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'cargo metadata fallo' }
+          $versions = @($meta.packages | ForEach-Object { $_.version } | Sort-Object -Unique)
+          if ($versions.Count -ne 1 -or $versions[0] -ne $tagVersion) {
+            throw "la etiqueta dice $tagVersion y Cargo.toml dice $($versions -join ', ')"
+          }
+          git merge-base --is-ancestor $env:SHA origin/main
+          if ($LASTEXITCODE -ne 0) { throw "el commit de la etiqueta ($env:SHA) no está en main: un release sale de main" }
+          Write-Host "etiqueta $env:TAG = versión $tagVersion, en main"
+
+      # Igual que privacy-history de ci.yml: en una etiqueta, `before` son ceros y se revisa TODA la historia hasta el commit.
+      - name: privacy-check (mensajes y blobs de la historia)
+        shell: pwsh
+        env:
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
+        run: |
+          $to = (git rev-parse "$($env:PUSH_AFTER)^{commit}").Trim()
+          if ($LASTEXITCODE -ne 0) { throw "no se pudo resolver $env:PUSH_AFTER a un commit" }
+          Write-Host "rango: $env:PUSH_BEFORE .. $to"
+          ./scripts/privacy-check.ps1 -GenericOnly -From $env:PUSH_BEFORE -To $to
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: privacy-check (todo el árbol)
+        shell: pwsh
+        run: ./scripts/privacy-check.ps1 -All -GenericOnly
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Instalar WiX
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version $env:WIX_VERSION --add-source https://api.nuget.org/v3/index.json
+          if ($LASTEXITCODE -ne 0) { throw 'no se pudo instalar WiX' }
+      # build-release.ps1 (CRT estático, sin rutas de la máquina, imports PE) + MSI + zip + SHA256SUMS.txt + validación.
+      - name: Construir el MSI, el zip y las sumas de verificación
+        shell: pwsh
+        run: ./scripts/build-msi.ps1 -OutDir "$env:RUNNER_TEMP/dist"
+
+      # --- Firma con SignPath Foundation: DESACTIVADA hasta que el proyecto sea aceptado ---------------------------------
+      # Para activarla (ver CODE_SIGNING.md): 1) tras la aprobación de SignPath, crea en el repositorio los secretos
+      # SIGNPATH_API_TOKEN y SIGNPATH_ORGANIZATION_ID y la variable SIGNPATH_ENABLED=true; 2) rellena project-slug,
+      # signing-policy-slug y artifact-configuration-slug con los de SignPath; 3) quita `false &&` de los `if`;
+      # 4) la configuración de artefacto de SignPath debe firmar tesela.exe y tesela-scan.exe Y el MSI (lo ideal es firmar
+      # primero los .exe, reconstruir el MSI con ellos y firmar el MSI: ver CODE_SIGNING.md). Los pasos de abajo firman el
+      # MSI ya construido, y vuelven a calcular SHA256SUMS.txt DESPUÉS de firmar (la attestation de más abajo cubre lo firmado).
+      # No hay ningún secreto en este archivo.
+      - name: SignPath - subir el MSI sin firmar
+        if: ${{ false && vars.SIGNPATH_ENABLED == 'true' }}
+        id: signpath-unsigned
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unsigned-msi
+          path: ${{ runner.temp }}/dist/*.msi
+          if-no-files-found: error
+      - name: SignPath - pedir la firma
+        if: ${{ false && vars.SIGNPATH_ENABLED == 'true' }}
+        uses: signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: tesela
+          signing-policy-slug: release-signing
+          artifact-configuration-slug: msi
+          github-artifact-id: ${{ steps.signpath-unsigned.outputs.artifact-id }}
+          wait-for-completion-timeout-in-seconds: 3600
+          output-artifact-directory: ${{ runner.temp }}/signed
+      - name: SignPath - sustituir el MSI y recalcular las sumas
+        if: ${{ false && vars.SIGNPATH_ENABLED == 'true' }}
+        shell: pwsh
+        run: |
+          $dist = Join-Path $env:RUNNER_TEMP 'dist'
+          $signed = @(Get-ChildItem -LiteralPath (Join-Path $env:RUNNER_TEMP 'signed') -Filter '*.msi')
+          if ($signed.Count -ne 1) { throw 'SignPath no devolvio exactamente un MSI' }
+          Copy-Item -LiteralPath $signed[0].FullName -Destination (Join-Path $dist $signed[0].Name) -Force
+          $lines = Get-ChildItem -LiteralPath $dist -File | Where-Object { $_.Name -ne 'SHA256SUMS.txt' } | Sort-Object Name |
+            ForEach-Object { '{0}  {1}' -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.Name }
+          [System.IO.File]::WriteAllText((Join-Path $dist 'SHA256SUMS.txt'), (($lines -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+
+      # Procedencia (SLSA) de lo que se publica: `gh attestation verify <archivo> --repo wandoth1/tesela`.
+      - name: Attestation de procedencia
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            ${{ runner.temp }}/dist/*.msi
+            ${{ runner.temp }}/dist/*.zip
+            ${{ runner.temp }}/dist/SHA256SUMS.txt
+
+      # Notas de la release: la sección de la versión en CHANGELOG.md, y cómo verificarla.
+      - name: Notas de la release
+        shell: pwsh
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          $version = $env:TAG.Substring(1)
+          $lines = Get-Content -LiteralPath CHANGELOG.md -Encoding utf8
+          $start = -1
+          for ($i = 0; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match ('^##\s+\[?' + [regex]::Escape($version) + '\]?(\s|$)')) { $start = $i + 1; break }
+          }
+          if ($start -lt 0) { throw "CHANGELOG.md no tiene una seccion '## [$version]'" }
+          $body = New-Object System.Collections.Generic.List[string]
+          for ($i = $start; $i -lt $lines.Count -and $lines[$i] -notmatch '^##\s'; $i++) { $body.Add($lines[$i]) }
+          $text = ($body -join "`n").Trim()
+          if (-not $text) { throw "la seccion $version de CHANGELOG.md esta vacia" }
+          $sums = (Get-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'dist/SHA256SUMS.txt') -Raw).TrimEnd()
+          $notes = @(
+            $text, '',
+            '## Verificar la descarga', '',
+            '```', $sums, '```', '',
+            "``gh attestation verify <archivo> --repo wandoth1/tesela`` comprueba la procedencia del build. Esta versión **no está firmada** todavía: Windows SmartScreen puede avisar (ver el README, sección Instalación).")
+          [System.IO.File]::WriteAllText((Join-Path $env:RUNNER_TEMP 'dist/RELEASE-NOTES.md'), (($notes -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-files
+          path: |
+            ${{ runner.temp }}/dist/*.msi
+            ${{ runner.temp }}/dist/*.zip
+            ${{ runner.temp }}/dist/SHA256SUMS.txt
+            ${{ runner.temp }}/dist/RELEASE-NOTES.md
+          if-no-files-found: error
+          retention-days: 14
+
+  # SOLO este job puede escribir en el repositorio. No hace checkout ni ejecuta código del repositorio.
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-files
+          path: release-files
+      - name: Crear la GitHub Release en BORRADOR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          cd release-files
+          ls -la
+          gh release create "$TAG" --repo "$REPO" --draft --verify-tag \
+            --title "Tesela ${TAG#v}" --notes-file RELEASE-NOTES.md \
+            ./*.msi ./*.zip ./SHA256SUMS.txt

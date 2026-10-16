@@ -17,6 +17,8 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
+  # Version FIJADA de WiX (la misma que scripts/build-msi.ps1 y release.yml; scripts/tests/wix-version.tests.ps1 lo comprueba).
+  WIX_VERSION: "5.0.2"
 
 # Las acciones van fijadas por SHA (el tag, en el comentario); Dependabot propone las actualizaciones.
 jobs:
@@ -40,6 +42,10 @@ jobs:
       - name: pruebas de leak-scan (valores locales en los binarios)
         shell: pwsh
         run: ./scripts/tests/leak-scan.tests.ps1
+      # La version de WiX tiene que ser la misma en build-msi.ps1, ci.yml y release.yml; el UpgradeCode, el mismo en el .wxs y en el script.
+      - name: pruebas de la version de WiX y del UpgradeCode
+        shell: pwsh
+        run: ./scripts/tests/wix-version.tests.ps1
       - name: pruebas de privacy-check (pwsh)
         shell: pwsh
         run: ./scripts/tests/privacy-check.tests.ps1
@@ -199,3 +205,28 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: cargo check (aarch64-pc-windows-msvc)
         run: cargo check --workspace --all-targets --target aarch64-pc-windows-msvc
+
+  # Construye el MSI y el zip portable (sin publicar nada) para detectar roturas del empaquetado en cada PR y en main.
+  # scripts/build-msi.ps1 vuelve a compilar el release con build-release.ps1 (LTO completo) y valida el paquete.
+  msi:
+    if: github.event_name != 'schedule' && (github.event_name != 'push' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Sin argumentos instala el toolchain de rust-toolchain.toml (no se fía de la autoinstalación de la primera cargo).
+      - name: Instalar el toolchain de rust-toolchain.toml
+        run: rustup toolchain install
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Instalar WiX
+        shell: pwsh
+        run: |
+          dotnet tool install --global wix --version $env:WIX_VERSION --add-source https://api.nuget.org/v3/index.json
+          if ($LASTEXITCODE -ne 0) { throw 'no se pudo instalar WiX' }
+      - name: MSI y zip portable
+        shell: pwsh
+        run: ./scripts/build-msi.ps1 -OutDir "$env:RUNNER_TEMP/dist"
+      # El MSI no se instala en el runner: el ciclo de instalar, actualizar, reparar y desinstalar se prueba en un equipo de
+      # escritorio (docs de la v0.1). No se sube ningun artefacto.
