@@ -176,7 +176,9 @@ pub enum ItemStatus {
     WouldRecycle,
     /// No se envió.
     NotRecycled(RecycleFail),
-    /// Desapareció sin llegar a la Papelera (la shell lo eliminó definitivamente: no cabía).
+    /// Desapareció sin llegar a la Papelera (la shell lo eliminó definitivamente: no cabía) o, en un DIRECTORIO, su contenido
+    /// ya no es el de justo antes del envío (una medida completa con otra huella: perdió una parte, o cambió, por ejemplo
+    /// porque otro proceso escribía dentro). Para el directorio no se afirma el borrado: se afirma la diferencia (H2).
     DeletedUnexpectedly,
     /// Se movió a la Papelera un objeto DISTINTO del aprobado (alguien lo sustituyó entre la comprobación y la shell).
     /// Está en la Papelera: se puede restaurar.
@@ -303,7 +305,8 @@ pub struct Report {
 /// Por qué se detuvo el envío a la Papelera (corte de seguridad).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StopReason {
-    /// La shell eliminó definitivamente un elemento (no cabía en la Papelera).
+    /// La shell eliminó definitivamente un elemento (no cabía en la Papelera) o el contenido de un directorio ya no es el de
+    /// antes del envío (H2: puede haber cambiado sin que se haya perdido nada).
     DeletedUnexpectedly,
     /// No se pudo comprobar qué pasó con un elemento (la shell no dijo dónde quedó, o no se pudo abrir).
     Unverified,
@@ -908,22 +911,26 @@ impl Cleaner {
                     // A2-B1: un DIRECTORIO va SIEMPRE solo en su operación. Un recorrido tarda; con varios candidatos en la
                     // misma operación, lo que ya estaba medido podía crecer mientras se medían los demás y llegar a la shell
                     // con un tamaño que ya no era cierto (`PreDeleteItem` comprueba la identidad, no el tamaño). Solo, el
-                    // directorio se mide y se comprueba el presupuesto con la ocupación de ese instante, y se entrega sin
-                    // nada de por medio salvo la línea de intención del registro (§3.7.13).
+                    // directorio se mide y se entrega sin nada de por medio salvo la línea de intención del registro
+                    // (§3.7.13). H4: la ocupación de la Papelera (`bin_room`, de milisegundos y creciente con la Papelera) se
+                    // lee ANTES del recorrido, no después: así la ventana medida-entrega solo contiene la comparación pura
+                    // `take_op`. La ocupación puede tener, como mucho, la antigüedad del recorrido (del orden de 0,15 s) y la
+                    // cambian terceros mucho menos que el contenido de una carpeta.
                     let entries: Vec<(&PlanItem, Pending)> = if first_is_dir {
                         queue.pop_front();
                         let Some((it, mut p)) = slots[first].take() else {
                             continue;
                         };
+                        let room = vol
+                            .as_deref()
+                            .map_or(BinRoom::UNKNOWN, |r| shell.bin_room(r));
                         let mut st = StatsSnapshot::default();
                         if let Err((status, o)) = self.fresh_size(it, &mut p, &mut st, cancel) {
                             emit(it, None, 0, o);
                             results.insert(it.id, (status, st));
                             continue;
                         }
-                        let room = vol
-                            .as_deref()
-                            .map_or(BinRoom::UNKNOWN, |r| shell.bin_room(r));
+                        // Con la medida recién hecha y la ocupación leída antes de medirla.
                         if let Take::NoRoom = take_op(&[p.size], room) {
                             // No hay sitio ahora: enviarlo haría que la shell lo elimine o expulse lo que ya hay en la
                             // Papelera. No se toca (el handle de guarda se suelta al salir de este bloque).
@@ -1190,6 +1197,10 @@ impl Cleaner {
                     }
                     // Un veto (o cualquier otro corte del receptor) detiene también lo que queda por enviar.
                     if outcome.sink_aborted && !report.recycle_stopped {
+                        // H5 (decisión conservadora, documentada en PLAN): un solo fallo de un ARCHIVO con pendientes en su lote
+                        // detiene TODO el envío, aunque en un archivo no pueda haber pérdida parcial. La alternativa (reencolar
+                        // los pendientes en otra operación) se descartó por simplicidad: el caso es raro, porque tras preparar
+                        // el lote la guarda impide bloquear un archivo desde fuera.
                         // A2-M1: si el corte lo causó solo el FALLO de un resultado (ni veto ni pérdida: esos ya pararon el
                         // envío arriba), cancela lo pendiente del MISMO lote (queda como `Stopped`, intacto y comprobado) y
                         // solo entonces se detiene todo lo demás. Si el fallo fue lo último del lote (siempre, para un
@@ -1336,8 +1347,8 @@ impl Cleaner {
             g
         };
         // Lo que ocupa de verdad ahora frente a lo medido al aprobar. Un directorio NO se vuelve a medir aquí (un trozo son
-        // hasta 32 elementos y entre este punto y la operación que lo incluye pasa tiempo): se mide JUSTO ANTES de la
-        // operación, en `fresh_size` (H6.2). Mientras tanto vale lo aprobado.
+        // hasta 32 elementos y entre este punto y su turno pasa tiempo): se mide JUSTO ANTES de entregarlo, solo en su
+        // operación, en `fresh_size` (H6.2, A2-B1). Mientras tanto vale lo aprobado.
         let estimate = it
             .estimate
             .bytes
@@ -1383,9 +1394,10 @@ impl Cleaner {
         }
     }
 
-    /// B2 + H6.2 + A-B1: lo que ocupa un elemento pudo CRECER desde la aprobación, y también mientras esperaba su turno
-    /// (una operación de la shell puede tardar). Se vuelve a medir JUSTO ANTES de la operación que lo incluye, no al
-    /// preparar el trozo entero y no una sola vez:
+    /// B2 + H6.2 + A-B1 + A2-B1: lo que ocupa un elemento pudo CRECER desde la aprobación, y también mientras esperaba su
+    /// turno (una operación de la shell puede tardar). Se vuelve a medir JUSTO ANTES de entregarlo (un directorio, solo en su
+    /// operación; un archivo, en su lote, donde además `PreDeleteItem` lo mide otra vez), no al preparar el trozo entero y no
+    /// una sola vez:
     /// * un ARCHIVO, por su handle de guarda (`FileStandardInfo`: tamaño en disco y lógico), sin volver a abrir la ruta, y
     ///   comprobando de paso que sigue siendo el mismo objeto (identidad, enlaces, no pendiente de borrar);
     /// * un DIRECTORIO, con el mismo recorrido (relativo, sin entrar en reparse points) y solo si la medida es COMPLETA

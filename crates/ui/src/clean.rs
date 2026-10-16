@@ -1521,12 +1521,28 @@ mod summary_tests {
             assert!(en.to_lowercase().contains("could not be"), "{key}: {en}");
             assert!(!en.to_lowercase().contains("delete"), "{key}: {en}");
         }
-        // Y la pérdida confirmada sí lo dice, en su propia línea.
+        // Y la línea del contador y la del corte dicen lo mismo, sin afirmar el borrado de un directorio cuyo contenido solo
+        // cambió (H2): "se eliminó ... o su contenido cambió o perdió una parte", y mandan al registro y a la Papelera.
+        for key in ["sum-unexpected", "sum-recycle-stopped"] {
+            let es = block(include_str!("../i18n/es.ftl"), key);
+            let en = block(include_str!("../i18n/en.ftl"), key);
+            assert!(
+                es.contains("eliminó") || es.contains("eliminaron"),
+                "{key}: {es}"
+            );
+            assert!(es.contains("cambió"), "{key}: {es}");
+            assert!(
+                en.contains("deleted permanently") || en.contains("permanently deleted"),
+                "{key}: {en}"
+            );
+            assert!(en.contains("changed"), "{key}: {en}");
+        }
         let es = block(include_str!("../i18n/es.ftl"), "sum-unexpected");
-        assert!(
-            es.contains("se eliminó") || es.contains("se eliminaron"),
-            "{es}"
-        );
+        let en = block(include_str!("../i18n/en.ftl"), "sum-unexpected");
+        assert!(es.contains("registro") && es.contains("Papelera"), "{es}");
+        assert!(en.contains("log") && en.contains("Recycle Bin"), "{en}");
+        // Y el texto no promete el borrado en seco: nunca una frase como "se eliminó definitivamente (entero".
+        assert!(!es.contains("definitivamente (entero"), "{es}");
     }
 
     /// E3: la nota de `hiberfil.sys` dice lo que hay que saber antes de tocarlo: que hace falta un símbolo del sistema como
