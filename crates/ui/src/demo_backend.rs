@@ -214,6 +214,7 @@ impl DemoBackend {
                 path: path.to_path_buf(),
                 approved: DemoBackend::identity(node),
                 approved_tag: 0,
+                approved_links: 1,
                 is_dir: n.is_dir(),
             },
             min_age: Duration::ZERO,

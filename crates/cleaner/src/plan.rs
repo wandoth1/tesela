@@ -635,6 +635,7 @@ impl Cleaner {
                 path: canon.clone(),
                 approved: m.identity,
                 approved_tag: if cloud_file { m.reparse_tag } else { 0 },
+                approved_links: m.links,
                 is_dir: m.is_dir,
             },
             min_age: Duration::ZERO,

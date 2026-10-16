@@ -876,6 +876,7 @@ impl Cleaner {
             path,
             approved,
             approved_tag,
+            approved_links,
             is_dir,
         } = &it.spec
         else {
@@ -898,7 +899,12 @@ impl Cleaner {
         };
         let reparse_ok = !m.is_reparse()
             || (!m.is_dir && m.reparse_tag == *approved_tag && sys::is_cloud_tag(m.reparse_tag));
-        if m.identity != *approved || m.is_dir != *is_dir || !reparse_ok {
+        // Misma identidad pero otro número de enlaces: alguien añadió o quitó nombres desde la confirmación.
+        if m.identity != *approved
+            || m.is_dir != *is_dir
+            || !reparse_ok
+            || m.links != *approved_links
+        {
             st.changed += 1;
             return Prepared::Rejected(ItemStatus::Root(RootStatus::Changed), Outcome::Changed);
         }
@@ -927,7 +933,10 @@ impl Cleaner {
                 Err(c) => return map_open_error(c, st),
             };
             let same = sys::meta(&g).is_ok_and(|m2| {
-                m2.identity == *approved && !m2.is_dir && m2.reparse_tag == m.reparse_tag
+                m2.identity == *approved
+                    && !m2.is_dir
+                    && m2.reparse_tag == m.reparse_tag
+                    && m2.links == *approved_links
             }) && sys::final_path(&g).is_ok_and(|p| PathKey::new(&p) == key);
             if !same {
                 st.changed += 1;

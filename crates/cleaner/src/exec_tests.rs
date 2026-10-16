@@ -1459,6 +1459,67 @@ fn un_enlace_duro_sustituto_ya_no_da_un_recycled_falso() {
     assert_eq!(ids(), before);
 }
 
+// ---- m1: el número de enlaces aprobado es EXACTO ------------------------------------------------------------------------
+
+/// m1: se aprueba un archivo con 1 enlace y, antes de ejecutar, alguien le añade un segundo nombre (mismo objeto, otra
+/// ruta). Con la misma identidad, antes pasaba; ahora el número de enlaces aprobado es exacto y se rechaza ("cambió desde la
+/// confirmación"), tanto con destino Papelera como definitivo. Ningún nombre se toca.
+#[test]
+fn un_enlace_duro_anadido_tras_la_aprobacion_se_rechaza() {
+    for destination in [Destination::Recycle, Destination::Permanent] {
+        let sb = Sandbox::new();
+        let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+        let c = cleaner_for(&sb).with_shell(fake.clone());
+        sb.write("Docs/x.bin", 6_000);
+        let mut b = Basket::new();
+        b.add_path(sb.long("Docs/x.bin"), c.protection());
+        let mut plan = approve(&c, &b);
+        assert_eq!(plan.items.len(), 1, "{:?}", plan.rejected);
+        assert!(!plan.items[0].hard_linked);
+        plan.items[0].destination = destination;
+        // Después de aprobar: un segundo nombre para el mismo objeto.
+        sb.hard_link("Docs/x.bin", "Docs/x-otro-nombre.bin");
+        let rep = exec(&c, &plan, false, false, None).unwrap();
+        assert_eq!(
+            rep.items[0].status,
+            ItemStatus::Root(crate::engine::RootStatus::Changed),
+            "{destination:?}"
+        );
+        assert!(rep.totals.changed >= 1, "{destination:?}");
+        assert!(rep.items[0].removed.is_empty());
+        assert!(sb.path("Docs/x.bin").exists() && sb.path("Docs/x-otro-nombre.bin").exists());
+        assert!(fake.names().is_empty(), "no llegó a la shell");
+    }
+}
+
+/// m1: lo mismo al revés (se aprueba con 2 enlaces y se quita uno) se rechaza; sin cambios, el elemento con 2 enlaces se
+/// envía con normalidad.
+#[test]
+fn quitar_un_enlace_duro_tras_la_aprobacion_tambien_se_rechaza() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    sb.write("Docs/x.bin", 6_000);
+    sb.hard_link("Docs/x.bin", "Docs/y.bin");
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/x.bin"), c.protection());
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 1);
+    assert!(plan.items[0].hard_linked);
+    // Sin cambios: se envía.
+    let rep_ok = exec(&c, &plan, true, false, None).unwrap();
+    assert_eq!(rep_ok.items[0].status, ItemStatus::WouldRecycle);
+    // Se quita el otro nombre: el número de enlaces ya no es el aprobado.
+    fs::remove_file(sb.path("Docs/y.bin")).unwrap();
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    assert_eq!(
+        rep.items[0].status,
+        ItemStatus::Root(crate::engine::RootStatus::Changed)
+    );
+    assert!(sb.path("Docs/x.bin").exists());
+    assert!(fake.names().is_empty());
+}
+
 // ---- Reparto en operaciones y corte de seguridad (M-C), con una shell SIMULADA ----------------------------------------
 
 /// Una shell simulada: "recicla" moviendo a una carpeta del sandbox y, si en la operación hay un elemento cuyo nombre
