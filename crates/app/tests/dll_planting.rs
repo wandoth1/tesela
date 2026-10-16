@@ -52,6 +52,49 @@ fn archivos_con_nombre_de_dll_junto_al_exe_no_impiden_arrancar() {
     assert!(text.contains("tesela "), "{text}");
 }
 
+/// ¿Abre la ventana y pinta? `--demo --bench-hover 1` imprime los frames medidos; si no llega a pintar, no hay cifras. Se
+/// reintenta porque la medición es intermitente (ventana sin pintar al arrancar) también sin ninguna DLL falsa.
+fn paints(exe: &std::path::Path) -> bool {
+    (0..3).any(|_| {
+        let out = Command::new(exe)
+            .args(["--demo", "--bench-hover", "1"])
+            .output()
+            .unwrap();
+        let text = String::from_utf8_lossy(&out.stderr).to_string()
+            + &String::from_utf8_lossy(&out.stdout);
+        out.status.success() && text.contains("bench-hover:") && text.contains(" frames ")
+    })
+}
+
+/// Con archivos vacíos con nombre de DLL junto al `.exe` (`d3d12`, `dcomp`, `d3dcompiler_47`, `dxcompiler`, `dxil`... las que
+/// `wgpu` carga POR NOMBRE al abrir la ventana), el programa abre y pinta igual: se cargan las de `System32`. Es la prueba de
+/// `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)`: con `LOAD_LIBRARY_SEARCH_DEFAULT_DIRS` (que incluye la carpeta de
+/// la aplicación) o sin la llamada, `wgpu` cargaría el archivo vacío y no podría crear la superficie. (`--version` no sirve: sale
+/// antes de que nada cargue por nombre.) Sin escritorio gráfico o sin DX12 el CONTROL (sin archivos falsos) tampoco pinta: entonces
+/// no hay nada que comparar y la prueba se omite.
+#[test]
+fn con_dll_falsas_junto_al_exe_la_ventana_abre_y_pinta() {
+    let control = Tmp(std::env::temp_dir().join(format!("tesela-test-{}", uuid::Uuid::new_v4())));
+    std::fs::create_dir(&control.0).unwrap();
+    let control_exe = control.0.join("tesela-control.exe");
+    std::fs::copy(env!("CARGO_BIN_EXE_tesela"), &control_exe).unwrap();
+    if !paints(&control_exe) {
+        eprintln!("sin ventana que pinte en este entorno (el control tampoco): se omite");
+        return;
+    }
+    let planted = Tmp(std::env::temp_dir().join(format!("tesela-test-{}", uuid::Uuid::new_v4())));
+    std::fs::create_dir(&planted.0).unwrap();
+    let planted_exe = planted.0.join("tesela-copia.exe");
+    std::fs::copy(env!("CARGO_BIN_EXE_tesela"), &planted_exe).unwrap();
+    for name in PLANTED {
+        std::fs::write(planted.0.join(format!("{name}.dll")), b"").unwrap();
+    }
+    assert!(
+        paints(&planted_exe),
+        "con archivos vacíos con nombre de DLL junto al .exe la ventana no abre o no pinta: se cargó algo de su carpeta"
+    );
+}
+
 fn u16_at(b: &[u8], o: usize) -> usize {
     u16::from_le_bytes(b[o..o + 2].try_into().unwrap()) as usize
 }

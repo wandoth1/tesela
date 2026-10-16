@@ -50,28 +50,37 @@ mod tests {
         }
     }
 
-    /// Hijo de la prueba: con el directorio actual en una carpeta que contiene `PROBE`, comprueba que SIN el
-    /// endurecimiento se carga por nombre y CON él no. (El directorio actual forma parte del orden predeterminado.)
+    /// Hijo de la prueba (una COPIA del ejecutable de pruebas dentro de una carpeta temporal que también contiene `PROBE`: esa
+    /// es "la carpeta de la aplicación"): SIN el endurecimiento la DLL se carga por nombre desde ahí y CON él no. Así se
+    /// distingue `LOAD_LIBRARY_SEARCH_SYSTEM32` de `LOAD_LIBRARY_SEARCH_DEFAULT_DIRS`, que SÍ incluye la carpeta de la aplicación.
     #[test]
     fn hijo_busqueda_restringida() {
-        let Some(dir) = std::env::var_os("TESELA_DLL_PROBE_DIR") else {
+        if std::env::var_os("TESELA_DLL_PROBE_CHILD").is_none() {
             return; // solo lo lanza `la_busqueda_de_dll_se_limita_a_system32`
-        };
-        std::env::set_current_dir(dir).unwrap();
+        }
+        let exe_dir = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .to_path_buf();
+        assert!(
+            exe_dir.join(PROBE).exists(),
+            "la DLL de prueba debe estar junto al ejecutable hijo"
+        );
         assert!(
             load_probe_by_name(),
-            "sin el endurecimiento la DLL de la carpeta actual se encuentra por nombre (la prueba no detectaría nada)"
+            "sin el endurecimiento la DLL de la carpeta de la aplicación se encuentra por nombre (la prueba no detectaría nada)"
         );
         assert!(restrict_dll_search());
         assert!(
             !load_probe_by_name(),
-            "con el endurecimiento una DLL de fuera de System32 NO se carga por nombre"
+            "con el endurecimiento una DLL de la carpeta de la aplicación NO se carga por nombre"
         );
     }
 
     /// La prueba real corre en un proceso hijo: `SetDefaultDllDirectories` es del proceso entero y no debe cambiar las
-    /// cargas de los demás tests. La DLL de prueba es una copia de una DLL legítima del sistema con otro nombre (no ejecuta
-    /// nada propio) dentro de una carpeta temporal que se borra.
+    /// cargas de los demás tests. El hijo es una copia de este ejecutable de pruebas en una carpeta temporal, con al lado una
+    /// copia de una DLL legítima del sistema con otro nombre (no ejecuta nada propio); la carpeta se borra al acabar.
     #[test]
     fn la_busqueda_de_dll_se_limita_a_system32() {
         let sys = std::env::var_os("SystemRoot").map(std::path::PathBuf::from);
@@ -82,13 +91,15 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("tesela-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir(&dir).unwrap();
         std::fs::copy(&src, dir.join(PROBE)).unwrap();
-        let out = std::process::Command::new(std::env::current_exe().unwrap())
+        let child = dir.join("tesela-hijo.exe");
+        std::fs::copy(std::env::current_exe().unwrap(), &child).unwrap();
+        let out = std::process::Command::new(&child)
             .args([
                 "--exact",
                 "dll_hardening::tests::hijo_busqueda_restringida",
                 "--nocapture",
             ])
-            .env("TESELA_DLL_PROBE_DIR", &dir)
+            .env("TESELA_DLL_PROBE_CHILD", "1")
             .output()
             .unwrap();
         let _ = std::fs::remove_dir_all(&dir);
