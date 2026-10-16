@@ -124,7 +124,7 @@ fn parsing_name(path: &Path) -> Vec<u16> {
 pub struct BinItem {
     /// Nombre de análisis absoluto en la Papelera (el identificador estable del elemento).
     pub id: OsString,
-    /// Nombre con el que se ve en la Papelera (el original, o el de la lápida).
+    /// Nombre con el que se ve en la Papelera (el original; la shell puede ocultar la extensión).
     pub name: OsString,
     /// Carpeta de la que se borró.
     pub original_parent: PathBuf,
@@ -610,9 +610,11 @@ fn parse_meta(b: &[u8]) -> Option<MetaInfo> {
         return None;
     }
     let units: Vec<u16> = raw
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .take(max_units)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .map(|c| u16::from_le_bytes(*c))
         .take_while(|&u| u != 0)
         .collect();
     if units.is_empty() {

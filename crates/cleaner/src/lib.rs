@@ -7,7 +7,8 @@
 //!    protegido, mide con el mismo recorrido que borrará y decide si cabe en la Papelera.
 //! 3. [`exec`] la EJECUTA: primero vaciar la Papelera (lista enumerada al confirmar), después borrar lo definitivo
 //!    ([`engine`]: apertura relativa a handles, exclusiva, `FileDispositionInfoEx` por el mismo handle) y mover a la Papelera
-//!    (lápida renombrada por handle + `IFileOperation` + verificación por elemento).
+//!    (comprobación previa por handle, `IFileOperation` por la ruta original con un receptor de eventos propio y
+//!    verificación por IDENTIDAD de lo que llegó a la Papelera; sin lápidas).
 //!
 //! Todo `unsafe` está en [`sys`], [`recycle`], [`volume`] y [`process`], cada llamada con su `// SAFETY:` y un test.
 #![cfg(windows)]

@@ -36,11 +36,11 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
     FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX, FILE_FLAG_BACKUP_SEMANTICS,
     FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_EXTD_DIR_INFO, FILE_ID_INFO, FILE_LIST_DIRECTORY,
-    FILE_NAME_NORMALIZED, FILE_READ_ATTRIBUTES, FILE_RENAME_INFO, FILE_SHARE_DELETE,
-    FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_STANDARD_INFO, FileAttributeTagInfo, FileBasicInfo,
-    FileDispositionInfo, FileDispositionInfoEx, FileIdExtdDirectoryInfo, FileIdInfo,
-    FileRenameInfo, FileStandardInfo, GetFileInformationByHandleEx, GetFinalPathNameByHandleW,
-    OPEN_EXISTING, SetFileInformationByHandle, VOLUME_NAME_DOS,
+    FILE_NAME_NORMALIZED, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+    FILE_SHARE_WRITE, FILE_STANDARD_INFO, FileAttributeTagInfo, FileBasicInfo, FileDispositionInfo,
+    FileDispositionInfoEx, FileIdExtdDirectoryInfo, FileIdInfo, FileStandardInfo,
+    GetFileInformationByHandleEx, GetFinalPathNameByHandleW, OPEN_EXISTING,
+    SetFileInformationByHandle, VOLUME_NAME_DOS,
 };
 use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 
@@ -316,23 +316,8 @@ pub fn open_child_dir_for_listing(parent: &Handle, name: &[u16]) -> Result<Handl
     )
 }
 
-/// Abre un hijo con acceso `DELETE` y compartiendo todo, para renombrarlo por el handle (la Papelera) o borrar un
-/// directorio entero. La identidad se verifica después con [`meta`].
-pub fn open_child_for_rename(
-    parent: &Handle,
-    name: &[u16],
-    expect: Expect,
-) -> Result<Handle, Win32> {
-    open_rel(
-        parent,
-        name,
-        DELETE | FILE_READ_ATTRIBUTES,
-        FILE_SHARE_ALL,
-        expect,
-    )
-}
-
-/// Abre por ruta con acceso `DELETE` y compartiendo todo (el elemento de la cesta que se va a renombrar por el handle).
+/// Abre por ruta con acceso `DELETE` y compartiendo todo: comprobación previa de un elemento que va a la Papelera (se
+/// captura la identidad y se SUELTA el handle antes de entregar la ruta a la shell).
 pub fn open_path_for_rename(path: &Path) -> Result<Handle, Win32> {
     open_path(path, DELETE | FILE_READ_ATTRIBUTES, FILE_SHARE_ALL)
 }
@@ -578,56 +563,6 @@ pub fn delete_on_handle(h: &Handle) -> Result<(), Win32> {
     if ok == 0 { Err(last_error()) } else { Ok(()) }
 }
 
-/// Renombra el objeto abierto (acceso `DELETE`) a `new_name` en el MISMO directorio, por este handle y sin
-/// reemplazar nada. `new_name` es un nombre simple, sin separadores. Falla en seguro si algo del interior está abierto.
-///
-/// El origen es el handle (no se resuelve ninguna ruta para encontrarlo). El destino se pasa como ruta completa
-/// (Windows exige una ruta completa en `FILE_RENAME_INFO` cuando no hay `RootDirectory`; con un nombre suelto lo
-/// interpreta respecto al directorio de trabajo del proceso y falla con `ERROR_NOT_SAME_DEVICE`). Se construye con la
-/// ruta final del propio handle, de modo que el nombre nuevo cae junto al objeto, esté donde esté ahora. Devuelve la
-/// ruta final del objeto TRAS renombrar (la que se entrega a la Papelera), leída del handle.
-pub fn rename_on_handle(h: &Handle, new_name: &[u16]) -> Result<PathBuf, Win32> {
-    if new_name.is_empty()
-        || new_name
-            .iter()
-            .any(|&c| c == b'\\' as u16 || c == b'/' as u16 || c == 0)
-    {
-        return Err(ERROR_INVALID_PARAMETER);
-    }
-    let cur = final_path(h)?;
-    let Some(parent) = cur.parent() else {
-        return Err(ERROR_INVALID_PARAMETER);
-    };
-    let mut target: Vec<u16> = wide_long(parent);
-    target.pop(); // el NUL de `wide_long`
-    target.push(b'\\' as u16);
-    target.extend_from_slice(new_name);
-    // FILE_RENAME_INFO lleva el nombre inline (`FileName: [u16; 1]` es el primer elemento): se reserva un búfer alineado
-    // a 8 con el tamaño de la cabecera más el nombre.
-    let hdr = offset_of!(FILE_RENAME_INFO, FileName);
-    let total = hdr + target.len() * 2 + 2;
-    let mut buf = vec![0u64; total.div_ceil(8)];
-    let base = buf.as_mut_ptr() as *mut u8;
-    // SAFETY: `buf` tiene al menos `total` bytes alineados a 8, así que la cabecera cabe y está alineada; los campos
-    // se escriben con `write_unaligned`/punteros calculados dentro del búfer. `ReplaceIfExists` (primer campo de la
-    // unión) queda a 0 = falso y `RootDirectory` queda nulo (el nombre es una ruta completa).
-    unsafe {
-        let len_ptr = base.add(offset_of!(FILE_RENAME_INFO, FileNameLength)) as *mut u32;
-        len_ptr.write_unaligned((target.len() * 2) as u32);
-        let name_ptr = base.add(hdr) as *mut u16;
-        std::ptr::copy_nonoverlapping(target.as_ptr(), name_ptr, target.len());
-    }
-    // SAFETY: `h.0` es un handle válido abierto con DELETE; `base` apunta a una FILE_RENAME_INFO completa dentro de
-    // `buf`, y se pasa su tamaño exacto (`total`, que cabe en `buf`).
-    let ok = unsafe {
-        SetFileInformationByHandle(h.0, FileRenameInfo, base as *const c_void, total as u32)
-    };
-    if ok == 0 {
-        return Err(last_error());
-    }
-    final_path(h)
-}
-
 /// SOLO PARA PRUEBAS: fija creación, último acceso, última escritura y cambio del objeto a `filetime` (FILETIME).
 #[cfg(test)]
 pub fn set_all_times_for_test(path: &Path, filetime: i64) -> Result<(), Win32> {
@@ -814,39 +749,6 @@ mod tests {
         delete_on_handle(&dh).unwrap();
         drop(dh);
         assert!(!sb.path("b/dir").exists());
-    }
-
-    #[test]
-    fn renombrar_por_handle_en_el_mismo_directorio_sin_reemplazar() {
-        let sb = Sandbox::new();
-        sb.write("r/a.txt", 10);
-        sb.write("r/b.txt", 10);
-        let rh = open_dir_for_listing(&sb.path("r")).unwrap();
-        let h = open_child_for_rename(&rh, &w("a.txt"), Expect::File).unwrap();
-        let landed = rename_on_handle(&h, &w("lapida.txt")).unwrap();
-        assert_eq!(landed, sb.long("r/lapida.txt"));
-        drop(h);
-        assert!(!sb.path("r/a.txt").exists());
-        assert!(sb.path("r/lapida.txt").exists());
-        // No reemplaza a un existente.
-        let h = open_child_for_rename(&rh, &w("lapida.txt"), Expect::File).unwrap();
-        assert!(rename_on_handle(&h, &w("b.txt")).is_err());
-        // Nombres con separadores se rechazan.
-        assert_eq!(
-            rename_on_handle(&h, &w(r"x\y")).err(),
-            Some(ERROR_INVALID_PARAMETER)
-        );
-        assert_eq!(
-            rename_on_handle(&h, &w("")).err(),
-            Some(ERROR_INVALID_PARAMETER)
-        );
-        // Un directorio con un archivo abierto dentro no se renombra (falla en seguro).
-        sb.write("r/d/inside.bin", 10);
-        let open_inside = fs::File::open(sb.path("r/d/inside.bin")).unwrap();
-        let dh = open_child_for_rename(&rh, &w("d"), Expect::Dir).unwrap();
-        assert!(rename_on_handle(&dh, &w("d-lapida")).is_err());
-        assert!(sb.path("r/d").exists());
-        drop(open_inside);
     }
 
     #[test]
