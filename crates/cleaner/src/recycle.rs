@@ -20,8 +20,16 @@
 //! NO se garantiza que "nunca" pueda ser un objeto no aprobado: solo que se detecta y es restaurable.
 //!
 //! Banderas (decididas por las pruebas, ver `tests::wantnukewarning_*`):
-//! * enviar: `FOF_NO_UI | FOF_ALLOWUNDO | FOFX_RECYCLEONDELETE`;
-//! * purgar elementos de la Papelera: `FOF_NO_UI`.
+//! * enviar: `FOF_NO_UI | FOF_ALLOWUNDO | FOFX_RECYCLEONDELETE | FOF_NO_CONNECTED_ELEMENTS`;
+//! * purgar elementos de la Papelera: `FOF_NO_UI | FOF_NO_CONNECTED_ELEMENTS`.
+//!
+//! `FOF_NO_CONNECTED_ELEMENTS` (S1): sin ella, aprobar `pagina.html` puede arrastrar `pagina_files\`, que nadie aprobó.
+//!
+//! # El receptor de eventos corta el lote (M2)
+//! `PostDeleteItem` registra el evento PRIMERO y, si la shell eliminó definitivamente (`psiNewlyCreated` nulo) o no dijo
+//! dónde quedó el elemento, devuelve `E_ABORT`: la shell cancela las operaciones pendientes, de modo que el primer borrado
+//! inesperado ya no arrastra al resto del lote. Solo al ENVIAR; al purgar la Papelera el borrado definitivo es lo
+//! esperado y el receptor solo registra.
 #![allow(unsafe_code)]
 
 use std::collections::HashSet;
@@ -30,7 +38,7 @@ use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use windows::Win32::Foundation::{FILETIME, PROPERTYKEY};
+use windows::Win32::Foundation::{E_ABORT, FILETIME, PROPERTYKEY};
 use windows::Win32::Storage::EnhancedStorage::PKEY_Size;
 use windows::Win32::System::Com::StructuredStorage::PropVariantToBSTR;
 use windows::Win32::System::Com::{
@@ -40,10 +48,10 @@ use windows::Win32::System::Com::{
 #[cfg(test)]
 use windows::Win32::UI::Shell::FOF_WANTNUKEWARNING;
 use windows::Win32::UI::Shell::{
-    BHID_EnumItems, FILEOPERATION_FLAGS, FOF_ALLOWUNDO, FOF_NO_UI, FOFX_RECYCLEONDELETE,
-    FOLDERID_RecycleBinFolder, FileOperation, IEnumShellItems, IFileOperation,
-    IFileOperationProgressSink, IFileOperationProgressSink_Impl, IShellItem, IShellItem2,
-    KF_FLAG_DEFAULT, PID_DISPLACED_DATE, PID_DISPLACED_FROM, PSGUID_DISPLACED,
+    BHID_EnumItems, FILEOPERATION_FLAGS, FOF_ALLOWUNDO, FOF_NO_CONNECTED_ELEMENTS, FOF_NO_UI,
+    FOFX_RECYCLEONDELETE, FOLDERID_RecycleBinFolder, FileOperation, IEnumShellItems,
+    IFileOperation, IFileOperationProgressSink, IFileOperationProgressSink_Impl, IShellItem,
+    IShellItem2, KF_FLAG_DEFAULT, PID_DISPLACED_DATE, PID_DISPLACED_FROM, PSGUID_DISPLACED,
     SHCreateItemFromParsingName, SHGetKnownFolderItem, SHQUERYRBINFO, SHQueryRecycleBinW, SIGDN,
     SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_FILESYSPATH, SIGDN_PARENTRELATIVE,
 };
@@ -286,6 +294,9 @@ pub struct BatchOutcome {
     /// Solo al purgar: `$I` de elementos purgados que la shell dejó huérfanos y que se quitaron (ver
     /// [`remove_orphan_meta`]).
     pub meta_removed: u64,
+    /// Solo al enviar: el receptor CANCELÓ el lote (devolvió un error de aborto) por un veto o por un borrado definitivo
+    /// inesperado. Lo que no tiene evento sigue en su sitio.
+    pub sink_aborted: bool,
 }
 
 type Events = Arc<Mutex<Vec<DeleteEvent>>>;
@@ -296,12 +307,22 @@ fn display(item: &IShellItem, sigdn: SIGDN) -> Option<OsString> {
     unsafe { item.GetDisplayName(sigdn).ok().map(|p| take_pwstr(p)) }
 }
 
+/// Estado que el receptor comparte con quien lo creó.
+#[derive(Default)]
+struct SinkState {
+    /// El lote está cancelado: cualquier `PreDeleteItem` posterior falla (defensa por si la shell sigue tras un error).
+    tripped: AtomicBool,
+}
+
 /// El receptor de eventos de `IFileOperation`. Implementa la interfaz COM con `windows::core::implement` (la vtable,
-/// `QueryInterface`, `AddRef` y `Release` los genera la macro). Solo REGISTRA: nunca decide ni falla (si un método
-/// devolviera un error, la shell cancelaría todo lo que quedara pendiente).
+/// `QueryInterface`, `AddRef` y `Release` los genera la macro). Al PURGAR solo registra. Al ENVIAR (`abort_on_permanent`)
+/// corta el lote tras el primer borrado definitivo (ver el módulo). Un error de un método del receptor hace que la shell
+/// cancele lo que quedara pendiente: es exactamente lo que se quiere.
 #[implement(IFileOperationProgressSink)]
 struct Recorder {
     events: Events,
+    state: Arc<SinkState>,
+    abort_on_permanent: bool,
 }
 
 impl IFileOperationProgressSink_Impl for Recorder_Impl {
@@ -370,6 +391,10 @@ impl IFileOperationProgressSink_Impl for Recorder_Impl {
         Ok(())
     }
     fn PreDeleteItem(&self, _dwflags: u32, _psiitem: Ref<IShellItem>) -> windows::core::Result<()> {
+        // Defensa: si el lote ya está cancelado, ningún elemento más se procesa aunque la shell siguiera.
+        if self.abort_on_permanent && self.state.tripped.load(Ordering::SeqCst) {
+            return Err(E_ABORT.into());
+        }
         Ok(())
     }
     fn PostDeleteItem(
@@ -390,6 +415,10 @@ impl IFileOperationProgressSink_Impl for Recorder_Impl {
                 None => BinState::InBinUnknownPath,
             },
         };
+        // Con éxito, `psiNewlyCreated` nulo = eliminado definitivamente y sin ruta = no se puede verificar: en ambos casos
+        // el lote se corta. El evento se registra ANTES de devolver el error.
+        let unsafe_outcome =
+            hrdelete.0 >= 0 && matches!(state, BinState::Deleted | BinState::InBinUnknownPath);
         self.events
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -398,6 +427,10 @@ impl IFileOperationProgressSink_Impl for Recorder_Impl {
                 hr: hrdelete.0,
                 state,
             });
+        if self.abort_on_permanent && unsafe_outcome {
+            self.state.tripped.store(true, Ordering::SeqCst);
+            return Err(E_ABORT.into());
+        }
         Ok(())
     }
     fn PreNewItem(
@@ -439,13 +472,17 @@ struct Operation {
     op: IFileOperation,
     cookie: u32,
     events: Events,
+    state: Arc<SinkState>,
 }
 
 impl Operation {
-    fn new(flags: FILEOPERATION_FLAGS) -> Result<Operation> {
+    fn new(flags: FILEOPERATION_FLAGS, abort_on_permanent: bool) -> Result<Operation> {
         let events: Events = Arc::new(Mutex::new(Vec::new()));
+        let state = Arc::new(SinkState::default());
         let sink: IFileOperationProgressSink = Recorder {
             events: events.clone(),
+            state: state.clone(),
+            abort_on_permanent,
         }
         .into();
         // SAFETY: COM está inicializado en este hilo (lo garantiza quien llama); `sink` es una interfaz viva que `Advise`
@@ -454,7 +491,12 @@ impl Operation {
             let op: IFileOperation = CoCreateInstance(&FileOperation, None, CLSCTX_ALL)?;
             op.SetOperationFlags(flags)?;
             let cookie = op.Advise(&sink)?;
-            Ok(Operation { op, cookie, events })
+            Ok(Operation {
+                op,
+                cookie,
+                events,
+                state,
+            })
         }
     }
 
@@ -477,6 +519,7 @@ impl Operation {
             any_aborted: aborted,
             error,
             meta_removed: 0,
+            sink_aborted: self.state.tripped.load(Ordering::SeqCst),
         }
     }
 }
@@ -492,6 +535,22 @@ pub enum RecycleMode {
     WithNukeWarning,
 }
 
+/// Las banderas con las que se envía a la Papelera (S1: `FOF_NO_CONNECTED_ELEMENTS` evita que aprobar `pagina.html`
+/// arrastre `pagina_files\`, que nadie aprobó). `FOF_WANTNUKEWARNING` solo existe en las pruebas.
+pub(crate) fn send_flags(mode: RecycleMode) -> FILEOPERATION_FLAGS {
+    let base = FOF_NO_UI | FOF_ALLOWUNDO | FOFX_RECYCLEONDELETE | FOF_NO_CONNECTED_ELEMENTS;
+    match mode {
+        RecycleMode::Normal => base,
+        #[cfg(test)]
+        RecycleMode::WithNukeWarning => base | FOF_WANTNUKEWARNING,
+    }
+}
+
+/// Las banderas con las que se purgan elementos de la Papelera (también sin elementos conectados).
+pub(crate) fn purge_flags() -> FILEOPERATION_FLAGS {
+    FOF_NO_UI | FOF_NO_CONNECTED_ELEMENTS
+}
+
 /// Envía las rutas (una operación `IFileOperation` con todas) a la Papelera POR SU RUTA ORIGINAL. La shell abre cada
 /// elemento por su cuenta: entre que quien llama cierra su handle y ese momento hay una ventana, acotada por el destino
 /// (una sustitución hecha por el mismo usuario solo puede mandar OTRO objeto a la Papelera, recuperable). Por eso el
@@ -502,14 +561,7 @@ pub fn recycle_paths(paths: &[PathBuf], mode: RecycleMode) -> Result<BatchOutcom
         return Ok(BatchOutcome::default());
     }
     let _com = Com::init()?;
-    let flags = match mode {
-        RecycleMode::Normal => FOF_NO_UI | FOF_ALLOWUNDO | FOFX_RECYCLEONDELETE,
-        #[cfg(test)]
-        RecycleMode::WithNukeWarning => {
-            FOF_NO_UI | FOF_ALLOWUNDO | FOFX_RECYCLEONDELETE | FOF_WANTNUKEWARNING
-        }
-    };
-    let op = Operation::new(flags)?;
+    let op = Operation::new(send_flags(mode), true)?;
     let mut added = 0usize;
     for p in paths {
         let name = parsing_name(p);
@@ -538,7 +590,7 @@ pub fn recycle_paths(paths: &[PathBuf], mode: RecycleMode) -> Result<BatchOutcom
 /// Quien llama pasa una lista enumerada al confirmar y los elementos se casan por su `id` estable: lo que haya entrado
 /// después no se toca. La cancelación se mira entre trozos de 500.
 pub fn purge_items(items: &[BinItem], cancel: &AtomicBool) -> Result<BatchOutcome> {
-    purge_items_flags(items, cancel, FOF_NO_UI)
+    purge_items_flags(items, cancel, purge_flags())
 }
 
 fn purge_items_flags(
@@ -583,7 +635,7 @@ fn purge_items_flags(
         if cancel.load(Ordering::Relaxed) {
             break;
         }
-        let op = Operation::new(flags)?;
+        let op = Operation::new(flags, false)?;
         let mut added = 0usize;
         for it in chunk {
             // SAFETY: `op.op` y `it` son interfaces vivas.
@@ -1055,6 +1107,111 @@ mod tests {
         assert_eq!(ids(), before);
     }
 
+    /// S1: las banderas de envío y de purga llevan `FOF_NO_CONNECTED_ELEMENTS` (aprobar `pagina.html` no puede arrastrar
+    /// `pagina_files\`), y el envío conserva las que lo hacen recuperable y sin diálogos.
+    #[test]
+    fn las_banderas_de_envio_y_de_purga_excluyen_los_elementos_conectados() {
+        let has = |f: FILEOPERATION_FLAGS, x: FILEOPERATION_FLAGS| f.0 & x.0 == x.0;
+        let send = send_flags(RecycleMode::Normal);
+        for flag in [
+            FOF_NO_CONNECTED_ELEMENTS,
+            FOF_NO_UI,
+            FOF_ALLOWUNDO,
+            FOFX_RECYCLEONDELETE,
+        ] {
+            assert!(has(send, flag), "{flag:?}");
+        }
+        assert!(has(
+            send_flags(RecycleMode::WithNukeWarning),
+            FOF_NO_CONNECTED_ELEMENTS
+        ));
+        let purge = purge_flags();
+        assert!(has(purge, FOF_NO_CONNECTED_ELEMENTS) && has(purge, FOF_NO_UI));
+        // Y nunca la bandera que se cuelga con FOF_NO_UI.
+        assert!(!has(send, FOF_WANTNUKEWARNING) && !has(purge, FOF_WANTNUKEWARNING));
+    }
+
+    /// S1 con la shell REAL: enviar `pagina.html` no arrastra su carpeta `pagina_files\`. Solo elementos propios.
+    #[test]
+    fn enviar_pagina_html_no_arrastra_su_carpeta_pagina_files() {
+        let _lock = bin_lock();
+        if !bin_usable() {
+            return;
+        }
+        let before = ids();
+        let sb = Sandbox::new();
+        let _guard = BinGuard { uuid: sb.uuid() };
+        sb.write("w/pagina.html", 1_000);
+        sb.write("w/pagina_files/imagen.png", 2_000);
+        let r = recycle_paths(&[sb.long("w/pagina.html")], RecycleMode::Normal).unwrap();
+        assert!(r.error.is_none() && !r.any_aborted, "{r:?}");
+        assert!(!sb.path("w/pagina.html").exists(), "el aprobado se fue");
+        assert!(
+            sb.path("w/pagina_files/imagen.png").exists(),
+            "el elemento conectado NO se aprobó y no debe irse"
+        );
+        let mine: Vec<BinItem> = list_bin()
+            .unwrap()
+            .into_iter()
+            .filter(|i| is_mine(i, &sb.uuid()))
+            .collect();
+        assert_eq!(mine.len(), 1, "{mine:?}");
+        purge_items(&mine, &AtomicBool::new(false)).unwrap();
+        assert_eq!(ids(), before);
+    }
+
+    /// M2 con la shell REAL: un archivo disperso enorme (no cabe en ninguna Papelera) EN PRIMER LUGAR de un lote con dos
+    /// archivos pequeños. La shell lo elimina definitivamente; el receptor registra el evento y devuelve `E_ABORT`, y los
+    /// dos pequeños NO se procesan: siguen en su sitio y no están en la Papelera. Solo elementos propios.
+    #[test]
+    fn con_la_shell_real_el_primer_borrado_inesperado_no_arrastra_al_resto_del_lote() {
+        let _lock = bin_lock();
+        if !bin_usable() {
+            return;
+        }
+        let before = ids();
+        let sb = Sandbox::new();
+        let _guard = BinGuard { uuid: sb.uuid() };
+        let total = tesela_scanner::volume_space(&sb.long_root())
+            .map(|v| v.total)
+            .unwrap_or(1 << 40);
+        let len = total.saturating_mul(2).max(1 << 40);
+        let big = sb.path("m/a-enorme.bin");
+        std::fs::create_dir_all(big.parent().unwrap()).unwrap();
+        sparse_file(&big, len);
+        sb.write("m/b.txt", 500);
+        sb.write("m/c.txt", 500);
+        let paths = vec![
+            sb.long("m/a-enorme.bin"),
+            sb.long("m/b.txt"),
+            sb.long("m/c.txt"),
+        ];
+        let r = recycle_paths(&paths, RecycleMode::Normal).unwrap();
+        eprintln!(
+            "lote con un disperso enorme primero: eventos = {:?}, abortado = {}, sink_aborted = {}, error = {:?}",
+            r.events, r.any_aborted, r.sink_aborted, r.error
+        );
+        let ev = r.events.first().expect("la shell avisa de lo que elimina");
+        assert!(ev.succeeded() && ev.state == BinState::Deleted, "{ev:?}");
+        assert!(r.sink_aborted, "el receptor cortó el lote");
+        assert_eq!(r.events.len(), 1, "nada más se procesó: {:?}", r.events);
+        assert!(
+            !paths[0].exists(),
+            "el enorme se eliminó (evento registrado)"
+        );
+        assert!(
+            paths[1].exists() && paths[2].exists(),
+            "los demás siguen en su sitio"
+        );
+        let in_bin = list_bin()
+            .unwrap()
+            .into_iter()
+            .filter(|i| is_mine(i, &sb.uuid()))
+            .count();
+        assert_eq!(in_bin, 0, "ninguno llegó a la Papelera");
+        assert_eq!(ids(), before);
+    }
+
     /// Centinela: sin `TESELA_REAL_RECYCLE_TESTS=1` las pruebas que usan la Papelera real se saltan EN SILENCIO (pasan sin
     /// ejecutar nada). Esta prueba lo dice con una cifra: cuántas se han saltado (las llamadas a `bin_usable()` de este
     /// archivo y de `exec_tests.rs`). Cargo oculta la salida de las pruebas que pasan: se ve con `cargo test -- --nocapture`.
@@ -1174,6 +1331,8 @@ mod tests {
             Fate::GoneNotInBin => {
                 let ev = ev.expect("la shell avisa de lo que elimina");
                 assert!(ev.succeeded() && ev.state == BinState::Deleted, "{ev:?}");
+                // M2: el receptor registró el evento y CORTÓ el lote (devolvió E_ABORT tras `PostDeleteItem`).
+                assert!(out.sink_aborted, "el receptor debe cortar el lote: {out:?}");
             }
             Fate::InBin => {
                 let ev = ev.expect("la shell avisa de lo que envía");

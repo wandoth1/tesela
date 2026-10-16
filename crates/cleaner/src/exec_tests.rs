@@ -1410,7 +1410,10 @@ fn un_enlace_duro_sustituto_ya_no_da_un_recycled_falso() {
 // ---- Reparto en operaciones y corte de seguridad (M-C), con una shell SIMULADA ----------------------------------------
 
 /// Una shell simulada: "recicla" moviendo a una carpeta del sandbox y, si en la operación hay un elemento cuyo nombre
-/// contiene `nuke`, ELIMINA todos los de esa operación (así decide la shell real: por operación). Anota las operaciones.
+/// contiene `nuke`, la shell decide por operación que no cabe: ELIMINA el primer elemento (`PostDeleteItem` con
+/// `psiNewlyCreated` nulo) y el receptor de eventos CORTA el lote (M2): los demás no se procesan ni tienen evento. Un
+/// elemento cuyo nombre contiene `unknown` se recicla pero la shell "no dice dónde": también corta el lote. Anota las
+/// operaciones.
 struct FakeShell {
     bin: PathBuf,
     max: Option<u64>,
@@ -1476,8 +1479,12 @@ impl RecycleShell for FakeShell {
                 .is_some_and(|n| n.to_string_lossy().contains(self.nuke))
         });
         let mut events = Vec::new();
+        let mut sink_aborted = false;
         for (i, p) in paths.iter().enumerate() {
             let len = fs::metadata(p).map_or(0, |m| m.len());
+            let unknown = p
+                .file_name()
+                .is_some_and(|n| n.to_string_lossy().contains("unknown"));
             let state = if nuke {
                 fs::remove_file(p).unwrap();
                 BinState::Deleted
@@ -1489,16 +1496,31 @@ impl RecycleShell for FakeShell {
                 ));
                 fs::rename(p, &dest).unwrap();
                 *self.used.lock().unwrap() += len;
-                BinState::InBin(dest)
+                if unknown {
+                    BinState::InBinUnknownPath
+                } else {
+                    BinState::InBin(dest)
+                }
             };
+            let unsafe_outcome = matches!(state, BinState::Deleted | BinState::InBinUnknownPath);
             events.push(DeleteEvent {
                 item: p.clone().into_os_string(),
                 hr: 0,
                 state,
             });
+            // El receptor registra el evento y DESPUÉS devuelve E_ABORT: la shell no procesa el resto.
+            if unsafe_outcome {
+                sink_aborted = true;
+                break;
+            }
         }
         recycle::BatchOutcome {
             events,
+            sink_aborted,
+            error: sink_aborted.then(|| crate::recycle::ShellError {
+                hresult: windows::Win32::Foundation::E_ABORT.0,
+                detail: "cancelado por el receptor".into(),
+            }),
             ..recycle::BatchOutcome::default()
         }
     }
@@ -1566,6 +1588,83 @@ fn un_elemento_que_no_cabe_entre_otros_pequenos_nunca_arrastra_a_los_demas_y_cor
     assert_eq!((rep.deleted_unexpectedly, rep.stopped_items), (1, 2));
     // El primero fue en su propia operación (no con el enorme) y el enorme en la suya, y no hubo más.
     assert_eq!(fake.names(), vec![vec!["a.txt"], vec!["enorme.bin"]]);
+}
+
+/// M2: el primer borrado definitivo inesperado de una operación CORTA el lote en curso (el receptor devuelve `E_ABORT`
+/// tras registrar el evento): lo que venía detrás en la MISMA operación no se procesa y sigue en su sitio, y no se envía
+/// nada más. El `E_ABORT` propio no se cuenta como error de la shell.
+#[test]
+fn el_primer_borrado_inesperado_corta_el_lote_en_curso() {
+    let sb = Sandbox::new();
+    // Todos pequeños (van juntos en UNA operación) y uno con nombre `enorme`: la shell decide que la operación no cabe.
+    let fake = FakeShell::new(&sb, Some(10_000), 0, "enorme");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    let plan = plan_de(
+        &sb,
+        &c,
+        &[
+            ("a.txt", 100, 100),
+            ("enorme.bin", 100, 100),
+            ("c.txt", 100, 100),
+        ],
+    );
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    let st = |n: &str| {
+        rep.items
+            .iter()
+            .find(|i| i.path.ends_with(n))
+            .unwrap()
+            .status
+    };
+    assert_eq!(fake.names().len(), 1, "una sola operación");
+    // El primero se eliminó (evento registrado); el resto de la operación NO se procesó y sigue ahí.
+    assert_eq!(st("a.txt"), ItemStatus::DeletedUnexpectedly);
+    assert_eq!(
+        st("enorme.bin"),
+        ItemStatus::NotRecycled(RecycleFail::Stopped)
+    );
+    assert_eq!(st("c.txt"), ItemStatus::NotRecycled(RecycleFail::Stopped));
+    assert!(sb.path("Docs/enorme.bin").exists() && sb.path("Docs/c.txt").exists());
+    assert!(rep.recycle_stopped);
+    assert_eq!(rep.stop_reason, Some(StopReason::DeletedUnexpectedly));
+    assert_eq!((rep.deleted_unexpectedly, rep.stopped_items), (1, 2));
+    assert_eq!(
+        rep.shell_error, None,
+        "el E_ABORT propio no es un error de la shell"
+    );
+}
+
+/// M2: una ruta sin verificar (`InBinUnknownPath` con éxito) también corta el lote, y `Unverified` provoca
+/// `recycle_stopped`.
+#[test]
+fn una_ruta_sin_verificar_tambien_corta_el_lote_y_marca_recycle_stopped() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(10_000), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    let plan = plan_de(
+        &sb,
+        &c,
+        &[
+            ("unknown.txt", 100, 100),
+            ("b.txt", 100, 100),
+            ("c.txt", 100, 100),
+        ],
+    );
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    let st = |n: &str| {
+        rep.items
+            .iter()
+            .find(|i| i.path.ends_with(n))
+            .unwrap()
+            .status
+    };
+    assert_eq!(st("unknown.txt"), ItemStatus::Unverified);
+    assert_eq!(st("b.txt"), ItemStatus::NotRecycled(RecycleFail::Stopped));
+    assert_eq!(st("c.txt"), ItemStatus::NotRecycled(RecycleFail::Stopped));
+    assert!(sb.path("Docs/b.txt").exists() && sb.path("Docs/c.txt").exists());
+    assert!(rep.recycle_stopped);
+    assert_eq!(rep.stop_reason, Some(StopReason::Unverified));
+    assert_eq!((rep.unverified, rep.stopped_items), (1, 2));
 }
 
 #[test]
@@ -1908,31 +2007,34 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
     // Misma identidad, el nombre aprobado ya no existe y el objeto de la guarda está en la Papelera -> enviado.
     let p = pending(id, gone, &bin_file);
     let e = ev(0, BinState::InBin(bin_file.clone()));
-    assert_eq!(judge(&p, Some(&e), shell, false).0, ItemStatus::Recycled);
+    assert_eq!(
+        judge(&p, Some(&e), shell, false, false).0,
+        ItemStatus::Recycled
+    );
     // ...pero si el nombre aprobado SIGUE existiendo (otro nombre del mismo objeto llegó a la Papelera), no.
     let p_name = pending(id, &bin_file, &bin_file);
     assert_eq!(
-        judge(&p_name, Some(&e), shell, false).0,
+        judge(&p_name, Some(&e), shell, false, false).0,
         ItemStatus::RecycledOther
     );
     // ...ni si el objeto de la guarda NO está en la Papelera (sigue en su sitio con otro nombre).
     let fuera = sb.write("Docs/vivo.txt", 10);
     let p_fuera = pending(id, gone, &fuera);
     assert_eq!(
-        judge(&p_fuera, Some(&e), shell, false).0,
+        judge(&p_fuera, Some(&e), shell, false, false).0,
         ItemStatus::RecycledOther
     );
     // ...ni si el número de enlaces del objeto cambió respecto a lo comprobado (se le añadió otro nombre).
     let mut p_links = pending(id, gone, &bin_file);
     p_links.links = 3;
     assert_eq!(
-        judge(&p_links, Some(&e), shell, false).0,
+        judge(&p_links, Some(&e), shell, false, false).0,
         ItemStatus::RecycledOther
     );
     // Otra identidad -> se movió a la Papelera un objeto distinto del aprobado.
     let p2 = pending(ident(id.file_id ^ 1), gone, &bin_file);
     assert_eq!(
-        judge(&p2, Some(&e), shell, false).0,
+        judge(&p2, Some(&e), shell, false, false).0,
         ItemStatus::RecycledOther
     );
     let p3 = pending(
@@ -1944,32 +2046,53 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
         &bin_file,
     );
     assert_eq!(
-        judge(&p3, Some(&e), shell, false).0,
+        judge(&p3, Some(&e), shell, false, false).0,
         ItemStatus::RecycledOther
     );
     // La shell lo eliminó definitivamente (`psiNewlyCreated` nulo).
     assert_eq!(
-        judge(&p, Some(&ev(0, BinState::Deleted)), shell, false).0,
+        judge(&p, Some(&ev(0, BinState::Deleted)), shell, false, false).0,
         ItemStatus::DeletedUnexpectedly
     );
     // No dio ruta, o la ruta no se puede abrir -> no verificado.
     assert_eq!(
-        judge(&p, Some(&ev(0, BinState::InBinUnknownPath)), shell, false).0,
+        judge(
+            &p,
+            Some(&ev(0, BinState::InBinUnknownPath)),
+            shell,
+            false,
+            false
+        )
+        .0,
         ItemStatus::Unverified
     );
     let nada = ev(0, BinState::InBin(sb.path("bin/no-esta.txt")));
     assert_eq!(
-        judge(&p, Some(&nada), shell, false).0,
+        judge(&p, Some(&nada), shell, false, false).0,
         ItemStatus::Unverified
     );
     // Errores: en uso, sin permiso y otros, con su HRESULT.
     let hr_win32 = |c: u32| (0x8007_0000u32 | c) as i32;
     assert_eq!(
-        judge(&p, Some(&ev(hr_win32(32), BinState::Deleted)), shell, false).0,
+        judge(
+            &p,
+            Some(&ev(hr_win32(32), BinState::Deleted)),
+            shell,
+            false,
+            false
+        )
+        .0,
         ItemStatus::NotRecycled(RecycleFail::InUse)
     );
     assert_eq!(
-        judge(&p, Some(&ev(hr_win32(5), BinState::Deleted)), shell, false).0,
+        judge(
+            &p,
+            Some(&ev(hr_win32(5), BinState::Deleted)),
+            shell,
+            false,
+            false
+        )
+        .0,
         ItemStatus::NotRecycled(RecycleFail::Denied)
     );
     assert_eq!(
@@ -1977,6 +2100,7 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
             &p,
             Some(&ev(0x8000_4005u32 as i32, BinState::Deleted)),
             shell,
+            false,
             false
         )
         .0,
@@ -1989,6 +2113,7 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
             &p,
             Some(&ev(0x8027_0021u32 as i32, BinState::Deleted)),
             shell,
+            false,
             false
         )
         .0,
@@ -1999,6 +2124,7 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
             &p,
             Some(&ev(0x8027_0027u32 as i32, BinState::Deleted)),
             shell,
+            false,
             false
         )
         .0,
@@ -2007,14 +2133,22 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
     // Sin aviso: sigue en su sitio -> no procesado (o abortado, si la shell dijo que abortó); ya no está -> no verificado.
     let here = pending(id, &bin_file, &bin_file);
     assert_eq!(
-        judge(&here, None, shell, false).0,
+        judge(&here, None, shell, false, false).0,
         ItemStatus::NotRecycled(RecycleFail::NotProcessed)
     );
     assert_eq!(
-        judge(&here, None, shell, true).0,
+        judge(&here, None, shell, true, false).0,
         ItemStatus::NotRecycled(RecycleFail::Aborted)
     );
-    assert_eq!(judge(&p, None, shell, false).0, ItemStatus::Unverified);
+    // El receptor cortó el lote (M2): sin aviso y en su sitio = detenido por el corte de seguridad.
+    assert_eq!(
+        judge(&here, None, shell, false, true).0,
+        ItemStatus::NotRecycled(RecycleFail::Stopped)
+    );
+    assert_eq!(
+        judge(&p, None, shell, false, false).0,
+        ItemStatus::Unverified
+    );
 }
 
 #[test]

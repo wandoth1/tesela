@@ -18,7 +18,8 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tesela_cleaner::log::{HistoryEntry, history_append};
 use tesela_cleaner::{
     ApproveOptions, Backend, Basket, Browser, CategoryId, ExecError, ExecOptions, Fit, LogWriter,
-    Phase, Plan, PlanItem, Progress, RejectReason, Removed, Report, UnfitReason, Verdict,
+    Phase, Plan, PlanItem, Progress, RejectReason, Removed, Report, StopReason, UnfitReason,
+    Verdict,
 };
 
 /// Contexto del volumen que se está limpiando (para el historial y las barras antes/ahora del resumen).
@@ -1000,7 +1001,11 @@ fn summary_lines(env: &Env, s: &Summary) -> Vec<(String, bool)> {
         ));
     }
     if r.recycle_stopped {
-        v.push((n("sum-recycle-stopped", r.stopped_items), true));
+        let key = match r.stop_reason {
+            Some(StopReason::Unverified) => "sum-recycle-stopped-unverified",
+            _ => "sum-recycle-stopped",
+        };
+        v.push((n(key, r.stopped_items), true));
     }
     if r.no_room > 0 {
         v.push((n("sum-no-room", r.no_room), true));

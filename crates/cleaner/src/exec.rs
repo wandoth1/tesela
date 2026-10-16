@@ -9,7 +9,9 @@
 //!   La shell dice, por elemento, el resultado y la ruta real del elemento ya en la Papelera; se abre y se compara su
 //!   IDENTIDAD con la aprobada: igual = enviado; distinta = "se movió a la Papelera un objeto distinto del aprobado"
 //!   (recuperable); sin elemento en la Papelera = eliminado definitivamente (no cabía); error = omitido con su motivo.
-//!   Un directorio con algo abierto dentro falla en seguro (mover es renombrar) y se informa como "en uso".
+//!   Un directorio con algo abierto dentro falla en seguro (mover es renombrar) y se informa como "en uso". El receptor
+//!   CORTA el lote (devuelve `E_ABORT`) tras el primer borrado definitivo o la primera ruta sin verificar: lo que queda del
+//!   lote no se procesa y sigue en su sitio.
 //! * **Tres contadores**: "eliminado definitivamente" y "movido a la Papelera" son sumas de tamaños; "liberado ahora" es la
 //!   diferencia MEDIDA del espacio libre de cada volumen antes y después.
 //! * **Simulación** (`dry_run`): hace todo salvo lo destructivo y registra las identidades que habría tocado.
@@ -118,7 +120,8 @@ pub enum RecycleFail {
     /// No hay sitio en la Papelera ahora (capacidad menos lo que ya ocupa): enviarlo haría que la shell lo elimine o
     /// expulse elementos que ya estaban. No se toca.
     NoRoom,
-    /// Se detuvo el envío a la Papelera porque otro elemento acabó eliminado definitivamente (corte de seguridad).
+    /// Se detuvo el envío a la Papelera por seguridad (otro elemento acabó eliminado definitivamente o no se pudo
+    /// verificar): no se tocó.
     Stopped,
     /// La shell lo rechazó con este `HRESULT` (sigue en su sitio).
     Shell(i32),
@@ -224,9 +227,10 @@ pub struct Report {
     /// El primer error (`HRESULT`) que devolvió la shell o COM al enviar a la Papelera, si hubo alguno. Lo que no se pudo
     /// enviar queda como no procesado y sigue donde estaba.
     pub shell_error: Option<i32>,
-    /// El envío a la Papelera se DETUVO porque la shell eliminó definitivamente un elemento (corte de seguridad): los que
-    /// quedaban no se tocaron.
+    /// El envío a la Papelera se DETUVO por seguridad (ver [`StopReason`]): los que quedaban no se tocaron.
     pub recycle_stopped: bool,
+    /// Por qué se detuvo (el primero), si `recycle_stopped`.
+    pub stop_reason: Option<StopReason>,
     /// Elementos que no se enviaron por falta de sitio en la Papelera.
     pub no_room: u64,
     /// Elementos que no se enviaron por el corte de seguridad.
@@ -240,6 +244,15 @@ pub struct Report {
     pub skipped_unfit: u64,
     /// Ruta del registro local.
     pub log_path: Option<PathBuf>,
+}
+
+/// Por qué se detuvo el envío a la Papelera (corte de seguridad).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StopReason {
+    /// La shell eliminó definitivamente un elemento (no cabía en la Papelera).
+    DeletedUnexpectedly,
+    /// No se pudo comprobar qué pasó con un elemento (la shell no dijo dónde quedó, o no se pudo abrir).
+    Unverified,
 }
 
 /// Por qué no se ejecutó.
@@ -698,9 +711,15 @@ impl Cleaner {
                         l.flush();
                     }
                     let outcome = shell.recycle(&paths);
-                    // Un error de la shell o de COM no se pierde: consta en el registro local y en el resumen.
+                    // Un error de la shell o de COM no se pierde: consta en el registro local y en el resumen. El `E_ABORT`
+                    // que provoca el propio receptor al cortar el lote NO es un error de la shell: el motivo del corte va en
+                    // `stop_reason`.
                     if let Some(e) = &outcome.error {
-                        report.shell_error.get_or_insert(e.hresult);
+                        let own_abort = outcome.sink_aborted
+                            && e.hresult == windows::Win32::Foundation::E_ABORT.0;
+                        if !own_abort {
+                            report.shell_error.get_or_insert(e.hresult);
+                        }
                         if let Some(l) = &opts.log {
                             l.write_note(
                                 "recycle-error",
@@ -717,7 +736,8 @@ impl Cleaner {
                     // 3. Juzgar cada elemento por lo que notificó la shell (con el handle de guarda aún abierto).
                     for (it, p) in &entries {
                         let ev = events.get(&PathKey::new(&p.path)).copied();
-                        let (status, o) = judge(p, ev, shell, outcome.any_aborted);
+                        let (status, o) =
+                            judge(p, ev, shell, outcome.any_aborted, outcome.sink_aborted);
                         let mut st = StatsSnapshot::default();
                         match status {
                             ItemStatus::Recycled => {
@@ -730,9 +750,20 @@ impl Cleaner {
                             ItemStatus::NotRecycled(_) => st.other_errors += 1,
                             _ => {}
                         }
-                        if status == ItemStatus::DeletedUnexpectedly {
+                        // CORTE DE SEGURIDAD: tras un borrado inesperado o algo que no se pudo verificar no se envía nada más.
+                        if matches!(
+                            status,
+                            ItemStatus::DeletedUnexpectedly | ItemStatus::Unverified
+                        ) {
                             stopped = true;
                             report.recycle_stopped = true;
+                            report.stop_reason.get_or_insert(
+                                if status == ItemStatus::DeletedUnexpectedly {
+                                    StopReason::DeletedUnexpectedly
+                                } else {
+                                    StopReason::Unverified
+                                },
+                            );
                         }
                         emit(it, Some(p.identity), p.links, o);
                         if let Some(l) = &opts.log {
@@ -1033,18 +1064,22 @@ pub(crate) fn take_op(sizes: &[u64], room: BinRoom) -> Take {
 /// * el objeto conserve su número de enlaces (un renombrado a la Papelera no lo cambia).
 ///
 /// `aborted`: la shell dijo que abortó alguna operación (sin decir cuál): un elemento sin aviso se cuenta entonces como
-/// abortado.
+/// abortado. `sink_aborted`: el receptor cortó el lote (M2): un elemento sin aviso que sigue en su sitio quedó sin
+/// procesar por el corte (`Stopped`).
 fn judge(
     p: &Pending,
     ev: Option<&recycle::DeleteEvent>,
     shell: &dyn RecycleShell,
     aborted: bool,
+    sink_aborted: bool,
 ) -> (ItemStatus, Outcome) {
     use recycle::BinState;
     let Some(ev) = ev else {
         // La shell no llegó a procesarlo: si sigue ahí, no se envió; si no, no se puede saber qué pasó.
         return if std::fs::symlink_metadata(&p.path).is_ok() {
-            let why = if aborted {
+            let why = if sink_aborted {
+                RecycleFail::Stopped
+            } else if aborted {
                 RecycleFail::Aborted
             } else {
                 RecycleFail::NotProcessed
