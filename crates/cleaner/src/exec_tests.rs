@@ -2353,6 +2353,13 @@ impl RecycleShell for FakeShell {
             // `PreDeleteItem`: lo que hay ahora en la ruta debe ser el objeto aprobado (y un archivo no puede haber crecido);
             // si no, veto y se corta el lote.
             if !core.pre_delete(p.clone().into_os_string()) {
+                // Como la shell REAL (medido): del elemento vetado avisa con `PostDeleteItem(E_ABORT)` y sin elemento nuevo.
+                // El ejecutor no puede tomar ese `E_ABORT` del propio receptor por un error de Windows.
+                let _ = core.post_delete(
+                    p.clone().into_os_string(),
+                    windows::Win32::Foundation::E_ABORT.0,
+                    BinState::Deleted,
+                );
                 break;
             }
             let len = fs::metadata(p).map_or(0, |m| m.len());
@@ -3531,6 +3538,10 @@ fn un_archivo_que_crece_entre_preparar_el_lote_y_su_pre_delete_item_se_veta() {
     assert_eq!(rep.stop_reason, Some(StopReason::Changed));
     assert!(rep.totals.changed >= 1);
     assert_eq!(rep.deleted_unexpectedly, 0);
+    assert_eq!(
+        rep.shell_error, None,
+        "el E_ABORT del vetado es del receptor: no es un error de Windows"
+    );
 }
 
 /// A2-B1: el mismo caso con la shell REAL (solo cosas propias, tras `TESELA_REAL_RECYCLE_TESTS=1`): el receptor de verdad
@@ -3591,6 +3602,9 @@ fn con_la_shell_real_un_archivo_que_crece_en_el_lote_se_veta() {
     assert_eq!(st("c.txt"), ItemStatus::NotRecycled(RecycleFail::Stopped));
     assert!(sb.path("Docs/b.txt").exists() && sb.path("Docs/c.txt").exists());
     assert_eq!(rep.stop_reason, Some(StopReason::Changed));
+    // Un veto del receptor no es un error de Windows: la shell avisa del vetado con `E_ABORT` (el del propio receptor) y eso no
+    // debe aparecer como "la Papelera devolvió un error".
+    assert_eq!(rep.shell_error, None, "{rep:?}");
     let mine: Vec<BinItem> = recycle::list_bin()
         .unwrap()
         .into_iter()

@@ -1075,9 +1075,13 @@ impl Cleaner {
                             && e.hresult == windows::Win32::Foundation::E_ABORT.0;
                         if !own_abort {
                             report.shell_error.get_or_insert(e.hresult);
-                        } else if let Some(f) = outcome.events.iter().find(|ev| !ev.succeeded()) {
+                        } else if let Some(f) = outcome.events.iter().find(|ev| {
+                            !ev.succeeded() && ev.hr != windows::Win32::Foundation::E_ABORT.0
+                        }) {
                             // A2-M1: el receptor corta tras un resultado de FALLO y el `E_ABORT` es suyo; el error de la
-                            // shell es el de ese resultado, y no se pierde.
+                            // shell es el de ese resultado, y no se pierde. Se ignora el `E_ABORT` del propio receptor: tras
+                            // un veto la shell avisa del vetado con `PostDeleteItem(E_ABORT)` (medido) y eso no es un error
+                            // de Windows.
                             report.shell_error.get_or_insert(f.hr);
                         }
                         if let Some(l) = &opts.log {
