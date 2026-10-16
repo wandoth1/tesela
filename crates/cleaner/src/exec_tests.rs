@@ -4008,7 +4008,8 @@ fn el_proceso_de_pruebas_no_esta_elevado_segun_el_token() {
     );
 }
 
-/// A-B2: una medida incompleta es siempre "NO intacto" en el juicio R6 (`dir_untouched`), y `remeasure` la distingue de una
+/// A-B2 + A2-m1: una medida incompleta no demuestra NADA en el juicio R6 (`dir_check`: ni intacto ni cambiado, `Unknown`), y
+/// `remeasure` la distingue de una
 /// completa por cualquiera de sus causas: una subcarpeta que no se puede listar, un hijo que desaparece entre el listado y la
 /// apertura, o la cancelación a mitad del recorrido.
 #[test]
@@ -4029,15 +4030,24 @@ fn una_medida_incompleta_nunca_demuestra_que_nada_cambio() {
     };
     c.fresh_size(it, &mut p, &mut st, &cancel()).unwrap();
     assert!(p.snapshot.is_some());
-    assert!(c.dir_untouched(it, &p, &cancel()), "sin cambios: intacto");
+    assert_eq!(
+        c.dir_check(it, &p, &cancel()),
+        DirCheck::Intact,
+        "sin cambios: intacto"
+    );
     // (1) Una subcarpeta que no se puede listar.
     {
         let _lock = lock_dir(&sb.path("Docs/carpeta/sub"));
         assert!(matches!(c.remeasure(it, &cancel()), Remeasure::Incomplete));
-        assert!(!c.dir_untouched(it, &p, &cancel()));
+        assert_eq!(
+            c.dir_check(it, &p, &cancel()),
+            DirCheck::Unknown,
+            "no se pudo medir entero: no se afirma ni intacto ni perdido"
+        );
     }
-    assert!(
-        c.dir_untouched(it, &p, &cancel()),
+    assert_eq!(
+        c.dir_check(it, &p, &cancel()),
+        DirCheck::Intact,
         "soltada, vuelve a valer"
     );
     // (2) Un hijo que desaparece justo antes de abrirlo (ya listado).
@@ -4053,7 +4063,68 @@ fn una_medida_incompleta_nunca_demuestra_que_nada_cambio() {
     // (3) Cancelada a mitad: no se acepta como medida.
     let cancelled = Arc::new(AtomicBool::new(true));
     assert!(matches!(c.remeasure(it, &cancelled), Remeasure::Cancelled));
-    assert!(!c.dir_untouched(it, &p, &cancelled));
+    assert_eq!(c.dir_check(it, &p, &cancelled), DirCheck::Unknown);
+    // (4) Una medida COMPLETA que difiere: eso sí es un cambio (se perdió un hijo).
+    fs::remove_file(sb.path("Docs/carpeta/f1.bin")).ok();
+    assert_eq!(c.dir_check(it, &p, &cancel()), DirCheck::Changed);
+    // (5) Sin medida anterior con la que comparar, tampoco se afirma nada.
+    p.snapshot = None;
+    assert_eq!(c.dir_check(it, &p, &cancel()), DirCheck::Unknown);
+}
+
+/// A2-m1 (repetición de Astra): la shell simulada devuelve acceso denegado SIN tocar nada y un bloqueo exclusivo impide volver a
+/// leer una subcarpeta al comprobar el contenido. Antes ese "no se pudo comprobar" se contaba como pérdida confirmada
+/// (`DeletedUnexpectedly`, "se eliminó definitivamente"); ahora es `Unverified` ("no se pudo comprobar qué pasó"): no se afirma
+/// ninguna pérdida, y el envío se detiene igualmente (lo siguiente no se toca).
+#[test]
+fn una_comprobacion_que_no_se_pudo_hacer_no_se_cuenta_como_perdida_y_detiene_el_envio() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(100_000), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    sb.write("Docs/deniega-d1/f0.bin", 1_000);
+    sb.write("Docs/deniega-d1/sub/dentro.bin", 1_000);
+    sb.write("Docs/d2/y.bin", 1_000);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/deniega-d1"), c.protection());
+    b.add_path(sb.long("Docs/d2"), c.protection());
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 2, "{:?}", plan.rejected);
+    // El bloqueo llega JUSTO antes de entregar la carpeta a la shell: después de medirla entera (si no, `fresh_size` ya no
+    // la enviaría) y antes de la comprobación posterior.
+    let sub = sb.path("Docs/deniega-d1/sub");
+    let lock: Arc<Mutex<Option<fs::File>>> = Arc::new(Mutex::new(None));
+    let l2 = lock.clone();
+    let _hook = crate::engine::test_hooks::install_before_shell(sb.long("Docs"), move |p| {
+        if p.ends_with("deniega-d1") {
+            *l2.lock().unwrap() = Some(lock_dir(&sub));
+        }
+    });
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    let st = |n: &str| {
+        rep.items
+            .iter()
+            .find(|i| i.path.ends_with(n))
+            .unwrap()
+            .status
+    };
+    assert_eq!(
+        st("deniega-d1"),
+        ItemStatus::Unverified,
+        "no se afirma la pérdida"
+    );
+    assert_eq!(rep.deleted_unexpectedly, 0);
+    assert_eq!(rep.unverified, 1);
+    assert!(rep.recycle_stopped, "pero el envío se detiene");
+    assert_eq!(rep.stop_reason, Some(StopReason::Unverified));
+    assert_eq!(st("d2"), ItemStatus::NotRecycled(RecycleFail::Stopped));
+    assert_eq!(
+        fake.names(),
+        vec![vec!["deniega-d1"]],
+        "d2 no llegó a la shell"
+    );
+    assert!(sb.path("Docs/d2/y.bin").exists());
+    assert_eq!(sb.count_entries("Docs/deniega-d1"), 2, "sigue entera");
+    drop(lock.lock().unwrap().take());
 }
 
 /// Un error de la shell o de COM al enviar consta en el registro local (con su HRESULT) y en el informe (para el resumen);

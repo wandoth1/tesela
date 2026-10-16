@@ -1112,15 +1112,24 @@ impl Cleaner {
                         // que contiene: el objeto carpeta intacto no dice nada de sus hijos. Vale para CUALQUIER resultado
                         // de "no enviado" tras pasar por la shell (la shell dijo "eliminado" sin tocar, falló, no lo
                         // procesó...): un fallo puede llegar después de perder un hijo. Se vuelve a medir (mismo recorrido
-                        // relativo, COMPLETO) y la huella del contenido tiene que ser la de justo antes del envío; si no (o
-                        // si no se puede medir) es un borrado definitivo, aunque sea parcial. La comprobación NO se
-                        // interrumpe por la cancelación: debe terminar para poder decir la verdad del informe.
-                        if matches!(status, ItemStatus::NotRecycled(_))
-                            && it.is_dir()
-                            && !self.dir_untouched(it, p, &verify_cancel)
-                        {
-                            status = ItemStatus::DeletedUnexpectedly;
-                            o = Outcome::DeletedUnexpectedly;
+                        // relativo, COMPLETO) y la huella del contenido se compara con la de justo antes del envío, con TRES
+                        // resultados (A2-m1): igual, `Intact`; distinta en una medida completa, `Changed` = borrado
+                        // definitivo, aunque sea parcial; y si la medida no se pudo hacer entera (una subcarpeta sin leer, un
+                        // fallo, una cancelación) es `Unknown`: no se afirma ninguna pérdida, es `Unverified` y el envío se
+                        // detiene. La comprobación NO se interrumpe por la cancelación: debe terminar para poder decir la
+                        // verdad del informe.
+                        if matches!(status, ItemStatus::NotRecycled(_)) && it.is_dir() {
+                            match self.dir_check(it, p, &verify_cancel) {
+                                DirCheck::Intact => {}
+                                DirCheck::Changed => {
+                                    status = ItemStatus::DeletedUnexpectedly;
+                                    o = Outcome::DeletedUnexpectedly;
+                                }
+                                DirCheck::Unknown => {
+                                    status = ItemStatus::Unverified;
+                                    o = Outcome::Unverified;
+                                }
+                            }
                         }
                         let mut st = StatsSnapshot::default();
                         match status {
@@ -1351,13 +1360,22 @@ impl Cleaner {
         })
     }
 
-    /// R6: ¿sigue el directorio igual que justo antes del envío (mismo tamaño y mismo número de entradas)? Si la medida
-    /// falla, es INCOMPLETA (A-B2: una subcarpeta que no se pudo listar deja contenido sin contar y no demuestra nada) o
-    /// difiere en cualquier sentido, `false` (se trata como borrado, aunque sea parcial).
-    fn dir_untouched(&self, it: &PlanItem, p: &Pending, cancel: &Arc<AtomicBool>) -> bool {
+    /// R6 + A2-m1: ¿sigue el directorio igual que justo antes del envío? Tres estados:
+    /// * `Intact`: una medida COMPLETA con la misma huella (tamaños, número de entradas e identidades);
+    /// * `Changed`: una medida COMPLETA que difiere en cualquier sentido (se perdió o se cambió algo);
+    /// * `Unknown`: la medida no se pudo hacer entera (A-B2: una subcarpeta sin listar, una entrada que cambió o desapareció
+    ///   durante el recorrido, un fallo al abrir, una cancelación) o no hay medida anterior con la que comparar. No demuestra
+    ///   nada, ni que esté intacto ni que se perdiera algo.
+    fn dir_check(&self, it: &PlanItem, p: &Pending, cancel: &Arc<AtomicBool>) -> DirCheck {
         match (self.remeasure(it, cancel), p.snapshot) {
-            (Remeasure::Now(after), Some(before)) => snap_of(&after) == before,
-            _ => false,
+            (Remeasure::Now(after), Some(before)) => {
+                if snap_of(&after) == before {
+                    DirCheck::Intact
+                } else {
+                    DirCheck::Changed
+                }
+            }
+            _ => DirCheck::Unknown,
         }
     }
 
@@ -1430,6 +1448,17 @@ impl Cleaner {
     }
 }
 
+/// Qué se sabe del contenido de un directorio que la shell no envió (ver [`Cleaner::dir_check`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DirCheck {
+    /// Medida completa e igual a la de antes del envío.
+    Intact,
+    /// Medida completa y distinta: algo se perdió o cambió.
+    Changed,
+    /// La medida no se pudo hacer entera: no se puede afirmar nada.
+    Unknown,
+}
+
 /// Resultado de volver a medir un directorio justo antes de enviarlo.
 enum Remeasure {
     /// La medida de un recorrido COMPLETO (ver [`StatsSnapshot::is_complete`]).
@@ -1493,7 +1522,7 @@ struct Pending {
     /// hay ninguna. Si lo que se mide ahora es MÁS que esto, el elemento creció mientras esperaba su turno: no se envía.
     last: Option<u64>,
     /// La medida del directorio hecha justo antes de entregarlo a la shell (tamaño y número de entradas): lo que
-    /// `dir_untouched` compara después si la shell dice "eliminado" sin dar elemento en la Papelera (R6).
+    /// `dir_check` compara después si la shell dice "eliminado" sin dar elemento en la Papelera (R6).
     snapshot: Option<DirSnap>,
 }
 

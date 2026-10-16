@@ -457,8 +457,8 @@ sum-recycled-other =
     }
 sum-unverified =
     { $n ->
-        [one] It could not be checked what happened to { $count } item: look for it in the Recycle Bin.
-       *[other] It could not be checked what happened to { $count } items: look for them in the Recycle Bin.
+        [one] It could not be checked what happened to { $count } item: check it in its original place and in the Recycle Bin.
+       *[other] It could not be checked what happened to { $count } items: check them in their original place and in the Recycle Bin.
     }
 sum-not-recycled =
     { $n ->

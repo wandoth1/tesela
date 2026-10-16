@@ -458,8 +458,8 @@ sum-recycled-other =
     }
 sum-unverified =
     { $n ->
-        [one] No se pudo comprobar qué pasó con { $count } elemento: míralo en la Papelera.
-       *[other] No se pudo comprobar qué pasó con { $count } elementos: míralos en la Papelera.
+        [one] No se pudo comprobar qué pasó con { $count } elemento: revísalo en su sitio y en la Papelera.
+       *[other] No se pudo comprobar qué pasó con { $count } elementos: revísalos en su sitio y en la Papelera.
     }
 sum-not-recycled =
     { $n ->
