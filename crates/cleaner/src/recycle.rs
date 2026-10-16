@@ -907,7 +907,7 @@ pub(crate) fn purge_flags() -> FILEOPERATION_FLAGS {
 /// (un sustituto puesto por el mismo usuario puede llegar a la shell, que lo mueve a la Papelera si cabe, o lo elimina). Por
 /// eso el resultado trae, por elemento, la ruta real del elemento en la Papelera: quien llama compara su IDENTIDAD con la
 /// aprobada.
-pub fn recycle_paths(items: &[SendItem], mode: RecycleMode) -> Result<BatchOutcome> {
+pub(crate) fn recycle_paths(items: &[SendItem], mode: RecycleMode) -> Result<BatchOutcome> {
     if items.is_empty() {
         return Ok(BatchOutcome::default());
     }
@@ -961,12 +961,13 @@ pub enum PurgeStep<'a> {
 /// Quien llama pasa una lista enumerada al confirmar y los elementos se casan por su `id` estable: lo que haya entrado
 /// después no se toca. Antes de tocar un elemento se comprueba que su `$R` y su `$I` siguen teniendo la identidad que
 /// tenían al enumerar (M3). La cancelación se mira entre trozos de 500.
-pub fn purge_items(items: &[BinItem], cancel: &AtomicBool) -> Result<BatchOutcome> {
+#[cfg(test)]
+pub(crate) fn purge_items(items: &[BinItem], cancel: &AtomicBool) -> Result<BatchOutcome> {
     purge_items_flags(items, cancel, purge_flags(), &mut |_| {})
 }
 
 /// Como [`purge_items`], pero avisa de cada paso (ver [`PurgeStep`]) para dejarlo en el registro.
-pub fn purge_items_observed(
+pub(crate) fn purge_items_observed(
     items: &[BinItem],
     cancel: &AtomicBool,
     obs: &mut dyn FnMut(PurgeStep<'_>),
@@ -1105,18 +1106,13 @@ fn purge_items_flags(
                 out.meta_removed += 1;
             }
         }
-        let vetoed_ids: Vec<&OsString> = r.vetoed.iter().map(Veto::id).collect();
-        let vetoed_items: Vec<&BinItem> = chunk_items
-            .iter()
-            .copied()
-            .filter(|i| vetoed_ids.contains(&&i.id))
-            .collect();
+        let vetoed_items = vetoed_items(&chunk_items, &r.vetoed);
         if !vetoed_items.is_empty() {
             obs(PurgeStep::Vetoed(&vetoed_items));
         }
         let done: Vec<(&BinItem, Option<i32>)> = chunk_items
             .iter()
-            .filter(|i| !vetoed_ids.contains(&&i.id) && !replaced_ids.contains(&i.id))
+            .filter(|i| !vetoed_items.iter().any(|v| v.id == i.id) && !replaced_ids.contains(&i.id))
             .map(|i| (*i, r.events.iter().find(|e| e.item == i.id).map(|e| e.hr)))
             .collect();
         obs(PurgeStep::Done(&done));
@@ -1176,6 +1172,16 @@ fn open_bin_guard(item: &BinItem) -> Option<sys::Handle> {
     let h = sys::open_path_for_rename(Path::new(&item.id)).ok()?;
     let m = sys::meta(&h).ok()?;
     (m.identity == want && !m.delete_pending).then_some(h)
+}
+
+/// Los elementos del trozo a los que se atribuye algún veto (R-4): por el `id` del elemento al que pertenece lo vetado
+/// (`Veto::id`), no por la ruta vetada, que al purgar una carpeta de la Papelera es la de un HIJO.
+pub(crate) fn vetoed_items<'a>(chunk: &[&'a BinItem], vetoes: &[Veto]) -> Vec<&'a BinItem> {
+    chunk
+        .iter()
+        .copied()
+        .filter(|i| vetoes.iter().any(|v| *v.id() == i.id))
+        .collect()
 }
 
 /// Elementos con un evento de éxito cuyo objeto aprobado (el de su guarda) NO está pendiente de borrar: la shell borró otra
@@ -1477,56 +1483,84 @@ pub(crate) mod bintest {
             .collect()
     }
 
-    /// ¿Es un elemento de ALGUNA prueba (de cualquier ejecución)? Su carpeta de origen es hija directa de `%TEMP%` y se llama
-    /// `tesela-test-<uuid>`, o cuelga de ella; nunca coincide con elementos del usuario.
-    pub fn is_any_test_item(item: &BinItem) -> bool {
-        let temp = dunce::canonicalize(std::env::temp_dir()).unwrap();
+    /// ¿Tiene `name` la forma `tesela-test-<uuid>` (el nombre de un `Sandbox`: UUID v4 de 36 caracteres, 8-4-4-4-12 en
+    /// hexadecimal)? Con `exact`, sin nada detrás; sin él, puede seguir otra cosa (un archivo suelto con ese prefijo).
+    pub fn has_test_shape(name: &str, exact: bool) -> bool {
+        const PREFIX: &str = "tesela-test-";
+        let lower = name.to_lowercase();
+        let Some(rest) = lower.strip_prefix(PREFIX) else {
+            return false;
+        };
+        let Some(uuid) = rest.get(..36) else {
+            return false;
+        };
+        let shape_ok = uuid.char_indices().all(|(i, ch)| match i {
+            8 | 13 | 18 | 23 => ch == '-',
+            _ => ch.is_ascii_hexdigit(),
+        });
+        shape_ok && (!exact || rest.len() == 36)
+    }
+
+    /// ¿Es un elemento de ALGUNA prueba (de cualquier ejecución)? Su carpeta de origen es hija directa de `temp` y se llama
+    /// exactamente `tesela-test-<uuid>`, o cuelga de ella; o es `temp` mismo y el nombre del elemento empieza por
+    /// `tesela-test-<uuid>`. Con la FORMA del uuid (R-6): un `tesela-test-algo` del usuario no cuenta.
+    pub fn is_test_item_in(item: &BinItem, temp: &Path) -> bool {
         let key = |p: &Path| p.to_string_lossy().to_lowercase().replace('/', "\\");
         let parent = key(&crate::sys::strip_verbatim(item.original_parent.clone()));
-        let t = key(&temp);
+        let t = key(temp);
         let t = t.trim_end_matches('\\');
         match parent.strip_prefix(&format!("{t}\\")) {
-            Some(rest) => rest
-                .split('\\')
-                .next()
-                .unwrap_or("")
-                .starts_with("tesela-test-"),
-            None => {
-                parent == t
-                    && item
-                        .name
-                        .to_string_lossy()
-                        .to_lowercase()
-                        .starts_with("tesela-test-")
-            }
+            Some(rest) => has_test_shape(rest.split('\\').next().unwrap_or(""), true),
+            None => parent == t && has_test_shape(&item.name.to_string_lossy(), false),
         }
     }
 
-    /// Borra POR RUTA, sin el código bajo prueba, el `$R` y el `$I` de un elemento propio que quedó en la Papelera. Solo si
-    /// ambos cuelgan de `<unidad>:\$Recycle.Bin\<SID del usuario actual>\` y ninguno es un reparse point. `true` si quedó
-    /// sin `$R`.
+    /// [`is_test_item_in`] con el `%TEMP%` canónico de este proceso.
+    pub fn is_any_test_item(item: &BinItem) -> bool {
+        let temp = dunce::canonicalize(std::env::temp_dir()).unwrap();
+        is_test_item_in(item, &temp)
+    }
+
+    /// ¿Lo barre el barrido de restos? Solo un elemento de alguna prueba ([`is_test_item_in`]) borrado hace MÁS de 2 minutos
+    /// (nunca lo de una prueba que corra a la vez en otro proceso).
+    pub fn sweep_candidate(item: &BinItem, now: i64, temp: &Path) -> bool {
+        is_test_item_in(item, temp) && now - item.time_deleted > 120
+    }
+
+    /// ¿Es `p` un objeto normal, abierto sin seguir enlaces y que NO es un reparse point? Falla CERRADO: si no se puede abrir
+    /// o leer, no es "normal".
+    pub fn is_plain(p: &Path) -> bool {
+        sys::open_for_query(p)
+            .and_then(|h| sys::meta(&h))
+            .is_ok_and(|m| !m.is_reparse())
+    }
+
+    /// ¿Cuelga `p` de `<unidad>:\$Recycle.Bin\<sid>\`? (Los componentes se comprueban uno a uno.)
+    pub fn under_bin_of(p: &Path, sid: &str) -> bool {
+        let sid_dir = p.parent();
+        let bin_dir = sid_dir.and_then(Path::parent);
+        let drive = bin_dir.and_then(Path::parent);
+        !sid.is_empty()
+            && sid_dir
+                .and_then(Path::file_name)
+                .is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(sid))
+            && bin_dir
+                .and_then(Path::file_name)
+                .is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case("$Recycle.Bin"))
+            && drive.is_some_and(|d| PathKey::new(d).is_drive_root())
+    }
+
+    /// Borra POR RUTA, sin el código bajo prueba, el `$R` y el `$I` de un elemento propio que quedó en la Papelera. Solo si el
+    /// elemento es de una prueba ([`is_any_test_item`], defensa en profundidad: lo exige también el llamante), ambos cuelgan
+    /// de `<unidad>:\$Recycle.Bin\<SID del usuario actual>\` y ninguno es un reparse point ([`is_plain`], que falla cerrado).
+    /// `true` si quedó sin `$R`.
     pub fn remove_by_path(item: &BinItem) -> bool {
         let data = PathBuf::from(&item.id);
+        if !is_any_test_item(item) {
+            return false;
+        }
         let sid = tesela_scanner::current_user_sid().unwrap_or_default();
-        let under_own_bin = |p: &Path| {
-            let sid_dir = p.parent();
-            let bin_dir = sid_dir.and_then(Path::parent);
-            let drive = bin_dir.and_then(Path::parent);
-            sid_dir
-                .and_then(Path::file_name)
-                .is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case(&sid))
-                && !sid.is_empty()
-                && bin_dir
-                    .and_then(Path::file_name)
-                    .is_some_and(|n| n.to_string_lossy().eq_ignore_ascii_case("$Recycle.Bin"))
-                && drive.is_some_and(|d| PathKey::new(d).is_drive_root())
-        };
-        let safe = |p: &Path| {
-            under_own_bin(p)
-                && sys::open_for_query(p)
-                    .and_then(|h| sys::meta(&h))
-                    .map_or(true, |m| !m.is_reparse())
-        };
+        let safe = |p: &Path| under_bin_of(p, &sid) && is_plain(p);
         if let Some(meta) = meta_sibling(&data)
             && safe(&meta)
         {
@@ -1547,40 +1581,53 @@ pub(crate) mod bintest {
     }
 
     /// Purga lo que quede de las pruebas que cumplen `which`: hasta 3 intentos con `list_bin` + `purge_items` y, si aún queda
-    /// algo, borrado por ruta (ver [`remove_by_path`]). Devuelve cuántos elementos quedaron.
-    fn clean_own(which: &dyn Fn(&BinItem) -> bool) -> usize {
+    /// algo, borrado por ruta (ver [`remove_by_path`]). Devuelve cuántos elementos quedaron, o el error si la Papelera no se
+    /// puede listar (S-3: no se puede decir "0 fugas" sin haberla visto).
+    fn clean_own(which: &dyn Fn(&BinItem) -> bool) -> Result<usize> {
         for _ in 0..3 {
-            let Ok(items) = list_bin() else { break };
-            let mine: Vec<BinItem> = items.into_iter().filter(|i| which(i)).collect();
+            let mine: Vec<BinItem> = list_bin()?.into_iter().filter(|i| which(i)).collect();
             if mine.is_empty() {
-                return 0;
+                return Ok(0);
             }
             let _ = purge_items(&mine, &AtomicBool::new(false));
         }
-        let left: Vec<BinItem> = list_bin()
-            .map(|v| v.into_iter().filter(|i| which(i)).collect())
-            .unwrap_or_default();
+        let left: Vec<BinItem> = list_bin()?.into_iter().filter(|i| which(i)).collect();
         for it in &left {
             remove_by_path(it);
         }
-        list_bin().map_or(0, |v| v.into_iter().filter(|i| which(i)).count())
+        Ok(list_bin()?.into_iter().filter(|i| which(i)).count())
     }
 
-    /// Barre los restos de ejecuciones ANTERIORES (origen bajo `tesela-test-*`, borrados hace más de 2 minutos: nunca lo de
-    /// una prueba que corra a la vez en otro proceso). Solo se llama con las pruebas reales activadas y con `bin_lock()`.
+    /// ¿Hay que hacer `panic!` por lo que dejó la limpieza? `Some(mensaje)` si quedan elementos o si no se pudo listar la
+    /// Papelera, salvo que ya se esté en un pánico (un `panic!` en un `drop` durante un pánico aborta el proceso).
+    pub fn leak_verdict(left: Result<usize>, panicking: bool) -> Option<String> {
+        let msg = match left {
+            Ok(0) => return None,
+            Ok(n) => format!("quedan {n} elementos propios en la Papelera"),
+            Err(e) => {
+                format!("no se pudo listar la Papelera para comprobar que no quedan restos: {e}")
+            }
+        };
+        eprintln!("BinGuard: {msg}");
+        (!panicking).then_some(msg)
+    }
+
+    /// Barre los restos de ejecuciones ANTERIORES (origen bajo `tesela-test-<uuid>`, borrados hace más de 2 minutos: nunca lo
+    /// de una prueba que corra a la vez en otro proceso). Solo se llama con las pruebas reales activadas y con `bin_lock()`.
     pub fn sweep_leftovers() {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_secs() as i64);
-        let n = clean_own(&|i| is_any_test_item(i) && now - i.time_deleted > 120);
-        if n > 0 {
-            eprintln!("BARRIDO: quedan {n} restos de pruebas anteriores en la Papelera");
+        let temp = dunce::canonicalize(std::env::temp_dir()).unwrap();
+        if let Some(msg) = leak_verdict(clean_own(&|i| sweep_candidate(i, now, &temp)), false) {
+            panic!("BARRIDO: {msg}");
         }
     }
 
     /// Al soltarla (también en un pánico) purga SOLO los elementos propios de la prueba: hasta 3 intentos con el código y,
     /// si algo queda, borrado por ruta SIN el código bajo prueba (ver [`remove_by_path`]). Dice cuántos quedaron y, si no
-    /// es 0, hace `panic!` (salvo que ya se esté en un pánico): una fuga no puede pasar desapercibida.
+    /// es 0 (o no se pudo listar la Papelera), hace `panic!` (salvo que ya se esté en un pánico): una fuga no puede pasar
+    /// desapercibida.
     pub struct BinGuard {
         pub uuid: String,
     }
@@ -1588,11 +1635,8 @@ pub(crate) mod bintest {
     impl Drop for BinGuard {
         fn drop(&mut self) {
             let left = clean_own(&|i| is_mine(i, &self.uuid));
-            if left > 0 {
-                eprintln!("BinGuard: quedan {left} elementos propios en la Papelera");
-                if !std::thread::panicking() {
-                    panic!("BinGuard: quedan {left} elementos propios en la Papelera");
-                }
+            if let Some(msg) = leak_verdict(left, std::thread::panicking()) {
+                panic!("BinGuard: {msg}");
             }
         }
     }
@@ -2289,6 +2333,170 @@ mod tests {
             .collect();
         purge_items(&rest, &AtomicBool::new(false)).unwrap();
         assert_eq!(ids(), before);
+    }
+
+    /// R-4: el elemento al que se atribuye un veto es el DUEÑO de la ruta vetada, no la ruta: con un veto cuya ruta es la de un
+    /// HIJO de una carpeta de la Papelera (`owner` = su `$R`) el elemento sigue constando como vetado en el trozo.
+    #[test]
+    fn el_veto_de_un_hijo_marca_como_vetado_al_elemento_de_su_carpeta() {
+        let sb = Sandbox::new();
+        let a = synthetic_bin_item(&sb, "AAAA01", b"x");
+        let b = synthetic_bin_item(&sb, "BBBB02", b"y");
+        let c = synthetic_bin_item(&sb, "CCCC03", b"z");
+        let chunk = [&a, &b, &c];
+        let child_of_b = PathBuf::from(&b.id).join("sub/hijo.txt").into_os_string();
+        let veto = Veto {
+            item: child_of_b,
+            owner: Some(b.id.clone()),
+            kind: VetoKind::IdentityMismatch,
+        };
+        let v = vetoed_items(&chunk, std::slice::from_ref(&veto));
+        assert_eq!(v.len(), 1);
+        assert_eq!(v[0].id, b.id);
+        // Un veto sin dueño (un elemento al que se vetó él mismo) se atribuye por su propia ruta.
+        let own = Veto {
+            item: a.id.clone(),
+            owner: None,
+            kind: VetoKind::NotApproved,
+        };
+        let v = vetoed_items(&chunk, &[own, veto]);
+        assert_eq!(
+            v.iter().map(|i| &i.id).collect::<Vec<_>>(),
+            vec![&a.id, &b.id]
+        );
+        // Sin vetos, ninguno.
+        assert!(vetoed_items(&chunk, &[]).is_empty());
+    }
+
+    /// R-5: el barrido de restos SOLO coge elementos de alguna prueba (carpeta de origen `tesela-test-<uuid>` hija de `%TEMP%`,
+    /// o un elemento suelto de `%TEMP%` con ese nombre) borrados hace más de 2 minutos: nunca uno del usuario, ni uno reciente.
+    #[test]
+    fn el_barrido_solo_coge_restos_de_pruebas_antiguos() {
+        const UUID: &str = "0b9e4a6c-1d2f-4e3a-8b7c-5d6e7f8a9b0c";
+        let temp = PathBuf::from(r"C:\Users\<usuario>\AppData\Local\Temp");
+        let item = |parent: &str, name: &str, deleted: i64| BinItem {
+            id: OsString::from(r"C:\$Recycle.Bin\S-synthetic\$RXXXXXX.txt"),
+            name: OsString::from(name),
+            original_parent: PathBuf::from(parent),
+            time_deleted: deleted,
+            size: 1,
+            data_id: None,
+            meta_id: None,
+            no_identity: false,
+        };
+        let now = 10_000;
+        let old = now - 121;
+        let test_dir = format!(r"{}\tesela-test-{UUID}\Docs", temp.display());
+        // De una prueba y antiguo: sí.
+        assert!(sweep_candidate(&item(&test_dir, "a.txt", old), now, &temp));
+        // ...pero reciente (hace 120 s o menos): no.
+        assert!(!sweep_candidate(
+            &item(&test_dir, "a.txt", now - 120),
+            now,
+            &temp
+        ));
+        assert!(!sweep_candidate(&item(&test_dir, "a.txt", now), now, &temp));
+        // Del usuario (cualquier otra carpeta), antiguo: no.
+        for user in [
+            r"C:\Users\<usuario>\Documents",
+            r"C:\Users\<usuario>\AppData\Local\Temp\otra",
+            r"C:\Proyectos\tesela",
+            r"C:\Users\<usuario>\AppData\Local\Temp\tesela-test-sin-uuid\x",
+        ] {
+            assert!(
+                !sweep_candidate(&item(user, "a.txt", old), now, &temp),
+                "{user}"
+            );
+        }
+        // Un elemento SUELTO en `%TEMP%`: solo con la forma `tesela-test-<uuid>`.
+        let temp_s = temp.display().to_string();
+        assert!(sweep_candidate(
+            &item(&temp_s, &format!("tesela-test-{UUID}.txt"), old),
+            now,
+            &temp
+        ));
+        assert!(!sweep_candidate(
+            &item(&temp_s, "tesela-test-mis-notas.txt", old),
+            now,
+            &temp
+        ));
+        assert!(!sweep_candidate(
+            &item(&temp_s, "informe.txt", old),
+            now,
+            &temp
+        ));
+        // R-6: la forma del uuid (36 caracteres, 8-4-4-4-12 en hexadecimal) y, para carpetas, sin nada detrás.
+        assert!(has_test_shape(&format!("tesela-test-{UUID}"), true));
+        assert!(has_test_shape(
+            &format!("TESELA-TEST-{}", UUID.to_uppercase()),
+            true
+        ));
+        assert!(!has_test_shape(&format!("tesela-test-{UUID}-extra"), true));
+        assert!(has_test_shape(&format!("tesela-test-{UUID}-extra"), false));
+        for bad in [
+            "tesela-test-",
+            "tesela-test-1234",
+            "tesela-test-0b9e4a6c1d2f4e3a8b7c5d6e7f8a9b0c0000",
+            "tesela-test-0b9e4a6c-1d2f-4e3a-8b7c-5d6e7f8a9b0z",
+            "tesela-tests-0b9e4a6c-1d2f-4e3a-8b7c-5d6e7f8a9b0c",
+        ] {
+            assert!(!has_test_shape(bad, false), "{bad}");
+        }
+    }
+
+    /// R-5: el borrado por ruta de la limpieza rechaza un reparse point (junction) y falla CERRADO si no puede abrir lo que va
+    /// a borrar; y exige la forma de la Papelera propia.
+    #[test]
+    fn el_borrado_por_ruta_rechaza_reparse_points_y_falla_cerrado() {
+        let mut sb = Sandbox::new();
+        sb.write("p/normal.txt", 10);
+        sb.mkdir("p/carpeta");
+        sb.junction("p/enlace", "p/carpeta");
+        assert!(is_plain(&sb.long("p/normal.txt")));
+        assert!(is_plain(&sb.long("p/carpeta")));
+        assert!(!is_plain(&sb.long("p/enlace")), "un junction no es normal");
+        assert!(
+            !is_plain(&sb.long("p/no-existe")),
+            "lo que no se abre, no es normal"
+        );
+        // La forma de la Papelera propia.
+        let ok = Path::new(r"C:\$Recycle.Bin\S-synthetic-x\$RAAAA.txt");
+        assert!(under_bin_of(ok, "S-synthetic-x"));
+        assert!(under_bin_of(
+            Path::new(r"c:\$recycle.bin\s-synthetic-x\$RAAAA.txt"),
+            "S-SYNTHETIC-X"
+        ));
+        assert!(!under_bin_of(ok, "S-synthetic-otro"));
+        assert!(!under_bin_of(ok, ""));
+        assert!(!under_bin_of(
+            Path::new(r"C:\carpeta\S-synthetic-x\$RAAAA.txt"),
+            "S-synthetic-x"
+        ));
+        assert!(!under_bin_of(
+            Path::new(r"C:\x\$Recycle.Bin\S-synthetic-x\$RAAAA.txt"),
+            "S-synthetic-x"
+        ));
+        sb.remove_junction("p/enlace");
+    }
+
+    /// S-3: la detección de fugas del `BinGuard` no dice "0 fugas" si no pudo mirar: sin poder listar la Papelera hay error, y
+    /// con fugas hay `panic!` salvo que ya se esté en un pánico.
+    #[test]
+    fn la_comprobacion_de_fugas_falla_si_no_puede_listar_la_papelera() {
+        assert_eq!(leak_verdict(Ok(0), false), None);
+        assert_eq!(leak_verdict(Ok(0), true), None);
+        assert!(leak_verdict(Ok(3), false).is_some_and(|m| m.contains("3 elementos")));
+        assert_eq!(
+            leak_verdict(Ok(3), true),
+            None,
+            "ya hay un pánico: no se aborta"
+        );
+        let err = || ShellError {
+            hresult: 0x8000_4005u32 as i32,
+            detail: "no se puede listar".into(),
+        };
+        assert!(leak_verdict(Err(err()), false).is_some_and(|m| m.contains("no se pudo listar")));
+        assert_eq!(leak_verdict(Err(err()), true), None);
     }
 
     /// Incidente de la Papelera (limpieza de las pruebas): el borrado POR RUTA que usa `BinGuard` cuando el código bajo prueba no

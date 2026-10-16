@@ -514,7 +514,7 @@ fn count_error(unit: &Unit, code: Win32) -> Outcome {
 }
 
 /// Ejecuta las unidades con un pool de `threads` hilos y vuelve cuando todas terminaron (o se canceló).
-pub fn run(units: &[Arc<Unit>], threads: usize) {
+pub(crate) fn run(units: &[Arc<Unit>], threads: usize) {
     let threads = threads.clamp(1, 32);
     let workers: Vec<Worker<Task>> = (0..threads).map(|_| Worker::new_lifo()).collect();
     let shared = Shared {

@@ -127,6 +127,23 @@ impl Progress {
     }
 }
 
+/// Cuántos elementos de la lista cambiaron desde la confirmación: los que no cuadraban al enumerar (`not_matching`) más los
+/// elementos a los que se atribuye algún veto (`Veto::id`: el `$R` dueño, no la ruta vetada, que puede ser de un hijo).
+pub(crate) fn bin_changed(
+    not_matching: usize,
+    vetoes: &[recycle::Veto],
+    wanted: &HashSet<&OsString>,
+) -> u64 {
+    let mut vetoed: Vec<&OsString> = vetoes
+        .iter()
+        .map(recycle::Veto::id)
+        .filter(|id| wanted.contains(id))
+        .collect();
+    vetoed.sort();
+    vetoed.dedup();
+    (not_matching + vetoed.len()) as u64
+}
+
 /// Qué falló al enviar un elemento a la Papelera.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecycleFail {
@@ -721,12 +738,7 @@ impl Cleaner {
                 rep.still_there = rep.requested - rep.purged;
                 // Cambiaron desde la confirmación: los que no cuadraban al enumerar y los que cambiaron DESPUÉS, justo antes de
                 // que la shell los borrara (veto de `PreDeleteItem`, A-M4).
-                rep.changed = (out.changed_bin.len()
-                    + out
-                        .vetoed
-                        .iter()
-                        .filter(|v| wanted.contains(v.id()))
-                        .count()) as u64;
+                rep.changed = bin_changed(out.changed_bin.len(), &out.vetoed, &wanted);
                 rep.unverifiable = out.unverifiable_bin.len() as u64;
                 // El `E_ABORT` que provoca el propio receptor al vetar no es un fallo de la shell.
                 rep.failed = out.error.is_some() && !out.sink_aborted;

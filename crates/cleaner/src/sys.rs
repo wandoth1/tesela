@@ -659,7 +659,7 @@ pub fn list_dir(h: &Handle) -> Result<Vec<DirEntry>, Win32> {
 /// Marca para borrar el objeto abierto: `FileDispositionInfoEx` (DELETE | POSIX_SEMANTICS | IGNORE_READONLY) sobre
 /// ESTE handle. Un directorio solo se borra si está vacío (`DIR_NOT_EMPTY` si no). Si el sistema de archivos no
 /// admite la clase extendida (o la semántica POSIX), cae a `FileDispositionInfo`, que borra al cerrar el handle.
-pub fn delete_on_handle(h: &Handle) -> Result<(), Win32> {
+pub(crate) fn delete_on_handle(h: &Handle) -> Result<(), Win32> {
     let info = FILE_DISPOSITION_INFO_EX {
         Flags: FILE_DISPOSITION_FLAG_DELETE
             | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS

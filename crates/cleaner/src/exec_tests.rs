@@ -3532,6 +3532,42 @@ fn una_carpeta_que_no_se_puede_leer_entera_no_se_aprueba_para_la_papelera() {
     );
 }
 
+/// R-4: `BinReport.changed` cuenta los elementos a los que se atribuye un veto por su DUEÑO (el `$R` de su carpeta), no por
+/// la ruta vetada, que con la shell real puede ser la de un hijo; un elemento con varios vetos cuenta una vez, y lo que no es
+/// de la lista no cuenta.
+#[test]
+fn los_cambiados_de_la_papelera_cuentan_el_dueno_del_veto_y_no_la_ruta() {
+    let id = |n: &str| OsString::from(format!("C:\\$Recycle.Bin\\S-x\\{n}"));
+    let (a, b, ajeno) = (id("$RAAAA"), id("$RBBBB"), id("$RZZZZ"));
+    let wanted: HashSet<&OsString> = [&a, &b].into_iter().collect();
+    let veto = |item: OsString, owner: Option<OsString>| recycle::Veto {
+        item,
+        owner,
+        kind: recycle::VetoKind::IdentityMismatch,
+    };
+    let child = |parent: &OsString| {
+        let mut p = parent.clone();
+        p.push("\\sub\\hijo.txt");
+        p
+    };
+    // Un veto de un HIJO de `a`: cuenta `a` (con la ruta del hijo no estaría en la lista).
+    assert_eq!(
+        bin_changed(0, &[veto(child(&a), Some(a.clone()))], &wanted),
+        1
+    );
+    // Dos vetos del mismo elemento y uno de otro: 2; sumados a los que no cuadraban al enumerar.
+    let vetoes = [
+        veto(child(&a), Some(a.clone())),
+        veto(a.clone(), Some(a.clone())),
+        veto(b.clone(), None),
+    ];
+    assert_eq!(bin_changed(0, &vetoes, &wanted), 2);
+    assert_eq!(bin_changed(3, &vetoes, &wanted), 5);
+    // Un veto de algo que no es de la lista no cuenta.
+    assert_eq!(bin_changed(0, &[veto(ajeno.clone(), None)], &wanted), 0);
+    assert_eq!(bin_changed(1, &[], &wanted), 1);
+}
+
 /// E1: una elevación inyectada para probar las dos ramas (el CI no se puede elevar).
 struct FakeElevation(bool);
 
