@@ -2,18 +2,22 @@
 
 ## Cómo reportar una vulnerabilidad
 
-**No abras una issue pública.** Usa los avisos de seguridad privados de GitHub:
+**No publiques los detalles de una vulnerabilidad en una issue pública.** Hay dos canales:
 
-1. Ve a la pestaña **Security** del repositorio, [github.com/wandoth1/tesela/security](https://github.com/wandoth1/tesela/security).
-2. Pulsa **Report a vulnerability** (o abre directamente
-   [github.com/wandoth1/tesela/security/advisories/new](https://github.com/wandoth1/tesela/security/advisories/new)).
-3. Describe el problema: versión de Tesela, qué ocurre, cómo reproducirlo y qué impacto tiene.
+1. **Aviso privado de GitHub (preferido):** pestaña **Security** del repositorio, botón **Report a vulnerability**
+   ([github.com/wandoth1/tesela/security/advisories/new](https://github.com/wandoth1/tesela/security/advisories/new)).
+   Solo lo ven los mantenedores. *Si el botón no aparece, el reporte privado todavía no está activado en el repositorio: usa el
+   canal 2.*
+2. **Canal de respaldo (visible desde hoy):** abre una [issue](https://github.com/wandoth1/tesela/issues/new) **SIN detalles
+   técnicos** (sin pasos, sin capturas, sin datos): solo di que quieres reportar un problema de seguridad y pide un canal
+   privado. Un mantenedor te responderá en la issue con cómo seguir, y la issue se borrará o se dejará sin detalles.
 
-Solo lo ven los mantenedores. Si el aviso se confirma, se prepara el arreglo en privado, se publica una versión corregida y
-después el aviso (con crédito a quien lo reportó, si lo quiere).
+Cuando el aviso se confirme, se prepara el arreglo en privado, se publica una versión corregida y después el aviso (con crédito
+a quien lo reportó, si lo quiere).
 
-**No incluyas datos personales** (nombres de carpetas o archivos reales, tu nombre de usuario, capturas de tu disco): para
-reproducir un fallo basta una carpeta de prueba o el modo `--demo`, que usa datos sintéticos.
+Para reportar, describe: versión de Tesela, qué ocurre, cómo reproducirlo y qué impacto tiene. **No incluyas datos personales**
+(nombres de carpetas o archivos reales, tu nombre de usuario, capturas de tu disco): para reproducir un fallo basta una carpeta
+de prueba o el modo `--demo`, que usa datos sintéticos.
 
 ## Qué cuenta como vulnerabilidad
 
@@ -34,8 +38,4 @@ Solo la **última versión publicada** recibe correcciones de seguridad (hoy, la
 ## Plazos
 
 Se intenta acusar recibo en pocos días y dar un primer análisis en dos semanas. Es un proyecto personal sin garantías de
-servicio; si un aviso queda sin respuesta, se puede insistir en el mismo aviso.
-
-<!-- PENDIENTE DEL MANTENEDOR: activar "Private vulnerability reporting" en Settings > Code security del repositorio. Hoy
-     está DESACTIVADO (la API devuelve enabled=false): sin eso el botón "Report a vulnerability" no aparece y este texto
-     remite a algo que no existe. Quitar este comentario cuando esté activado. -->
+servicio; si un aviso queda sin respuesta, se puede insistir en el mismo aviso o issue.

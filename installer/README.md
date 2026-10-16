@@ -9,26 +9,42 @@
 nada de WiX se redistribuye dentro del MSI.
 
 ```powershell
-dotnet tool install --global wix --version 5.0.2 --add-source https://api.nuget.org/v3/index.json   # instalar
-dotnet tool uninstall --global wix                                                                # quitar
+pwsh -File scripts/install-wix.ps1 -Version 5.0.2    # instalar (y comprobar el SHA-512 del paquete)
+dotnet tool uninstall --global wix                   # quitar
 ```
 
-La versión está fijada en `scripts/build-msi.ps1`, en `.github/workflows/ci.yml` y en `.github/workflows/release.yml`
-(`scripts/tests/wix-version.tests.ps1` comprueba que las tres coinciden). **Por qué la 5.0.2 y no la 6.x o la 7.x:**
-desde la 6.0 el binario oficial se distribuye con el acuerdo OSMF (*Open Source Maintenance Fee*; solo cobra a quien
-obtiene ingresos con WiX, y el código sigue siendo MS-RL) y la herramienta pide **aceptarlo**; la 5.0.2 es MS-RL pura y no
-pide aceptar nada. Subir de versión es una decisión que se toma a propósito: cambia las tres a la vez y vuelve a probar el
-ciclo completo.
+`install-wix.ps1` ejecuta `dotnet tool install --global wix --version 5.0.2 --configfile installer/nuget.config`: ese
+`nuget.config` (`<clear/>` y solo nuget.org) hace que dotnet ignore cualquier otra fuente de NuGet de la máquina, y después se
+compara el SHA-512 del `.nupkg` instalado con el que publica nuget.org (fijado en el script).
+
+La versión está fijada en `scripts/build-msi.ps1`, `scripts/install-wix.ps1` (con su SHA-512), `.github/workflows/ci.yml` y
+`.github/workflows/release.yml` (`scripts/tests/wix-version.tests.ps1` comprueba que coinciden). **Por qué la 5.0.2 y no la 6.x
+o la 7.x:** desde la 6.0 el binario oficial se distribuye con el acuerdo OSMF (*Open Source Maintenance Fee*; solo cobra a
+quien obtiene ingresos con WiX, y el código sigue siendo MS-RL) y la herramienta pide **aceptarlo**; la 5.0.2 es MS-RL pura y
+no pide aceptar nada. Subir de versión es una decisión que se toma a propósito: cambia todo a la vez y vuelve a probar el ciclo
+completo.
 
 ## Qué instala
 
 - `tesela.exe`, `tesela-scan.exe`, `LICENSE-MIT`, `LICENSE-APACHE` y `THIRD-PARTY-NOTICES.md` en
-  `%LOCALAPPDATA%\Programs\Tesela`.
+  `%LOCALAPPDATA%\Programs\Tesela` (o en la carpeta que se pida con `INSTALLFOLDER=`, ver abajo).
 - Un acceso directo **"Tesela"** en el menú Inicio del usuario. Sin acceso en el escritorio y sin tocar el `PATH`.
-- La entrada de **Aplicaciones instaladas** (icono, editor "Tesela contributors", versión y enlace al repositorio).
-- Valores de `HKCU\Software\Tesela` (uno por componente: Windows Installer los necesita como *KeyPath* en una instalación por
-  usuario) que se quitan al desinstalar.
+- La entrada de **Aplicaciones instaladas** (icono, editor "Tesela contributors", versión y enlace al repositorio). Windows
+  Installer escribe su clave de desinstalación en `HKLM\...\Uninstall\{ProductCode}` aunque el paquete sea por usuario (lo hace
+  el servicio, sin pedir elevación); el icono va por `ProductIcon` en `%APPDATA%\Microsoft\Installer\{ProductCode}`.
+  `ARPINSTALLLOCATION` queda vacío: rellenarlo exigiría una acción personalizada.
+- Valores de `HKCU\Software\Tesela` (uno por componente, más `InstallFolder`: Windows Installer los necesita como *KeyPath* en
+  una instalación por usuario) que se quitan al desinstalar.
 - **Sin acciones personalizadas**, sin interfaz propia (la barra de progreso estándar) y sin elevación (`Scope="perUser"`).
+
+### Carpeta personalizada
+
+`msiexec /i tesela-<versión>-x64.msi INSTALLFOLDER="C:Mi carpeta\"` instala ahí. La carpeta se **recuerda** en
+`HKCU\Software\Tesela\InstallFolder` (un `RegistryValue` con `[INSTALLFOLDER]`) y se **recupera** con una `RegistrySearch`
+hacia `INSTALLFOLDER`, que corre también al actualizar, reparar y desinstalar: así `msiexec /x` (o Aplicaciones instaladas)
+quita los archivos de la carpeta personalizada sin necesidad de repetir el parámetro, y una actualización se queda donde
+estaba. Consecuencia: **la carpeta de una instalación existente no se cambia pasando otro `INSTALLFOLDER`**; hay que
+desinstalar e instalar de nuevo. Sin esto, los archivos de una instalación personalizada quedaban huérfanos al desinstalar.
 
 ## Identificadores (NO cambiar)
 
@@ -56,15 +72,42 @@ ciclo completo.
 
 ## Compilar y validar
 
+Requisitos: Windows con la toolchain MSVC y el **Windows SDK** (`rc.exe`, que usa `winresource` para el icono y los datos de
+versión), Python 3 y WiX 5.0.2 (arriba).
+
 ```powershell
 pwsh -File scripts/build-msi.ps1
 ```
 
-Compila los ejecutables (`build-release.ps1`: CRT estático, sin rutas de la máquina, imports PE), empaqueta el MSI y el zip
-portable, escribe `SHA256SUMS.txt` y **valida** el MSI (ICE, tablas, que es por usuario, que no lleva acciones
-personalizadas, que sus archivos son byte a byte los compilados y que ni el MSI ni el zip ni sus contenidos llevan datos de
-la máquina). Salida en `<target de cargo>/dist`; nada se escribe en el repositorio.
+Compila los ejecutables (`build-release.ps1`: CRT estático, `--locked`, enlace reproducible, sin rutas de la máquina, imports
+PE), empaqueta el MSI y el zip portable, escribe `SHA256SUMS.txt` y **valida** el MSI (`scripts/msi-validate.ps1`): ICE, lista
+**cerrada** de tablas (cualquier `CustomAction`, `Environment`, `ServiceInstall`, `Class`, `Extension`, `ProgId`, `Binary`... es
+un fallo), por usuario, archivos byte a byte los compilados, y ni el MSI ni el zip ni sus contenidos llevan datos de la
+máquina. Salida en `<target de cargo>/dist`; nada se escribe en el repositorio. `scripts/tests/msi-validate.tests.ps1 -Msi
+<msi>` prueba el validador con copias manipuladas del MSI (sin instalarlas).
 
 El icono **no se versiona** (`privacy-check` rechaza las imágenes): `crates/app/build.rs` lo dibuja en cada compilación y lo
 incrusta en `tesela.exe`; `scripts/extract-ico.py` lo saca del ejecutable para el MSI. (Apuntar la tabla `Icon` al `.exe`
 metería una copia entera del ejecutable en el MSI.)
+
+El build es **reproducible**: `-Clink-arg=/Brepro` y `--remap-path-prefix` hacen que el mismo commit dé el mismo `.exe` byte a
+byte en carpetas distintas. (El MSI y el zip no lo son: llevan marcas de tiempo y el `ProductCode` es nuevo en cada
+compilación.)
+
+## Antes de la primera release
+
+**[A CONFIGURAR POR EL MANTENEDOR]** Son ajustes del repositorio que hoy **no están hechos** (no se pueden hacer desde el
+código ni los toca el CI). Hasta entonces, cualquiera con permiso de escritura puede empujar a `main` o crear una etiqueta
+`v*` que dispara `release.yml`:
+
+1. **Ruleset de etiquetas `v*`:** solo administradores, sin force-push ni borrado.
+2. **Protección de `main`:** pull request obligatorio, revisión de los code owners (`.github/CODEOWNERS`) y los checks del CI
+   (`privacy`, `privacy-history`, `build`, `deny`, `msrv`, `aarch64`, `msi`) requeridos.
+3. **Environment `release`** con revisor requerido.
+4. **"Require SHA pinning"** para las acciones (Settings > Actions).
+5. **Immutable releases.**
+6. **MFA** en todas las cuentas con acceso (GitHub y, cuando exista, SignPath).
+7. Activar **"Private vulnerability reporting"** (Settings > Code security) para que funcione el botón "Report a vulnerability"
+   de `SECURITY.md` (hoy está desactivado; mientras tanto vale el canal de respaldo que describe).
+8. (Opcional) Ensayar el flujo: Actions > Release > Run workflow en `main` (ensayo, sin publicar nada).
+9. Poner fecha a la sección de `CHANGELOG.md` y comprobar que la etiqueta es la versión de `Cargo.toml`.

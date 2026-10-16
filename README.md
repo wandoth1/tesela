@@ -3,6 +3,8 @@
 **Mira qué ocupa tu disco y libera espacio sin miedo.**
 Analizador visual de espacio en disco para Windows, escrito en Rust: rápido, ligero y claro.
 
+[Instalación](#instalación) · [Code signing policy](CODE_SIGNING.md) · [Seguridad](SECURITY.md) · [Cambios](CHANGELOG.md)
+
 > 🚧 **Estado: MVP v0.1 en construcción.** Hechos el modelo, el escáner, la interfaz (mapa, lista, detalles, escaneo con progreso real, es/en, claro/oscuro) y **la limpieza**: Recomendaciones, cesta, confirmación y resumen, con borrado seguro por handle y envío a la Papelera. **Esta versión borra de verdad** (solo lo que apruebas en la confirmación): pruébala primero con `--dry-run` o con `--demo`. El instalador MSI por usuario ya está hecho (ver [Instalación](#instalación)); falta publicar la primera release. Conclusiones de la fase 0 en [docs/fase-0-conclusiones.md](docs/fase-0-conclusiones.md); el plan completo está en [docs/PLAN.md](docs/PLAN.md).
 
 ## Qué será
@@ -20,6 +22,8 @@ Windows 10 22H2 o Windows 11, x64. **No necesita administrador.** Descarga los a
 [github.com/wandoth1/tesela/releases](https://github.com/wandoth1/tesela/releases) (mientras no haya ninguna publicada, el
 instalador solo se puede construir desde el código: `pwsh -File scripts/build-msi.ps1`).
 
+**Code signing policy:** la v0.1 todavía no está firmada; la [política de firma de código (Code signing policy)](CODE_SIGNING.md) describe qué se firmará, quién aprueba cada release y cómo se construye.
+
 ### Instalador MSI (recomendado)
 
 1. Descarga `tesela-<versión>-x64.msi`.
@@ -36,6 +40,10 @@ instalador solo se puede construir desde el código: `pwsh -File scripts/build-m
 `tesela-<versión>-x64-portable.zip` trae `tesela.exe`, `tesela-scan.exe`, las licencias y los avisos de terceros. Descomprímelo
 donde quieras y ejecuta `tesela.exe`; no instala nada ni toca el registro. Para quitarlo, borra la carpeta.
 
+> El zip descargado lleva la marca de la web (*Mark of the Web*) y los archivos que descomprimes la heredan, así que SmartScreen puede avisar también al abrir el `tesela.exe` descomprimido (ver más abajo). Si has verificado la descarga, puedes quitar la marca antes de descomprimir con *Propiedades > Desbloquear* del zip, o con `Unblock-File .\tesela-<versión>-x64-portable.zip`.
+
+`tesela --version` y `tesela-scan --version` imprimen la versión. `tesela-scan` (herramienta de consola) la escribe por la salida **estándar**; `tesela.exe` (aplicación gráfica, sin consola propia) la escribe por la salida de **errores** de quien lo lanza, así que en PowerShell se ve con `Start-Process .	esela.exe -ArgumentList --version -Wait -NoNewWindow` o desde `cmd`.
+
 ### Verificar la descarga
 
 Cada release incluye `SHA256SUMS.txt` y una *attestation* de procedencia (GitHub certifica que los archivos salen del flujo
@@ -43,9 +51,10 @@ público `release.yml` de este repositorio, sin manipular).
 
 ```powershell
 # 1. La suma SHA-256 tiene que ser la de SHA256SUMS.txt:
-Get-FileHash .	esela-0.1.0-x64.msi -Algorithm SHA256
+Get-FileHash .\tesela-0.1.0-x64.msi -Algorithm SHA256
 # 2. La procedencia (necesita GitHub CLI: https://cli.github.com):
-gh attestation verify .	esela-0.1.0-x64.msi --repo wandoth1/tesela
+gh attestation verify .\tesela-0.1.0-x64.msi --repo wandoth1/tesela `
+    --signer-workflow wandoth1/tesela/.github/workflows/release.yml
 ```
 
 ### Aviso de Windows SmartScreen
@@ -130,7 +139,7 @@ Rust · [egui/eframe](https://github.com/emilk/egui) · [windows-rs](https://git
 
 ---
 
-**English:** Tesela is a visual disk space analyzer and cleaner for Windows, written in Rust. Phase 0 (measurement spike) is done and the MVP v0.1 is under construction (scan, treemap, and the cleaner with handle-based safe deletion are in; the installer is pending); see [docs/PLAN.md](docs/PLAN.md) and [docs/fase-0-conclusiones.md](docs/fase-0-conclusiones.md) (in Spanish).
+**English:** Tesela is a visual disk space analyzer and cleaner for Windows, written in Rust. The MVP v0.1 is feature-complete (scanner, treemap UI, and the cleaner with handle-based safe deletion) and ships as a **per-user MSI installer** (no administrator needed) plus a portable zip, built and attested by GitHub Actions; the first release is not published yet and is **unsigned** (see [Code signing policy](CODE_SIGNING.md)). See [docs/PLAN.md](docs/PLAN.md) and [docs/fase-0-conclusiones.md](docs/fase-0-conclusiones.md) (in Spanish).
 
 ## Desarrollo
 
@@ -138,6 +147,8 @@ Workspace de Cargo en la raíz (`crates/`); `spike/` es el código de medición 
 Estado del MVP v0.1: hechos el modelo (`tesela-model`), el escáner de solo lectura (`tesela-scanner`) con su CLI
 `tesela-scan`, el layout del treemap (`tesela-layout`), la limpieza (`tesela-cleaner`: reglas, protecciones, borrado por
 handle y Papelera), la interfaz (`tesela-ui`) y el ejecutable (`tesela-app`, binario `tesela`).
+
+Requisitos: Rust (el toolchain de `rust-toolchain.toml`, MSVC), el **Windows SDK** (`rc.exe`: `winresource` incrusta el icono y los datos de versión en los `.exe`), Python 3 (`build-release.ps1` lo usa para leer los imports PE), **PowerShell 7** (`pwsh`) y, para el instalador, **WiX 5.0.2** como `dotnet tool` (`pwsh -File scripts/install-wix.ps1 -Version 5.0.2`; ver [installer/README.md](installer/README.md)). Para la suite de pruebas **completa**, define `TESELA_REAL_RECYCLE_TESTS=1` (pruebas con la Papelera real, abajo).
 
 ```powershell
 cargo fmt --check

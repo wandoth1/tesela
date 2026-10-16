@@ -10,3 +10,9 @@
 /scripts/extract-ico.py @wandoth1
 /CODE_SIGNING.md @wandoth1
 /SECURITY.md @wandoth1
+/crates/*/build.rs @wandoth1
+/.cargo/config.toml @wandoth1
+/Cargo.toml @wandoth1
+/rust-toolchain.toml @wandoth1
+/scripts/install-wix.ps1 @wandoth1
+/scripts/msi-validate.ps1 @wandoth1
