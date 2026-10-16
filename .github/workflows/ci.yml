@@ -109,21 +109,21 @@ jobs:
       - name: Formato
         run: cargo fmt --all --check
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
         env:
           RUSTFLAGS: -D warnings -C target-feature=+crt-static
       # La feature `capture` (capturas del README) no entra en el build normal: se vigila aparte para que no se pudra.
       - name: Clippy (feature capture)
-        run: cargo clippy -p tesela-app --all-targets --features capture -- -D warnings
+        run: cargo clippy -p tesela-app --all-targets --features capture --locked -- -D warnings
         env:
           RUSTFLAGS: -D warnings -C target-feature=+crt-static
       # `--screenshot` sale con error (código 1) si no puede guardar la captura; la prueba corre ANTES de abrir ventana alguna.
       - name: Tests (feature capture, código de salida de --screenshot)
-        run: cargo test -p tesela-app --features capture --test screenshot
+        run: cargo test -p tesela-app --features capture --locked --test screenshot
         env:
           RUSTFLAGS: -D warnings -C target-feature=+crt-static
       - name: Tests
-        run: cargo test --workspace
+        run: cargo test --workspace --locked
         env:
           RUSTFLAGS: -D warnings -C target-feature=+crt-static
       # Release sin rutas de la máquina en los binarios (y comprobación de que no las llevan), con el runtime de C
@@ -138,10 +138,12 @@ jobs:
       # 18,9 MB), un margen deliberado para que una variación del compilador o de las dependencias avise (el tamaño se
       # imprime siempre) sin romper el CI, pero un salto grande sí. No se lanza la
       # interfaz: el runner no tiene GPU (wgpu usaría WARP) y no aporta nada.
-      - name: Humo del ejecutable
+      - name: Humo de los ejecutables
         shell: pwsh
         run: |
-          $exe = Join-Path (cargo metadata --format-version 1 --no-deps | ConvertFrom-Json).target_directory 'release/tesela.exe'
+          $dir = Join-Path (cargo metadata --format-version 1 --no-deps | ConvertFrom-Json).target_directory 'release'
+          # tesela.exe es de interfaz gráfica (subsistema windows): escribe --version por la salida de ERRORES.
+          $exe = Join-Path $dir 'tesela.exe'
           $err = Join-Path $env:RUNNER_TEMP 'tesela-version.txt'
           $p = Start-Process -FilePath $exe -ArgumentList '--version' -Wait -PassThru -RedirectStandardError $err
           if ($p.ExitCode -ne 0) { throw "tesela --version terminó con $($p.ExitCode)" }
@@ -151,6 +153,13 @@ jobs:
           $mib = (Get-Item $exe).Length / 1MB
           Write-Host ('tesela.exe: {0:N1} MiB' -f $mib)
           if ($mib -gt 18) { throw 'tesela.exe supera el presupuesto de tamaño (18 MiB)' }
+          # tesela-scan.exe es de consola: escribe --version por la salida ESTÁNDAR.
+          $scanOut = Join-Path $env:RUNNER_TEMP 'tesela-scan-version.txt'
+          $p = Start-Process -FilePath (Join-Path $dir 'tesela-scan.exe') -ArgumentList '--version' -Wait -PassThru -RedirectStandardOutput $scanOut
+          if ($p.ExitCode -ne 0) { throw "tesela-scan --version terminó con $($p.ExitCode)" }
+          $out = Get-Content -LiteralPath $scanOut -Raw
+          Write-Host $out
+          if ($out -notmatch '^tesela-scan \d+\.\d+\.\d+') { throw 'tesela-scan --version no imprime la versión' }
       # No se ejecuta ningún escaneo de C: en el CI: los tests solo usan árboles sintéticos en %TEMP%.
 
   # Licencias y avisos de seguridad. También se ejecuta cada semana (schedule).
@@ -166,7 +175,7 @@ jobs:
         run: rustup toolchain install
       - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
-          tool: cargo-deny
+          tool: cargo-deny@0.20.2
       - name: cargo deny
         run: cargo deny check
 
@@ -186,7 +195,7 @@ jobs:
         run: rustup toolchain install 1.95.0 --profile minimal
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: cargo +1.95.0 check
-        run: cargo +1.95.0 check --workspace --all-targets
+        run: cargo +1.95.0 check --workspace --all-targets --locked
 
   # Comprobación cruzada para ARM64 (se publicará en la v1.0): solo compila, no enlaza ni ejecuta.
   aarch64:
@@ -204,7 +213,7 @@ jobs:
         run: rustup target add aarch64-pc-windows-msvc
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: cargo check (aarch64-pc-windows-msvc)
-        run: cargo check --workspace --all-targets --target aarch64-pc-windows-msvc
+        run: cargo check --workspace --all-targets --locked --target aarch64-pc-windows-msvc
 
   # Construye el MSI y el zip portable (sin publicar nada) para detectar roturas del empaquetado en cada PR y en main.
   # scripts/build-msi.ps1 vuelve a compilar el release con build-release.ps1 (LTO completo) y valida el paquete.
@@ -220,13 +229,19 @@ jobs:
       - name: Instalar el toolchain de rust-toolchain.toml
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      # Con la version fijada, solo nuget.org (installer/nuget.config) y comprobando el SHA-512 del paquete.
       - name: Instalar WiX
         shell: pwsh
-        run: |
-          dotnet tool install --global wix --version $env:WIX_VERSION --add-source https://api.nuget.org/v3/index.json
-          if ($LASTEXITCODE -ne 0) { throw 'no se pudo instalar WiX' }
+        run: ./scripts/install-wix.ps1 -Version $env:WIX_VERSION
       - name: MSI y zip portable
         shell: pwsh
         run: ./scripts/build-msi.ps1 -OutDir "$env:RUNNER_TEMP/dist"
+      # El validador del MSI se prueba con copias manipuladas (en %TEMP%, sin instalar nada).
+      - name: Pruebas del validador del MSI
+        shell: pwsh
+        run: |
+          $msi = @(Get-ChildItem -LiteralPath "$env:RUNNER_TEMP/dist" -Filter '*.msi')
+          if ($msi.Count -ne 1) { throw 'se esperaba exactamente un MSI' }
+          ./scripts/tests/msi-validate.tests.ps1 -Msi $msi[0].FullName
       # El MSI no se instala en el runner: el ciclo de instalar, actualizar, reparar y desinstalar se prueba en un equipo de
       # escritorio (docs de la v0.1). No se sube ningun artefacto.
