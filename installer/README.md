@@ -84,7 +84,12 @@ pwsh -File scripts/build-msi.ps1
 Compila los ejecutables (`build-release.ps1`: CRT estático, `--locked`, enlace reproducible, sin rutas de la máquina, imports
 PE), empaqueta el MSI y el zip portable, escribe `SHA256SUMS.txt` y **valida** el MSI (`scripts/msi-validate.ps1`): ICE, lista
 **cerrada** de tablas (cualquier `CustomAction`, `Environment`, `ServiceInstall`, `Class`, `Extension`, `ProgId`, `Binary`... es
-un fallo), por usuario, archivos byte a byte los compilados, y ni el MSI ni el zip ni sus contenidos llevan datos de la
+un fallo), por usuario, el **árbol de carpetas exacto** (cada `Directory` con su `Directory_Parent`: `TARGETDIR` > `LocalAppDataFolder` >
+`ProgramsFolder` > `INSTALLFOLDER`, y `ProgramMenuFolder` bajo `TARGETDIR`, con los nombres `Programs` y `Tesela`), las **dos filas
+exactas de `Upgrade`** (reemplazar versiones anteriores, atributos 513, y detectar posteriores, atributos 2, con sus propiedades
+`WIX_UPGRADE_DETECTED` y `WIX_DOWNGRADE_DETECTED`), la `LaunchCondition` `NOT WIX_DOWNGRADE_DETECTED`, que `FindRelatedProducts` se
+ejecute antes que `LaunchConditions` y que `RemoveExistingProducts` esté entre `InstallValidate` e `InstallInitialize` (los
+identificadores se comparan distinguiendo mayúsculas), archivos byte a byte los compilados, y ni el MSI ni el zip ni sus contenidos llevan datos de la
 máquina. Salida en `<target de cargo>/dist`; nada se escribe en el repositorio. `scripts/tests/msi-validate.tests.ps1 -Msi
 <msi>` prueba el validador con copias manipuladas del MSI (sin instalarlas).
 

@@ -196,14 +196,18 @@ discos reales ni resultados de escaneos (los ejemplos, capturas y fixtures son s
 - `scripts/privacy-check.ps1 -All` revisa todo el árbol (el CI lo ejecuta con `-GenericOnly`). Busca SID, rutas de perfil
   reales, unidades D:–Z:, rutas UNC de red (`\\<servidor>\<recurso>`: en la documentación usa un marcador entre `<>`), hardware,
   antivirus y builds de Windows; en local añade el usuario, el equipo y el perfil leídos
-  del entorno en tiempo de ejecución. Se decodifica UTF-8 y UTF-16, se revisan cadenas de binarios, se rechazan **por su firma** los
+  del entorno en tiempo de ejecución. Se decodifica UTF-8 (y, si los bytes no son UTF-8 válido, también Latin-1/ANSI, cada decodificación por separado con sus números de línea), UTF-16 y UTF-32 con BOM, y de los binarios se revisan sus cadenas (ASCII, y ASCII con letras de cualquier alfabeto, en Latin-1 y en UTF-16 de ambas alineaciones); se rechazan **por su firma** los
   formatos opacos o comprimidos (ZIP y derivados, también por su registro de fin en los últimos 64 KiB, gzip, 7z, rar, xz,
   bz2, zstd, cab, msi, pdf, sqlite: su contenido no se puede revisar) y se rechazan las imágenes, con UNA excepción estrecha: `docs/img/<nombre>.png` si es un PNG sin metadatos (solo fragmentos IHDR, PLTE, tRNS, IDAT, IEND, sRGB, gAMA, cHRM y pHYs), de menos de 2 MiB, y `docs/img/README.md` tiene una línea con su nombre y la orden `--demo` que lo genera.
   `docs/spike-results.md` no puede existir y `spike/` pasa las reglas no ligadas a rutas.
 - **Límites que ninguna firma detecta:** zlib crudo, lzma-alone (`.lzma`), datos cifrados u ofuscados y texto en base64 u otra
   transformación. Los frena que el repositorio no admite binarios desconocidos y que quien audita el cambio los vea. Se
-  decodifican UTF-8, UTF-16 y UTF-32 (con BOM) y, ante cualquier NUL en TODO el archivo, se revisan además sus cadenas ASCII y
-  UTF-16.
+  decodifican UTF-8 (con BOM o sin él), UTF-16 y UTF-32 (con BOM) y, ante cualquier NUL en TODO el archivo, se revisan además sus
+  cadenas (ASCII y ASCII con letras de cualquier alfabeto) en Latin-1 y en UTF-16. Los valores locales con acentos se buscan en
+  todas esas codificaciones con límites de palabra que cuentan las letras latinas acentuadas; un valor pegado a una letra
+  cirílica, griega o CJK cuenta como coincidencia (falso positivo, del lado seguro). *Límites conocidos, sin cambio:* no se
+  normalizan NFC/NFD, no se interpretan los bytes 0x80-0x9F de CP1252, un valor de 3 a 5 caracteres solo se ve en UTF-16 de un
+  binario si va dentro de una cadena de 6 o más, y el UTF-16 big endian sin BOM solo se ve para letras latinas (Latin-1).
 - **Mensajes y rangos:** el mensaje de commit se revisa entero (también las líneas con `#` y lo que sigue a la línea de tijera
   de `git commit --verbose`, aunque git lo recortaría: el hook ve el archivo antes). `privacy-check.ps1 -From <sha> -To <sha>`
   revisa el mensaje de cada commit y TODOS los blobs que introduce el rango, también los que un commit posterior borra; el CI lo
