@@ -24,6 +24,7 @@ SmartScreen puede avisar.
   `dxcompiler.dll`.
 - El escáner ya no sigue un enlace (junction o symlink) elegido como carpeta raíz: lo rechaza con un mensaje claro.
 - El registro local escribe cada resultado en el momento, y su poda ya no puede borrar el registro recién abierto.
+- El modo demostración (`--demo`) y las herramientas de medición ya no leen ni guardan la configuración en tu perfil.
 
 ### Cambiado
 
