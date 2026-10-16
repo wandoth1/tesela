@@ -284,6 +284,31 @@ mod tests {
     }
 
     #[test]
+    fn limpieza_pantallas_y_simulacion() {
+        for (v, sc) in [
+            ("recs", Screen::Recs),
+            ("confirm", Screen::Confirm),
+            ("summary", Screen::Summary),
+        ] {
+            let c = p(&format!("--demo --screen {v}")).unwrap();
+            assert_eq!(c.screen, sc);
+            // Sin --demo mostrarian una limpieza que no es la del disco real.
+            assert!(p(&format!("--screen {v}")).unwrap_err().contains("--demo"));
+        }
+        assert!(
+            p("--screen otra --demo")
+                .unwrap_err()
+                .contains("recs, confirm o summary")
+        );
+        assert!(p("--dry-run").unwrap().dry_run);
+        assert!(!p("--demo").unwrap().dry_run);
+        // La simulacion se combina con el resto (escanear y limpiar sin tocar nada).
+        let c = p("--scan X --dry-run").unwrap();
+        assert!(c.dry_run && c.scan == Some(PathBuf::from("X")));
+        assert!(p("--demo --screen confirm --dry-run").unwrap().dry_run);
+    }
+
+    #[test]
     fn ayuda_y_version() {
         assert!(p("--help").unwrap().help);
         assert!(p("-V").unwrap().version);
