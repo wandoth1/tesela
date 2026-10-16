@@ -4,17 +4,21 @@ use std::path::PathBuf;
 use tesela_ui::{LangPref, ThemePref};
 
 pub const USAGE: &str = "\
-tesela: analizador visual de espacio en disco para Windows (solo lectura en esta version)
+tesela: analizador visual de espacio en disco para Windows, con limpieza segura
 
 Uso:
   tesela                       abre la pantalla de inicio
-  tesela --demo                modo demostracion: arbol SINTETICO y unidades ficticias; no lee tu disco
+  tesela --demo                modo demostracion: arbol SINTETICO y unidades ficticias; no lee tu disco y la limpieza
+                               es SIMULADA (nunca toca el disco)
   tesela --scan <ruta>         analiza esa carpeta o unidad nada mas arrancar
+  tesela --dry-run             modo simulacion: la limpieza hace todo salvo borrar o mover y registra las identidades
+                               que habria tocado (log local en %LOCALAPPDATA%\\Tesela); se combina con --scan
 
 Opciones de --demo:
   --stopped                    el arbol de la demostracion es el de un analisis detenido (carpetas incompletas)
   --stress                     (desarrollo) un mapa de ~20 000 celdas para medir el peor caso
-  --screen home|scan|map|list  pantalla inicial (por defecto home)
+  --screen home|scan|map|list|recs|confirm|summary
+                               pantalla inicial (por defecto home); recs, confirm y summary son del flujo de limpieza
   --open <carpeta/carpeta>     entra por esas carpetas (con map o list)
   --select <nombre>            deja seleccionado ese elemento de la carpeta (con map o list)
   --progress <0..1>            fraccion fija del escaneo simulado (con --screen scan)
@@ -42,6 +46,12 @@ pub enum Screen {
     Scan,
     Map,
     List,
+    /// Recomendaciones.
+    Recs,
+    /// La confirmacion de la limpieza con una cesta de ejemplo.
+    Confirm,
+    /// El resumen tras limpiar esa cesta.
+    Summary,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -54,6 +64,8 @@ pub struct Cli {
     pub open: Vec<String>,
     pub select: Option<String>,
     pub scan: Option<PathBuf>,
+    /// Modo simulacion: la limpieza no toca nada.
+    pub dry_run: bool,
     pub theme: Option<ThemePref>,
     pub lang: Option<LangPref>,
     pub size: Option<(f32, f32)>,
@@ -78,6 +90,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
             "--demo" => cli.demo = true,
             "--stopped" => cli.stopped = true,
             "--stress" => cli.stress = true,
+            "--dry-run" => cli.dry_run = true,
             "--help" | "-h" | "-?" => cli.help = true,
             "--version" | "-V" => cli.version = true,
             "--screen" => {
@@ -86,9 +99,12 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
                     "scan" => Screen::Scan,
                     "map" => Screen::Map,
                     "list" => Screen::List,
+                    "recs" => Screen::Recs,
+                    "confirm" => Screen::Confirm,
+                    "summary" => Screen::Summary,
                     v => {
                         return Err(format!(
-                            "--screen: valor desconocido `{v}` (home, scan, map o list)"
+                            "--screen: valor desconocido `{v}` (home, scan, map, list, recs, confirm o summary)"
                         ));
                     }
                 }

@@ -190,12 +190,6 @@ pub fn icon_button(ui: &mut Ui, env: &mut Env, icon: Icon, label: &str, enabled:
     }
 }
 
-/// Pista "Disponible en la próxima versión" para lo que es del incremento 3 (cesta, limpieza). Quien deshabilita un
-/// botón decide qué pista le corresponde: no todos los deshabilitados son "de la próxima versión".
-pub fn next_version_hint(resp: Response, env: &Env) -> Response {
-    resp.on_hover_text(env.tr.t("next-version"))
-}
-
 /// Chip redondeado con icono opcional (riesgo, "Aproximado", tamaños de la cesta...).
 pub fn chip(
     ui: &mut Ui,
@@ -395,6 +389,9 @@ mod tests {
                 for enabled in [true, false] {
                     let label = format!("boton-{style:?}-{enabled}");
                     let mut icons = IconCache::default();
+                    let backend: std::sync::Arc<dyn tesela_cleaner::Backend> = std::sync::Arc::new(
+                        crate::demo_backend::DemoBackend::new(std::time::Duration::ZERO),
+                    );
                     let mut actions: Vec<Action> = Vec::new();
                     let mut painted = Color32::PLACEHOLDER;
                     // Dos pases: el primero aplica las fuentes del sistema.
@@ -409,6 +406,8 @@ mod tests {
                                 drives: &[],
                                 drives_loading: false,
                                 settings: Settings::default(),
+                                backend: &backend,
+                                dry_run: false,
                                 modal_open: false,
                                 actions: &mut actions,
                             };

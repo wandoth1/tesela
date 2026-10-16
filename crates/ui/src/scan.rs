@@ -8,6 +8,7 @@
 
 use crate::app::{Action, Env, ScanRequest};
 use crate::args;
+use crate::clean::{CleanFlow, FlowEvent, SummaryClick, VolumeCtx};
 use crate::demo::{self, DEMO_KNOWN_ROWS};
 use crate::error::StartError;
 use crate::explore::{Explore, ScanInfo};
@@ -20,6 +21,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use tesela_cleaner::{Backend, Basket, CategoryId, Plan};
 use tesela_model::{FileType, Tree};
 use tesela_scanner::{KnownKind, Progress, ScanHandle, ScanOptions};
 
@@ -115,6 +117,21 @@ pub struct ScanScreen {
     /// (tarjeta de sitios conocidos, tarjeta del mapa): su contenido no cabe y se desplaza (la barra está a la vista).
     overflow: (bool, bool),
     kind: Kind,
+    backend: Arc<dyn Backend>,
+    /// La limpieza ("Limpiar lo seguro"): se puede lanzar sin esperar al mapa.
+    flow: CleanFlow,
+    /// Lo medido de cada categoría segura cuando su fila terminó (con la antigüedad y las protecciones reales).
+    measures: HashMap<CategoryId, Measure>,
+    /// Navegadores abiertos al terminar el barrido de sitios conocidos.
+    browsers_open: Vec<tesela_cleaner::Browser>,
+    /// Lo que se limpió durante el escaneo (para actualizar el árbol cuando acabe).
+    cleaned: Vec<tesela_cleaner::Removed>,
+}
+
+/// La medida de una categoría segura.
+enum Measure {
+    Computing(crossbeam_channel::Receiver<Plan>),
+    Done(u64),
 }
 
 /// Nombre canónico en minúsculas para comparar rutas (formas largas, sin `\\?\`).
@@ -179,7 +196,12 @@ fn start_real(req: &ScanRequest, startup: &Startup) -> Result<Real, StartError> 
 impl ScanScreen {
     /// Escaneo real de `req.root`. Arrancarlo (abrir y listar la raíz, resolver las rutas prioritarias) es E/S que puede
     /// tardar en un disco frío o de red: se hace en un hilo y la pantalla aparece al instante.
-    pub fn real(ctx: &egui::Context, req: ScanRequest, animate: bool) -> ScanScreen {
+    pub fn real(
+        ctx: &egui::Context,
+        req: ScanRequest,
+        animate: bool,
+        backend: Arc<dyn Backend>,
+    ) -> ScanScreen {
         // El token de cancelación existe antes que el hilo y viaja en `ScanOptions`.
         let startup = Arc::new(Startup::default());
         let (c, r, s) = (ctx.clone(), req.clone(), startup.clone());
@@ -210,11 +232,21 @@ impl ScanScreen {
             stop_pending: false,
             overflow: (false, false),
             kind: Kind::Starting(startup),
+            browsers_open: backend.running_browsers(),
+            backend,
+            flow: CleanFlow::default(),
+            measures: HashMap::new(),
+            cleaned: Vec::new(),
         }
     }
 
     /// Escaneo simulado sobre el árbol sintético. `frozen` fija la fracción (capturas y pruebas).
-    pub fn demo(req: ScanRequest, frozen: Option<f32>, _stopped: bool) -> ScanScreen {
+    pub fn demo(
+        req: ScanRequest,
+        frozen: Option<f32>,
+        _stopped: bool,
+        backend: Arc<dyn Backend>,
+    ) -> ScanScreen {
         let tree = Arc::new(demo::tree(demo::Variant::Complete));
         let mut top: Vec<(String, u64)> = tree
             .children(0)
@@ -230,6 +262,11 @@ impl ScanScreen {
             animate: true,
             stop_pending: false,
             overflow: (false, false),
+            browsers_open: backend.running_browsers(),
+            backend,
+            flow: CleanFlow::default(),
+            measures: HashMap::new(),
+            cleaned: Vec::new(),
             kind: Kind::Demo(Demo {
                 tree,
                 top,
@@ -294,6 +331,14 @@ impl ScanScreen {
     /// Avanza el escaneo: si terminó, devuelve el resultado.
     pub fn poll(&mut self, ctx: &egui::Context) -> Option<ScanOutcome> {
         let started = self.started;
+        // La limpieza que se lance durante el escaneo avanza aquí; mientras haya una ventana de la limpieza abierta o un
+        // resumen a la vista, el resultado del escaneo espera (no se le quita la pantalla al usuario a mitad de limpiar).
+        self.flow.poll(ctx, &self.backend, false);
+        for ev in self.flow.take_events() {
+            let FlowEvent::Removed(v) = ev;
+            self.cleaned.extend(v);
+        }
+        let hold = self.flow.busy() || self.flow.in_summary();
         if let Kind::Starting(s) = &self.kind {
             let (result, thread_alive) = {
                 let mut slot = s.slot.lock().unwrap_or_else(|e| e.into_inner());
@@ -323,16 +368,22 @@ impl ScanScreen {
         match &mut self.kind {
             Kind::Starting(_) => None,
             Kind::Real(r) => {
-                if r.handle.as_ref().is_some_and(ScanHandle::is_finished) {
+                if r.handle.as_ref().is_some_and(ScanHandle::is_finished) && !hold {
                     let handle = r.handle.take()?;
+                    let cleaned = std::mem::take(&mut self.cleaned);
                     return Some(match handle.wait() {
                         _ if self.discard => ScanOutcome::Cancelled,
-                        Ok(res) => ScanOutcome::Done(Box::new(Explore::from_scan(
-                            self.req.clone(),
-                            res,
-                            self.animate,
-                            started.elapsed(),
-                        ))),
+                        Ok(res) => {
+                            let mut ex = Explore::from_scan(
+                                self.req.clone(),
+                                res,
+                                self.animate,
+                                started.elapsed(),
+                                &self.backend,
+                            );
+                            ex.apply_removed(&cleaned);
+                            ScanOutcome::Done(Box::new(ex))
+                        }
                         Err(e) => ScanOutcome::Failed(StartError::Scan(e)),
                     });
                 }
@@ -341,18 +392,22 @@ impl ScanScreen {
             }
             Kind::Demo(d) => {
                 let done = d.frozen.is_none()
-                    && (d.stop || self.started.elapsed().as_secs_f32() >= DEMO_SECS);
+                    && (d.stop || self.started.elapsed().as_secs_f32() >= DEMO_SECS)
+                    && !hold;
                 if done && !self.discard {
                     let variant = if d.stop {
                         demo::Variant::Stopped
                     } else {
                         demo::Variant::Complete
                     };
-                    return Some(ScanOutcome::Done(Box::new(Explore::demo(
+                    let mut ex = Explore::demo(
                         self.req.clone(),
                         variant,
                         self.animate,
-                    ))));
+                        self.backend.clone(),
+                    );
+                    ex.apply_removed(&std::mem::take(&mut self.cleaned));
+                    return Some(ScanOutcome::Done(Box::new(ex)));
                 }
                 if done {
                     return Some(ScanOutcome::Cancelled);
@@ -398,6 +453,35 @@ struct Row {
     /// Datos del usuario (Descargas, Papelera): riesgo "Revisar". Se enseñan, pero NO cuentan en la cifra grande de
     /// "sitios conocidos" (PLAN.md §2.4: el titular suma solo lo seguro) y llevan la etiqueta "Revisar".
     review: bool,
+    /// Categoría segura de la fila (la que mide el `cleaner` al terminar), si la tiene.
+    safe: Option<CategoryId>,
+    /// El navegador de esta caché está abierto: la fila no cuenta y dice "Cierra X para liberar hasta N".
+    blocked: Option<&'static str>,
+}
+
+/// La categoría segura de una clase de sitio conocido (Descargas y la Papelera no lo son: son datos del usuario).
+fn safe_category(k: Option<KnownKind>) -> Option<CategoryId> {
+    match k? {
+        KnownKind::UserTemp => Some(CategoryId::UserTemp),
+        KnownKind::WindowsTemp => Some(CategoryId::WindowsTemp),
+        KnownKind::ChromeCache => Some(CategoryId::ChromeCache),
+        KnownKind::EdgeCache => Some(CategoryId::EdgeCache),
+        KnownKind::FirefoxCache => Some(CategoryId::FirefoxCache),
+        KnownKind::Downloads | KnownKind::RecycleBin => None,
+    }
+}
+
+fn kind_of_key(key: &str) -> Option<KnownKind> {
+    Some(match key {
+        "known-user-temp" => KnownKind::UserTemp,
+        "known-windows-temp" => KnownKind::WindowsTemp,
+        "known-chrome-cache" => KnownKind::ChromeCache,
+        "known-edge-cache" => KnownKind::EdgeCache,
+        "known-firefox-cache" => KnownKind::FirefoxCache,
+        "known-downloads" => KnownKind::Downloads,
+        "known-recycle-bin" => KnownKind::RecycleBin,
+        _ => return None,
+    })
 }
 
 /// ¿Es una clase de sitio conocido con datos del usuario (riesgo "Revisar", nunca "seguro")?
@@ -447,6 +531,10 @@ struct View {
     bars: Vec<(String, u64, bool)>,
     finished: bool,
     fraction: Option<f32>,
+    /// Lo que se puede liberar sin riesgo (suma de lo medido por el `cleaner` de las filas seguras terminadas).
+    safe_sum: u64,
+    /// Todas las filas terminaron y ninguna medida está pendiente: "Limpiar lo seguro" se puede pulsar.
+    can_clean: bool,
 }
 
 fn view_of(s: &ScanScreen, env: &Env) -> View {
@@ -466,6 +554,8 @@ fn view_of(s: &ScanScreen, env: &Env) -> View {
             bars: Vec::new(),
             finished: false,
             fraction: total.map(|_| 0.0),
+            safe_sum: 0,
+            can_clean: false,
         },
         Kind::Real(r) => {
             let p = &r.progress;
@@ -484,6 +574,8 @@ fn view_of(s: &ScanScreen, env: &Env) -> View {
                 bytes,
                 done,
                 review: kind_is_review(k),
+                safe: safe_category(k),
+                blocked: None,
             })
             .collect();
             let mut bars: Vec<(String, u64, bool)> = p
@@ -509,6 +601,8 @@ fn view_of(s: &ScanScreen, env: &Env) -> View {
                 bars,
                 finished: p.finished.load(load),
                 fraction: total.map(|t| (bytes as f32 / t as f32).clamp(0.0, 0.99)),
+                safe_sum: 0,
+                can_clean: false,
             }
         }
         Kind::Demo(d) => {
@@ -520,6 +614,8 @@ fn view_of(s: &ScanScreen, env: &Env) -> View {
                     bytes: (*bytes as f32 * (f / end).min(1.0)) as u64,
                     done: f >= *end,
                     review: matches!(*key, "known-downloads" | "known-recycle-bin"),
+                    safe: safe_category(kind_of_key(key)),
+                    blocked: None,
                 })
                 .collect();
             // Cada carpeta avanza a su ritmo: las más grandes tardan más en completarse.
@@ -543,6 +639,8 @@ fn view_of(s: &ScanScreen, env: &Env) -> View {
                 bars,
                 finished: f >= 1.0,
                 fraction: Some(f),
+                safe_sum: 0,
+                can_clean: false,
             }
         }
     }
@@ -559,10 +657,27 @@ fn card_frame(pal: &Palette) -> egui::Frame {
 /// Pinta la pantalla de escaneo.
 pub fn show(ui: &mut Ui, env: &mut Env, s: &mut ScanScreen) {
     let pal = env.pal;
-    let v = view_of(s, env);
+    // El resumen de una limpieza lanzada desde aquí ocupa la ventana; al volver se sigue con el escaneo.
+    if s.flow.in_summary() {
+        match s.flow.show_summary(ui, env) {
+            Some(SummaryClick::EmptyNow) => {
+                s.flow.close_summary();
+                s.flow.basket.clear();
+                s.flow.basket.set_empty_bin(true);
+                let vol = s.volume_ctx();
+                s.flow.start(ui.ctx(), env.backend, vol, false);
+            }
+            Some(SummaryClick::OpenBin) => crate::platform::open_recycle_bin(),
+            _ => {}
+        }
+        return;
+    }
+    let mut v = view_of(s, env);
+    s.update_measures(ui.ctx(), &mut v);
     let elapsed = s.started.elapsed().as_secs();
     let mut stop = false;
     let mut cancel = false;
+    let mut clean_click = false;
     egui::CentralPanel::default()
         .frame(
             egui::Frame::new()
@@ -685,7 +800,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, s: &mut ScanScreen) {
                         .id_salt("scan-known-scroll")
                         .auto_shrink([false, false])
                         .max_height(left_rect.height() - 50.0)
-                        .show(ui, |ui| known_places(ui, env, &v));
+                        .show(ui, |ui| known_places(ui, env, &v, &mut clean_click));
                     left_over = out.content_size.y > out.inner_rect.height() + 0.5;
                 });
             });
@@ -708,12 +823,105 @@ pub fn show(ui: &mut Ui, env: &mut Env, s: &mut ScanScreen) {
     if cancel {
         env.actions.push(Action::GoHome);
     }
+    if clean_click {
+        s.start_safe_clean(ui.ctx(), env, &v);
+    }
+    let vol = s.volume_ctx();
+    let used = vol.volume.map(|(t, f)| t.saturating_sub(f));
+    s.flow.show_modals(ui.ctx(), env, vol, used);
+}
+
+impl ScanScreen {
+    fn volume_ctx(&self) -> VolumeCtx {
+        let d = self.req.drive.as_ref();
+        VolumeCtx {
+            drive: d.map(|d| d.letter),
+            volume: d.filter(|d| d.volume_scope).map(|d| (d.total, d.free)),
+        }
+    }
+
+    /// Recoge las medidas terminadas, lanza la de cada fila segura que acaba de terminar y calcula el titular.
+    fn update_measures(&mut self, ctx: &egui::Context, v: &mut View) {
+        let mut finished = Vec::new();
+        for (id, m) in &self.measures {
+            if let Measure::Computing(rx) = m
+                && let Ok(plan) = rx.try_recv()
+            {
+                finished.push((*id, plan.permanent_bytes()));
+            }
+        }
+        for (id, b) in finished {
+            self.measures.insert(id, Measure::Done(b));
+        }
+        for r in &v.rows {
+            if let (true, Some(cat)) = (r.done, r.safe)
+                && !self.measures.contains_key(&cat)
+            {
+                let (tx, rx) = crossbeam_channel::bounded(1);
+                let (b, c2) = (self.backend.clone(), ctx.clone());
+                let mut basket = Basket::new();
+                basket.set_category(cat, true);
+                std::thread::spawn(move || {
+                    let plan = b.approve(
+                        &basket,
+                        &Default::default(),
+                        &Arc::new(AtomicBool::new(false)),
+                    );
+                    let _ = tx.send(plan);
+                    c2.request_repaint();
+                });
+                self.measures.insert(cat, Measure::Computing(rx));
+            }
+        }
+        let (mut sum, mut pending) = (0u64, false);
+        for r in v.rows.iter_mut() {
+            let Some(cat) = r.safe else { continue };
+            match self.measures.get(&cat) {
+                Some(Measure::Done(b)) => {
+                    r.bytes = *b;
+                    let blocked = tesela_cleaner::Browser::from_category(cat)
+                        .filter(|br| self.browsers_open.contains(br));
+                    r.blocked = blocked.map(tesela_cleaner::Browser::name);
+                    if blocked.is_none() {
+                        sum += *b;
+                    }
+                }
+                Some(Measure::Computing(_)) => pending = true,
+                None => {}
+            }
+        }
+        if pending {
+            ctx.request_repaint_after(Duration::from_millis(60));
+        }
+        v.safe_sum = sum;
+        v.can_clean = !v.rows.is_empty()
+            && v.rows.iter().all(|r| r.done)
+            && !pending
+            && sum > 0
+            && !self.flow.busy();
+    }
+
+    /// "Limpiar lo seguro": la cesta son las categorías seguras que se pueden limpiar ahora, y se pasa a la confirmación.
+    fn start_safe_clean(&mut self, ctx: &egui::Context, env: &Env, v: &View) {
+        self.flow.basket.clear();
+        for r in &v.rows {
+            if let Some(cat) = r.safe
+                && r.blocked.is_none()
+                && r.bytes > 0
+                && matches!(self.measures.get(&cat), Some(Measure::Done(_)))
+            {
+                self.flow.basket.set_category(cat, true);
+            }
+        }
+        let vol = self.volume_ctx();
+        self.flow.start(ctx, env.backend, vol, false);
+    }
 }
 
 /// Ancho del botón "Limpiar lo seguro" que se reserva a su derecha cuando la tarjeta es ancha.
 const CLEAN_BUTTON_W: f32 = 190.0;
 
-fn known_places(ui: &mut Ui, env: &mut Env, v: &View) {
+fn known_places(ui: &mut Ui, env: &mut Env, v: &View, clean_click: &mut bool) {
     let pal = env.pal;
     // El texto (que se ajusta al ancho) y el botón NUNCA se pisan: con sitio, el botón va a la derecha en su propia
     // columna reservada; si no (tarjeta estrecha, ventana mínima), el botón va debajo del texto.
@@ -729,15 +937,21 @@ fn known_places(ui: &mut Ui, env: &mut Env, v: &View) {
                 .size(13.0)
                 .color(pal.text_muted),
         );
-        // Solo lo que no son datos del usuario: Descargas y la Papelera se muestran pero no cuentan aquí.
-        let sum: u64 = v.rows.iter().filter(|r| !r.review).map(|r| r.bytes).sum();
+        // Solo lo seguro y medido por el `cleaner` (con la antigüedad y las protecciones reales): Descargas y la Papelera
+        // se muestran pero no cuentan aquí.
+        let all_done = !v.rows.is_empty() && v.rows.iter().all(|r| r.done);
+        let headline = if v.safe_sum == 0 && !all_done {
+            env.tr.t("scan-measuring")
+        } else if v.safe_sum > 0 {
+            env.tr
+                .ta("scan-known-sum", args!["size" => env.tr.size(v.safe_sum)])
+        } else {
+            env.tr.t("scan-nothing-safe")
+        };
         ui.label(
-            RichText::new(
-                env.tr
-                    .ta("scan-known-sum", args!["size" => env.tr.size(sum)]),
-            )
-            .font(theme::font_semibold(30.0))
-            .color(pal.text),
+            RichText::new(headline)
+                .font(theme::font_semibold(30.0))
+                .color(pal.text),
         );
         ui.label(
             RichText::new(env.tr.t("scan-known-note"))
@@ -752,17 +966,22 @@ fn known_places(ui: &mut Ui, env: &mut Env, v: &View) {
             );
         }
     };
-    let button = |ui: &mut Ui, env: &mut Env| {
-        // Inactivo: la limpieza es del incremento 3.
+    let mut button = |ui: &mut Ui, env: &mut Env| {
+        let label = env.tr.t("scan-clean-safe");
         let r = widgets::button(
             ui,
             env,
             ButtonStyle::Primary,
             Some(Icon::ShieldCheckmark),
-            &env.tr.t("scan-clean-safe"),
-            false,
+            &label,
+            v.can_clean,
         );
-        widgets::next_version_hint(r, env);
+        if !v.can_clean {
+            r.clone().on_hover_text(env.tr.t("scan-clean-wait"));
+        }
+        if r.clicked() {
+            *clean_click = true;
+        }
     };
     if side_by_side {
         ui.horizontal_top(|ui| {
@@ -834,6 +1053,16 @@ fn known_places(ui: &mut Ui, env: &mut Env, v: &View) {
                     RichText::new(env.tr.t("risk-review-tag"))
                         .size(12.0)
                         .color(pal.review),
+                );
+            }
+            if let Some(b) = r.blocked {
+                ui.label(
+                    RichText::new(env.tr.ta(
+                        "scan-row-blocked",
+                        args!["name" => b, "size" => env.tr.size(r.bytes)],
+                    ))
+                    .size(12.0)
+                    .color(pal.review),
                 );
             }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -995,6 +1224,10 @@ pub(crate) mod test_hooks {
 mod group_tests {
     use super::*;
 
+    fn test_backend() -> Arc<dyn Backend> {
+        Arc::new(crate::demo_backend::DemoBackend::new(Duration::ZERO))
+    }
+
     /// Carpeta temporal propia (solo se borra lo creado aquí, bajo la carpeta temporal).
     struct Temp(std::path::PathBuf);
     impl Temp {
@@ -1032,18 +1265,18 @@ mod group_tests {
         let t = Temp::new();
         let ctx = egui::Context::default();
         // Cancelar activa la bandera al instante, sin esperar al hilo de arranque.
-        let mut s = ScanScreen::real(&ctx, t.req(), false);
+        let mut s = ScanScreen::real(&ctx, t.req(), false, test_backend());
         let flag = s.startup_cancel().expect("arrancando");
         s.cancel();
         assert!(flag.load(Ordering::SeqCst), "cancelar activa el token");
         // "Parar y ver" también (el escaneo se construye con lo recibido), sin descartar.
-        let mut s2 = ScanScreen::real(&ctx, t.req(), false);
+        let mut s2 = ScanScreen::real(&ctx, t.req(), false, test_backend());
         let flag2 = s2.startup_cancel().unwrap();
         s2.stop();
         assert!(flag2.load(Ordering::SeqCst), "parar activa el token");
         assert!(!s2.discard);
         // Soltar la pantalla (Drop) también.
-        let s3 = ScanScreen::real(&ctx, t.req(), false);
+        let s3 = ScanScreen::real(&ctx, t.req(), false, test_backend());
         let flag3 = s3.startup_cancel().unwrap();
         drop(s3);
         assert!(flag3.load(Ordering::SeqCst), "soltar activa el token");
@@ -1058,7 +1291,7 @@ mod group_tests {
         let t = Temp::new();
         let ctx = egui::Context::default();
         for i in 0..60u64 {
-            let s = ScanScreen::real(&ctx, t.req(), false);
+            let s = ScanScreen::real(&ctx, t.req(), false, test_backend());
             if i % 3 == 0 {
                 std::thread::sleep(Duration::from_micros(i * 100));
             }

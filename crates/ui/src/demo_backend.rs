@@ -1,0 +1,509 @@
+//! Respaldo SIMULADO de la limpieza para `tesela --demo`: la cesta, la confirmación y el resumen funcionan, pero contra el
+//! árbol sintético y SIN tocar el disco (no abre, lista, renombra ni borra nada: solo lee el `Tree` en memoria).
+//!
+//! Imita lo observable del `cleaner` real: protección por carpetas, "Contenido de…", antigüedad mínima de los temporales,
+//! el límite de la Papelera (el 10 % de la unidad ficticia), enlaces con la nube y los tres contadores.
+
+use crate::demo::{self, DEMO_NOW, DEMO_SID, USER};
+use crate::recs::eligible_by_age;
+use crate::treepath::Locator;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tesela_cleaner::engine::{StatsSnapshot, UnitSpec};
+use tesela_cleaner::exec::BinReport;
+use tesela_cleaner::paths::PathKey;
+use tesela_cleaner::plan::BinPlan;
+use tesela_cleaner::protect::{ChildAction, ProtectionRoots};
+use tesela_cleaner::recycle::BinItem;
+use tesela_cleaner::sys::FileIdentity;
+use tesela_cleaner::{
+    ApproveOptions, Backend, Basket, Browser, CategoryId, Destination, ExecError, ExecOptions, Fit,
+    ItemReport, ItemStatus, Phase, Plan, PlanItem, Progress, Protection, Removed, Report, Risk,
+    Source, UnfitReason, Verdict, rules,
+};
+use tesela_model::{Tree, View};
+
+/// El respaldo simulado.
+pub struct DemoBackend {
+    tree: Arc<Tree>,
+    root: String,
+    prot: Arc<Protection>,
+    browsers: Mutex<Vec<Browser>>,
+    /// Cuánto dura la ejecución simulada (para que se vea el progreso). 0 en las pruebas.
+    delay: Duration,
+    cache_dirs: Vec<(CategoryId, PathBuf)>,
+}
+
+fn p(root: &str, rel: &str) -> PathBuf {
+    PathBuf::from(format!("{root}{rel}"))
+}
+
+impl DemoBackend {
+    pub fn new(delay: Duration) -> DemoBackend {
+        let tree = Arc::new(demo::tree(demo::Variant::Complete));
+        let root = demo::root_name();
+        let me = format!("Users\\{USER}");
+        let local = format!("{me}\\AppData\\Local");
+        let prot = Protection::new(&ProtectionRoots {
+            denied: vec![
+                p(&root, "Windows"),
+                p(&root, "Archivos de programa"),
+                p(&root, "ProgramData"),
+                p(&root, "Users\\Público"),
+                p(&root, &format!("{local}\\Google\\Chrome\\User Data")),
+                p(&root, &format!("{local}\\Microsoft\\Edge\\User Data")),
+                p(&root, &format!("{local}\\Mozilla\\Firefox")),
+            ],
+            untouchable: vec![
+                p(&root, "Users"),
+                p(&root, &me),
+                p(&root, &format!("{me}\\AppData")),
+                p(&root, &local),
+                p(&root, &format!("{me}\\AppData\\Roaming")),
+            ],
+            content_roots: ["Documentos", "Vídeos", "Imágenes", "Música", "Descargas"]
+                .iter()
+                .map(|n| p(&root, &format!("{me}\\{n}")))
+                .collect(),
+            exempt: vec![
+                p(&root, "Windows\\Temp"),
+                p(
+                    &root,
+                    &format!("{local}\\Google\\Chrome\\User Data\\Default\\Cache"),
+                ),
+                p(
+                    &root,
+                    &format!("{local}\\Microsoft\\Edge\\User Data\\Default\\Cache"),
+                ),
+                p(
+                    &root,
+                    &format!("{local}\\Mozilla\\Firefox\\Profiles\\demo.default-release\\cache2"),
+                ),
+            ],
+        });
+        let cache_dirs = vec![
+            (
+                CategoryId::ChromeCache,
+                p(
+                    &root,
+                    &format!("{local}\\Google\\Chrome\\User Data\\Default\\Cache"),
+                ),
+            ),
+            (
+                CategoryId::EdgeCache,
+                p(
+                    &root,
+                    &format!("{local}\\Microsoft\\Edge\\User Data\\Default\\Cache"),
+                ),
+            ),
+            (
+                CategoryId::FirefoxCache,
+                p(
+                    &root,
+                    &format!("{local}\\Mozilla\\Firefox\\Profiles\\demo.default-release\\cache2"),
+                ),
+            ),
+        ];
+        DemoBackend {
+            tree,
+            root,
+            prot: Arc::new(prot),
+            browsers: Mutex::new(vec![Browser::Chrome]),
+            delay,
+            cache_dirs,
+        }
+    }
+
+    /// Navegadores "abiertos" (en la demostración, Chrome por defecto; las pruebas lo cambian).
+    pub fn set_browsers(&self, b: Vec<Browser>) {
+        *self.browsers.lock().unwrap_or_else(|e| e.into_inner()) = b;
+    }
+
+    fn me(&self) -> String {
+        format!("{}Users\\{USER}", self.root)
+    }
+
+    /// ¿Cabe en la Papelera de la unidad ficticia? Mismo criterio que el `cleaner` real: el 10 % de la unidad, con un
+    /// margen del 90 %.
+    fn fit(&self, bytes: u64) -> Fit {
+        let limit = demo::drives()[0].total / 10;
+        if (bytes as u128) * 100 > (limit as u128) * 90 {
+            Fit::Unfit(UnfitReason::TooBig)
+        } else {
+            Fit::Fits
+        }
+    }
+
+    fn identity(node: u32) -> FileIdentity {
+        FileIdentity {
+            volume_serial: 0xDE30,
+            file_id: node as u128 + 1,
+        }
+    }
+
+    fn entry_item(
+        &self,
+        path: &Path,
+        loc: &mut Locator,
+        view: &View,
+        plan: &mut Plan,
+        out: &mut Vec<PlanItem>,
+    ) {
+        let key = PathKey::new(path);
+        let Some(node) = loc.locate(path) else {
+            plan.rejected.push(tesela_cleaner::Rejected {
+                path: path.to_path_buf(),
+                reason: tesela_cleaner::RejectReason::Missing,
+            });
+            return;
+        };
+        let verdict = self.prot.target_verdict(&key);
+        if verdict != Verdict::Allowed {
+            plan.rejected.push(tesela_cleaner::Rejected {
+                path: path.to_path_buf(),
+                reason: tesela_cleaner::RejectReason::Protected(verdict),
+            });
+            return;
+        }
+        let tree = &self.tree;
+        let n = tree.node(node);
+        if n.is_dir() && self.prot.contains_protected(&key) {
+            // Carpeta con algo protegido dentro: sus hijos permitidos son los elementos; lo protegido se omite.
+            for c in view.kids(node).iter() {
+                let cpath = path.join(tree.name_lossy(c).as_ref());
+                let ckey = PathKey::new(&cpath);
+                match self.prot.child_action(&ckey) {
+                    ChildAction::Skip => plan.omitted_protected.0 += 1,
+                    ChildAction::Descend => {
+                        if self.prot.is_retained_root(&ckey) {
+                            plan.omitted_protected.0 += 1;
+                        }
+                        if tree.node(c).is_dir() {
+                            self.entry_item(&cpath, loc, view, plan, out);
+                        }
+                    }
+                    ChildAction::Delete => self.entry_item(&cpath, loc, view, plan, out),
+                }
+            }
+            return;
+        }
+        let (bytes, logical, files, _) = eligible_by_age(view, node, u32::MAX);
+        let fit = self.fit(bytes.max(logical));
+        out.push(PlanItem {
+            id: 0,
+            category: None,
+            path: path.to_path_buf(),
+            risk: Risk::Review,
+            destination: Destination::Recycle,
+            fit,
+            spec: UnitSpec::Entry {
+                path: path.to_path_buf(),
+                approved: DemoBackend::identity(node),
+                approved_tag: 0,
+                is_dir: n.is_dir(),
+            },
+            min_age: Duration::ZERO,
+            estimate: StatsSnapshot {
+                bytes,
+                logical,
+                files,
+                dirs: u64::from(n.is_dir()),
+                ..StatsSnapshot::default()
+            },
+            cloud_synced: n.flags & tesela_model::flags::CLOUD != 0,
+            hard_linked: false,
+            volume: Some(PathBuf::from(&self.root)),
+        });
+    }
+}
+
+impl Backend for DemoBackend {
+    fn category_roots(&self, id: CategoryId) -> Vec<PathBuf> {
+        match id {
+            CategoryId::UserTemp => vec![p(
+                &self.root,
+                &format!("Users\\{USER}\\AppData\\Local\\Temp"),
+            )],
+            CategoryId::WindowsTemp => vec![p(&self.root, "Windows\\Temp")],
+            c if c.is_browser_cache() => self
+                .cache_dirs
+                .iter()
+                .filter(|(i, _)| *i == c)
+                .map(|(_, d)| d.clone())
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn downloads_dir(&self) -> Option<PathBuf> {
+        Some(PathBuf::from(format!("{}\\Descargas", self.me())))
+    }
+
+    fn recycle_dir(&self, drive_root: &Path) -> Option<PathBuf> {
+        Some(drive_root.join("$Recycle.Bin").join(DEMO_SID))
+    }
+
+    fn protection(&self) -> Arc<Protection> {
+        self.prot.clone()
+    }
+
+    fn approve(&self, basket: &Basket, opts: &ApproveOptions, _cancel: &Arc<AtomicBool>) -> Plan {
+        let view = View::new(&self.tree, None);
+        let mut loc = Locator::new(&self.tree);
+        let mut plan = Plan::default();
+        let mut items: Vec<PlanItem> = Vec::new();
+        for src in basket.sources() {
+            match src {
+                Source::Category(id) => {
+                    let rule = rules().get(*id);
+                    let Some(dest) = rule.destination else {
+                        continue;
+                    };
+                    let cutoff = if rule.min_age.is_zero() {
+                        u32::MAX
+                    } else {
+                        DEMO_NOW - rule.min_age.as_secs() as u32
+                    };
+                    for root in self.category_roots(*id) {
+                        let Some(node) = loc.locate(&root) else {
+                            continue;
+                        };
+                        let (bytes, logical, files, _) = eligible_by_age(&view, node, cutoff);
+                        let (_, _, all_files, _) = eligible_by_age(&view, node, u32::MAX);
+                        items.push(PlanItem {
+                            id: 0,
+                            category: Some(*id),
+                            path: root.clone(),
+                            risk: rule.risk,
+                            destination: dest,
+                            fit: Fit::Fits,
+                            spec: UnitSpec::Contents {
+                                path: root,
+                                approved: DemoBackend::identity(node),
+                            },
+                            min_age: rule.min_age,
+                            estimate: StatsSnapshot {
+                                bytes,
+                                logical,
+                                files,
+                                dirs: 0,
+                                young: all_files - files,
+                                ..StatsSnapshot::default()
+                            },
+                            cloud_synced: false,
+                            hard_linked: false,
+                            volume: Some(PathBuf::from(&self.root)),
+                        });
+                    }
+                }
+                Source::Path(path) => self.entry_item(path, &mut loc, &view, &mut plan, &mut items),
+                Source::ContentsOf(folder) => {
+                    let verdict = self.prot.target_verdict(&PathKey::new(folder));
+                    match (verdict, loc.locate(folder)) {
+                        (Verdict::ContentsOnly, Some(node)) => {
+                            for c in view.kids(node).iter() {
+                                let cpath = folder.join(self.tree.name_lossy(c).as_ref());
+                                self.entry_item(&cpath, &mut loc, &view, &mut plan, &mut items);
+                            }
+                        }
+                        (v, _) => plan.rejected.push(tesela_cleaner::Rejected {
+                            path: folder.clone(),
+                            reason: tesela_cleaner::RejectReason::Protected(v),
+                        }),
+                    }
+                }
+                Source::EmptyBin => {
+                    let drive = PathBuf::from(&self.root);
+                    let bytes = self
+                        .recycle_dir(&drive)
+                        .and_then(|d| loc.locate(&d))
+                        .map_or(opts.bin_bytes_hint, |n| view.alloc(n));
+                    // Una lista de elementos ficticios: la cuenta de la carpeta de la Papelera del árbol de demostración.
+                    let n = loc
+                        .locate(&self.recycle_dir(&drive).unwrap_or_default())
+                        .map_or(0, |n| self.tree.node(n).files_below as usize);
+                    let list: Vec<BinItem> = (0..n)
+                        .map(|i| BinItem {
+                            id: OsString::from(format!("demo-{i}")),
+                            name: OsString::from(format!("elemento-{i}")),
+                            original_parent: PathBuf::from(format!(
+                                "{}Users\\{USER}\\Descargas",
+                                self.root
+                            )),
+                            time_deleted: DEMO_NOW as i64 - 86_400 * (i as i64 % 60),
+                        })
+                        .collect();
+                    plan.bin = Some(BinPlan {
+                        items: list,
+                        bytes_hint: bytes,
+                    });
+                }
+            }
+        }
+        for (i, mut it) in items.into_iter().enumerate() {
+            it.id = i;
+            plan.items.push(it);
+        }
+        plan
+    }
+
+    fn execute(
+        &self,
+        plan: &Plan,
+        opts: &ExecOptions,
+        progress: &Arc<Progress>,
+    ) -> Result<Report, ExecError> {
+        let step = |phase: Phase| {
+            progress.set_phase(phase);
+            if !self.delay.is_zero() {
+                std::thread::sleep(self.delay / 4);
+            }
+        };
+        step(Phase::Preparing);
+        let mut rep = Report {
+            dry_run: opts.dry_run,
+            ..Report::default()
+        };
+        let view = View::new(&self.tree, None);
+        let mut loc = Locator::new(&self.tree);
+        progress.set_items_total(plan.items.len() + usize::from(plan.bin.is_some()));
+        if let Some(b) = &plan.bin {
+            step(Phase::EmptyingBin);
+            rep.bin = Some(BinReport {
+                requested: b.items.len() as u64,
+                purged: b.items.len() as u64,
+                still_there: 0,
+                bytes_hint: b.bytes_hint,
+                failed: false,
+            });
+            progress.add_item_done();
+        }
+        step(Phase::Deleting);
+        for it in &plan.items {
+            if progress.cancel.load(Ordering::Relaxed) {
+                break;
+            }
+            let unfit_skipped = it.is_unfit() && !opts.allow_unfit_permanent;
+            let dest = if it.is_unfit() && opts.allow_unfit_permanent {
+                Destination::Permanent
+            } else {
+                it.destination
+            };
+            let mut removed = Vec::new();
+            let mut stats = StatsSnapshot::default();
+            let status = if unfit_skipped {
+                rep.skipped_unfit += 1;
+                ItemStatus::SkippedUnfit
+            } else if opts.dry_run {
+                match dest {
+                    Destination::Permanent => ItemStatus::Done,
+                    Destination::Recycle => ItemStatus::WouldRecycle,
+                }
+            } else {
+                stats.bytes = it.estimate.bytes;
+                stats.logical = it.estimate.logical;
+                stats.files = it.estimate.files;
+                if let Some(node) = loc.locate(&it.path) {
+                    match &it.spec {
+                        UnitSpec::Contents { .. } => {
+                            // Una entrada por cada hijo de primer nivel que cumple la antigüedad.
+                            let cutoff = if it.min_age.is_zero() {
+                                u32::MAX
+                            } else {
+                                DEMO_NOW - it.min_age.as_secs() as u32
+                            };
+                            for c in view.kids(node).iter() {
+                                let (b, l, f, all) = eligible_by_age(&view, c, cutoff);
+                                if f == 0 {
+                                    continue;
+                                }
+                                removed.push(Removed {
+                                    path: it.path.join(self.tree.name_lossy(c).as_ref()),
+                                    is_dir: self.tree.node(c).is_dir(),
+                                    removed: all,
+                                    bytes: b,
+                                    logical: l,
+                                    files: f,
+                                });
+                            }
+                            if it.category == Some(CategoryId::UserTemp) {
+                                // Lo que un programa tenía abierto (simulado).
+                                stats.in_use = 37;
+                            }
+                        }
+                        UnitSpec::Entry { is_dir, .. } => removed.push(Removed {
+                            path: it.path.clone(),
+                            is_dir: *is_dir,
+                            removed: true,
+                            bytes: it.estimate.bytes,
+                            logical: it.estimate.logical,
+                            files: it.estimate.files,
+                        }),
+                    }
+                }
+                match dest {
+                    Destination::Permanent => ItemStatus::Done,
+                    Destination::Recycle => ItemStatus::Recycled,
+                }
+            };
+            match (dest, status) {
+                (Destination::Permanent, ItemStatus::Done) => rep.permanent_bytes += stats.bytes,
+                (Destination::Recycle, ItemStatus::Recycled | ItemStatus::WouldRecycle) => {
+                    rep.recycled_bytes += if status == ItemStatus::WouldRecycle {
+                        it.estimate.bytes
+                    } else {
+                        stats.bytes
+                    };
+                }
+                _ => {}
+            }
+            if opts.dry_run && dest == Destination::Permanent && status == ItemStatus::Done {
+                rep.permanent_bytes += it.estimate.bytes;
+            }
+            rep.totals.merge(&stats);
+            rep.items.push(ItemReport {
+                id: it.id,
+                category: it.category,
+                path: it.path.clone(),
+                destination: dest,
+                status,
+                stats,
+                removed,
+            });
+            progress.add_item_done();
+        }
+        step(Phase::Verifying);
+        rep.cancelled = progress.cancel.load(Ordering::Relaxed);
+        if !opts.dry_run {
+            let bin = rep.bin.map_or(0, |b| b.bytes_hint);
+            let freed = rep.permanent_bytes + bin;
+            let d = &demo::drives()[0];
+            rep.freed_now = Some(freed as i64);
+            rep.volumes.push(tesela_cleaner::exec::VolumeDelta {
+                root: PathBuf::from(&self.root),
+                free_before: d.free,
+                free_after: d.free + freed,
+            });
+        }
+        progress.set_phase(Phase::Done);
+        Ok(rep)
+    }
+
+    fn running_browsers(&self) -> Vec<Browser> {
+        self.browsers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
+    }
+
+    fn data_dir(&self) -> Option<PathBuf> {
+        None
+    }
+
+    fn is_demo(&self) -> bool {
+        true
+    }
+}

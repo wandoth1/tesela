@@ -5,7 +5,7 @@
 use crate::app::Env;
 use crate::args;
 use crate::describe::{self, Special};
-use crate::explore::{Explore, Sel};
+use crate::explore::{AddState, Explore, Sel};
 use crate::icons::Icon;
 use crate::map::{info_key, stacked_bar};
 use crate::platform;
@@ -38,6 +38,8 @@ fn note(ui: &mut Ui, env: &mut Env, icon: Icon, text: String, color: egui::Color
 pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
     let pal = env.pal;
     let tree = ex.tree.clone();
+    let overlay = ex.overlay.clone();
+    let view = tesela_model::View::new(&tree, overlay.as_deref());
     let sel = ex.selection.unwrap_or(Sel::Node(ex.root.node));
     let is_current = ex.selection.is_none();
     // Barra SÓLIDA y siempre visible cuando el contenido no cabe (ventana pequeña): nada queda cortado sin aviso.
@@ -109,31 +111,31 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
             }
 
             // Cifras.
-            let bytes = group.map_or(node.alloc, |o| o.bytes);
+            let bytes = group.map_or(view.alloc(id), |o| o.bytes);
             let alloc_txt = if lower {
                 env.tr.size_min(bytes)
             } else {
                 env.tr.size(bytes)
             };
-            let logical_txt = if group.is_some() || special.is_some() && node.logical == 0 {
+            let logical_txt = if group.is_some() || special.is_some() && view.logical(id) == 0 {
                 "—".to_string()
             } else if lower {
-                env.tr.size_min(node.logical)
+                env.tr.size_min(view.logical(id))
             } else {
-                env.tr.size(node.logical)
+                env.tr.size(view.logical(id))
             };
             let files_txt = match (group, node.is_dir()) {
                 (None, true) => {
-                    let f = env.tr.int(node.files_below as u64);
+                    let f = env.tr.int(view.files_below(id));
                     if lower { format!("≥ {f}") } else { f }
                 }
                 _ => "—".to_string(),
             };
             let (parent_alloc, parent_name) = match tree.parent(id) {
                 Some(p) if group.is_none() => {
-                    (tree.node(p).alloc, describe::display_name(&tree, p, env.tr))
+                    (view.alloc(p), describe::display_name(&tree, p, env.tr))
                 }
-                Some(p) => (tree.node(p).alloc, describe::display_name(&tree, p, env.tr)),
+                Some(p) => (view.alloc(p), describe::display_name(&tree, p, env.tr)),
                 None => (0, String::new()),
             };
             let share = if parent_alloc > 0 {
@@ -179,7 +181,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
             });
 
             // Composición y antigüedad (solo carpetas con datos).
-            if group.is_none() && node.is_dir() && node.alloc > 0 && special.is_none() {
+            if group.is_none() && node.is_dir() && view.alloc(id) > 0 && special.is_none() {
                 let h = tree.hist(id);
                 stacked_bar(ui, &pal, h);
                 let tp = describe::type_phrase(env.tr, h);
@@ -227,6 +229,57 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
             if group.is_none() && node.flags & flags::CLOUD != 0 {
                 note(ui, env, Icon::Cloud, env.tr.t("cloud-note"), pal.accent);
             }
+            // Protección y cesta.
+            let state = ex.add_state(sel);
+            match state {
+                AddState::Denied => {
+                    note(
+                        ui,
+                        env,
+                        Icon::LockClosed,
+                        env.tr.t("protected-denied-why"),
+                        pal.text_muted,
+                    );
+                }
+                AddState::Untouchable => {
+                    note(
+                        ui,
+                        env,
+                        Icon::LockClosed,
+                        env.tr.t("protected-untouchable-why"),
+                        pal.text_muted,
+                    );
+                }
+                AddState::ContentsOf => {
+                    note(
+                        ui,
+                        env,
+                        Icon::Info,
+                        env.tr.t("protected-contents-why"),
+                        pal.text_muted,
+                    );
+                }
+                AddState::CloudOnly => {
+                    note(
+                        ui,
+                        env,
+                        Icon::Cloud,
+                        env.tr.t("menu-unavailable-cloud"),
+                        pal.text_muted,
+                    );
+                }
+                AddState::InBasket => {
+                    widgets::chip(
+                        ui,
+                        env,
+                        Some(Icon::Cart),
+                        &env.tr.t("details-in-basket"),
+                        pal.accent,
+                        pal.accent_soft,
+                    );
+                }
+                _ => {}
+            }
             if group.is_some() {
                 note(
                     ui,
@@ -239,15 +292,59 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
 
             // Acciones.
             ui.add_space(4.0);
+            let (label, enabled, hint) = match state {
+                AddState::Addable => (env.tr.t("menu-add-basket"), true, None),
+                AddState::ContentsOf => (env.tr.t("menu-add-contents-short"), true, None),
+                AddState::InBasket if ex.basket_has_own(sel) => {
+                    (env.tr.t("menu-remove-basket"), true, None)
+                }
+                AddState::InBasket => (env.tr.t("menu-in-basket"), false, None),
+                AddState::Untouchable => (
+                    env.tr.t("menu-add-basket"),
+                    false,
+                    Some("protected-untouchable-why"),
+                ),
+                AddState::Denied => (
+                    env.tr.t("menu-add-basket"),
+                    false,
+                    Some("protected-denied-why"),
+                ),
+                AddState::InfoOnly => (
+                    env.tr.t("menu-add-basket"),
+                    false,
+                    Some("menu-unavailable-info"),
+                ),
+                AddState::SystemBlock => (
+                    env.tr.t("menu-add-basket"),
+                    false,
+                    Some("menu-unavailable-system"),
+                ),
+                AddState::CloudOnly => (
+                    env.tr.t("menu-add-basket"),
+                    false,
+                    Some("menu-unavailable-cloud"),
+                ),
+                AddState::Group => (env.tr.t("menu-add-basket"), false, Some("tip-open-group")),
+            };
             let r = widgets::button(
                 ui,
                 env,
                 ButtonStyle::Secondary,
                 Some(Icon::Cart),
-                &env.tr.t("menu-add-basket"),
-                false,
+                &label,
+                enabled,
             );
-            widgets::next_version_hint(r, env);
+            if let Some(h) = hint {
+                r.clone().on_hover_text(env.tr.t(h));
+            }
+            if r.clicked() {
+                let now = ui.input(|i| i.time);
+                if state == AddState::InBasket {
+                    ex.basket_remove(sel);
+                } else {
+                    ex.basket_add(sel, env, now);
+                }
+            }
             let is_system = special == Some(Special::SystemBlock);
             let real = !env.demo && !is_system;
             ui.horizontal_wrapped(|ui| {
@@ -306,25 +403,25 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
             });
 
             // Lo más grande aquí.
-            if group.is_none() && describe::can_enter(&tree, id) {
+            if group.is_none() && describe::can_enter_view(&view, id) {
                 ui.add_space(6.0);
                 widgets::section_label(ui, &pal, &env.tr.t("details-biggest"));
-                let kids = tesela_layout::Children::of(&tree, id);
+                let kids = tesela_layout::Children::of_view(&view, id);
                 for c in kids.iter_from(0).take(5) {
-                    row_biggest(ui, env, &tree, c);
+                    row_biggest(ui, env, &view, c);
                 }
             }
         });
     ex.details_overflow = out.content_size.y > out.inner_rect.height() + 0.5;
 }
 
-fn row_biggest(ui: &mut Ui, env: &Env, tree: &tesela_model::Tree, c: NodeId) {
+fn row_biggest(ui: &mut Ui, env: &Env, view: &tesela_model::View, c: NodeId) {
     let pal = env.pal;
-    let n = tree.node(c);
+    let tree = view.tree();
     let size = if describe::is_lower_bound(tree, c) {
-        env.tr.size_min(n.alloc)
+        env.tr.size_min(view.alloc(c))
     } else {
-        env.tr.size(n.alloc)
+        env.tr.size(view.alloc(c))
     };
     ui.horizontal(|ui| {
         ui.add(

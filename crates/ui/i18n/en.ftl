@@ -7,7 +7,7 @@ settings-theme = Theme
 settings-language = Language
 about = About Tesela
 about-version = Version { $v }
-about-description = Disk space analyzer for Windows. This version is read-only: it never deletes or moves anything.
+about-description = Disk space analyzer for Windows. It shows what takes up space and helps you free it: what can be regenerated is deleted, your files go to the Recycle Bin and system folders are protected.
 about-license = License: MIT or Apache-2.0
 about-notices = Third-party notices
 theme-system = Same as system
@@ -70,8 +70,8 @@ scan-counts-of = { $files } files · { $size } of { $total } · { $time }
 scan-stop = Stop and view what we have
 scan-progress-label = Scan progress: { $pct }%
 scan-known-title = Places where temporary files usually pile up
-scan-known-sum = { $size } in known places
-scan-known-note = For now this only shows how much they take; which of it is safe to clean arrives in the next version.
+scan-known-sum = You can free at least { $size }
+scan-known-note = Only safe things count: temporary files older than a day and browser caches. We show you what is deleted and what goes to the Recycle Bin before cleaning.
 scan-known-excluded = Downloads and the Recycle Bin are your own data: they are shown, but not counted in the figure above.
 risk-review-tag = Review
 scan-clean-safe = Clean the safe stuff
@@ -196,3 +196,220 @@ age-mixed = A mix of recent and old files
 map-has-others = Includes the group { $label }.
 percent = { $n }%
 percent-fine = { $v }%
+scan-measuring = Working out what can be freed…
+scan-nothing-safe = Nothing safe to clean in the known places
+scan-clean-wait = Available when the sweep of the known places finishes
+scan-row-blocked = Close { $name } to free up to { $size }
+
+# Basket, protection and menu
+basket-added = Added to the basket
+basket-empty-hint = The basket is empty. Add items from the map, the list or Recommendations.
+basket-window-title = Basket
+basket-contents-of = Contents of { $name }
+basket-remove-item = Remove { $name } from the basket
+basket-phrase-permanent = Deleted, and it is recreated on its own
+basket-phrase-recycle = Goes to the Recycle Bin · you can recover it
+basket-phrase-bin = What is in the Recycle Bin when you confirm is deleted permanently
+menu-add-contents = Add the contents of “{ $name }” to the basket
+menu-add-contents-short = Add its contents to the basket
+menu-remove-basket = Remove from the basket
+menu-in-basket = Already in the basket
+menu-in-basket-why = It is inside something that is already in the basket.
+menu-view-contents = View contents
+menu-unavailable-cloud = Files that exist only in the cloud take no space on this drive: they cannot be selected to free space.
+menu-unavailable-info = Info only: Windows manages it and it cannot be deleted from here.
+protected-label = Protected
+protected-denied-why = Protected: it belongs to the system or to other programs and cannot be deleted from here.
+protected-untouchable-why = A key folder of your profile or drive: it cannot be deleted as a whole, but what is inside can be cleaned.
+protected-contents-why = A known folder (Documents, Videos...): its contents can be added, but not the folder itself.
+details-in-basket = In the basket
+dry-run-banner = Simulation mode: nothing is deleted
+cleaned-badge = ≈ Approximate until rescan
+cleaned-tip = You have cleaned since the scan: sizes were updated, but the type and age charts were not. Rescan (F5) to bring them up to date.
+info-name-pagefile = Virtual memory (pagefile.sys)
+info-name-hiberfil = Hibernation (hiberfil.sys)
+info-name-swapfile = App swap (swapfile.sys)
+dest-permanent = Deleted · recreated on its own
+
+# Recommendations
+risk-safe-tag = Safe
+recs-title-safe = You can free { $size } with no risk
+recs-title-none = Nothing safe to clean right now
+recs-subtitle-review = And there is { $size } more that you should look at yourself.
+recs-clean-safe = Clean the safe items ({ $size })
+recs-safe-hint = Already checked. Recreated on its own or reinstalled.
+recs-review-hint = Unchecked. Open it and decide.
+recs-info-hint = Managed by Windows. We explain what it is.
+recs-none = There are no known cleanup places in this folder. Scan a whole drive to see recommendations.
+recs-review-none = Nothing to review here.
+recs-info-none = There are no files of this kind in what was scanned.
+recs-include = Include { $name }
+recs-browser-cache = { $name } cache
+recs-blocked = { $name } is open: close it to free up to { $size }
+recs-recheck = Check again
+recs-view = View
+recs-empty-bin = Empty
+rule-browsers-name = Browser caches
+rule-browsers-why = Copies of web pages that the browser downloads again. Your passwords, history and sessions are not touched.
+rule-user-temp-why = Temporary files older than a day. Recent ones are left in case an installer is using them.
+rule-windows-temp-why = Windows temporary files older than a day. Recent ones are left in case an installer is using them.
+rule-downloads-why = Your own files: look at them and choose. Nothing here is checked automatically.
+rule-recycle-bin-why = Emptying it is permanent. Only what is in it when you confirm is emptied; what arrives later is not touched.
+
+# Confirmation
+confirm-title = Review before cleaning
+confirm-subtitle =
+    { $n ->
+        [one] { $count } item · { $size } · we check every path again right before deleting
+       *[other] { $count } items · { $size } · we check every path again right before deleting
+    }
+confirm-empty = There is nothing to clean with this basket.
+confirm-dry-banner = Simulation mode: nothing will be deleted or moved; only what would be done is logged.
+confirm-reconfirm = Something changed since you confirmed (what fits in the Recycle Bin). Review again before cleaning.
+confirm-group-permanent = Deleted and recreated on its own
+confirm-permanent-note = This part cannot be undone, but Windows and your programs recreate it when they need it.
+confirm-upto = up to { $size }
+confirm-group-bin = Empty the Recycle Bin
+confirm-bin-note =
+    { $n ->
+        [one] The { $count } item in it now is deleted permanently (about { $size }). What arrives later is not touched.
+       *[other] The { $count } items in it now are deleted permanently (about { $size }). What arrives later is not touched.
+    }
+confirm-group-recycle = Goes to the Recycle Bin · you can recover it
+confirm-recycle-note = These are your own files; they are not recreated. The space is only really freed when you empty the Recycle Bin.
+confirm-your-file = Your file
+confirm-no-space = will not free space
+confirm-more =
+    { $n ->
+        [one] and { $count } more
+       *[other] and { $count } more
+    }
+confirm-group-unfit = Will be deleted permanently because it does not fit in the Recycle Bin
+confirm-unfit-check = I understand this cannot be recovered
+confirm-unfit-note = Without checking the box, these items are not touched.
+unfit-no-bin = the drive has no Recycle Bin
+unfit-nuke = the Recycle Bin is turned off for the drive
+unfit-too-big = it exceeds the size of the Recycle Bin
+unfit-path-long = the path is too long for the Recycle Bin
+confirm-hardlink =
+    { $n ->
+        [one] { $count } file is shared with another name: it will not free space ({ $size })
+       *[other] { $count } files are shared with another name: they will not free space ({ $size })
+    }
+confirm-cloud = Synced with OneDrive: deleting it also removes it from the cloud.
+confirm-protected =
+    { $n ->
+        [one] { $count } protected item will be skipped.
+       *[other] { $count } protected items will be skipped.
+    }
+confirm-protected-size =
+    { $n ->
+        [one] { $count } protected item will be skipped ({ $size }).
+       *[other] { $count } protected items will be skipped ({ $size }).
+    }
+confirm-rejected =
+    { $n ->
+        [one] { $count } item can no longer be cleaned (it changed, no longer exists or is protected).
+       *[other] { $count } items can no longer be cleaned (they changed, no longer exist or are protected).
+    }
+reject-missing = no longer exists
+reject-denied = no permission
+reject-identity = cannot be verified
+reject-reparse = is a link
+reject-protected = protected
+reject-untouchable = cannot be deleted as a whole
+reject-other = system error
+confirm-see-all = See the full list
+confirm-hide-all = See less
+confirm-go-both = Free { $free } and move { $bin } to the Recycle Bin
+confirm-go-free = Free { $free }
+confirm-go-bin = Move { $bin } to the Recycle Bin
+confirm-go-free-zero = Clean
+confirm-go-dry = Simulate the cleanup
+
+# Running and summary
+run-title = Cleaning…
+run-title-dry = Simulating…
+run-phase-preparing = Preparing…
+run-phase-bin = Emptying the Recycle Bin…
+run-phase-delete = Deleting…
+run-phase-recycle = Moving to the Recycle Bin…
+run-phase-verify = Checking every item…
+run-progress = { $done } of { $total } items · { $count } entries checked
+run-cancelling = Cancelling: what already started finishes and nothing else is touched.
+sum-freed = Freed now
+sum-dry = Simulation: this is what would have been freed
+sum-permanent = Deleted permanently
+sum-recycled = Moved to the Recycle Bin
+sum-bin-purged = Recycle Bin emptied
+sum-bin-items =
+    { $n ->
+        [one] { $count } item
+       *[other] { $count } items
+    }
+sum-before = Before
+sum-now = Now
+sum-used-pct = { $used } used · { $pct }
+sum-bin-card = Another { $size } is in the Recycle Bin
+sum-bin-card-note = That space is really freed when you empty it.
+sum-empty-now = Empty now ({ $size })
+sum-open-bin = Open the Recycle Bin
+sum-back = Back to the map
+sum-in-use =
+    { $n ->
+        [one] { $count } file in use was skipped. Nothing was forced.
+       *[other] { $count } files in use were skipped. Nothing was forced.
+    }
+sum-denied =
+    { $n ->
+        [one] { $count } item without permission was skipped.
+       *[other] { $count } items without permission were skipped.
+    }
+sum-browser-open = { $name } is still open: close it to free up to { $size } more.
+sum-changed =
+    { $n ->
+        [one] { $count } item changed since the confirmation and was not touched.
+       *[other] { $count } items changed since the confirmation and were not touched.
+    }
+sum-protected =
+    { $n ->
+        [one] { $count } protected item was respected.
+       *[other] { $count } protected items were respected.
+    }
+sum-reparse =
+    { $n ->
+        [one] { $count } link was not followed (links are never entered).
+       *[other] { $count } links were not followed (links are never entered).
+    }
+sum-young =
+    { $n ->
+        [one] { $count } recent file was left alone (less than a day old).
+       *[other] { $count } recent files were left alone (less than a day old).
+    }
+sum-shared =
+    { $n ->
+        [one] { $count } file shared with another name did not free space.
+       *[other] { $count } files shared with another name did not free space.
+    }
+sum-unexpected =
+    { $n ->
+        [one] { $count } item did not fit in the Recycle Bin and was deleted permanently.
+       *[other] { $count } items did not fit in the Recycle Bin and were deleted permanently.
+    }
+sum-not-recycled =
+    { $n ->
+        [one] { $count } item could not be moved to the Recycle Bin (in use or no permission): it is still where it was.
+       *[other] { $count } items could not be moved to the Recycle Bin (in use or no permission): they are still where they were.
+    }
+sum-skipped-unfit =
+    { $n ->
+        [one] { $count } item that does not fit in the Recycle Bin was not touched.
+       *[other] { $count } items that do not fit in the Recycle Bin were not touched.
+    }
+sum-bin-failed =
+    { $n ->
+        [one] The Recycle Bin could not be emptied completely: { $count } item is still there.
+       *[other] The Recycle Bin could not be emptied completely: { $count } items are still there.
+    }
+sum-cancelled = You cancelled the cleanup: what was already done stays done.
+sum-diverge = "Deleted permanently" and "freed now" differ: this can be because of hard links, files another program had open, or changes made by Windows itself.

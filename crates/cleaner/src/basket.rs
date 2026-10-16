@@ -114,6 +114,13 @@ impl Basket {
         })
     }
 
+    /// ¿Está "Contenido de X" en la cesta para la carpeta `key`?
+    pub fn has_contents_of(&self, key: &PathKey) -> bool {
+        self.entries
+            .iter()
+            .any(|e| matches!(e.source, Source::ContentsOf(_)) && e.key.as_ref() == Some(key))
+    }
+
     /// Añade un archivo o una carpeta ("Tu archivo"). Una carpeta conocida solo se añade con
     /// [`Basket::add_contents_of`]; los intocables y los denegados rebotan.
     pub fn add_path(&mut self, path: PathBuf, prot: &Protection) -> AddOutcome {

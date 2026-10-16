@@ -15,6 +15,8 @@ use crate::theme::{self, Palette, ThemePref};
 use crate::{home, scan};
 use crossbeam_channel::{Receiver, TryRecvError};
 use std::path::PathBuf;
+use std::sync::Arc;
+use tesela_cleaner::Backend;
 
 /// Preferencia de idioma: el del sistema o uno fijo.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -79,6 +81,19 @@ pub enum StartScreen {
     Scan(f32),
     /// Directamente el mapa (o la lista) del árbol de demostración.
     Map(MapStart),
+    /// Una pantalla del flujo de limpieza, con el respaldo SIMULADO (capturas y pruebas).
+    Clean(CleanStart),
+}
+
+/// Pantalla de la limpieza con la que arranca la demostración.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CleanStart {
+    /// Recomendaciones.
+    Recommendations,
+    /// La confirmación, con una cesta de ejemplo (lo seguro, un archivo y una carpeta de proyectos).
+    Confirm,
+    /// El resumen tras limpiar esa misma cesta.
+    Summary,
 }
 
 /// Dónde arranca la exploración de la demostración.
@@ -92,6 +107,16 @@ pub struct MapStart {
     pub select: Option<String>,
 }
 
+/// El respaldo de la limpieza (el `cleaner` real o el simulado de `--demo`).
+#[derive(Clone)]
+pub struct BackendRef(pub Arc<dyn Backend>);
+
+impl std::fmt::Debug for BackendRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Backend(demo: {})", self.0.is_demo())
+    }
+}
+
 /// Opciones de arranque.
 #[derive(Clone, Debug)]
 pub struct Options {
@@ -101,6 +126,10 @@ pub struct Options {
     /// ¿Animar? (`SPI_GETCLIENTAREAANIMATION`); los tests lo desactivan.
     pub animate: bool,
     pub start: StartScreen,
+    /// Modo simulación (`--dry-run`): la limpieza registra las identidades aprobadas SIN tocar nada.
+    pub dry_run: bool,
+    /// Sustituye al respaldo por defecto (las pruebas inyectan el suyo).
+    pub backend: Option<BackendRef>,
 }
 
 impl Default for Options {
@@ -110,6 +139,8 @@ impl Default for Options {
             demo: None,
             animate: true,
             start: StartScreen::Home,
+            dry_run: false,
+            backend: None,
         }
     }
 }
@@ -136,6 +167,8 @@ pub enum Action {
     SetLanguage(LangPref),
     /// Abre la ventana "Acerca de".
     ShowAbout,
+    /// Borra el historial de limpiezas (Ajustes).
+    ClearHistory,
 }
 
 /// Lo que las pantallas necesitan de la interfaz mientras dibujan.
@@ -148,6 +181,10 @@ pub struct Env<'a> {
     pub drives: &'a [DriveInfo],
     pub drives_loading: bool,
     pub settings: Settings,
+    /// La limpieza (real o simulada).
+    pub backend: &'a Arc<dyn Backend>,
+    /// Modo simulación: no se borra nada.
+    pub dry_run: bool,
     /// Hay una ventana modal abierta ("Acerca de"): las teclas de navegación de la exploración no actúan.
     pub modal_open: bool,
     pub actions: &'a mut Vec<Action>,
@@ -167,6 +204,8 @@ pub struct TeselaUi {
     icons: IconCache,
     demo: Option<DemoOptions>,
     animate: bool,
+    backend: Arc<dyn Backend>,
+    dry_run: bool,
     drives: Vec<DriveInfo>,
     drives_rx: Option<Receiver<Vec<DriveInfo>>>,
     folder_rx: Option<Receiver<Option<PathBuf>>>,
@@ -194,6 +233,12 @@ impl TeselaUi {
             icons: IconCache::default(),
             demo: opts.demo,
             animate: opts.animate,
+            backend: opts
+                .backend
+                .clone()
+                .map(|b| b.0)
+                .unwrap_or_else(|| default_backend(opts.demo.is_some())),
+            dry_run: opts.dry_run,
             drives: Vec::new(),
             drives_rx: None,
             folder_rx: None,
@@ -225,6 +270,7 @@ impl TeselaUi {
                     req,
                     Some(p),
                     opts.demo.unwrap_or_default().stopped,
+                    ui.backend.clone(),
                 )));
             }
             (Some(d), StartScreen::Map(m)) => {
@@ -237,8 +283,20 @@ impl TeselaUi {
                 } else {
                     demo::Variant::Complete
                 };
-                let mut ex = Explore::demo(req, variant, ui.animate);
+                let mut ex = Explore::demo(req, variant, ui.animate, ui.backend.clone());
                 ex.demo_navigate(&m);
+                ui.screen = Screen::Explore(Box::new(ex));
+            }
+            (Some(d), StartScreen::Clean(c)) => {
+                let req = ui.demo_request();
+                ui.last_request = Some(req.clone());
+                let variant = if d.stopped {
+                    demo::Variant::Stopped
+                } else {
+                    demo::Variant::Complete
+                };
+                let mut ex = Explore::demo(req, variant, ui.animate, ui.backend.clone());
+                ex.demo_clean(&ui.backend, c, ui.dry_run);
                 ui.screen = Screen::Explore(Box::new(ex));
             }
             _ => {}
@@ -410,9 +468,9 @@ impl TeselaUi {
         self.notice = None;
         self.last_request = Some(req.clone());
         let screen = if let Some(d) = self.demo {
-            ScanScreen::demo(req, None, d.stopped)
+            ScanScreen::demo(req, None, d.stopped, self.backend.clone())
         } else {
-            ScanScreen::real(ctx, req, self.animate)
+            ScanScreen::real(ctx, req, self.animate, self.backend.clone())
         };
         self.screen = Screen::Scan(Box::new(screen));
     }
@@ -454,6 +512,11 @@ impl TeselaUi {
                     }
                 }
                 Action::ShowAbout => self.about.open = true,
+                Action::ClearHistory => {
+                    if let Some(dir) = self.backend.data_dir() {
+                        let _ = tesela_cleaner::log::history_clear(&dir);
+                    }
+                }
                 Action::SetTheme(t) => {
                     self.settings.theme = t;
                     self.settings_dirty = true;
@@ -491,6 +554,8 @@ impl TeselaUi {
                 drives: &self.drives,
                 drives_loading: self.drives_rx.is_some(),
                 settings: self.settings,
+                backend: &self.backend,
+                dry_run: self.dry_run,
                 modal_open: self.about.open,
                 actions: &mut actions,
             };
@@ -529,4 +594,20 @@ impl TeselaUi {
             ctx.request_repaint();
         }
     }
+}
+
+/// El respaldo por defecto: el `cleaner` real (raíces de `SHGetKnownFolderPath`), o el simulado en la demostración.
+fn default_backend(demo: bool) -> Arc<dyn Backend> {
+    if demo {
+        return Arc::new(crate::demo_backend::DemoBackend::new(
+            std::time::Duration::from_millis(1600),
+        ));
+    }
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
+        .and_then(|d| tesela_cleaner::paths::canonical_path(&d).ok());
+    Arc::new(tesela_cleaner::Cleaner::new(
+        tesela_cleaner::Roots::from_system(exe_dir.as_deref()),
+    ))
 }

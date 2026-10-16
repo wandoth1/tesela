@@ -7,21 +7,24 @@
 
 use crate::app::{Action, Env, ScanRequest};
 use crate::args;
+use crate::clean::{CleanFlow, FlowEvent, SummaryClick};
 use crate::demo;
 use crate::describe::{self, Special};
 use crate::home::{drive_title, settings_button};
 use crate::icons::Icon;
 use crate::map::MapState;
+use crate::recs::Recs;
 use crate::theme::{self, Palette};
-use crate::widgets::{self, ButtonStyle};
+use crate::widgets;
 use crate::{details, list};
 use egui::{
     Align, CornerRadius, Key, Layout, Margin, Modifiers, RichText, Sense, Stroke, Ui, vec2,
 };
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tesela_cleaner::{Backend, Browser, Protection};
 use tesela_layout::{Others, Root};
-use tesela_model::{FileType, NodeId, Tree};
+use tesela_model::{FileType, NodeId, Overlay, Tree, View as TreeView};
 use tesela_scanner::ScanResult;
 
 /// Cifras del escaneo que se conservan junto al árbol.
@@ -61,11 +64,39 @@ pub enum Sel {
 pub enum View {
     Map,
     List,
+    Recommendations,
+}
+
+/// Qué se puede hacer con un elemento respecto a la cesta.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum AddState {
+    /// Se puede añadir.
+    Addable,
+    /// Ya está en la cesta (él o un ancestro).
+    InBasket,
+    /// Carpeta conocida: solo "Contenido de …".
+    ContentsOf,
+    /// Intocable como destino (raíz del perfil, AppData...): su contenido sí se puede limpiar.
+    Untouchable,
+    /// Denegada por completo.
+    Denied,
+    /// `pagefile.sys` y compañía: solo informar.
+    InfoOnly,
+    /// El bloque "Windows y otros datos del sistema".
+    SystemBlock,
+    /// Archivo que solo está en la nube: no se puede seleccionar para liberar espacio.
+    CloudOnly,
+    /// Una agrupación "Otros": se abre y se elige dentro.
+    Group,
 }
 
 /// Exploración de un árbol.
 pub struct Explore {
     pub(crate) tree: Arc<Tree>,
+    /// Lo que ya se limpió, sin reescanear (PLAN.md §3.6). `None` hasta la primera limpieza.
+    pub(crate) overlay: Option<Arc<Overlay>>,
+    /// Ya se limpió algo desde el análisis: los histogramas (tipos, antigüedad) son aproximados hasta reescanear.
+    pub(crate) cleaned: bool,
     pub(crate) info: ScanInfo,
     /// Versión de los datos para la caché del layout (cambia con el árbol; en el inc. 3, con el overlay).
     pub(crate) version: u64,
@@ -80,6 +111,16 @@ pub struct Explore {
     pub(crate) details_overflow: bool,
     pub(crate) selection: Option<Sel>,
     pub(crate) view: View,
+    /// El flujo de limpieza: cesta, confirmación, ejecución y resumen.
+    pub(crate) flow: CleanFlow,
+    /// Recomendaciones calculadas (se recalculan al cambiar el árbol o los navegadores abiertos).
+    pub(crate) recs: Option<(u64, Recs)>,
+    /// Ya se preseleccionó lo seguro al abrir Recomendaciones por primera vez.
+    pub(crate) recs_preselected: bool,
+    pub(crate) basket_open: bool,
+    pub(crate) browsers_open: Vec<Browser>,
+    pub(crate) protection: Arc<Protection>,
+    pub(crate) now_unix: u32,
     pub(crate) search: String,
     pub(crate) map: MapState,
     pub(crate) scroll_to_selection: bool,
@@ -130,10 +171,12 @@ fn next_version() -> u64 {
 }
 
 impl Explore {
-    fn new(tree: Tree, info: ScanInfo, animate: bool) -> Explore {
+    fn new(tree: Tree, info: ScanInfo, animate: bool, backend: &Arc<dyn Backend>) -> Explore {
         let scripts = crate::fonts::scripts_of_wtf8(tree.names_bytes());
         Explore {
             tree: Arc::new(tree),
+            overlay: None,
+            cleaned: false,
             info,
             version: next_version(),
             scripts,
@@ -143,6 +186,19 @@ impl Explore {
             details_overflow: false,
             selection: None,
             view: View::Map,
+            flow: CleanFlow::default(),
+            recs: None,
+            recs_preselected: false,
+            basket_open: false,
+            browsers_open: backend.running_browsers(),
+            protection: backend.protection(),
+            now_unix: if backend.is_demo() {
+                crate::demo::DEMO_NOW
+            } else {
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs() as u32)
+            },
             search: String::new(),
             map: MapState::default(),
             scroll_to_selection: false,
@@ -165,14 +221,20 @@ impl Explore {
         res: ScanResult,
         animate: bool,
         elapsed: Duration,
+        backend: &Arc<dyn Backend>,
     ) -> Explore {
         let files = res.tree.stats().files;
         let info = crate::scan::info_from_summary(&req, &res.summary, files, elapsed);
-        Explore::new(res.tree, info, animate)
+        Explore::new(res.tree, info, animate, backend)
     }
 
     /// Desde el árbol sintético de la demostración.
-    pub fn demo(req: ScanRequest, variant: demo::Variant, animate: bool) -> Explore {
+    pub fn demo(
+        req: ScanRequest,
+        variant: demo::Variant,
+        animate: bool,
+        backend: Arc<dyn Backend>,
+    ) -> Explore {
         let tree = demo::tree(variant);
         let files = tree.stats().files;
         let volume = req.drive.as_ref().map(|d| (d.total, d.free));
@@ -190,7 +252,7 @@ impl Explore {
             finished_at: Instant::now(),
             req,
         };
-        Explore::new(tree, info, animate)
+        Explore::new(tree, info, animate, &backend)
     }
 
     /// Coloca la exploración de la demostración según `start` (carpetas por nombre; sin animaciones).
@@ -211,6 +273,77 @@ impl Explore {
         if start.list {
             self.view = View::List;
         }
+    }
+
+    /// Coloca la exploración de la demostración en una pantalla del flujo de limpieza (capturas y pruebas; el respaldo es
+    /// el simulado: no toca el disco).
+    pub fn demo_clean(
+        &mut self,
+        backend: &Arc<dyn Backend>,
+        what: crate::app::CleanStart,
+        dry: bool,
+    ) {
+        use crate::app::CleanStart;
+        self.recs_preselected = false;
+        let env_free = self.volume_ctx();
+        match what {
+            CleanStart::Recommendations => {
+                self.view = View::Recommendations;
+                self.sync_blocked_hint();
+            }
+            CleanStart::Confirm | CleanStart::Summary => {
+                // La cesta de ejemplo: lo seguro que se puede limpiar ahora, una carpeta de proyectos y un archivo tuyo.
+                let recs = {
+                    let view = self.view();
+                    crate::recs::compute(
+                        &self.tree,
+                        &view,
+                        backend.as_ref(),
+                        &self.browsers_open,
+                        self.now_unix,
+                    )
+                };
+                for id in recs.preselected() {
+                    self.flow.basket.set_category(id, true);
+                }
+                self.recs = Some((self.version, recs));
+                self.recs_preselected = true;
+                self.sync_blocked_hint();
+                let prot = self.protection.clone();
+                let base = format!("{}Users\\{}", crate::demo::root_name(), crate::demo::USER);
+                for rel in [
+                    "Proyectos\\tienda-web\\node_modules",
+                    "Descargas\\distro-linux-24.04.iso",
+                ] {
+                    self.flow
+                        .basket
+                        .add_path(std::path::PathBuf::from(format!("{base}\\{rel}")), &prot);
+                }
+                if what == CleanStart::Confirm {
+                    self.flow.open_confirm_now(backend, env_free);
+                } else {
+                    self.flow.run_now(backend, env_free, dry);
+                    for ev in self.flow.take_events() {
+                        let FlowEvent::Removed(v) = ev;
+                        self.apply_removed(&v);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Pasa a la limpieza las cachés de navegadores abiertos que no se limpian y cuánto se liberaría al cerrarlos.
+    pub(crate) fn sync_blocked_hint(&mut self) {
+        self.flow.blocked_hint = self
+            .recs
+            .as_ref()
+            .map(|(_, r)| {
+                r.rows
+                    .iter()
+                    .filter_map(|row| row.blocked_by.map(|b| (b, row.bytes)))
+                    .collect()
+            })
+            .unwrap_or_default();
     }
 
     /// Nombre de lo explorado (para el título de la ventana).
@@ -250,7 +383,7 @@ impl Explore {
     /// Con un archivo no hace nada. Devuelve si cambió la raíz.
     pub fn enter(&mut self, sel: Sel) -> bool {
         let target = match sel {
-            Sel::Node(id) if describe::can_enter(&self.tree, id) => Root::node(id),
+            Sel::Node(id) if describe::can_enter_view(&self.view(), id) => Root::node(id),
             Sel::Group(o) => o.root(),
             _ => return false,
         };
@@ -300,12 +433,69 @@ impl Explore {
         self.selection = sel;
     }
 
+    /// El árbol visto a través del overlay de limpieza.
+    pub(crate) fn view(&self) -> TreeView<'_> {
+        TreeView::new(&self.tree, self.overlay.as_deref())
+    }
+
     /// Hijos (visibles) que está mostrando ahora el mapa o la lista.
     pub(crate) fn shown_children(&self) -> Shown {
-        let kids = tesela_layout::Children::of(&self.tree, self.root.node);
+        let kids = tesela_layout::Children::of_view(&self.view(), self.root.node);
         let end = (self.root.end as usize).min(kids.len());
         let start = (self.root.start as usize).min(end);
         Shown { kids, start, end }
+    }
+
+    /// Aplica al árbol lo que desapareció de verdad (overlay, PLAN.md §3.6), sin reescanear: lo que se eliminó entero
+    /// deja de verse y lo que se limpió solo en parte encoge. Los ancestros restan lo mismo.
+    pub(crate) fn apply_removed(&mut self, removed: &[tesela_cleaner::Removed]) {
+        if removed.is_empty() {
+            return;
+        }
+        let tree = self.tree.clone();
+        let mut loc = crate::treepath::Locator::new(&tree);
+        let ov = Arc::make_mut(
+            self.overlay
+                .get_or_insert_with(|| Arc::new(Overlay::new(&tree))),
+        );
+        for r in removed {
+            let Some(id) = loc.locate(&r.path) else {
+                continue;
+            };
+            if r.removed {
+                ov.remove(&tree, id);
+            } else {
+                ov.shrink(&tree, id, r.bytes, r.logical, r.files);
+            }
+        }
+        self.cleaned = true;
+        // La caché del layout y el mesh se invalidan por la versión; la selección y la carpeta actual se mantienen
+        // válidas.
+        self.version = next_version();
+        self.search_hits = None;
+        self.search_set = None;
+        let view = TreeView::new(&self.tree, self.overlay.as_deref());
+        if let Some(Sel::Node(id)) = self.selection
+            && !view.is_visible(id)
+        {
+            self.selection = None;
+        }
+        if let Some(Sel::Group(o)) = self.selection
+            && !view.is_visible(o.parent)
+        {
+            self.selection = None;
+        }
+        let mut node = self.root.node;
+        let mut moved = false;
+        while !view.is_visible(node) {
+            node = self.tree.parent(node).unwrap_or(0);
+            moved = true;
+        }
+        if moved || self.root.is_group() {
+            // Una agrupación "Otros" abierta ya no describe lo mismo: se vuelve a la carpeta.
+            self.root = Root::node(node);
+            self.group_stack.clear();
+        }
     }
 
     /// Texto de la ruta de un elemento (solo para mostrar o copiar).
@@ -359,6 +549,33 @@ impl Explore {
     /// Pinta la ventana principal.
     pub fn show(&mut self, ui: &mut Ui, env: &mut Env) {
         let ctx = ui.ctx().clone();
+        // El flujo de limpieza avanza (hilos de aprobación y ejecución) y lo que desapareció se aplica al árbol.
+        self.flow.poll(&ctx, env.backend, env.dry_run);
+        for ev in self.flow.take_events() {
+            let FlowEvent::Removed(v) = ev;
+            self.apply_removed(&v);
+        }
+        self.ensure_recs(env);
+        self.sync_blocked_hint();
+        if self.flow.recheck {
+            self.flow.recheck = false;
+            self.recheck_browsers(env);
+            self.view = View::Recommendations;
+        }
+        // El resumen ocupa toda la ventana.
+        if self.flow.in_summary() {
+            match self.flow.show_summary(ui, env) {
+                Some(SummaryClick::EmptyNow) => {
+                    self.flow.close_summary();
+                    self.flow.basket.clear();
+                    self.flow.basket.set_empty_bin(true);
+                    self.start_clean(&ctx, env);
+                }
+                Some(SummaryClick::OpenBin) => crate::platform::open_recycle_bin(),
+                _ => {}
+            }
+            return;
+        }
         self.handle_keys(&ctx, env);
         let pal = env.pal;
 
@@ -370,7 +587,7 @@ impl Explore {
         egui::Panel::bottom("tesela-basket")
             .exact_size(56.0)
             .frame(bar_frame(pal.surface))
-            .show(ui, |ui| basket_bar(ui, env));
+            .show(ui, |ui| self.basket_bar(ui, env));
         egui::Panel::top("tesela-toolbar")
             .exact_size(56.0)
             .frame(bar_frame(pal.surface))
@@ -393,15 +610,18 @@ impl Explore {
                     .show(ui, |ui| self.sidebar(ui, env));
                 self.sidebar_overflow = out.content_size.y > out.inner_rect.height() + 0.5;
             });
-        egui::Panel::right("tesela-details")
-            .exact_size(300.0)
-            .resizable(false)
-            .frame(
-                egui::Frame::new()
-                    .fill(pal.surface)
-                    .inner_margin(Margin::same(20)),
-            )
-            .show(ui, |ui| details::show(ui, env, self));
+        // Las Recomendaciones ocupan todo el ancho (como en la maqueta): sin panel de detalles.
+        if self.view != View::Recommendations {
+            egui::Panel::right("tesela-details")
+                .exact_size(300.0)
+                .resizable(false)
+                .frame(
+                    egui::Frame::new()
+                        .fill(pal.surface)
+                        .inner_margin(Margin::same(20)),
+                )
+                .show(ui, |ui| details::show(ui, env, self));
+        }
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
@@ -411,7 +631,12 @@ impl Explore {
             .show(ui, |ui| match self.view {
                 View::Map => crate::map::show(ui, env, self),
                 View::List => list::show(ui, env, self),
+                View::Recommendations => self.recs_ui(ui, env),
             });
+        self.basket_window(&ctx, env);
+        let vol = self.volume_ctx();
+        let used = vol.volume.map(|(t, f)| t.saturating_sub(f));
+        self.flow.show_modals(&ctx, env, vol, used);
         // Desenlace de "Abrir en el Explorador": el hilo suelto responde por el manejador; un shell que no responde o un
         // error salen como aviso.
         if let Some(h) = &mut self.reveal {
@@ -462,7 +687,7 @@ impl Explore {
 
     fn handle_keys(&mut self, ctx: &egui::Context, env: &mut Env) {
         // Con una ventana modal abierta ("Acerca de") NINGÚN atajo de la exploración actúa, tampoco Ctrl+F ni F5.
-        if env.modal_open {
+        if env.modal_open || self.flow.modal_open() {
             return;
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::F)) {
@@ -568,7 +793,8 @@ impl Explore {
         chain.reverse();
         let group = self.root.is_group().then(|| {
             let sh = self.shown_children();
-            let bytes: u64 = sh.iter().map(|c| self.tree.node(c).alloc).sum();
+            let view = self.view();
+            let bytes: u64 = sh.iter().map(|c| view.alloc(c)).sum();
             (sh.len(), bytes)
         });
         let last_is_current = group.is_none();
@@ -596,7 +822,7 @@ impl Explore {
                         .font(theme::font_semibold(14.0))
                         .color(pal.text),
                 );
-                let a = self.tree.node(id).alloc;
+                let a = self.view().alloc(id);
                 let sz = if describe::is_lower_bound(&self.tree, id) {
                     env.tr.size_min(a)
                 } else {
@@ -714,9 +940,23 @@ impl Explore {
                 self.view = view;
             }
         }
-        // Recomendaciones: del incremento 3.
+        // Recomendaciones, con lo seguro que se puede liberar como chip.
+        self.ensure_recs(env);
+        let safe = self.recs.as_ref().map_or(0, |r| r.1.safe_total());
+        let chip = (safe > 0).then(|| env.tr.size(safe));
         let label = env.tr.t("view-recommendations");
-        sidebar_item(ui, env, Icon::ShieldCheckmark, &label, false, false, None);
+        let selected = self.view == View::Recommendations;
+        if sidebar_item(
+            ui,
+            env,
+            Icon::ShieldCheckmark,
+            &label,
+            selected,
+            true,
+            chip.as_deref(),
+        ) {
+            self.view = View::Recommendations;
+        }
 
         ui.add_space(10.0);
         widgets::section_label(ui, &pal, &env.tr.t("sidebar-types"));
@@ -769,7 +1009,6 @@ impl Explore {
         let pal = env.pal;
         let t = &self.tree;
         let info = &self.info;
-        let root = t.node(0);
         let ago = {
             let s = info.finished_at.elapsed().as_secs();
             if s < 60 {
@@ -793,7 +1032,7 @@ impl Explore {
             ),
             _ => env.tr.ta(
                 "status-folder",
-                args!["size" => env.tr.size(root.alloc), "files" => files, "ago" => ago],
+                args!["size" => env.tr.size(self.view().alloc(0)), "files" => files, "ago" => ago],
             ),
         };
         // Dos zonas que NUNCA se pisan: a la derecha "Reescanear" y el aviso de la demostración (se reservan primero), y a la
@@ -855,6 +1094,14 @@ impl Explore {
                             .size(12.0)
                             .color(pal.review),
                     );
+                }
+                if self.cleaned {
+                    let tip = env.tr.t("cleaned-tip");
+                    widgets::chip(ui, env, Some(Icon::Info), &env.tr.t("cleaned-badge"), pal.review, pal.accent_soft)
+                        .on_hover_text(tip);
+                }
+                if env.dry_run {
+                    ui.label(RichText::new(env.tr.t("dry-run-banner")).size(12.0).color(pal.review));
                 }
                 if info.approximate {
                     let tip = env.tr.t("approx-tip");
@@ -1084,50 +1331,6 @@ fn color_group(ui: &mut Ui, env: &mut Env) {
                 );
             });
         });
-}
-
-/// Zona de la cesta: visible pero vacía e inactiva (es del incremento 3).
-fn basket_bar(ui: &mut Ui, env: &mut Env) {
-    let pal = env.pal;
-    ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-        env.icons.show(ui, Icon::Cart, 22.0, pal.text_muted);
-        ui.label(
-            RichText::new(env.tr.ta(
-                "basket-summary",
-                args!["n" => 0u64, "size" => env.tr.size(0)],
-            ))
-            .color(pal.text_muted),
-        );
-        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            let r = widgets::button(
-                ui,
-                env,
-                ButtonStyle::Primary,
-                None,
-                &env.tr.ta("basket-clean", args!["size" => env.tr.size(0)]),
-                false,
-            );
-            widgets::next_version_hint(r, env);
-            let r = widgets::button(
-                ui,
-                env,
-                ButtonStyle::Ghost,
-                None,
-                &env.tr.t("basket-empty"),
-                false,
-            );
-            widgets::next_version_hint(r, env);
-            let r = widgets::button(
-                ui,
-                env,
-                ButtonStyle::Secondary,
-                None,
-                &env.tr.t("basket-view"),
-                false,
-            );
-            widgets::next_version_hint(r, env);
-        });
-    });
 }
 
 /// Estilo especial de un nodo en las listas: icono y color de su clase.

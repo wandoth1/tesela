@@ -67,6 +67,12 @@ pub fn fold(s: &str) -> String {
         .collect()
 }
 
+/// ¿Es un directorio al que se puede entrar, según lo que se ve tras limpiar (un directorio vaciado ya no tiene hijos)?
+pub fn can_enter_view(view: &tesela_model::View, id: NodeId) -> bool {
+    let n = view.tree().node(id);
+    n.is_dir() && n.flags & flags::SYSTEM_INFO == 0 && !view.kids(id).is_empty()
+}
+
 /// ¿Es un directorio al que se puede entrar? (con hijos, no es un punto de montaje ni el bloque del sistema).
 pub fn can_enter(tree: &Tree, id: NodeId) -> bool {
     let n = tree.node(id);

@@ -6,15 +6,19 @@ use crate::exec::{ExecError, ExecOptions, Progress, Report};
 use crate::plan::{ApproveOptions, Cleaner, Plan};
 use crate::process::{self, Browser};
 use crate::protect::Protection;
-use crate::roots::Roots;
-use std::path::PathBuf;
+use crate::rules::CategoryId;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
 /// Lo que la interfaz necesita del `cleaner`.
 pub trait Backend: Send + Sync {
-    /// Raíces de las categorías (la UI las busca en el árbol escaneado para dar tamaños).
-    fn roots(&self) -> &Roots;
+    /// Raíces (directorios) de una categoría con acción `Contents`: la UI las busca en el árbol escaneado para dar tamaños.
+    fn category_roots(&self, id: CategoryId) -> Vec<PathBuf>;
+    /// La carpeta Descargas.
+    fn downloads_dir(&self) -> Option<PathBuf>;
+    /// La carpeta de la Papelera del usuario en la unidad `drive_root` (`C:\$Recycle.Bin\<SID>`).
+    fn recycle_dir(&self, drive_root: &Path) -> Option<PathBuf>;
     /// La protección, para decidir qué se puede añadir a la cesta.
     fn protection(&self) -> Arc<Protection>;
     /// Aprueba la cesta: identidades, protección re-validada, medida.
@@ -37,8 +41,14 @@ pub trait Backend: Send + Sync {
 }
 
 impl Backend for Cleaner {
-    fn roots(&self) -> &Roots {
-        Cleaner::roots(self)
+    fn category_roots(&self, id: CategoryId) -> Vec<PathBuf> {
+        self.roots().category_roots(id)
+    }
+    fn downloads_dir(&self) -> Option<PathBuf> {
+        self.roots().downloads.clone()
+    }
+    fn recycle_dir(&self, drive_root: &Path) -> Option<PathBuf> {
+        tesela_scanner::current_user_sid().map(|sid| drive_root.join("$Recycle.Bin").join(sid))
     }
     fn protection(&self) -> Arc<Protection> {
         Cleaner::protection(self).clone()

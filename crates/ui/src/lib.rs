@@ -7,7 +7,10 @@
 
 mod about;
 pub mod app;
+mod basket;
+mod clean;
 pub mod demo;
+pub mod demo_backend;
 pub mod describe;
 mod details;
 pub mod error;
@@ -19,11 +22,16 @@ pub mod icons;
 mod list;
 pub mod map;
 pub mod platform;
+mod recs;
 mod scan;
 pub mod theme;
+mod treepath;
 mod widgets;
 
-pub use app::{DemoOptions, LangPref, MapStart, Options, Settings, StartScreen, TeselaUi};
+pub use app::{
+    BackendRef, CleanStart, DemoOptions, LangPref, MapStart, Options, Settings, StartScreen,
+    TeselaUi,
+};
 pub use i18n::{Lang, Tr};
 pub use theme::ThemePref;
 

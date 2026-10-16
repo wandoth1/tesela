@@ -45,7 +45,16 @@ fn opts(start: StartScreen) -> Options {
         demo: Some(DemoOptions::default()),
         animate: false,
         start,
+        dry_run: false,
+        backend: Some(crate::app::BackendRef(test_backend())),
     }
+}
+
+/// El respaldo simulado, sin pausas: las pruebas nunca tocan el disco con la limpieza.
+pub(crate) fn test_backend() -> std::sync::Arc<dyn tesela_cleaner::Backend> {
+    std::sync::Arc::new(crate::demo_backend::DemoBackend::new(
+        std::time::Duration::ZERO,
+    ))
 }
 
 fn harness(o: Options) -> Harness<'static, App> {
@@ -173,7 +182,7 @@ fn la_ventana_principal_tiene_todas_sus_zonas() {
     ] {
         h.get_by_label(zone);
     }
-    // La cesta: visible pero vacía e inactiva.
+    // La cesta: visible, vacía y con sus botones inactivos.
     h.get_by_label_contains("Cesta · 0 elementos");
     assert!(h.get_by_label("Ver").accesskit_node().is_disabled());
     assert!(
@@ -181,11 +190,11 @@ fn la_ventana_principal_tiene_todas_sus_zonas() {
             .accesskit_node()
             .is_disabled()
     );
-    // Antigüedad y Riesgo (v0.2) y Recomendaciones (inc. 3) deshabilitados; Tipo activo.
+    // Antigüedad y Riesgo (v0.2) deshabilitados; Tipo y Recomendaciones activos.
     assert!(h.get_by_label("Antigüedad").accesskit_node().is_disabled());
     assert!(h.get_by_label("Riesgo").accesskit_node().is_disabled());
     assert!(
-        h.get_by_label("Recomendaciones")
+        !h.get_by_label("Recomendaciones")
             .accesskit_node()
             .is_disabled()
     );
@@ -510,13 +519,13 @@ fn ctrl_f_enfoca_el_buscador_y_f5_pide_reescanear() {
 }
 
 #[test]
-fn el_menu_contextual_ofrece_las_acciones_y_anadir_a_la_cesta_esta_deshabilitado() {
+fn el_menu_contextual_ofrece_las_acciones_y_anadir_a_la_cesta_esta_activo() {
     let mut h = harness(opts(StartScreen::Map(MapStart {
         list: true,
         open: vec!["Users".into(), crate::demo::USER.into()],
         select: None,
     })));
-    let row = h.get_by_label_contains("Vídeos, ");
+    let row = h.get_by_label_contains("Proyectos, ");
     row.click_secondary();
     h.run_steps(3);
     h.get_by_label("Entrar");
@@ -526,12 +535,15 @@ fn el_menu_contextual_ofrece_las_acciones_y_anadir_a_la_cesta_esta_deshabilitado
             .map(|n| n.accesskit_node().is_disabled())
             .collect()
     };
-    // En la demostración lo que toca el disco está deshabilitado; la cesta, hasta el incremento 3.
-    for l in ["Abrir en el Explorador", "Propiedades", "Añadir a la cesta"] {
+    // En la demostración lo que toca el disco está deshabilitado; la cesta funciona (contra el respaldo simulado).
+    for l in ["Abrir en el Explorador", "Propiedades"] {
         let v = all(&h, l);
         assert!(v.len() >= 2, "{l}: menú y detalles");
         assert!(v.iter().all(|d| *d), "{l} debe estar deshabilitado");
     }
+    let v = all(&h, "Añadir a la cesta");
+    assert!(v.len() >= 2, "menú y detalles");
+    assert!(v.iter().all(|d| !*d), "Añadir a la cesta debe estar activo");
     let v = all(&h, "Copiar ruta");
     assert!(v.len() >= 2 && v.iter().all(|d| !*d));
 }
@@ -724,7 +736,13 @@ fn el_escaneo_en_modo_de_respaldo_muestra_la_insignia_aproximado() {
         label: "prueba".into(),
         drive: None,
     };
-    let ex = crate::explore::Explore::from_scan(req, res, false, std::time::Duration::ZERO);
+    let ex = crate::explore::Explore::from_scan(
+        req,
+        res,
+        false,
+        std::time::Duration::ZERO,
+        &test_backend(),
+    );
     assert!(ex.info.approximate);
     let mut o = opts(StartScreen::Home);
     o.demo = None;
@@ -758,7 +776,13 @@ fn el_breadcrumb_de_una_carpeta_escaneada_usa_su_nombre_y_no_la_ruta_entera() {
         label: "mi-carpeta".into(),
         drive: None,
     };
-    let ex = crate::explore::Explore::from_scan(req, res, false, std::time::Duration::ZERO);
+    let ex = crate::explore::Explore::from_scan(
+        req,
+        res,
+        false,
+        std::time::Duration::ZERO,
+        &test_backend(),
+    );
     let mut o = opts(StartScreen::Home);
     o.demo = None;
     let mut h = harness(o);
@@ -822,10 +846,13 @@ fn cada_boton_deshabilitado_da_su_propia_pista() {
         0,
         "sin pista de próxima versión en Subir"
     );
-    // La cesta SÍ es de la próxima versión (y la pista sale una sola vez).
-    h.get_by_label("Vaciar cesta").hover();
+    // Con la cesta vacía, "Limpiar" explica por qué está deshabilitado (y la pista sale una sola vez).
+    h.get_by_label_contains("Limpiar 0").hover();
     h.run_steps(14);
-    assert_eq!(h.query_all_by_label(hint).count(), 1);
+    assert_eq!(
+        h.query_all_by_label_contains("La cesta está vacía").count(),
+        1
+    );
     // En la demostración, "Abrir en el Explorador" explica por qué no se puede, sin la pista de próxima versión.
     h.get_by_label("Abrir en el Explorador").hover();
     h.run_steps(14);
@@ -915,7 +942,13 @@ fn los_nombres_en_otros_alfabetos_acaban_en_una_fuente_que_tiene_el_glifo() {
         label: "alfabetos".into(),
         drive: None,
     };
-    let ex = crate::explore::Explore::from_scan(req, res, false, std::time::Duration::ZERO);
+    let ex = crate::explore::Explore::from_scan(
+        req,
+        res,
+        false,
+        std::time::Duration::ZERO,
+        &test_backend(),
+    );
     // El árbol anuncia las escrituras que trae.
     for s in [
         Scripts::RTL,
@@ -1190,7 +1223,7 @@ fn cancelar_o_cerrar_la_pantalla_detiene_el_escaneo_sin_dejarlo_huerfano() {
 
     // A. Cancelar antes de que el arranque termine: se descarta y el escaneo creado se cancela.
     let root = mk("a");
-    let mut s = ScanScreen::real(&ctx, req(&root), false);
+    let mut s = ScanScreen::real(&ctx, req(&root), false, test_backend());
     s.cancel();
     let t0 = Instant::now();
     let out = loop {
@@ -1208,12 +1241,12 @@ fn cancelar_o_cerrar_la_pantalla_detiene_el_escaneo_sin_dejarlo_huerfano() {
 
     // B. Soltar la pantalla sin más (Drop) mientras arranca.
     let root = mk("b");
-    drop(ScanScreen::real(&ctx, req(&root), false));
+    drop(ScanScreen::real(&ctx, req(&root), false, test_backend()));
     all_cancelled(&root, 0);
 
     // C. LA CARRERA: el resultado del arranque ya está entregado, la pantalla no lo ha recogido y se suelta.
     let root = mk("c");
-    let s = ScanScreen::real(&ctx, req(&root), false);
+    let s = ScanScreen::real(&ctx, req(&root), false, test_backend());
     let t0 = Instant::now();
     while test_hooks::counts(&root).0 == 0 {
         assert!(t0.elapsed().as_secs() < 20, "el escaneo no arrancó");
@@ -1235,7 +1268,7 @@ fn cancelar_o_cerrar_la_pantalla_detiene_el_escaneo_sin_dejarlo_huerfano() {
     // D. Muchas veces, con esperas distintas: ninguno se queda sin cancelar.
     let root = mk("d");
     for i in 0..40u64 {
-        let s = ScanScreen::real(&ctx, req(&root), false);
+        let s = ScanScreen::real(&ctx, req(&root), false, test_backend());
         std::thread::sleep(Duration::from_micros(i * 150));
         if i % 2 == 0 {
             drop(s);
@@ -1804,8 +1837,8 @@ fn con_la_ventana_minima_la_pantalla_de_escaneo_no_pisa_textos_ni_corta_el_mapa(
                 "Cancelar",
                 "Limpiar lo seguro",
                 "Sitios donde suele haber archivos temporales",
-                "en sitios conocidos",
-                "De momento solo se muestra",
+                "Solo cuenta lo seguro",
+                "Descargas y la Papelera son datos tuyos",
                 "El mapa se va llenando",
             ],
         ),
@@ -1818,8 +1851,8 @@ fn con_la_ventana_minima_la_pantalla_de_escaneo_no_pisa_textos_ni_corta_el_mapa(
                 "Cancel",
                 "Clean the safe stuff",
                 "Places where temporary files usually pile up",
-                "in known places",
-                "For now this only shows",
+                "Only safe things count",
+                "Downloads and the Recycle Bin are your own data",
                 "The map is filling in",
             ],
         ),
@@ -1968,37 +2001,73 @@ fn con_una_ventana_modal_abierta_f5_y_ctrl_f_no_actuan() {
     );
 }
 
+/// Pasos hasta que aparece una etiqueta (los hilos de medida del `cleaner` terminan solos).
+fn wait_label(h: &mut Harness<'static, App>, label: &str) -> bool {
+    for _ in 0..200 {
+        h.run_steps(2);
+        if h.query_by_label(label).is_some() {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    false
+}
+
 #[test]
-fn descargas_y_papelera_no_cuentan_en_la_cifra_de_sitios_conocidos_y_llevan_revisar() {
+fn el_titular_suma_solo_lo_seguro_medido_y_descargas_y_papelera_llevan_revisar() {
+    use tesela_cleaner::{ApproveOptions, Basket, CategoryId};
     for (lang, tag, excluded) in [
         (LangPref::Es, "Revisar", "no cuentan en la cifra de arriba"),
         (LangPref::En, "Review", "not counted in the figure above"),
     ] {
         let mut o = opts(StartScreen::Scan(1.0));
         o.settings.language = lang;
-        let h = harness(o);
+        let mut h = harness(o);
         let tr = crate::Tr::new(lang.resolve());
-        // Con el progreso al 100 % cada fila vale su cifra final. La Papelera es de revisión: fuera de la cifra grande.
-        let safe: u64 = crate::demo::DEMO_KNOWN_ROWS
-            .iter()
-            .filter(|(k, _, _)| !matches!(*k, "known-downloads" | "known-recycle-bin"))
-            .map(|(_, b, _)| *b)
-            .sum();
+        // Lo seguro y utilizable: temporales y las cachés de Edge y Firefox (Chrome está "abierto" en la demostración: no
+        // cuenta). Cada cifra es la que mide el `cleaner` (antigüedad mínima de los temporales incluida).
+        let b = test_backend();
+        let measured = |id: CategoryId| {
+            let mut bk = Basket::new();
+            bk.set_category(id, true);
+            b.approve(
+                &bk,
+                &ApproveOptions::default(),
+                &std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            )
+            .permanent_bytes()
+        };
+        let safe: u64 = [
+            CategoryId::UserTemp,
+            CategoryId::WindowsTemp,
+            CategoryId::EdgeCache,
+            CategoryId::FirefoxCache,
+        ]
+        .into_iter()
+        .map(measured)
+        .sum();
         let all: u64 = crate::demo::DEMO_KNOWN_ROWS
             .iter()
             .map(|(_, b, _)| *b)
             .sum();
-        assert!(all > safe);
+        assert!(all > safe && safe > 0);
         let want = tr.ta("scan-known-sum", crate::args!["size" => tr.size(safe)]);
         let not_want = tr.ta("scan-known-sum", crate::args!["size" => tr.size(all)]);
-        h.get_by_label(&want);
+        assert!(wait_label(&mut h, &want), "{lang:?}: falta `{want}`");
         assert!(
             h.query_by_label(&not_want).is_none(),
-            "la Papelera no debe contar en la cifra grande"
+            "Descargas y la Papelera no deben contar en la cifra grande"
         );
         // La etiqueta de riesgo y la nota que lo explica.
         assert_eq!(h.query_all_by_label(tag).count(), 1, "{lang:?}");
         h.get_by_label_contains(excluded);
+        // Chrome está abierto: su fila no cuenta y lo dice.
+        let blocked = if lang == LangPref::Es {
+            "Cierra Chrome para liberar hasta"
+        } else {
+            "Close Chrome to free up to"
+        };
+        h.get_by_label_contains(blocked);
     }
 }
 

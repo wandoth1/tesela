@@ -25,7 +25,8 @@ use windows::Win32::UI::Shell::{
     BHID_EnumItems, FOF_ALLOWUNDO, FOF_NO_UI, FOFX_RECYCLEONDELETE, FOLDERID_RecycleBinFolder,
     FileOperation, IEnumShellItems, IFileOperation, IShellItem, IShellItem2, KF_FLAG_DEFAULT,
     PID_DISPLACED_DATE, PID_DISPLACED_FROM, PSGUID_DISPLACED, SHCreateItemFromParsingName,
-    SHGetKnownFolderItem, SIGDN_DESKTOPABSOLUTEPARSING, SIGDN_PARENTRELATIVE,
+    SHGetKnownFolderItem, SHQUERYRBINFO, SHQueryRecycleBinW, SIGDN_DESKTOPABSOLUTEPARSING,
+    SIGDN_PARENTRELATIVE,
 };
 use windows::core::{Interface, PCWSTR, PWSTR};
 
@@ -182,6 +183,17 @@ pub fn list_bin() -> Result<Vec<BinItem>> {
         }
         Ok(out)
     }
+}
+
+/// Cuántos elementos y cuántos bytes hay en la Papelera del usuario (todas las unidades), según la shell.
+pub fn bin_totals() -> Result<(u64, u64)> {
+    let mut info = SHQUERYRBINFO {
+        cbSize: size_of::<SHQUERYRBINFO>() as u32,
+        ..SHQUERYRBINFO::default()
+    };
+    // SAFETY: `info` es escribible y trae su `cbSize`; una ruta nula consulta todas las unidades.
+    unsafe { SHQueryRecycleBinW(PCWSTR::null(), &mut info)? };
+    Ok((info.i64NumItems.max(0) as u64, info.i64Size.max(0) as u64))
 }
 
 /// Resultado de una operación por lotes de la shell.
@@ -386,6 +398,16 @@ mod tests {
         let r = purge_items(&mine).unwrap();
         assert!(!r.any_aborted);
         assert_eq!(ids(), before, "la Papelera queda exactamente como estaba");
+    }
+
+    #[test]
+    fn los_totales_de_la_papelera_son_coherentes_con_la_lista() {
+        let _lock = bin_lock();
+        let (n, _bytes) = bin_totals().expect("SHQueryRecycleBin");
+        let listed = list_bin().unwrap().len() as u64;
+        // La shell cuenta los elementos de primer nivel igual que la enumeración (puede haber una diferencia si el
+        // usuario vacía o llena la Papelera justo ahora).
+        assert!(n.abs_diff(listed) <= 2, "{n} frente a {listed}");
     }
 
     #[test]

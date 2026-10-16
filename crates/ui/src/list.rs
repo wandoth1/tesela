@@ -6,6 +6,7 @@ use crate::app::Env;
 use crate::args;
 use crate::describe::{self, Special};
 use crate::explore::{Explore, Sel, node_icon};
+use crate::icons::Icon;
 use crate::map::menu_items;
 use crate::theme;
 use crate::widgets;
@@ -93,7 +94,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
         None => Items::Children(ex.shown_children()),
     };
     let n = items.len();
-    let total: u64 = ex.tree.node(ex.root.node).alloc.max(1);
+    let total: u64 = ex.view().alloc(ex.root.node).max(1);
     let tree = ex.tree.clone();
 
     // Cabecera de columnas.
@@ -165,6 +166,8 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
             }
             let id = items.get(i);
             let node = *tree.node(id);
+            let node_alloc = ex.view().alloc(id);
+            let node_files = ex.view().files_below(id);
             let sel = Sel::Node(id);
             let (rect, _) =
                 ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::hover());
@@ -187,13 +190,13 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
             let lower = describe::is_lower_bound(&tree, id);
             let name = describe::display_name(&tree, id, env.tr);
             let size_txt = if lower {
-                env.tr.size_min(node.alloc)
+                env.tr.size_min(node_alloc)
             } else {
-                env.tr.size(node.alloc)
+                env.tr.size(node_alloc)
             };
-            let share = 100.0 * node.alloc as f64 / total as f64;
+            let share = 100.0 * node_alloc as f64 / total as f64;
             let files = if node.is_dir() {
-                Some(node.files_below as u64)
+                Some(node_files)
             } else {
                 None
             };
@@ -213,6 +216,17 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
                 if describe::special(&tree, id) == Some(Special::SystemBlock) {
                     s.push_str(", ");
                     s.push_str(&env.tr.t("system-tip"));
+                }
+                if describe::special(&tree, id).is_none() {
+                    let key = tesela_cleaner::paths::PathKey::new(&tree.path(id));
+                    if ex.protection.target_verdict(&key) != tesela_cleaner::Verdict::Allowed {
+                        s.push_str(", ");
+                        s.push_str(&env.tr.t("protected-label"));
+                    }
+                    if ex.flow.basket.covers(&key) {
+                        s.push_str(", ");
+                        s.push_str(&env.tr.t("details-in-basket"));
+                    }
                 }
                 s
             };
@@ -253,7 +267,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
                     icon,
                     icon_col,
                 );
-                widgets::clipped_text(
+                let name_rect = widgets::clipped_text(
                     ui.painter(),
                     pos2(rect.left() + NAME_LEFT, cy),
                     Align2::LEFT_CENTER,
@@ -266,13 +280,38 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
                     pal.text,
                     cols.name_w,
                 );
+                // Candado si está protegido (no se puede añadir a la cesta) y carrito si ya está en ella.
+                let (protected, in_basket) = if describe::special(&tree, id).is_none() {
+                    let key = tesela_cleaner::paths::PathKey::new(&tree.path(id));
+                    (
+                        ex.protection.target_verdict(&key) != tesela_cleaner::Verdict::Allowed,
+                        ex.flow.basket.covers(&key),
+                    )
+                } else {
+                    (false, false)
+                };
+                let mut x = name_rect.right() + 8.0;
+                for (show, icon, col) in [
+                    (protected, Icon::LockClosed, pal.text_muted),
+                    (in_basket, Icon::Cart, pal.accent),
+                ] {
+                    if show && x + 16.0 < rect.right() - cols.size_right - 60.0 {
+                        env.icons.paint(
+                            ui.painter(),
+                            Rect::from_min_size(pos2(x, cy - 8.0), vec2(16.0, 16.0)),
+                            icon,
+                            col,
+                        );
+                        x += 22.0;
+                    }
+                }
                 // Barra de cuota y porcentaje (se ocultan si el nombre no tiene sitio).
                 if let Some(b) = cols.bar_left {
                     let bar =
                         Rect::from_min_size(pos2(rect.right() - b, cy - 4.0), vec2(90.0, 8.0));
                     ui.painter()
                         .rect_filled(bar, CornerRadius::same(4), pal.track);
-                    let fw = (bar.width() * (share / 100.0) as f32).max(if node.alloc > 0 {
+                    let fw = (bar.width() * (share / 100.0) as f32).max(if node_alloc > 0 {
                         2.0
                     } else {
                         0.0

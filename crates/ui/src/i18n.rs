@@ -284,9 +284,12 @@ mod catalog_tests {
     use super::*;
     use std::collections::BTreeSet;
 
-    const SOURCES: [(&str, &str); 14] = [
+    const SOURCES: [(&str, &str); 18] = [
         ("app.rs", include_str!("app.rs")),
+        ("basket.rs", include_str!("basket.rs")),
+        ("clean.rs", include_str!("clean.rs")),
         ("demo.rs", include_str!("demo.rs")),
+        ("demo_backend.rs", include_str!("demo_backend.rs")),
         ("describe.rs", include_str!("describe.rs")),
         ("details.rs", include_str!("details.rs")),
         ("explore.rs", include_str!("explore.rs")),
@@ -296,6 +299,7 @@ mod catalog_tests {
         ("list.rs", include_str!("list.rs")),
         ("map.rs", include_str!("map.rs")),
         ("platform.rs", include_str!("platform.rs")),
+        ("recs.rs", include_str!("recs.rs")),
         ("scan.rs", include_str!("scan.rs")),
         ("theme.rs", include_str!("theme.rs")),
         ("widgets.rs", include_str!("widgets.rs")),
@@ -378,7 +382,7 @@ mod catalog_tests {
                 let all = crate::args![
                     "name" => "x", "files" => "x", "size" => "x", "total" => "x", "time" => "x", "pct" => "x", "free" => "x", "avail" => "x", "detail" => "x",
                     "used" => "x", "ago" => "x", "explained" => "x", "done" => 1u64, "n" => 2u64, "count" => "2",
-                    "parent" => "x", "error" => "x", "type" => "x", "label" => "x", "v" => "x"
+                    "parent" => "x", "error" => "x", "type" => "x", "label" => "x", "v" => "x", "bin" => "x"
                 ];
                 assert!(!tr.ta(id, all).is_empty());
             }

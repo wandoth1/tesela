@@ -84,8 +84,17 @@ impl Progress {
             _ => Phase::Done,
         }
     }
-    fn set_phase(&self, p: Phase) {
+    /// Indica la fase en curso (lo hace el ejecutor; el respaldo simulado de la demostración también).
+    pub fn set_phase(&self, p: Phase) {
         self.phase.store(p as u8, Ordering::Relaxed);
+    }
+    /// Fija cuántos elementos tiene la ejecución.
+    pub fn set_items_total(&self, n: usize) {
+        self.items_total.store(n, Ordering::Relaxed);
+    }
+    /// Un elemento terminado más.
+    pub fn add_item_done(&self) {
+        self.items_done.fetch_add(1, Ordering::Relaxed);
     }
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::SeqCst);

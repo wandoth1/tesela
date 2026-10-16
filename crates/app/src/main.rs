@@ -1,6 +1,6 @@
 //! `tesela`: el ejecutable de Tesela. Ventana `eframe` con `wgpu` compilado SOLO con DX12 (WARP de respaldo en
 //! máquinas sin GPU), manifiesto `asInvoker` + rutas largas + PerMonitorV2, y configuración mínima en
-//! `%APPDATA%\Tesela\config.toml`. En este incremento la aplicación es de SOLO LECTURA.
+//! `%APPDATA%\Tesela\config.toml`. La limpieza (cesta, confirmación, borrado y Papelera) vive en `tesela-cleaner`.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod cli;
@@ -12,7 +12,7 @@ mod shell;
 
 use cli::Screen;
 use config::{Config, MIN_SIZE};
-use tesela_ui::{DemoOptions, MapStart, Options, StartScreen, TeselaUi};
+use tesela_ui::{CleanStart, DemoOptions, MapStart, Options, StartScreen, TeselaUi};
 
 fn main() -> eframe::Result {
     let cli = match cli::parse(std::env::args().skip(1)) {
@@ -96,6 +96,9 @@ fn main() -> eframe::Result {
             StartScreen::Map(MapStart::default())
         }
         (true, Screen::Scan) => StartScreen::Scan(cli.progress.unwrap_or(0.45)),
+        (true, Screen::Recs) => StartScreen::Clean(CleanStart::Recommendations),
+        (true, Screen::Confirm) => StartScreen::Clean(CleanStart::Confirm),
+        (true, Screen::Summary) => StartScreen::Clean(CleanStart::Summary),
         (true, Screen::Map | Screen::List) => StartScreen::Map(MapStart {
             list: cli.screen == Screen::List,
             open: cli.open.clone(),
@@ -109,6 +112,8 @@ fn main() -> eframe::Result {
         demo,
         animate,
         start,
+        dry_run: cli.dry_run,
+        backend: None,
     };
     let scan = cli.scan.clone();
     let wait_explore = scan.is_some();

@@ -280,6 +280,25 @@ pub fn show_properties_async(path: PathBuf) -> std::thread::JoinHandle<bool> {
     })
 }
 
+/// Abre la Papelera de reciclaje en el Explorador (`shell:RecycleBinFolder`), en un hilo propio: la E/S de la shell no
+/// debe bloquear la interfaz. No hay nada que comprobar: si Windows no puede, no pasa nada.
+pub fn open_recycle_bin() {
+    std::thread::spawn(|| {
+        let file = wide("shell:RecycleBinFolder");
+        let verb = wide("open");
+        // SAFETY: `SHELLEXECUTEINFOW` es una estructura de enteros y punteros para la que todo cero es un valor válido
+        // (punteros nulos); se rellenan a continuación los campos que usa esta llamada.
+        let mut info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
+        info.cbSize = size_of::<SHELLEXECUTEINFOW>() as u32;
+        info.fMask = SEE_MASK_FLAG_NO_UI;
+        info.lpVerb = verb.as_ptr();
+        info.lpFile = file.as_ptr();
+        info.nShow = SW_SHOW;
+        // SAFETY: `info` está completa y sus cadenas (`verb`, `file`, terminadas en NUL) viven durante la llamada.
+        unsafe { ShellExecuteExW(&mut info) };
+    });
+}
+
 fn show_properties_impl(path: &Path, wait: bool) -> bool {
     let file = wide_path(path);
     let verb = wide("properties");

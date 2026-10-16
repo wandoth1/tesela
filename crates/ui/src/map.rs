@@ -8,7 +8,7 @@
 use crate::app::Env;
 use crate::args;
 use crate::describe::{self, InfoKind, Special};
-use crate::explore::{Explore, Sel};
+use crate::explore::{AddState, Explore, Sel};
 use crate::icons::Icon;
 use crate::platform;
 use crate::theme::{self, Palette};
@@ -19,10 +19,12 @@ use egui::{
     Ui, pos2, vec2,
 };
 use std::sync::Arc;
+use tesela_cleaner::paths::PathKey;
+use tesela_cleaner::{Protection, Verdict};
 use tesela_layout::{
     Cell, CellKind, Depth, Key as LayoutKey, Layout, LayoutCache, NO_CELL, Params, Root,
 };
-use tesela_model::{FileType, NodeId, Tree, flags};
+use tesela_model::{FileType, NodeId, Tree, View as TreeView, flags};
 
 /// Duración del zoom animado.
 const ZOOM_SECS: f64 = 0.18;
@@ -35,6 +37,8 @@ pub struct CellStyle {
     pub special: Option<Special>,
     pub cloud: bool,
     pub lower_bound: bool,
+    /// Ruta protegida (denegada, intocable o carpeta conocida): borde punteado y candado (PLAN.md §2.7).
+    pub protected: Option<Verdict>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -89,6 +93,8 @@ pub struct MapState {
     /// Layout del último frame (para localizar celdas desde fuera, p. ej. en los tests).
     pub(crate) layout: Option<Arc<Layout>>,
     pub(crate) stats: MapStats,
+    /// Nodos de la carpeta actual que están en la cesta (con la huella con la que se calcularon).
+    pub(crate) marks: (u64, Arc<std::collections::HashSet<NodeId>>),
 }
 
 impl Default for MapState {
@@ -102,6 +108,7 @@ impl Default for MapState {
             last_rect: None,
             layout: None,
             stats: MapStats::default(),
+            marks: (0, Arc::default()),
         }
     }
 }
@@ -179,8 +186,19 @@ fn screen_rect(r: &tesela_layout::Rect, origin: Pos2) -> Rect {
 
 // --- Estilo y mesh ---------------------------------------------------------------------------------------------------
 
-/// Estilo de todas las celdas (los padres de nivel 0 van antes que sus hijas insinuadas).
+/// Estilo de todas las celdas (los padres de nivel 0 van antes que sus hijas insinuadas), sin protección.
+#[allow(dead_code)]
 fn styles_for(layout: &Layout, tree: &Tree, pal: &Palette) -> Vec<CellStyle> {
+    styles_with(layout, tree, pal, None)
+}
+
+/// Como [`styles_for`] marcando las celdas de nivel 0 cuya ruta está protegida.
+fn styles_with(
+    layout: &Layout,
+    tree: &Tree,
+    pal: &Palette,
+    prot: Option<&Protection>,
+) -> Vec<CellStyle> {
     let mut out: Vec<CellStyle> = Vec::with_capacity(layout.cells().len());
     for c in layout.cells() {
         let st = match c.kind {
@@ -192,6 +210,7 @@ fn styles_for(layout: &Layout, tree: &Tree, pal: &Palette) -> Vec<CellStyle> {
                     special: None,
                     cloud: false,
                     lower_bound: false,
+                    protected: None,
                 }
             }
             CellKind::Node(id) => {
@@ -218,12 +237,21 @@ fn styles_for(layout: &Layout, tree: &Tree, pal: &Palette) -> Vec<CellStyle> {
                 } else {
                     base
                 };
+                // Solo las celdas con etiqueta (nivel 0): construir la ruta de cada hija insinuada no compensa.
+                let protected = match (prot, c.level, special) {
+                    (Some(p), 0, None) => match p.target_verdict(&PathKey::new(&tree.path(id))) {
+                        Verdict::Allowed => None,
+                        v => Some(v),
+                    },
+                    _ => None,
+                };
                 CellStyle {
                     fill,
                     text: theme::text_on(pal, fill),
                     special,
                     cloud: n.flags & flags::CLOUD != 0,
                     lower_bound: n.flags & (flags::INCOMPLETE | flags::INCOMPLETE_BELOW) != 0,
+                    protected,
                 }
             }
         };
@@ -290,6 +318,20 @@ fn build_mesh(
                 );
             }
         }
+        // Ruta protegida: borde punteado (el candado se pinta con la etiqueta).
+        if st.protected.is_some() && r.width() >= 14.0 && r.height() >= 14.0 {
+            let col = if theme::luminance(st.fill) > 0.35 {
+                Color32::from_rgba_unmultiplied(0, 0, 0, 150)
+            } else {
+                Color32::from_rgba_unmultiplied(255, 255, 255, 190)
+            };
+            for (a, b) in dotted_rect_segments(r.shrink(3.0), 4.0, 3.0) {
+                tess.tessellate_shape(
+                    Shape::line_segment([a, b], Stroke::new(1.5, col)),
+                    &mut mesh,
+                );
+            }
+        }
         // Franja inferior de 4 px con los 3 tipos principales de una carpeta "Mixto" de al menos 48 px.
         if let CellKind::Node(id) = c.kind {
             let n = tree.node(id);
@@ -321,6 +363,67 @@ fn build_mesh(
         }
     }
     mesh
+}
+
+/// Recalcula qué nodos de las celdas de nivel 0 están en la cesta, si cambió la cesta, la carpeta o el árbol.
+fn refresh_marks(ex: &mut Explore, layout: &Layout) {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    for s in ex.flow.basket.sources() {
+        format!("{s:?}").hash(&mut h);
+    }
+    (ex.version, ex.root.node, ex.root.start, ex.root.end).hash(&mut h);
+    let stamp = h.finish() | 1;
+    if ex.map.marks.0 == stamp {
+        return;
+    }
+    let mut set = std::collections::HashSet::new();
+    if !ex.flow.basket.is_empty() {
+        let cat_nodes: Vec<NodeId> = ex
+            .recs
+            .as_ref()
+            .map(|(_, r)| {
+                r.rows
+                    .iter()
+                    .filter(|row| ex.flow.basket.contains_category(row.id))
+                    .flat_map(|row| row.parts.iter().map(|p| p.node))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for id in level0_nodes(layout) {
+            let key = PathKey::new(&ex.tree.path(id));
+            if ex.flow.basket.covers(&key)
+                || cat_nodes.contains(&id)
+                || ex.flow.basket.has_contents_of(&key)
+            {
+                set.insert(id);
+            }
+        }
+    }
+    ex.map.marks = (stamp, Arc::new(set));
+}
+
+/// Segmentos que dibujan el contorno de `r` punteado: rayitas de `dash` px separadas `gap` px.
+pub(crate) fn dotted_rect_segments(r: Rect, dash: f32, gap: f32) -> Vec<(Pos2, Pos2)> {
+    let mut out = Vec::new();
+    let mut edge = |a: Pos2, b: Pos2| {
+        let len = (b - a).length();
+        if len <= 0.0 {
+            return;
+        }
+        let dir = (b - a) / len;
+        let mut t = 0.0;
+        while t < len {
+            let e = (t + dash).min(len);
+            out.push((a + dir * t, a + dir * e));
+            t += dash + gap;
+        }
+    };
+    edge(r.left_top(), r.right_top());
+    edge(r.right_top(), r.right_bottom());
+    edge(r.right_bottom(), r.left_bottom());
+    edge(r.left_bottom(), r.left_top());
+    out
 }
 
 /// Copia del mesh con los vértices transformados (de `from` a `to`) y la opacidad multiplicada por `alpha`.
@@ -360,6 +463,7 @@ fn draw_labels(
     params: &Params,
 ) {
     let tree = &ex.tree;
+    let view = ex.view();
     let tr = env.tr;
     let mut hint_labels = 0usize;
     for (c, st) in e.layout.cells().iter().zip(&e.styles) {
@@ -397,7 +501,7 @@ fn draw_labels(
                 let (name, bytes, lower) = match c.kind {
                     CellKind::Node(id) => (
                         describe::display_name(tree, id, tr),
-                        tree.node(id).alloc,
+                        view.alloc(id),
                         st.lower_bound,
                     ),
                     CellKind::Others(i) => {
@@ -414,10 +518,11 @@ fn draw_labels(
                 };
                 let x = rect.left() + 12.0;
                 let max_w = rect.width() - 24.0;
-                let icon = match (st.special, st.cloud) {
-                    (Some(Special::SystemBlock), _) => Some(Icon::Info),
-                    (Some(Special::InfoOnly(_)), _) => Some(Icon::Warning),
-                    (None, true) => Some(Icon::Cloud),
+                let icon = match (st.special, st.cloud, st.protected) {
+                    (Some(Special::SystemBlock), _, _) => Some(Icon::Info),
+                    (Some(Special::InfoOnly(_)), _, _) => Some(Icon::Warning),
+                    (None, _, Some(_)) => Some(Icon::LockClosed),
+                    (None, true, None) => Some(Icon::Cloud),
                     _ => None,
                 };
                 let icon_w = if icon.is_some() { 20.0 } else { 0.0 };
@@ -465,11 +570,10 @@ fn draw_labels(
                 }
                 if let CellKind::Node(id) = c.kind {
                     hint_labels += 1;
-                    let n = tree.node(id);
                     let bytes = if st.lower_bound {
-                        tr.size_min(n.alloc)
+                        tr.size_min(view.alloc(id))
                     } else {
-                        tr.size(n.alloc)
+                        tr.size(view.alloc(id))
                     };
                     let txt = format!("{} · {}", describe::display_name(tree, id, tr), bytes);
                     widgets::clipped_text(
@@ -508,11 +612,10 @@ fn map_label(ex: &Explore, env: &Env) -> String {
     }
     match ex.selection {
         Some(Sel::Node(id)) => {
-            let n = tree.node(id);
             let size = if describe::is_lower_bound(tree, id) {
-                tr.size_min(n.alloc)
+                tr.size_min(ex.view().alloc(id))
             } else {
-                tr.size(n.alloc)
+                tr.size(ex.view().alloc(id))
             };
             s.push(' ');
             s.push_str(&tr.ta(
@@ -555,7 +658,10 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
         version: ex.version,
         params,
     };
-    let layout = ex.map.cache.get(&ex.tree, lkey);
+    let layout = ex
+        .map
+        .cache
+        .get_view(TreeView::new(&ex.tree, ex.overlay.as_deref()), lkey);
     let mkey = MeshKey {
         layout: lkey,
         origin: (rect.min.x as i32, rect.min.y as i32),
@@ -563,7 +669,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
         dark: pal.dark,
     };
     if ex.map.mesh.as_ref().is_none_or(|m| m.key != mkey) {
-        let styles = styles_for(&layout, &ex.tree, &pal);
+        let styles = styles_with(&layout, &ex.tree, &pal, Some(&ex.protection));
         let mesh = build_mesh(&layout, &ex.tree, &styles, &pal, ppp, rect.min);
         ex.map.stats.rebuilds += 1;
         ex.map.stats.cells = layout.cells().len();
@@ -578,6 +684,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
     }
     ex.map.layout = Some(layout.clone());
     ex.map.last_rect = Some(rect);
+    refresh_marks(ex, &layout);
 
     // Zoom pendiente: se convierte en animación en cuanto hay mesh nuevo.
     let now = ctx.input(|i| i.time);
@@ -706,6 +813,23 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
     // --- Overlays ---
     if !animating {
         draw_labels(&painter, env, ex, entry, &params);
+        // Lo que está en la cesta lleva una insignia con el carrito.
+        for c in layout.cells().iter().filter(|c| c.level == 0) {
+            if let CellKind::Node(id) = c.kind
+                && ex.map.marks.1.contains(&id)
+                && c.rect.w >= 30.0
+                && c.rect.h >= 30.0
+            {
+                let center = rect.min + vec2(c.rect.x + c.rect.w - 16.0, c.rect.y + 16.0);
+                painter.circle_filled(center, 10.0, pal.accent);
+                env.icons.paint(
+                    &painter,
+                    Rect::from_center_size(center, vec2(13.0, 13.0)),
+                    Icon::Cart,
+                    Color32::WHITE,
+                );
+            }
+        }
         // Veladura de la búsqueda.
         if let Some(hits) = ex.search_set() {
             let veil = pal.bg.gamma_multiply(0.72);
@@ -810,6 +934,7 @@ fn neighbor(layout: &Layout, cur: Option<usize>, dx: f32, dy: f32) -> Option<usi
 fn tooltip(ui: &mut Ui, env: &mut Env, ex: &Explore, cell: &Cell, layout: &Layout, pal: &Palette) {
     let tr = env.tr;
     let tree = &ex.tree;
+    let view = ex.view();
     ui.set_max_width(280.0);
     match cell.kind {
         CellKind::Others(i) => {
@@ -837,18 +962,18 @@ fn tooltip(ui: &mut Ui, env: &mut Env, ex: &Explore, cell: &Cell, layout: &Layou
                 );
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     let s = if lower {
-                        tr.size_min(n.alloc)
+                        tr.size_min(view.alloc(id))
                     } else {
-                        tr.size(n.alloc)
+                        tr.size(view.alloc(id))
                     };
                     ui.label(egui::RichText::new(s).font(theme::font_semibold(14.0)));
                 });
             });
             let parent_alloc = tree
                 .parent(id)
-                .map_or(n.alloc, |p| tree.node(p).alloc)
+                .map_or(view.alloc(id), |p| view.alloc(p))
                 .max(1);
-            let pct = 100.0 * n.alloc as f64 / parent_alloc as f64;
+            let pct = 100.0 * view.alloc(id) as f64 / parent_alloc as f64;
             let parent_name = tree
                 .parent(id)
                 .map(|p| describe::display_name(tree, p, tr))
@@ -867,7 +992,7 @@ fn tooltip(ui: &mut Ui, env: &mut Env, ex: &Explore, cell: &Cell, layout: &Layou
                 }
                 line.push_str(&tr.ta(
                     "files-count",
-                    args!["n" => n.files_below as u64, "count" => tr.int(n.files_below as u64)],
+                    args!["n" => view.files_below(id), "count" => tr.int(view.files_below(id))],
                 ));
             }
             if !line.is_empty() {
@@ -889,7 +1014,7 @@ fn tooltip(ui: &mut Ui, env: &mut Env, ex: &Explore, cell: &Cell, layout: &Layou
                     );
                 }
                 None => {
-                    if n.is_dir() && n.alloc > 0 {
+                    if n.is_dir() && view.alloc(id) > 0 {
                         let h = tree.hist(id);
                         stacked_bar(ui, pal, h);
                         let tp = describe::type_phrase(tr, h);
@@ -914,7 +1039,31 @@ fn tooltip(ui: &mut Ui, env: &mut Env, ex: &Explore, cell: &Cell, layout: &Layou
                                 .color(pal.text_muted),
                         );
                     }
-                    if describe::can_enter(tree, id) {
+                    match ex.protection.target_verdict(&PathKey::new(&tree.path(id))) {
+                        Verdict::Denied => {
+                            ui.label(
+                                egui::RichText::new(tr.t("protected-denied-why"))
+                                    .size(12.0)
+                                    .color(pal.text_muted),
+                            );
+                        }
+                        Verdict::Untouchable => {
+                            ui.label(
+                                egui::RichText::new(tr.t("protected-untouchable-why"))
+                                    .size(12.0)
+                                    .color(pal.text_muted),
+                            );
+                        }
+                        Verdict::ContentsOnly => {
+                            ui.label(
+                                egui::RichText::new(tr.t("protected-contents-why"))
+                                    .size(12.0)
+                                    .color(pal.text_muted),
+                            );
+                        }
+                        Verdict::Allowed => {}
+                    }
+                    if describe::can_enter_view(&view, id) {
                         ui.label(
                             egui::RichText::new(tr.t("tip-enter"))
                                 .size(12.0)
@@ -973,9 +1122,16 @@ pub(crate) fn menu_items(ui: &mut Ui, env: &mut Env, ex: &mut Explore, sel: Sel)
         matches!(sel, Sel::Node(id) if describe::special(&tree, id) == Some(Special::SystemBlock));
     let real_path = !env.demo && !is_system;
     ui.set_min_width(210.0);
+    let state = ex.add_state(sel);
     match sel {
-        Sel::Node(id) if describe::can_enter(&tree, id) => {
-            if ui.button(tr.t("menu-enter")).clicked() {
+        Sel::Node(id) if describe::can_enter_view(&ex.view(), id) => {
+            // Lo protegido no se puede añadir a la cesta: "Ver contenido" ocupa su lugar.
+            let key = if matches!(state, AddState::Untouchable | AddState::Denied) {
+                "menu-view-contents"
+            } else {
+                "menu-enter"
+            };
+            if ui.button(tr.t(key)).clicked() {
                 ex.enter(sel);
                 ui.close();
             }
@@ -1020,9 +1176,42 @@ pub(crate) fn menu_items(ui: &mut Ui, env: &mut Env, ex: &mut Explore, sel: Sel)
         ui.close();
     }
     ui.separator();
-    // Es del incremento 3: la cesta aún no existe.
-    ui.add_enabled(false, egui::Button::new(tr.t("menu-add-basket")))
-        .on_disabled_hover_text(tr.t("next-version"));
+    let now = ui.input(|i| i.time);
+    let disabled = |ui: &mut Ui, label: String, why: &str| {
+        ui.add_enabled(false, egui::Button::new(label))
+            .on_disabled_hover_text(tr.t(why));
+    };
+    match state {
+        AddState::Addable => {
+            if ui.button(tr.t("menu-add-basket")).clicked() {
+                ex.basket_add(sel, env, now);
+                ui.close();
+            }
+        }
+        AddState::ContentsOf => {
+            let name = describe::display_name(&tree, node, tr);
+            if ui
+                .button(tr.ta("menu-add-contents", args!["name" => name]))
+                .clicked()
+            {
+                ex.basket_add(sel, env, now);
+                ui.close();
+            }
+        }
+        AddState::InBasket if ex.basket_has_own(sel) => {
+            if ui.button(tr.t("menu-remove-basket")).clicked() {
+                ex.basket_remove(sel);
+                ui.close();
+            }
+        }
+        AddState::InBasket => disabled(ui, tr.t("menu-in-basket"), "menu-in-basket-why"),
+        AddState::Untouchable => disabled(ui, tr.t("menu-add-basket"), "protected-untouchable-why"),
+        AddState::Denied => disabled(ui, tr.t("menu-add-basket"), "protected-denied-why"),
+        AddState::InfoOnly => disabled(ui, tr.t("menu-add-basket"), "menu-unavailable-info"),
+        AddState::SystemBlock => disabled(ui, tr.t("menu-add-basket"), "menu-unavailable-system"),
+        AddState::CloudOnly => disabled(ui, tr.t("menu-add-basket"), "menu-unavailable-cloud"),
+        AddState::Group => disabled(ui, tr.t("menu-add-basket"), "tip-open-group"),
+    }
 }
 
 /// Para los tests: ¿qué ids de nodo hay entre las celdas de nivel 0?

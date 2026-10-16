@@ -12,6 +12,8 @@ use tesela_model::{Batch, EntryData, FinishOptions, Tree, TreeBuilder, flags};
 const GIB: u64 = 1 << 30;
 const MIB: u64 = 1 << 20;
 const DAY: u32 = 86_400;
+/// SID ficticio del usuario de la demostración (nombre de su carpeta en la Papelera).
+pub const DEMO_SID: &str = "S-1-5-DEMO-1001";
 /// "Ahora" fijo del árbol de demostración (segundos Unix), para que las edades no dependan del reloj.
 pub const DEMO_NOW: u32 = 1_760_000_000;
 
@@ -169,7 +171,73 @@ fn files(
         .collect()
 }
 
+/// Datos de los navegadores del usuario ficticio, con SUS cachés reales (`Cache`, `Code Cache`, `cache2`) y su perfil
+/// (historial, cookies...), que NO es caché. Se generan con un generador aparte para no alterar el resto del árbol.
+fn browsers(extra: &mut Rng) -> Vec<Spec> {
+    let cache = |extra: &mut Rng, prefix: &str, n: usize, total: u64| {
+        files(extra, prefix, n, total, &[("dat", 6), ("bin", 2)], (0, 20))
+    };
+    let chrome_profile = dir(
+        "Default",
+        vec![
+            dir("Cache", cache(extra, "f_", 300, 1900 * MIB)),
+            dir("Code Cache", cache(extra, "js-", 80, 300 * MIB)),
+            file("History", 40 * MIB, 2),
+            file("Cookies", 12 * MIB, 1),
+            file("Login Data", 2 * MIB, 40),
+        ],
+    );
+    let edge_profile = dir(
+        "Default",
+        vec![
+            dir("Cache", cache(extra, "f_", 400, 3100 * MIB)),
+            file("History", 30 * MIB, 3),
+            file("Cookies", 9 * MIB, 1),
+        ],
+    );
+    vec![
+        dir(
+            "Google",
+            vec![dir(
+                "Chrome",
+                vec![dir(
+                    "User Data",
+                    vec![chrome_profile, file("Local State", MIB, 9)],
+                )],
+            )],
+        ),
+        dir(
+            "Microsoft",
+            vec![dir(
+                "Edge",
+                vec![dir(
+                    "User Data",
+                    vec![edge_profile, file("Local State", MIB, 12)],
+                )],
+            )],
+        ),
+        dir(
+            "Mozilla",
+            vec![dir(
+                "Firefox",
+                vec![dir(
+                    "Profiles",
+                    vec![dir(
+                        "demo.default-release",
+                        vec![
+                            dir("cache2", cache(extra, "e-", 120, 800 * MIB)),
+                            file("places.sqlite", 60 * MIB, 1),
+                            file("key4.db", 2 * MIB, 50),
+                        ],
+                    )],
+                )],
+            )],
+        ),
+    ]
+}
+
 fn build_spec(rng: &mut Rng, variant: Variant) -> Spec {
+    let mut extra = Rng(0xD0CA_11ED_5EED_0002);
     let user = USER;
     // --- Carpeta del usuario ---
     let videos = dir(
@@ -472,9 +540,8 @@ fn build_spec(rng: &mut Rng, variant: Variant) -> Spec {
     let appdata = dir(
         "AppData",
         vec![
-            dir(
-                "Local",
-                vec![
+            dir("Local", {
+                let mut v = vec![
                     dir(
                         "Paquetes",
                         files(
@@ -498,7 +565,7 @@ fn build_spec(rng: &mut Rng, variant: Variant) -> Spec {
                         ),
                     ),
                     dir(
-                        "Cache navegador",
+                        "Cache de aplicaciones",
                         files(
                             rng,
                             "cache-",
@@ -519,8 +586,10 @@ fn build_spec(rng: &mut Rng, variant: Variant) -> Spec {
                             (30, 600),
                         ),
                     ),
-                ],
-            ),
+                ];
+                v.extend(browsers(&mut extra));
+                v
+            }),
             dir(
                 "Roaming",
                 files(
@@ -699,12 +768,28 @@ fn build_spec(rng: &mut Rng, variant: Variant) -> Spec {
             k
         },
     };
+    // La Papelera del usuario: su carpeta lleva el SID (ficticio).
+    let recycle_bin = dir(
+        "$Recycle.Bin",
+        vec![dir(
+            DEMO_SID,
+            files(
+                &mut extra,
+                "$R",
+                14,
+                520 * MIB,
+                &[("mp4", 1), ("zip", 1), ("pdf", 1)],
+                (2, 60),
+            ),
+        )],
+    );
     let mut root_kids = vec![
         users,
         program_files,
         games,
         windows,
         program_data,
+        recycle_bin,
         file("pagefile.sys", 16 * GIB, 1),
         file("hiberfil.sys", 13 * GIB, 3),
         file("swapfile.sys", 256 * MIB, 3),
@@ -839,13 +924,15 @@ pub fn tree(variant: Variant) -> Tree {
     })
 }
 
-/// Fila de "sitios conocidos" del escaneo simulado: (clave i18n, bytes finales, fracción del escaneo en que acaba).
-pub const DEMO_KNOWN_ROWS: [(&str, u64, f32); 5] = [
-    ("known-user-temp", 1_950_000_000, 0.10),
-    ("known-windows-temp", 380_000_000, 0.22),
-    ("known-chrome-cache", 1_900_000_000, 0.36),
-    ("known-edge-cache", 3_900_000_000, 0.52),
-    ("known-recycle-bin", 520_000_000, 0.66),
+/// Fila de "sitios conocidos" del escaneo simulado: (clave i18n, bytes finales, fracción del escaneo en que acaba). Los
+/// tamaños son los de las carpetas correspondientes del árbol de demostración.
+pub const DEMO_KNOWN_ROWS: [(&str, u64, f32); 6] = [
+    ("known-user-temp", 2_254_000_000, 0.10),
+    ("known-windows-temp", 314_572_800, 0.22),
+    ("known-chrome-cache", 2_361_000_000, 0.36),
+    ("known-edge-cache", 3_250_000_000, 0.52),
+    ("known-firefox-cache", 838_860_800, 0.60),
+    ("known-recycle-bin", 545_259_520, 0.66),
 ];
 
 #[cfg(test)]

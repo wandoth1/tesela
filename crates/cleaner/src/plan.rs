@@ -328,9 +328,14 @@ impl Cleaner {
                         if let Some(f) = &self.bin_filter {
                             items.retain(|i| f(i));
                         }
+                        let hint = if opts.bin_bytes_hint > 0 {
+                            opts.bin_bytes_hint
+                        } else {
+                            crate::recycle::bin_totals().map_or(0, |t| t.1)
+                        };
                         plan.bin = Some(BinPlan {
                             items,
-                            bytes_hint: opts.bin_bytes_hint,
+                            bytes_hint: hint,
                         });
                     }
                 }
