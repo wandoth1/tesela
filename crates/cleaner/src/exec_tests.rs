@@ -1195,10 +1195,21 @@ fn una_raiz_descartada_deja_su_motivo_visible_y_en_el_registro() {
     b.set_category(CategoryId::UserTemp, true);
     let plan = approve(&c, &b);
     assert!(plan.items.is_empty());
+    // Chrome: un enlace en su ruta; el %TEMP% redirigido: su propio motivo (R5), no "un enlace".
     assert!(
         plan.rejected
             .iter()
+            .filter(|r| r.reason != RejectReason::OutsideLocalAppData)
             .all(|r| r.reason == RejectReason::ReparseAncestor)
+    );
+    assert_eq!(
+        plan.rejected
+            .iter()
+            .filter(|r| r.reason == RejectReason::OutsideLocalAppData)
+            .count(),
+        1,
+        "{:?}",
+        plan.rejected
     );
     let log = Arc::new(LogWriter::create(&sb.path("Tesela"), false).unwrap());
     exec(&c, &plan, false, false, Some(log.clone())).unwrap();

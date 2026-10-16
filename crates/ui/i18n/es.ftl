@@ -329,6 +329,7 @@ reject-denied = sin permiso
 reject-identity = no se puede verificar
 reject-reparse = es un enlace
 reject-reparse-ancestor = un enlace en su ruta
+reject-outside-local = la carpeta temporal está redirigida fuera de los datos locales del usuario
 reject-protected = protegido
 reject-untouchable = no se puede borrar entero
 reject-other = error del sistema

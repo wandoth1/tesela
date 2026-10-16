@@ -70,6 +70,9 @@ pub enum RejectReason {
     /// ruta que se comprobó dejó de ser la misma: no se ofrece como categoría (un enlace por encima de `User Data` o de
     /// `%TEMP%` podría llevarla a una carpeta protegida).
     ReparseAncestor,
+    /// La carpeta temporal del usuario está redirigida fuera de `%LOCALAPPDATA%` (no es `Local\Temp` ni cuelga de ella): no
+    /// se ofrece como categoría. No es un enlace en su ruta (R5).
+    OutsideLocalAppData,
     /// La ruta resuelta no es de una unidad local con letra (UNC, también hacia un disco local por su compartición
     /// administrativa, o una unidad de red): el `cleaner` solo limpia unidades locales, porque la protección se define
     /// sobre rutas de unidad.
@@ -434,14 +437,19 @@ impl Cleaner {
                     continue;
                 }
                 // Capa 1 de B1: la cadena tiene un enlace (o cambió): la categoría no se ofrece para esta raíz.
-                Err(
-                    RootRejection::ReparseInChain { .. }
-                    | RootRejection::NotCanonical
-                    | RootRejection::OutsideLocalAppData,
-                ) => {
+                Err(RootRejection::ReparseInChain { .. } | RootRejection::NotCanonical) => {
                     plan.rejected.push(Rejected {
                         path: check.raw,
                         reason: RejectReason::ReparseAncestor,
+                    });
+                    continue;
+                }
+                // Un %TEMP% redirigido fuera de %LOCALAPPDATA%: su propio motivo (coherente con la tarjeta de
+                // Recomendaciones), no "un enlace en su ruta".
+                Err(RootRejection::OutsideLocalAppData) => {
+                    plan.rejected.push(Rejected {
+                        path: check.raw,
+                        reason: RejectReason::OutsideLocalAppData,
                     });
                     continue;
                 }
