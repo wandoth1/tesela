@@ -4,7 +4,7 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). L
 (`major.minor.patch`, sin sufijos: un MSI no admite `-rc1`). `release.yml` copia la sección de la versión de la etiqueta a las
 notas de la GitHub Release, así que cada versión necesita su sección aquí.
 
-## [0.1.0] - pendiente de publicar
+## [0.1.0] - 2026-10-16
 
 Primera versión (MVP). **Sin firmar**: Windows SmartScreen puede avisar (ver el README, "Instalación").
 

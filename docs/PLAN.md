@@ -316,7 +316,7 @@ Principio: **verificar y actuar sobre el mismo handle**, nunca "comprobar por ru
   - Fuzzing del parser MFT antes de la 1.0.
 - **Release:** `lto = "fat"`, `codegen-units = 1`, `strip`. `panic = "unwind"` en las 0.x y `abort` solo tras el fuzzing.
 - **Firma:** SignPath Foundation (licencia OSI, build automatizado, política de firma publicada en el README).
-- **Entrega:** **MSI por usuario desde la v0.1** (WiX vía `cargo-wix` o `cargo-dist`, generado en GitHub Actions en cada release y firmado con SignPath en cuanto esté aprobado), más un zip portable con SHA-256. winget y ARM64 publicado, en la v1.0.
+- **Entrega:** **MSI por usuario desde la v0.1**, con **WiX 5.0.2** (`wix` CLI como `dotnet tool`, versión y SHA-512 fijados; `.wxs` escrito a mano, sin acciones personalizadas; desde WiX 6 el paquete exige aceptar el acuerdo OSMF), más un zip portable y `SHA256SUMS.txt`. `scripts/build-msi.ps1` parte siempre de `build-release.ps1` (binarios reproducibles con `/Brepro`) y valida el MSI con `scripts/msi-validate.ps1` (tablas en lista cerrada). `release.yml` (etiqueta `v*`): jobs `build` → `attest` (procedencia) → `verify` → `release` en **borrador**; un ensayo `workflow_dispatch` (`dry_run`) solo desde `main`. La v0.1 sale **sin firmar**; SignPath Foundation (gratis para open source) cuando el mantenedor lo solicite (`CODE_SIGNING.md`). winget y ARM64 publicado, en la v1.0.
 
 ---
 
@@ -327,7 +327,7 @@ Referencia de diseño: un SSD con un volumen de ~1 M de archivos. La memoria se 
 | Fase | Contenido | Hito medible |
 |---|---|---|
 | **0. Spike ✅** | Hecho: ver [fase-0-conclusiones.md](fase-0-conclusiones.md). Backend wgpu DX12 + `Mesh`; API `FileIdExtdDirectoryInfo`; POSIX descartado; Mica descartado; destino de las carpetas de desarrollo diferido a la v0.2 | Cerrado (ronda 4, §9) |
-| **1. MVP v0.1** | ✅ Inc. 1 (modelo + escáner + CLI `tesela-scan` + CI). ✅ Inc. 2 (layout + interfaz de solo lectura + `--demo`). ✅ Inc. 3 (borrado seguro, §3.7). Pendiente: inc. 4 MSI. Walker + cola prioritaria + TreeBuilder (con dedup de hard links), inicio, pantalla de escaneo con veredicto, treemap (`Mesh` cacheado) + lista + detalles, bloque del sistema, cesta por destino, borrado definitivo + Papelera, protección, Temp/cachés/Papelera/pagefile/hiberfil, resumen, historial de resúmenes, es/en, claro/oscuro. **Entregable: instalador MSI por usuario** + zip portable, generados en CI | 1 M de archivos en < 30 s en caliente; veredicto de rutas conocidas en < 5 s; private working set ≤ 75 MiB en reposo con el mapa dibujado y ~85 B por entrada en régimen (≈ 155 MiB con 1 M; aceptado por el usuario); p99 de CPU por frame < 8 ms con hover; **0 borrados fuera del conjunto permitido** en los tests; el MSI instala, actualiza y desinstala sin administrador |
+| **1. MVP v0.1** | ✅ Inc. 1 (modelo + escáner + CLI `tesela-scan` + CI). ✅ Inc. 2 (layout + interfaz de solo lectura + `--demo`). ✅ Inc. 3 (borrado seguro, §3.7). ✅ Inc. 4 (MSI por usuario + release en borrador). Walker + cola prioritaria + TreeBuilder (con dedup de hard links), inicio, pantalla de escaneo con veredicto, treemap (`Mesh` cacheado) + lista + detalles, bloque del sistema, cesta por destino, borrado definitivo + Papelera, protección, Temp/cachés/Papelera/pagefile/hiberfil, resumen, historial de resúmenes, es/en, claro/oscuro. **Entregable: instalador MSI por usuario** + zip portable, generados en CI | 1 M de archivos en < 30 s en caliente; veredicto de rutas conocidas en < 5 s; private working set ≤ 75 MiB en reposo con el mapa dibujado y ~85 B por entrada en régimen (≈ 155 MiB con 1 M; aceptado por el usuario); p99 de CPU por frame < 8 ms con hover; **0 borrados fuera del conjunto permitido** en los tests; el MSI instala, actualiza y desinstala sin administrador |
 | **2. v0.2** | Carpetas de desarrollo (con la decisión de destino y "renombrar primero", §2.6), descargas e instaladores viejos, archivos grandes, colorear por antigüedad y riesgo, filtros, Deshacer + `Ctrl+Z`, historial visible, atajos, flechas en el treemap | Relayout de 20k rectángulos < 5 ms |
 | **3. v0.3** | MFT + "Reiniciar como administrador" (con la cesta persistida) + test diferencial | 1 M < 3 s; 10 M < 30 s; totales iguales al walker salvo metadatos NTFS y carpetas denegadas |
 | **4. v1.0** | Duplicados, WinSxS / puntos de restauración, helper elevado, USN incremental, Excluir + exclusiones persistentes, exportar CSV/HTML, menú contextual del Explorador (HKCU), winget, ARM64 publicado, fuzzing, auditoría con lector de pantalla | Reescaneo incremental < 2 s; exe ≲ 16 MB (wgpu DX12 ya ocupa ≈ 10,5 MB); paquetes firmados |
@@ -368,12 +368,14 @@ Pendientes (las tres primeras las hace el usuario):
 - [ ] **Windows 10 22H2:** `FILE_ID_EXTD_DIR_INFO` y `SegUIVar.ttf`.
 - [ ] **Symlinks de directorio** al borrar. No necesita administrador si se activa el Modo de desarrollador.
 - [ ] `FOF_WANTNUKEWARNING` junto con `FOF_NO_UI` y el límite real de la Papelera aplicado: **test obligatorio del incremento 3** (§3.7).
-- [ ] Incremento 4 (MSI): CRT estático sin `VCRUNTIME140.dll` (verificado en los imports del `.exe`); pruebas de ciclo completo sin elevación (instalar, actualizar, reparar, rollback, desinstalar, dos usuarios, app abierta durante la actualización, conservación o borrado explícito de la configuración); validación del paquete final (ejecutables, avisos de terceros, sin rutas locales, firmas EXE/MSI). SignPath exige además reputación verificable, política publicada, roles con MFA, procedencia del build, aprobación manual por release y atributos de producto/versión.
-- [ ] `cargo-wix` con WiX 4/5/6 en GitHub Actions (antes de la v0.1); `winget-releaser`; runner ARM64.
+- [x] Incremento 4 (MSI): CRT estático sin `VCRUNTIME140.dll` (verificado en los imports); ciclo instalar/actualizar/bloquear versión anterior/reparar/carpeta personalizada/desinstalar sin elevación, con la máquina idéntica al final; validación del paquete (ejecutables, avisos, sin rutas locales).
+- [ ] MSI pendiente de probar: dos usuarios, aplicación abierta durante la actualización (Restart Manager), rollback de una instalación fallida, firmas EXE/MSI.
+- [x] WiX 5.0.2 en GitHub Actions (sin `cargo-wix`). Pendientes: `winget-releaser` y runner ARM64 (v1.0).
+- [ ] **Configuración del repo (la hace el mantenedor):** reporte privado de vulnerabilidades, ruleset de etiquetas `v*`, protección de `main` (PR + code owners + checks), environment `release` con revisor, "Require SHA pinning", immutable releases y MFA. Lista detallada en `installer/README.md`.
 - [ ] Marcas registradas del nombre "Tesela" sin revisar.
 
 ## 7. Siguiente paso
-**Incremento 4 del MVP: instalador MSI por usuario y publicación de la release v0.1**, con el mismo flujo: construye un Sonnet (alto), audita otro Sonnet (muy alto) y revisión final con el asesor. Capturas y ejemplos, siempre con datos sintéticos.
+**Publicar la v0.1.0** (etiqueta, verificación del borrador y publicación) y, después, la **auditoría externa** que pedirá el usuario; luego, la v0.2 (§4).
 
 ## 8. Fuera del alcance (explícito)
 Limpiador de registro, "optimizar" o desfragmentar, desinstalar programas, análisis de red o nube en v1, cuentas, telemetría o anuncios, sunburst o 3D, triturado o recuperación, editor o gestor de archivos completo, reglas automáticas sin intervención del usuario.
@@ -414,6 +416,13 @@ Limpiador de registro, "optimizar" o desfragmentar, desinstalar programas, anál
    - `$Recycle.Bin`, `Default` y `Public` denegadas.
    - El titular suma solo lo Seguro.
    - El MVP borra con `remove_file` y deja POSIX para la v0.2.
+
+**Ronda 9** (incremento 4, instalador y release: construcción Sonnet, 2 auditorías Sonnet, revisión con el asesor):
+- WiX 5.0.2 (no 6/7, para no aceptar el acuerdo OSMF en nombre del usuario), por usuario, sin acciones personalizadas; `INSTALLFOLDER` persistido en HKCU para que actualizar y desinstalar respeten una carpeta personalizada.
+- Icono dibujado por `build.rs` (el repo no versiona imágenes fuera de `docs/img/`) e incrustado con `winresource`, con VERSIONINFO.
+- Cadena de suministro: acciones por SHA, permisos mínimos por job, attestation en un job aislado, verificación antes del borrador, `--locked`, WiX con `nuget.config` limpio y SHA-512 comprobado, binarios reproducibles.
+- Los tests con la Papelera real van detrás de `TESELA_REAL_RECYCLE_TESTS=1` (los runners de GitHub no tienen Papelera de escritorio); en local se lanzan con la variable.
+- La seguridad real de la publicación hoy es el borrador que verifica una persona: la configuración del repo (rulesets, protección de `main`, environment) queda para el mantenedor.
 
 **Ronda 8** (incremento 3, el borrado: construcción Sonnet, 3 auditorías Sonnet con sondas de ataque, revisión con el asesor):
 - El diseño "verificar y actuar sobre el mismo handle" resistió todas las carreras probadas (sustitución ×300, junctions en hijo/ancestro/raíz, hard links, renombrados, cancelación, matar el proceso).
