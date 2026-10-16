@@ -4,6 +4,40 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). L
 (`major.minor.patch`, sin sufijos: un MSI no admite `-rc1`). `release.yml` copia la sección de la versión de la etiqueta a las
 notas de la GitHub Release, así que cada versión necesita su sección aquí.
 
+## [0.1.2] - 2026-10-16
+
+Segunda ronda de correcciones tras dos auditorías externas de la 0.1.1 (una de la limpieza y otra del resto).
+**Actualiza si usas la limpieza.** El análisis del disco no cambia en lo esencial. Sigue **sin firmar**: Windows
+SmartScreen puede avisar.
+
+### Seguridad
+
+- Envío a la Papelera más estricto: cada archivo y carpeta se vuelve a medir justo antes de enviarlo, y se recalcula si
+  cabe. Lo que creció desde la confirmación, o lo que no se pudo medir entero, no se envía.
+- Si Windows falla después de haber borrado parte de algo, se cuenta como borrado y el envío se detiene. Una carpeta
+  solo se da por intacta si su contenido coincide (huella de cada elemento, no solo el tamaño total).
+- Vaciar la Papelera comprueba la identidad de cada elemento en el último momento. Un sustituto se veta y lo que venía
+  detrás no se toca.
+- **No limpia si se está ejecutando como administrador** (por ejemplo, abierta desde una consola elevada). Analizar y
+  simular siguen funcionando.
+- Endurecimiento contra DLL plantadas: el programa solo busca sus DLL en System32 y ya no intenta cargar
+  `dxcompiler.dll`.
+- El escáner ya no sigue un enlace (junction o symlink) elegido como carpeta raíz: lo rechaza con un mensaje claro.
+- El registro local escribe cada resultado en el momento, y su poda ya no puede borrar el registro recién abierto.
+
+### Cambiado
+
+- Textos que no prometen de más: "Hasta X en candidatos de bajo riesgo (se comprueba al limpiar)", "Liberar hasta X" y
+  "Cambio medido del espacio libre" (otros programas también lo modifican).
+- Los temporales se limpian si llevan **más de 7 días** sin modificarse (antes, 24 h), como hace Windows.
+- La nota de `hiberfil.sys` explica que hace falta un símbolo del sistema como administrador, qué se pierde con
+  `powercfg /h off` y la alternativa `powercfg /h /type reduced`.
+- Una carpeta con partes ilegibles se rechaza al aprobarla, con el motivo.
+- Nuevo lema: *"Mira qué ocupa tu disco y decide qué liberar, sabiendo qué se borra y comprobando lo que se libera."*
+- Herramientas del proyecto: la comprobación de privacidad detecta más formas de ruta y valores partidos; el SHA-512 de
+  WiX se comprueba antes de instalarlo; el validador del MSI y las pruebas son más estrictos.
+- Nueva hoja de ruta de producto en `docs/ROADMAP.md`.
+
 ## [0.1.1] - 2026-10-16
 
 Correcciones de seguridad de la limpieza tras una auditoría externa de la 0.1.0. **Actualiza si usas la limpieza**: el
