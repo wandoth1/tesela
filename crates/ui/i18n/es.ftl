@@ -292,6 +292,8 @@ unfit-no-bin = la unidad no tiene Papelera
 unfit-nuke = la Papelera de la unidad está desactivada
 unfit-too-big = supera el tamaño de la Papelera
 unfit-path-long = la ruta es demasiado larga para la Papelera
+unfit-policy = una directiva del sistema impide usar la Papelera
+unfit-unknown = no se pudo comprobar si cabe en la Papelera
 confirm-hardlink =
     { $n ->
         [one] { $count } archivo está compartido con otro nombre: no liberará espacio ({ $size })
@@ -354,6 +356,7 @@ sum-now = Ahora
 sum-used-pct = { $used } usados · { $pct }
 sum-bin-card = Otros { $size } están en la Papelera de reciclaje
 sum-bin-card-note = Ese espacio se libera de verdad cuando la vacías.
+sum-bin-card-all = La Papelera tiene { $total } en total y se vacía entera.
 sum-empty-now = Vaciar ahora ({ $size })
 sum-open-bin = Abrir la Papelera
 sum-back = Volver al mapa
@@ -397,6 +400,16 @@ sum-unexpected =
     { $n ->
         [one] { $count } elemento no cabía en la Papelera y se eliminó definitivamente.
        *[other] { $count } elementos no cabían en la Papelera y se eliminaron definitivamente.
+    }
+sum-recycled-other =
+    { $n ->
+        [one] { $count } elemento cambió justo antes de enviarlo: a la Papelera llegó algo distinto de lo que aprobaste. Está en la Papelera y puedes restaurarlo.
+       *[other] { $count } elementos cambiaron justo antes de enviarlos: a la Papelera llegó algo distinto de lo que aprobaste. Está en la Papelera y puedes restaurarlo.
+    }
+sum-unverified =
+    { $n ->
+        [one] No se pudo comprobar qué pasó con { $count } elemento: míralo en la Papelera.
+       *[other] No se pudo comprobar qué pasó con { $count } elementos: míralos en la Papelera.
     }
 sum-not-recycled =
     { $n ->

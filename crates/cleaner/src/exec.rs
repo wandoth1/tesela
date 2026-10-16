@@ -212,6 +212,9 @@ pub struct Report {
     pub recycled_other: u64,
     /// Elementos de los que no se pudo comprobar qué pasó.
     pub unverified: u64,
+    /// Lo que hay en TODA la Papelera tras la ejecución (según la shell): es lo que vaciaría "Vaciar ahora". `None` si
+    /// no se envió nada a la Papelera, en simulación o si la consulta falló.
+    pub bin_total_after: Option<u64>,
     /// Elementos que no se pudieron enviar.
     pub not_recycled: u64,
     /// Elementos que no caben en la Papelera y no se confirmaron.
@@ -405,6 +408,9 @@ impl Cleaner {
                 (_, ItemStatus::NotRecycled(_)) => report.not_recycled += 1,
                 _ => {}
             }
+        }
+        if !opts.dry_run && (report.recycled_bytes > 0 || report.recycled_other > 0) {
+            report.bin_total_after = recycle::bin_totals().ok().map(|t| t.1);
         }
         if !opts.dry_run {
             // La liberación de espacio de NTFS puede tardar un instante en reflejarse.

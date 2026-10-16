@@ -291,6 +291,8 @@ unfit-no-bin = the drive has no Recycle Bin
 unfit-nuke = the Recycle Bin is turned off for the drive
 unfit-too-big = it exceeds the size of the Recycle Bin
 unfit-path-long = the path is too long for the Recycle Bin
+unfit-policy = a system policy prevents using the Recycle Bin
+unfit-unknown = it could not be checked whether it fits in the Recycle Bin
 confirm-hardlink =
     { $n ->
         [one] { $count } file is shared with another name: it will not free space ({ $size })
@@ -353,6 +355,7 @@ sum-now = Now
 sum-used-pct = { $used } used · { $pct }
 sum-bin-card = Another { $size } is in the Recycle Bin
 sum-bin-card-note = That space is really freed when you empty it.
+sum-bin-card-all = The Recycle Bin holds { $total } in total and all of it is emptied.
 sum-empty-now = Empty now ({ $size })
 sum-open-bin = Open the Recycle Bin
 sum-back = Back to the map
@@ -396,6 +399,16 @@ sum-unexpected =
     { $n ->
         [one] { $count } item did not fit in the Recycle Bin and was deleted permanently.
        *[other] { $count } items did not fit in the Recycle Bin and were deleted permanently.
+    }
+sum-recycled-other =
+    { $n ->
+        [one] { $count } item changed right before it was sent: something different from what you approved reached the Recycle Bin. It is in the Recycle Bin and you can restore it.
+       *[other] { $count } items changed right before they were sent: something different from what you approved reached the Recycle Bin. They are in the Recycle Bin and you can restore them.
+    }
+sum-unverified =
+    { $n ->
+        [one] It could not be checked what happened to { $count } item: look for it in the Recycle Bin.
+       *[other] It could not be checked what happened to { $count } items: look for them in the Recycle Bin.
     }
 sum-not-recycled =
     { $n ->

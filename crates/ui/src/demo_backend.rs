@@ -478,6 +478,17 @@ impl Backend for DemoBackend {
         }
         step(Phase::Verifying);
         rep.cancelled = progress.cancel.load(Ordering::Relaxed);
+        if !opts.dry_run && rep.recycled_bytes > 0 {
+            // Toda la Papelera ficticia: lo que ya tenía (la carpeta del árbol, si no se vació) más lo recién enviado.
+            let before = if rep.bin.is_some() {
+                0
+            } else {
+                self.recycle_dir(&PathBuf::from(&self.root))
+                    .and_then(|d| loc.locate(&d))
+                    .map_or(0, |n| view.alloc(n))
+            };
+            rep.bin_total_after = Some(before + rep.recycled_bytes);
+        }
         if !opts.dry_run {
             let bin = rep.bin.map_or(0, |b| b.bytes_hint);
             let freed = rep.permanent_bytes + bin;

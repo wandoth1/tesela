@@ -242,6 +242,11 @@ fn un_elemento_del_usuario_va_a_la_papelera_por_su_ruta_original_y_se_verifica()
     assert!(!sb.path("Docs/carpeta").exists());
     assert_eq!(sb.count_entries("Docs"), 0, "no queda nada en su sitio");
     assert!(rep.recycled_bytes >= 76_000);
+    assert!(
+        rep.bin_total_after.is_some_and(|t| t > 0),
+        "la shell dice cuánto hay en la Papelera: {:?}",
+        rep.bin_total_after
+    );
     assert_eq!(rep.permanent_bytes, 0);
     assert_eq!(
         (
@@ -311,6 +316,18 @@ fn vaciar_la_papelera_purga_solo_la_lista_capturada() {
     );
     assert_eq!(plan.bin.as_ref().unwrap().items.len(), 2);
     assert!(plan.items.is_empty());
+    // El tamaño que se enseña es el de la lista enumerada (con el filtro de la prueba, solo lo propio), no el de toda la
+    // Papelera ni lo que sugirió quien llama.
+    let listed: u64 = plan
+        .bin
+        .as_ref()
+        .unwrap()
+        .items
+        .iter()
+        .map(|i| i.size)
+        .sum();
+    assert_eq!(plan.bin.as_ref().unwrap().bytes_hint, listed);
+    assert!(listed >= 4_000, "{listed}");
     // ...y después entra otro elemento propio en la Papelera, que NO está en la lista capturada.
     sb.write("Docs/tres.txt", 2_000);
     let mut b3 = Basket::new();

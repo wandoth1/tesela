@@ -39,6 +39,10 @@ pub enum UnfitReason {
     TooBig,
     /// La ruta no cabe en los 260 caracteres que admite la Papelera.
     PathTooLong,
+    /// Una directiva del sistema ("No mover los archivos eliminados a la Papelera") hace que la shell elimine de verdad.
+    Policy,
+    /// No se pudo averiguar si cabe (volumen, límite o tamaño del volumen desconocidos): se trata como "no cabe".
+    Unknown,
 }
 
 /// Si un elemento con destino Papelera cabe en ella.
@@ -330,10 +334,21 @@ impl Cleaner {
                         if let Some(f) = &self.bin_filter {
                             items.retain(|i| f(i));
                         }
-                        let hint = if opts.bin_bytes_hint > 0 {
-                            opts.bin_bytes_hint
+                        // El tamaño tiene que ser el de la LISTA enumerada: con un filtro, la suma de lo que se listó; sin él,
+                        // el total de toda la Papelera según la shell (o, si falla, lo que sepa quien llama).
+                        let listed: u64 = items.iter().map(|i| i.size).sum();
+                        let hint = if self.bin_filter.is_some() {
+                            listed
                         } else {
-                            crate::recycle::bin_totals().map_or(0, |t| t.1)
+                            crate::recycle::bin_totals()
+                                .map(|t| t.1)
+                                .ok()
+                                .filter(|b| *b > 0)
+                                .unwrap_or(if opts.bin_bytes_hint > 0 {
+                                    opts.bin_bytes_hint
+                                } else {
+                                    listed
+                                })
                         };
                         plan.bin = Some(BinPlan {
                             items,
@@ -690,40 +705,188 @@ fn reason_of(code: u32) -> RejectReason {
     }
 }
 
-/// ¿Cabe un elemento de `bytes` con ruta `path` en la Papelera de su volumen?
-pub(crate) fn fit_for(path: &Path, bytes: u64) -> Fit {
+/// Todo lo que decide si algo cabe en la Papelera, ya leído (así la decisión es una función pura y se prueba sin tocar el
+/// registro ni el volumen).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct BinFacts {
+    /// Longitud de la ruta del elemento.
+    pub path_len: usize,
+    /// ¿Se averiguó el volumen del elemento?
+    pub volume_known: bool,
+    /// Directiva `NoRecycleFiles`.
+    pub policy_no_recycle: bool,
+    pub limit: BinLimit,
+    /// Tamaño del volumen (`None` si falló la consulta).
+    pub volume_total: Option<u64>,
+}
+
+/// Porcentaje del volumen que se ASUME como tamaño máximo de la Papelera cuando el registro no tiene `MaxCapacity`.
+/// Microsoft no documenta el valor por defecto de la shell: lo medido en los volúmenes con valor fue ≈ el 10 %. Se usa la
+/// MITAD (5 %) a propósito: es conservador (lo dudoso se trata como "no cabe" y pide confirmación expresa) y ya no tiene
+/// que ser exacto, porque el receptor de eventos dice la verdad después (`psiNewlyCreated` nulo = eliminado).
+pub(crate) const DEFAULT_BIN_PERCENT_ASSUMED: u64 = 5;
+
+/// La decisión (ver [`fit_for`]): ante CUALQUIER duda, `Unfit`.
+pub(crate) fn fit_decide(bytes: u64, f: &BinFacts) -> Fit {
     // La Papelera no admite rutas de 260 caracteres o más.
-    if path.as_os_str().len() > MAX_BIN_PATH {
+    if f.path_len > MAX_BIN_PATH {
         return Fit::Unfit(UnfitReason::PathTooLong);
     }
-    let Some(root) = volume::volume_root(path) else {
-        return Fit::Fits;
-    };
-    match volume::bin_limit(&root) {
+    if !f.volume_known {
+        return Fit::Unfit(UnfitReason::Unknown);
+    }
+    if f.policy_no_recycle {
+        return Fit::Unfit(UnfitReason::Policy);
+    }
+    let too_big = |max: u64| (bytes as u128) * 100 > (max as u128) * BIN_MARGIN_PERCENT as u128;
+    match f.limit {
         BinLimit::NoBin => Fit::Unfit(UnfitReason::NoBin),
         BinLimit::NukeOnDelete => Fit::Unfit(UnfitReason::NukeOnDelete),
-        BinLimit::Max(max) => {
-            if (bytes as u128) * 100 > (max as u128) * BIN_MARGIN_PERCENT as u128 {
-                Fit::Unfit(UnfitReason::TooBig)
-            } else {
-                Fit::Fits
-            }
-        }
-        BinLimit::Unknown => {
-            // Sin valor en el registro la shell usa un porcentaje por defecto que Microsoft no documenta: SE ASUME el 10 % del
-            // volumen (los `MaxCapacity` que se vieron en los volúmenes de medición eran ≈ el 10 %). Esta rama NO se ha
-            // probado contra la shell real (todos esos volúmenes tenían el valor en el registro).
-            match tesela_scanner::volume_space(&root) {
-                Ok(v) if v.volume_scope && v.total > 0 => {
-                    let max = v.total / 10;
-                    if (bytes as u128) * 100 > (max as u128) * BIN_MARGIN_PERCENT as u128 {
-                        Fit::Unfit(UnfitReason::TooBig)
-                    } else {
-                        Fit::Fits
-                    }
+        BinLimit::Indeterminate => Fit::Unfit(UnfitReason::Unknown),
+        BinLimit::Max(max) if too_big(max) => Fit::Unfit(UnfitReason::TooBig),
+        BinLimit::Max(_) => Fit::Fits,
+        BinLimit::Unknown => match f.volume_total {
+            Some(total) if total > 0 => {
+                if too_big(total / 100 * DEFAULT_BIN_PERCENT_ASSUMED) {
+                    Fit::Unfit(UnfitReason::TooBig)
+                } else {
+                    Fit::Fits
                 }
-                _ => Fit::Fits,
             }
+            _ => Fit::Unfit(UnfitReason::Unknown),
+        },
+    }
+}
+
+/// ¿Cabe un elemento de `bytes` con ruta `path` en la Papelera de su volumen? Cualquier error al averiguarlo (raíz del
+/// volumen, límite, tamaño del volumen, directivas) da `Unfit`: nunca falla abierto.
+pub(crate) fn fit_for(path: &Path, bytes: u64) -> Fit {
+    // `GetVolumePathNameW` resuelve una ruta rara o relativa contra el directorio actual: solo se pregunta por rutas
+    // absolutas de unidades locales (las que ya pasaron la comprobación de `is_local_path`).
+    let root = volume::is_local_path(path)
+        .then(|| volume::volume_root(path))
+        .flatten();
+    let (limit, volume_total) = match &root {
+        Some(r) => (
+            volume::bin_limit(r),
+            tesela_scanner::volume_space(r)
+                .ok()
+                .filter(|v| v.volume_scope)
+                .map(|v| v.total),
+        ),
+        None => (BinLimit::Indeterminate, None),
+    };
+    fit_decide(
+        bytes,
+        &BinFacts {
+            path_len: path.as_os_str().len(),
+            volume_known: root.is_some(),
+            policy_no_recycle: volume::recycle_policy_disabled(),
+            limit,
+            volume_total,
+        },
+    )
+}
+
+#[cfg(test)]
+mod fit_tests {
+    use super::*;
+
+    fn facts(limit: BinLimit) -> BinFacts {
+        BinFacts {
+            path_len: 40,
+            volume_known: true,
+            policy_no_recycle: false,
+            limit,
+            volume_total: Some(1_000_000_000_000),
         }
+    }
+
+    #[test]
+    fn con_un_limite_configurado_se_compara_con_el_margen() {
+        let max = 100_000_000_000u64;
+        let f = facts(BinLimit::Max(max));
+        assert_eq!(fit_decide(10_000_000_000, &f), Fit::Fits);
+        assert_eq!(fit_decide(89_000_000_000, &f), Fit::Fits);
+        assert_eq!(
+            fit_decide(91_000_000_000, &f),
+            Fit::Unfit(UnfitReason::TooBig)
+        );
+    }
+
+    #[test]
+    fn ante_cualquier_duda_no_cabe() {
+        // Volumen desconocido, límite indeterminado o tamaño del volumen que falló: Unfit(Unknown), nunca Fits.
+        let mut f = facts(BinLimit::Max(1 << 40));
+        f.volume_known = false;
+        assert_eq!(fit_decide(1, &f), Fit::Unfit(UnfitReason::Unknown));
+        assert_eq!(
+            fit_decide(1, &facts(BinLimit::Indeterminate)),
+            Fit::Unfit(UnfitReason::Unknown)
+        );
+        let mut g = facts(BinLimit::Unknown);
+        g.volume_total = None;
+        assert_eq!(fit_decide(1, &g), Fit::Unfit(UnfitReason::Unknown));
+        g.volume_total = Some(0);
+        assert_eq!(fit_decide(1, &g), Fit::Unfit(UnfitReason::Unknown));
+        // Sin Papelera o con la Papelera desactivada.
+        assert_eq!(
+            fit_decide(1, &facts(BinLimit::NoBin)),
+            Fit::Unfit(UnfitReason::NoBin)
+        );
+        assert_eq!(
+            fit_decide(1, &facts(BinLimit::NukeOnDelete)),
+            Fit::Unfit(UnfitReason::NukeOnDelete)
+        );
+    }
+
+    #[test]
+    fn la_directiva_no_recycle_files_lo_hace_no_caber_aunque_el_limite_sea_enorme() {
+        let mut f = facts(BinLimit::Max(1 << 50));
+        assert_eq!(fit_decide(1, &f), Fit::Fits);
+        f.policy_no_recycle = true;
+        assert_eq!(fit_decide(1, &f), Fit::Unfit(UnfitReason::Policy));
+    }
+
+    #[test]
+    fn sin_valor_en_el_registro_se_asume_un_5_por_ciento_conservador() {
+        // 1 TB de volumen: el 5 % son 50 GB; con el margen del 90 %, hasta 45 GB.
+        let f = facts(BinLimit::Unknown);
+        assert_eq!(fit_decide(44_000_000_000, &f), Fit::Fits);
+        assert_eq!(
+            fit_decide(46_000_000_000, &f),
+            Fit::Unfit(UnfitReason::TooBig)
+        );
+        // Con el 10 % de la shell (si es el real) esto cabría: se pide confirmación de más, nunca de menos.
+        assert_eq!(
+            fit_decide(80_000_000_000, &f),
+            Fit::Unfit(UnfitReason::TooBig)
+        );
+    }
+
+    #[test]
+    fn las_rutas_largas_no_caben_se_sepa_lo_que_se_sepa() {
+        let mut f = facts(BinLimit::Max(1 << 50));
+        f.path_len = 259;
+        assert_eq!(fit_decide(1, &f), Fit::Unfit(UnfitReason::PathTooLong));
+        f.path_len = 258;
+        assert_eq!(fit_decide(1, &f), Fit::Fits);
+        // Con cualquier otra duda a la vez, gana la ruta larga (el motivo más concreto).
+        f.path_len = 300;
+        f.volume_known = false;
+        assert_eq!(fit_decide(1, &f), Fit::Unfit(UnfitReason::PathTooLong));
+    }
+
+    #[test]
+    fn el_mismo_calculo_sobre_el_volumen_real_no_falla_abierto() {
+        // El temporal de la prueba existe: la respuesta es una de las dos, y un tamaño absurdo nunca "cabe".
+        let tmp = dunce::canonicalize(std::env::temp_dir()).unwrap();
+        assert!(matches!(fit_for(&tmp, 1), Fit::Fits | Fit::Unfit(_)));
+        assert!(matches!(fit_for(&tmp, u64::MAX / 2), Fit::Unfit(_)));
+        // Una ruta sin volumen conocido no cabe.
+        assert!(matches!(
+            fit_for(Path::new("ZZ:\\no\\existe"), 1),
+            Fit::Unfit(_)
+        ));
     }
 }

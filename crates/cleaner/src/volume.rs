@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 use windows_sys::Win32::Storage::FileSystem::{
     GetDriveTypeW, GetTempPathW, GetVolumeNameForVolumeMountPointW, GetVolumePathNameW,
 };
-use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW};
+use windows_sys::Win32::System::Registry::{
+    HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RegGetValueW,
+};
 
 /// `%TEMP%` según Windows (`GetTempPathW`).
 pub fn temp_path() -> Option<PathBuf> {
@@ -113,9 +115,11 @@ pub enum BinLimit {
     Max(u64),
     /// No hay valor en el registro: la shell usa su porcentaje por defecto, que no se documenta.
     Unknown,
+    /// No se pudo averiguar nada del volumen (tipo de unidad o GUID desconocidos): NUNCA se da por bueno.
+    Indeterminate,
 }
 
-fn reg_dword(subkey: &str, value: &str) -> Option<u32> {
+fn reg_dword(hive: HKEY, subkey: &str, value: &str) -> Option<u32> {
     let sk: Vec<u16> = subkey.encode_utf16().chain(Some(0)).collect();
     let v: Vec<u16> = value.encode_utf16().chain(Some(0)).collect();
     let mut data = 0u32;
@@ -124,7 +128,7 @@ fn reg_dword(subkey: &str, value: &str) -> Option<u32> {
     // clave raíz es una predefinida.
     let rc = unsafe {
         RegGetValueW(
-            HKEY_CURRENT_USER,
+            hive,
             sk.as_ptr(),
             v.as_ptr(),
             RRF_RT_REG_DWORD,
@@ -141,21 +145,30 @@ fn reg_dword(subkey: &str, value: &str) -> Option<u32> {
 pub fn bin_limit(root: &Path) -> BinLimit {
     match drive_kind(root) {
         DriveKind::Fixed | DriveKind::RamDisk => {}
-        DriveKind::Unknown => return BinLimit::Unknown,
+        DriveKind::Unknown => return BinLimit::Indeterminate,
         _ => return BinLimit::NoBin,
     }
     let Some(guid) = volume_guid(root) else {
-        return BinLimit::Unknown;
+        return BinLimit::Indeterminate;
     };
     let key =
         format!(r"Software\Microsoft\Windows\CurrentVersion\Explorer\BitBucket\Volume\{guid}");
-    if reg_dword(&key, "NukeOnDelete") == Some(1) {
+    if reg_dword(HKEY_CURRENT_USER, &key, "NukeOnDelete") == Some(1) {
         return BinLimit::NukeOnDelete;
     }
-    match reg_dword(&key, "MaxCapacity") {
+    match reg_dword(HKEY_CURRENT_USER, &key, "MaxCapacity") {
         Some(mb) => BinLimit::Max(mb as u64 * 1024 * 1024),
         None => BinLimit::Unknown,
     }
+}
+
+/// ¿Hay una directiva "No mover los archivos eliminados a la Papelera" (`NoRecycleFiles`) en el usuario (HKCU) o en el
+/// equipo (HKLM)? Con ella la shell elimina de verdad lo que se "envía a la Papelera": todo cuenta como "no cabe".
+pub fn recycle_policy_disabled() -> bool {
+    const KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer";
+    [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE]
+        .into_iter()
+        .any(|h| reg_dword(h, KEY, "NoRecycleFiles").is_some_and(|v| v != 0))
 }
 
 #[cfg(test)]
@@ -221,6 +234,7 @@ mod tests {
     fn una_unidad_de_red_o_extraible_no_tiene_papelera_por_su_tipo() {
         // Sin crear ninguna: el mapeo de tipos es el de GetDriveTypeW.
         assert_eq!(drive_kind(Path::new("ZZ:\\")), DriveKind::Unknown);
-        assert_eq!(bin_limit(Path::new("ZZ:\\")), BinLimit::Unknown);
+        // Lo que no se puede averiguar NUNCA se da por bueno.
+        assert_eq!(bin_limit(Path::new("ZZ:\\")), BinLimit::Indeterminate);
     }
 }

@@ -443,6 +443,8 @@ fn unfit_reason_key(r: UnfitReason) -> &'static str {
         UnfitReason::NukeOnDelete => "unfit-nuke",
         UnfitReason::TooBig => "unfit-too-big",
         UnfitReason::PathTooLong => "unfit-path-long",
+        UnfitReason::Policy => "unfit-policy",
+        UnfitReason::Unknown => "unfit-unknown",
     }
 }
 
@@ -915,6 +917,12 @@ fn summary_lines(env: &Env, s: &Summary) -> Vec<(String, bool)> {
     if r.deleted_unexpectedly > 0 {
         v.push((n("sum-unexpected", r.deleted_unexpectedly), true));
     }
+    if r.recycled_other > 0 {
+        v.push((n("sum-recycled-other", r.recycled_other), true));
+    }
+    if r.unverified > 0 {
+        v.push((n("sum-unverified", r.unverified), true));
+    }
     if r.not_recycled > 0 {
         v.push((n("sum-not-recycled", r.not_recycled), true));
     }
@@ -1051,6 +1059,7 @@ fn summary_ui(ui: &mut Ui, env: &mut Env, s: &Summary) -> Option<SummaryClick> {
                     }
                     // Tarjeta de la Papelera: "Vaciar ahora" es el botón principal si lo que hay supera lo liberado.
                     if r.recycled_bytes > 0 && !r.dry_run {
+                        let bin_all = r.bin_total_after.unwrap_or(r.recycled_bytes);
                         let primary = r.recycled_bytes > r.freed_now.unwrap_or(0).max(0) as u64;
                         egui::Frame::new()
                             .fill(pal.surface)
@@ -1068,9 +1077,17 @@ fn summary_ui(ui: &mut Ui, env: &mut Env, s: &Summary) -> Option<SummaryClick> {
                                                 .color(pal.text),
                                         );
                                         ui.label(RichText::new(env.tr.t("sum-bin-card-note")).size(13.0).color(pal.text_muted));
+                                        // "Vaciar ahora" vacía TODA la Papelera (la lista enumerada al confirmar), no solo lo recién enviado.
+                                        if bin_all > r.recycled_bytes {
+                                            ui.label(
+                                                RichText::new(env.tr.ta("sum-bin-card-all", args!["total" => env.tr.size(bin_all)]))
+                                                    .size(13.0)
+                                                    .color(pal.text_muted),
+                                            );
+                                        }
                                     });
                                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                        let label = env.tr.ta("sum-empty-now", args!["size" => env.tr.size(r.recycled_bytes)]);
+                                        let label = env.tr.ta("sum-empty-now", args!["size" => env.tr.size(bin_all)]);
                                         let style = if primary { ButtonStyle::Primary } else { ButtonStyle::Secondary };
                                         if widgets::button(ui, env, style, None, &label, true).clicked() {
                                             click = Some(SummaryClick::EmptyNow);
