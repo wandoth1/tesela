@@ -902,77 +902,29 @@ impl Cleaner {
                         }
                         break;
                     }
-                    // El primero de la cola se mide ahora (justo antes de decidir su operación): si creció, no se envía.
-                    if let Some((it, p)) = slots[first].as_mut() {
-                        let mut st = StatsSnapshot::default();
-                        if let Err((status, o)) = self.fresh_size(it, p, &mut st, cancel) {
-                            emit(it, None, 0, o);
-                            results.insert(it.id, (status, st));
-                            slots[first] = None;
-                            queue.pop_front();
-                            continue;
-                        }
-                    }
-                    let sizes: Vec<u64> = queue
-                        .iter()
-                        .map(|&i| slots[i].as_ref().map_or(0, |s| s.1.size))
-                        .collect();
-                    let room = vol
-                        .as_deref()
-                        .map_or(BinRoom::UNKNOWN, |r| shell.bin_room(r));
-                    let n = match take_op(&sizes, room) {
-                        Take::NoRoom => {
-                            // No hay sitio ahora: enviarlo haría que la shell lo elimine o expulse lo que ya hay en la
-                            // Papelera. No se toca.
-                            queue.pop_front();
-                            if let Some((it, _)) = slots[first].take() {
-                                emit(it, None, 0, Outcome::NotRecycled);
-                                results.insert(
-                                    it.id,
-                                    (
-                                        ItemStatus::NotRecycled(RecycleFail::NoRoom),
-                                        StatsSnapshot::default(),
-                                    ),
-                                );
-                            }
-                            continue;
-                        }
-                        Take::Send(n) => n,
-                    };
-                    // A-B1: los candidatos de la operación se miden DE NUEVO ahora, justo antes de entregarla (archivos por
-                    // su handle de guarda; directorios con el recorrido). Lo que creció desde la última medida no se envía.
-                    // El PRIMERO se mide el ÚLTIMO (s-1): ya se midió arriba para decidir el grupo, pero mientras se medían los
-                    // demás pudo crecer; así queda el menor tiempo posible entre su medida y la entrega a la shell.
-                    let mut staged: Vec<(usize, &PlanItem, Pending)> = Vec::new();
-                    let mut candidates: Vec<usize> = queue.drain(..n).collect();
-                    candidates.sort_by_key(|&i| i == first);
-                    for i in candidates {
-                        let Some((it, mut p)) = slots[i].take() else {
+                    let first_is_dir = slots[first].as_ref().is_some_and(|(it, _)| it.is_dir());
+                    // A2-B1: un DIRECTORIO va SIEMPRE solo en su operación. Un recorrido tarda; con varios candidatos en la
+                    // misma operación, lo que ya estaba medido podía crecer mientras se medían los demás y llegar a la shell
+                    // con un tamaño que ya no era cierto (`PreDeleteItem` comprueba la identidad, no el tamaño). Solo, el
+                    // directorio se mide y se comprueba el presupuesto con la ocupación de ese instante, y se entrega sin
+                    // nada de por medio salvo la línea de intención del registro (§3.7.13).
+                    let entries: Vec<(&PlanItem, Pending)> = if first_is_dir {
+                        queue.pop_front();
+                        let Some((it, mut p)) = slots[first].take() else {
                             continue;
                         };
                         let mut st = StatsSnapshot::default();
-                        match self.fresh_size(it, &mut p, &mut st, cancel) {
-                            Ok(()) => staged.push((i, it, p)),
-                            Err((status, o)) => {
-                                emit(it, None, 0, o);
-                                results.insert(it.id, (status, st));
-                            }
+                        if let Err((status, o)) = self.fresh_size(it, &mut p, &mut st, cancel) {
+                            emit(it, None, 0, o);
+                            results.insert(it.id, (status, st));
+                            continue;
                         }
-                    }
-                    if staged.is_empty() {
-                        continue;
-                    }
-                    // El orden de la operación es el de la cola.
-                    staged.sort_by_key(|s| s.0);
-                    // ...y se vuelve a comprobar el presupuesto con los tamaños y la ocupación de AHORA: lo que ya no cabe
-                    // en la operación vuelve al principio de la cola (se medirá otra vez cuando le toque).
-                    let room_now = vol
-                        .as_deref()
-                        .map_or(BinRoom::UNKNOWN, |r| shell.bin_room(r));
-                    let fresh_sizes: Vec<u64> = staged.iter().map(|s| s.2.size).collect();
-                    let keep = match take_op(&fresh_sizes, room_now) {
-                        Take::NoRoom => {
-                            let (_, it, _guard) = staged.remove(0);
+                        let room = vol
+                            .as_deref()
+                            .map_or(BinRoom::UNKNOWN, |r| shell.bin_room(r));
+                        if let Take::NoRoom = take_op(&[p.size], room) {
+                            // No hay sitio ahora: enviarlo haría que la shell lo elimine o expulse lo que ya hay en la
+                            // Papelera. No se toca (el handle de guarda se suelta al salir de este bloque).
                             emit(it, None, 0, Outcome::NotRecycled);
                             results.insert(
                                 it.id,
@@ -981,26 +933,113 @@ impl Cleaner {
                                     StatsSnapshot::default(),
                                 ),
                             );
-                            0
+                            continue;
                         }
-                        Take::Send(k) => k.min(staged.len()),
+                        vec![(it, p)]
+                    } else {
+                        // ARCHIVOS: pueden viajar juntos (nunca con un directorio). El primero de la cola se mide ahora
+                        // (justo antes de decidir su operación): si creció, no se envía.
+                        if let Some((it, p)) = slots[first].as_mut() {
+                            let mut st = StatsSnapshot::default();
+                            if let Err((status, o)) = self.fresh_size(it, p, &mut st, cancel) {
+                                emit(it, None, 0, o);
+                                results.insert(it.id, (status, st));
+                                slots[first] = None;
+                                queue.pop_front();
+                                continue;
+                            }
+                        }
+                        // El grupo se corta en el primer directorio de la cola: la operación solo lleva archivos.
+                        let sizes: Vec<u64> = queue
+                            .iter()
+                            .take_while(|&&i| slots[i].as_ref().is_some_and(|s| !s.0.is_dir()))
+                            .map(|&i| slots[i].as_ref().map_or(0, |s| s.1.size))
+                            .collect();
+                        let room = vol
+                            .as_deref()
+                            .map_or(BinRoom::UNKNOWN, |r| shell.bin_room(r));
+                        let n = match take_op(&sizes, room) {
+                            Take::NoRoom => {
+                                // No hay sitio ahora: enviarlo haría que la shell lo elimine o expulse lo que ya hay en la
+                                // Papelera. No se toca.
+                                queue.pop_front();
+                                if let Some((it, _)) = slots[first].take() {
+                                    emit(it, None, 0, Outcome::NotRecycled);
+                                    results.insert(
+                                        it.id,
+                                        (
+                                            ItemStatus::NotRecycled(RecycleFail::NoRoom),
+                                            StatsSnapshot::default(),
+                                        ),
+                                    );
+                                }
+                                continue;
+                            }
+                            Take::Send(n) => n,
+                        };
+                        // Los candidatos se miden DE NUEVO ahora, por su handle de guarda, y la medida de cada archivo
+                        // viaja con él: `PreDeleteItem` lo vuelve a leer justo antes de que la shell lo toque y veta lo que
+                        // creció (A2-B1; sin eso, lo medido al principio del lote podía crecer mientras se medían los demás).
+                        let mut staged: Vec<(usize, &PlanItem, Pending)> = Vec::new();
+                        let candidates: Vec<usize> = queue.drain(..n).collect();
+                        for i in candidates {
+                            let Some((it, mut p)) = slots[i].take() else {
+                                continue;
+                            };
+                            let mut st = StatsSnapshot::default();
+                            match self.fresh_size(it, &mut p, &mut st, cancel) {
+                                Ok(()) => staged.push((i, it, p)),
+                                Err((status, o)) => {
+                                    emit(it, None, 0, o);
+                                    results.insert(it.id, (status, st));
+                                }
+                            }
+                        }
+                        if staged.is_empty() {
+                            continue;
+                        }
+                        // ...y se vuelve a comprobar el presupuesto con los tamaños y la ocupación de AHORA: lo que ya no
+                        // cabe en la operación vuelve al principio de la cola (se medirá otra vez cuando le toque).
+                        let room_now = vol
+                            .as_deref()
+                            .map_or(BinRoom::UNKNOWN, |r| shell.bin_room(r));
+                        let fresh_sizes: Vec<u64> = staged.iter().map(|s| s.2.size).collect();
+                        let keep = match take_op(&fresh_sizes, room_now) {
+                            Take::NoRoom => {
+                                let (_, it, _guard) = staged.remove(0);
+                                emit(it, None, 0, Outcome::NotRecycled);
+                                results.insert(
+                                    it.id,
+                                    (
+                                        ItemStatus::NotRecycled(RecycleFail::NoRoom),
+                                        StatsSnapshot::default(),
+                                    ),
+                                );
+                                0
+                            }
+                            Take::Send(k) => k.min(staged.len()),
+                        };
+                        for (i, it, p) in staged.drain(keep..).rev() {
+                            slots[i] = Some((it, p));
+                            queue.push_front(i);
+                        }
+                        staged.into_iter().map(|(_, it, p)| (it, p)).collect()
                     };
-                    for (i, it, p) in staged.drain(keep..).rev() {
-                        slots[i] = Some((it, p));
-                        queue.push_front(i);
-                    }
-                    let entries: Vec<(&PlanItem, Pending)> =
-                        staged.into_iter().map(|(_, it, p)| (it, p)).collect();
                     if entries.is_empty() {
                         continue;
                     }
                     let paths: Vec<PathBuf> = entries.iter().map(|(_, p)| p.path.clone()).collect();
                     // La identidad aprobada viaja con la ruta: el receptor la comprueba en `PreDeleteItem`.
+                    // Un ARCHIVO lleva además su handle de guarda y el tamaño contado: `PreDeleteItem` lo vuelve a medir (A2-B1).
                     let send: Vec<recycle::SendItem> = entries
                         .iter()
-                        .map(|(_, p)| recycle::SendItem {
+                        .map(|(it, p)| recycle::SendItem {
                             path: p.path.clone(),
                             identity: p.identity,
+                            size_guard: (!it.is_dir()).then(|| recycle::SizeGuard {
+                                handle: p.held.clone(),
+                                budget: p.size,
+                            }),
                         })
                         .collect();
                     #[cfg(test)]
@@ -1284,7 +1323,7 @@ impl Cleaner {
             path: final_path,
             identity: m.identity,
             links: m.links,
-            held,
+            held: Arc::new(held),
             size,
             last,
             snapshot: None,
@@ -1423,8 +1462,9 @@ struct Pending {
     path: PathBuf,
     identity: FileIdentity,
     links: u32,
-    /// Handle de guarda (ver `prepare_recycle`): abierto hasta después de juzgar el elemento.
-    held: sys::Handle,
+    /// Handle de guarda (ver `prepare_recycle`): abierto hasta después de juzgar el elemento. Compartido (`Arc`) porque el
+    /// receptor de la shell lo usa para volver a medir un archivo en `PreDeleteItem` (A2-B1).
+    held: Arc<sys::Handle>,
     /// Lo que se cuenta para repartir en operaciones: provisional al preparar (el mayor entre lo aprobado y lo que ocupa
     /// ahora) y, tras cada [`Cleaner::fresh_size`], lo que ocupa AHORA.
     size: u64,

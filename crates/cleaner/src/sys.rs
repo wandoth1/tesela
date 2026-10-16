@@ -520,6 +520,35 @@ pub fn meta(h: &Handle) -> Result<Meta, Win32> {
     })
 }
 
+/// Lo que ocupa AHORA el objeto abierto, leído por su handle (solo `FileStandardInfo`: una consulta, sin reabrir la ruta).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Sizes {
+    /// `AllocationSize`: bytes en disco.
+    pub alloc: u64,
+    /// `EndOfFile`: tamaño lógico.
+    pub logical: u64,
+    /// `DeletePending`: alguien ya lo marcó para borrar.
+    pub delete_pending: bool,
+}
+
+impl Sizes {
+    /// El mayor de los dos tamaños: lo que se cuenta contra el presupuesto de la Papelera.
+    pub fn charge(&self) -> u64 {
+        self.alloc.max(self.logical)
+    }
+}
+
+/// Tamaños actuales del objeto abierto (A2-B1: el receptor de la shell vuelve a medir cada archivo por su handle de guarda justo
+/// antes de que la shell lo toque).
+pub fn sizes(h: &Handle) -> Result<Sizes, Win32> {
+    let std_info: FILE_STANDARD_INFO = query_info(h, FileStandardInfo)?;
+    Ok(Sizes {
+        alloc: std_info.AllocationSize.max(0) as u64,
+        logical: std_info.EndOfFile.max(0) as u64,
+        delete_pending: std_info.DeletePending,
+    })
+}
+
 /// Ruta canónica LARGA del objeto abierto (`GetFinalPathNameByHandleW`, normalizada y sin `\\?\`). Resuelve los
 /// ancestros y los nombres 8.3, y para un enlace abierto con `OPEN_REPARSE_POINT` es la ruta del propio enlace.
 pub fn final_path(h: &Handle) -> Result<PathBuf, Win32> {
