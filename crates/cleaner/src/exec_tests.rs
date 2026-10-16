@@ -4220,3 +4220,137 @@ fn el_informe_dice_que_desaparecio_de_verdad_para_actualizar_el_arbol() {
     assert!(rep2.items[0].removed.is_empty());
     assert!(sb2.path("Temp/x.tmp").exists());
 }
+
+// ---- El flujo REAL de la Papelera con el endurecimiento de DLL del ejecutable --------------------------------------------
+
+/// PROCESO HIJO de `con_la_shell_real_el_flujo_funciona_con_el_endurecimiento_de_dlls_activo` (solo actúa con su variable;
+/// el resto del tiempo es una prueba ignorada que no hace nada). Hace, con el endurecimiento ACTIVO desde antes de tocar COM:
+/// enviar a la Papelera un archivo y una carpeta con hijos (propios, uuid en el nombre) por el camino de producción
+/// (`Cleaner::execute`: guarda, receptor, verificación por identidad), comprobar `Recycled`, y vaciarlos por el camino real de
+/// "vaciar" (con el alcance limitado a lo propio), comprobando que ya no están. Cualquier fallo es un pánico: código de salida
+/// distinto de 0.
+#[test]
+#[ignore = "proceso hijo de la prueba del endurecimiento de DLL"]
+fn hijo_endurecimiento_dll() {
+    let Ok(uuid) = std::env::var("TESELA_HARDEN_CHILD_UUID") else {
+        return;
+    };
+    // 1. El endurecimiento, ANTES de tocar COM.
+    assert!(
+        crate::testutil::restrict_dll_search_to_system32(),
+        "SetDefaultDllDirectories falló"
+    );
+    eprintln!("ENDURECIDO: SetDefaultDllDirectories(SYSTEM32) activo");
+
+    let sb = Sandbox::with_uuid(&uuid);
+    let c = cleaner_for(&sb);
+    sb.write("Docs/archivo.txt", 5_000);
+    sb.write("Docs/carpeta/a.txt", 3_000);
+    sb.write("Docs/carpeta/sub/b.txt", 3_000);
+    // 2. A la Papelera, por el camino de producción.
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/archivo.txt"), c.protection());
+    b.add_path(sb.long("Docs/carpeta"), c.protection());
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 2, "{:?}", plan.rejected);
+    let rep = exec(&c, &plan, false, false, None).expect("la ejecución real");
+    for it in &rep.items {
+        eprintln!(
+            "ENDURECIDO: {:?} -> {:?}",
+            it.path.file_name().unwrap(),
+            it.status
+        );
+        assert_eq!(it.status, ItemStatus::Recycled, "{:?}", it.path);
+    }
+    assert_eq!(
+        (
+            rep.deleted_unexpectedly,
+            rep.recycled_other,
+            rep.unverified,
+            rep.not_recycled
+        ),
+        (0, 0, 0, 0)
+    );
+    assert!(rep.shell_error.is_none(), "{:?}", rep.shell_error);
+    assert!(!sb.path("Docs/archivo.txt").exists() && !sb.path("Docs/carpeta").exists());
+    let mine = || -> Vec<BinItem> {
+        recycle::list_bin()
+            .expect("lista la Papelera")
+            .into_iter()
+            .filter(|i| is_mine(i, &sb.uuid()))
+            .collect()
+    };
+    assert_eq!(mine().len(), 2, "llegaron a la Papelera: {:?}", mine());
+    // 3. Vaciar (solo lo propio), por el camino real.
+    let mut v = Basket::new();
+    v.set_empty_bin(true);
+    let plan = c.approve(&v, &ApproveOptions::default(), &cancel());
+    assert_eq!(plan.bin.as_ref().expect("plan de vaciar").items.len(), 2);
+    let rep = exec(&c, &plan, false, false, None).expect("vaciar de verdad");
+    let bin = rep.bin.expect("informe de la Papelera");
+    eprintln!("ENDURECIDO: vaciar -> {bin:?}");
+    assert_eq!((bin.requested, bin.purged, bin.still_there), (2, 2, 0));
+    assert_eq!((bin.changed, bin.replaced, bin.unverifiable), (0, 0, 0));
+    assert!(!bin.failed);
+    assert!(mine().is_empty(), "ya no queda nada propio en la Papelera");
+    eprintln!("ENDURECIDO: todo coincide");
+}
+
+/// El flujo REAL de la Papelera (COM, `IFileOperation`, el receptor, la guarda y la purga con su receptor) funciona con
+/// `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)` activo, que es lo que hace `tesela.exe` al arrancar: se lanza un
+/// proceso hijo (el patrón de la prueba de `FOF_WANTNUKEWARNING`) que lo activa antes de tocar COM y hace el recorrido con
+/// elementos propios. El padre comprueba el código de salida (con plazo) y que la Papelera del usuario es la de antes; su
+/// `BinGuard` limpia lo del hijo si algo falla.
+#[test]
+fn con_la_shell_real_el_flujo_funciona_con_el_endurecimiento_de_dlls_activo() {
+    use std::io::Read;
+    let _lock = bin_lock();
+    if !bin_usable() {
+        return;
+    }
+    let before = ids();
+    let uuid = uuid::Uuid::new_v4().to_string();
+    let _guard = BinGuard { uuid: uuid.clone() };
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+        .args([
+            "--ignored",
+            "--exact",
+            "exec::tests::hijo_endurecimiento_dll",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env("TESELA_HARDEN_CHILD_UUID", &uuid)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("lanza el proceso hijo de la prueba");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(90);
+    let status = loop {
+        if let Some(st) = child.try_wait().unwrap() {
+            break Some(st);
+        }
+        if std::time::Instant::now() >= deadline {
+            let _ = child.kill();
+            let _ = child.wait();
+            break None;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    };
+    let (mut out, mut err) = (String::new(), String::new());
+    if let Some(mut o) = child.stdout.take() {
+        let _ = o.read_to_string(&mut out);
+    }
+    if let Some(mut e) = child.stderr.take() {
+        let _ = e.read_to_string(&mut err);
+    }
+    for l in err
+        .lines()
+        .chain(out.lines())
+        .filter(|l| l.starts_with("ENDURECIDO"))
+    {
+        eprintln!("hijo: {l}");
+    }
+    let st = status.expect("el hijo no terminó en 90 s (se colgó)");
+    assert!(st.success(), "el hijo falló ({st:?}):\n{err}\n{out}");
+    assert_eq!(ids(), before, "la Papelera del usuario es la de antes");
+}

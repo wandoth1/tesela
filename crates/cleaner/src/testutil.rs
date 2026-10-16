@@ -27,6 +27,17 @@ impl Sandbox {
         }
     }
 
+    /// Como [`Sandbox::new`], con el uuid dado (un proceso hijo de una prueba lo recibe de su padre, que ya lo vigila con su
+    /// `BinGuard`).
+    pub fn with_uuid(uuid: &str) -> Sandbox {
+        let root = std::env::temp_dir().join(format!("tesela-test-{uuid}"));
+        fs::create_dir(&root).expect("crea la carpeta temporal");
+        Sandbox {
+            root,
+            junctions: Vec::new(),
+        }
+    }
+
     /// Raíz tal como se creó (`temp_dir()`; en algunos runners con componentes 8.3).
     pub fn root(&self) -> &Path {
         &self.root
@@ -251,4 +262,19 @@ pub fn short_path(path: &Path) -> PathBuf {
         return path.to_path_buf();
     }
     PathBuf::from(std::ffi::OsString::from_wide(&buf[..n]))
+}
+
+unsafe extern "system" {
+    /// `kernel32`: restringe la búsqueda de DLL de todo el proceso (la que hace `tesela.exe` al arrancar).
+    fn SetDefaultDllDirectories(directory_flags: u32) -> i32;
+}
+
+/// `LOAD_LIBRARY_SEARCH_SYSTEM32`: solo se buscan DLL en `System32`.
+const LOAD_LIBRARY_SEARCH_SYSTEM32: u32 = 0x0000_0800;
+
+/// `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)` en ESTE proceso (sin añadir ninguna característica de crate:
+/// se declara la función de `kernel32`). `true` si Windows lo aceptó.
+pub fn restrict_dll_search_to_system32() -> bool {
+    // SAFETY: llamada de `kernel32` sin punteros; solo cambia la búsqueda de DLL del proceso.
+    unsafe { SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32) != 0 }
 }
