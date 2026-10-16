@@ -22,10 +22,12 @@
 
   Que se comprueba:
     1. Patrones GENERICOS (siempre): SID (cuentas locales y AzureAD), rutas de perfil reales (Windows, `/c/Users/<usuario>`,
-       `/mnt/c/Users/<usuario>`), unidades D: a Z:, rutas UNC (`\\<servidor>\<recurso>`, tambien escapadas y `\\?\UNC\...`),
+       `/mnt/c/Users/<usuario>`), unidades D: a Z:, rutas UNC (`\\<servidor>\<recurso>`, con `\` o `/` en cualquier mezcla, tambien escapadas y `\\?\UNC\...`),
        fabricantes y modelos de CPU/GPU/disco, antivirus, builds de Windows, versiones de driver. Falsos positivos
-       razonables de la regla UNC: documentacion o ejemplos con una ruta de red; escribe un marcador `<servidor>` en vez
-       de un nombre (los marcadores con `<` no cuentan) o construye el dato en hexadecimal.
+       razonables de la regla UNC: documentacion o ejemplos con una ruta de red y una URL SIN protocolo (`//<host>/<ruta>`,
+       que con barras normales es indistinguible de una ruta de red; `https://host/ruta` y los comentarios `// texto` no
+       cuentan); escribe un marcador `<servidor>` en vez de un nombre (los marcadores con `<` no cuentan), anade el
+       protocolo a la URL o construye el dato en hexadecimal.
     2. Valores LOCALES (solo en la maquina del desarrollador; nunca con -GenericOnly ni en CI): el nombre de usuario,
        el nombre del equipo, el dominio y la ruta del perfil, leidos EN TIEMPO DE EJECUCION de las variables de entorno, y una lista
        negra local NO versionada: `<git-common-dir>/privacy-denylist` (un termino por linea, sin distinguir
@@ -42,8 +44,9 @@
        LIMITES inherentes que ninguna firma detecta: zlib crudo, lzma-alone (`.lzma`), datos cifrados u ofuscados y texto
        codificado en base64 u otra transformacion. Lo unico que los frena es que el repositorio no admite binarios
        desconocidos y que quien audita el cambio los vea.
-    5. `docs/spike-results.md` NO puede existir (se rehace por separado) y `spike/` se revisa con las reglas que no
-       dependen de rutas (SID, hardware, antivirus, builds, valores locales y lista negra).
+    5. `docs/spike-results.md` NO puede existir (se rehace por separado) y `spike/` se revisa con TODAS las reglas, las de
+       rutas incluidas. Unica excepcion: dos archivos de la fase 0 con rutas sinteticas desde su primer commit, que saltan
+       SOLO las reglas de rutas y solo con el contenido exacto revisado (lista `$spikePathAllow`, por SHA-256).
 
   Los patrones estan escritos con corchetes (p. ej. `Ge[F]orce`) para que este script no se detecte a si mismo y se
   pueda revisar como cualquier otro archivo.
@@ -128,7 +131,8 @@ if ($Local -and $GenericOnly) {
 }
 
 # --- Reglas ---------------------------------------------------------------------------------------------------------
-# Path = $true: regla ligada a rutas (no se aplica en spike/). Los corchetes evitan que el script se detecte a si mismo.
+# Path = $true: regla ligada a rutas. Se aplica en TODO el repositorio, spike/ incluido; la unica excepcion es la lista CERRADA
+# `$spikePathAllow` (mas abajo). Los corchetes evitan que el script se detecte a si mismo.
 $generic = @(
     @{ Name = 'SID de Windows'; Path = $false; Pattern = 'S-1-5-21-\d' },
     @{ Name = 'SID de cuenta AzureAD'; Path = $false; Pattern = 'S-1-12-1-\d' },
@@ -136,9 +140,13 @@ $generic = @(
     @{ Name = 'Ruta de perfil real estilo Unix o WSL'; Path = $true; Pattern = '(?i)(?<![A-Za-z0-9_.])/(mnt/)?[a-z]/Users/(?!<usuario>|Public\b|Default\b)[^/\s''"`]+' },
     @{ Name = 'Ruta absoluta de unidad D: a Z:'; Path = $true; Pattern = '(?i)(?<![A-Za-z0-9_])[D-Z]:[\\/]' },
     @{ Name = 'Ruta WSL de unidad D a Z'; Path = $true; Pattern = '(?i)(?<![A-Za-z0-9_])/mnt/[d-z](/|$)' },
-    @{ Name = 'Ruta UNC de red'; Path = $false; Pattern = '(?<![A-Za-z0-9_\\.:/])\\\\(?![?.<])[A-Za-z0-9_][A-Za-z0-9_.-]*\\[A-Za-z0-9_$]' },
-    @{ Name = 'Ruta UNC de red escapada'; Path = $false; Pattern = '(?<![A-Za-z0-9_\\.:/])\\\\\\\\(?![?.<])[A-Za-z0-9_][A-Za-z0-9_.-]*\\\\[A-Za-z0-9_$]' },
-    @{ Name = 'Ruta UNC verbatim'; Path = $false; Pattern = '(?i)\\\\\?\\UNC\\[A-Za-z0-9_]' },
+    # UNC: las barras valen en cualquier mezcla (`\` y `/`). Las tres reglas piden la forma ANCLADA: dos barras seguidas, que
+    # no vengan precedidas de otra barra, de `:` (una URL `https://...`), de `.` ni de una letra (`a//b`), y un servidor que
+    # empiece por letra, digito o `_` (se excluyen `?`, `.` y `<`: `\\?\C:`, `\\.\pipe` y el marcador `<servidor>`).
+    @{ Name = 'Ruta UNC de red'; Path = $false; Pattern = '(?<![A-Za-z0-9_\\.:/])[\\/]{2}(?![?.<])[A-Za-z0-9_][A-Za-z0-9_.-]*[\\/][A-Za-z0-9_$]' },
+    # Escapada (un literal de Rust, JSON...): cada barra invertida va duplicada, la barra normal no.
+    @{ Name = 'Ruta UNC de red escapada'; Path = $false; Pattern = '(?<![A-Za-z0-9_\\.:/])(?:\\\\\\\\|\\\\/|/\\\\)(?![?.<])[A-Za-z0-9_][A-Za-z0-9_.-]*(?:\\\\|[\\/])[A-Za-z0-9_$]' },
+    @{ Name = 'Ruta UNC verbatim'; Path = $false; Pattern = '(?i)(?:\\\\|[\\/]){2}\?(?:\\\\|[\\/])UNC(?:\\\\|[\\/])[A-Za-z0-9_]' },
     @{ Name = 'Fabricante o modelo de GPU/CPU/disco'; Path = $false; Pattern = '(?i)\b(N[V]IDIA|Ge[F]orce|R[T]X\s?\d{3,4}\w*|G[T]X\s?\d{3,4}\w*|Rade[o]n|Ry[z]en|Threadrip[p]er|EP[Y]C|X[e]on|Inte[l]\s+Core|Inte[l]\(R\)\s*Core|Core\s+i[3579][ -]|Apple\s+M[1-9]|Sam[s]ung|WD_BL[A]CK|WD\s+Bl[a]ck|Western\s+Dig[i]tal|Sea[g]ate|Kings[t]on|Cruc[i]al|Cors[a]ir|SN8\d\d\w*|H[y]nix|Mic[r]on|Tos[h]iba|SanD[i]sk)\b' },
     @{ Name = 'Antivirus'; Path = $false; Pattern = '(?i)\b(Bitdef[e]nder|Kaspers[k]y|Nor[t]on|McA[f]ee|Av[a]st|AVG\s+Anti\w*|ES[E]T|Malwareby[t]es|Soph[o]s|CrowdStr[i]ke|Sentinel[O]ne|Trend\s*Mi[c]ro|Symant[e]c|F-Se[c]ure|Webr[o]ot|Cylan[c]e|Carbon\s*Bl[a]ck)\b' },
     @{ Name = 'Build de Windows'; Path = $false; Pattern = '(?i)\bbuild\s+(19|2\d)\d{3}\b' },
@@ -195,7 +203,23 @@ function Get-TextsWithAnsiFallback {
 
 function ConvertTo-ScanText {
     # Devuelve la LISTA de textos a revisar para unos bytes (cada uno se revisa por separado), o $null si hay que rechazar (se
-    # indica en $reject).
+    # indica en $reject). A los textos de siempre se ANADEN (nunca los sustituyen: UTF-16 sigue leyendose igual) los mismos
+    # textos sin NUL: un SID o una ruta de perfil partidos por bytes NUL sueltos (`S-1 -5...`) no coinciden con nada en ninguna
+    # decodificacion, pero al quitar los NUL vuelven a ser el valor. Los saltos de linea no cambian: las lineas coinciden.
+    param([byte[]]$Bytes, [ref]$Reject)
+    $texts = ConvertTo-ScanTextCore $Bytes $Reject
+    if ($null -eq $texts) { return $null }
+    $nul = [string][char]0
+    $extra = New-Object System.Collections.Generic.List[string]
+    foreach ($t in $texts) {
+        if ($t.IndexOf([char]0) -ge 0) { $extra.Add($t.Replace($nul, '')) }
+    }
+    if ($extra.Count -eq 0) { return , @($texts) }
+    return , @(@($texts) + $extra.ToArray())
+}
+
+function ConvertTo-ScanTextCore {
+    # Los textos "de siempre" (sin la variante sin NUL, que anade ConvertTo-ScanText).
     param([byte[]]$Bytes, [ref]$Reject)
     $Reject.Value = $null
     $n = $Bytes.Length
@@ -219,7 +243,9 @@ function ConvertTo-ScanText {
     $runClasses = @('[\x20-\x7E]{6,}', '[\x20-\x7E\p{L}\p{N}]{6,}')
     $sb = New-Object System.Text.StringBuilder
     $latin = [System.Text.Encoding]::GetEncoding(28591).GetString($Bytes)
-    $decodes = @($latin)
+    # Latin-1 es una biyeccion de bytes: quitar los NUL del texto es quitar los bytes NUL. Sus cadenas se emiten tambien (un
+    # valor partido por NUL sueltos no forma ninguna cadena de 6 caracteres sin esto).
+    $decodes = @($latin, $latin.Replace([string][char]0, ''))
     foreach ($off in 0, 1) { $decodes += [System.Text.Encoding]::Unicode.GetString($Bytes, $off, (($n - $off) -band -2)) }
     foreach ($d in $decodes) {
         foreach ($cls in $runClasses) {
@@ -278,6 +304,23 @@ if ($MessageFile) {
 }
 
 $pathFree = @($rules | Where-Object { -not $_.Path })
+
+# --- Excepcion ESTRECHA de las reglas de rutas en spike/ ------------------------------------------------------------
+# spike/ se revisa con TODAS las reglas, las de rutas incluidas. Dos archivos de la fase 0 llevan, desde su primer commit, rutas
+# SINTETICAS en un test y en un comentario (una unidad `D:` inventada, una carpeta de usuario inventada y el ejemplo de lo que
+# redacta redact.py): son datos de prueba, no de ninguna maquina, y estan en la historia (que no se reescribe). Para ellos y SOLO
+# para ellos las reglas de rutas se saltan, y solo mientras el contenido sea EXACTAMENTE el revisado (SHA-256 de sus bytes):
+# cambiar un solo byte los devuelve a las reglas completas. Lista cerrada: nada nuevo entra por aqui.
+$spikePathAllow = @{
+    'spike/scripts/redact.py'       = '65ab9bc8af78a0d82bb9b84bda44cf7c9e95a896f59bd552c38239fc7b298346'
+    'spike/trash-bench/src/main.rs' = '801482ae217ac6a09cebfef0b7904e3dc792f59545983a9d58f205d7bcaa2f77'
+}
+
+function Get-Sha256Hex {
+    param([byte[]]$Bytes)
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    try { return ([System.BitConverter]::ToString($sha.ComputeHash($Bytes))).Replace('-', '').ToLowerInvariant() } finally { $sha.Dispose() }
+}
 $imageExt = '(?i)\.(png|jpe?g|gif|bmp|webp|tiff?|heic)$'
 
 # --- Excepcion ESTRECHA para las capturas de --demo ------------------------------------------------------------------
@@ -504,8 +547,9 @@ function Get-OpaqueFormat {
 # --- Revision de UN archivo (nombre y contenido); sirve para staging, -All y el modo de rango -------------------------
 function Test-FileBytes {
     param([string]$F, [byte[]]$Bytes, [string]$Where)
-    $inSpike = $F.StartsWith('spike/')
-    $ruleSet = if ($inSpike) { $pathFree } else { $rules }
+    # Todas las reglas en todas partes; solo los dos archivos de $spikePathAllow, con el contenido revisado, saltan las de rutas.
+    $ruleSet = $rules
+    if ($spikePathAllow.ContainsKey($F) -and (Get-Sha256Hex $Bytes) -ceq $spikePathAllow[$F]) { $ruleSet = $pathFree }
 
     if ($F -eq 'docs/spike-results.md') {
         $problems.Add("${Where}${F}: archivo prohibido (los resultados del spike se rehacen por separado)")

@@ -398,6 +398,29 @@ try {
         Expect ('docs/img: ' + $case[0]) $case[2]
     }
 
+    # --- UNC con barras normales: URL SIN protocolo es un falso positivo DOCUMENTADO, con protocolo no ------------------------
+    foreach ($case in @(
+            @('URL sin protocolo (barras, host y ruta) cuenta como ruta de red (falso positivo documentado)', ('ver /' + '/cdn.ejemplo.invalid/lib.js'), $true),
+            @('la misma URL con protocolo no cuenta', 'ver https://cdn.ejemplo.invalid/lib.js', $false),
+            @('comentario con espacio no cuenta', 'x = 1; // lo que sea/otra cosa', $false),
+            @('el marcador <servidor> con barras normales no cuenta', 'ver //<servidor>/<recurso>', $false)
+        )) {
+        Reset-Repo
+        Put 'u.txt' ($case[1] + "`n")
+        Stage-All
+        Expect ('UNC: ' + $case[0]) $case[2]
+    }
+    foreach ($k in 'unc-barras-normales', 'unc-verbatim-barras-normales', 'unc-barras-mezcladas-a', 'unc-escapada-con-barra-normal', 'unc-verbatim-escapada') {
+        Reset-Repo
+        Put 'u.txt' ($bad[$k] + "`n")
+        Stage-All
+        Expect "UNC (-GenericOnly): $k" $true @('-GenericOnly')
+        $msgU = Join-Path $repo 'MSGU.txt'
+        [System.IO.File]::WriteAllText($msgU, ('feat: ' + $bad[$k] + "`n"), $utf8)
+        Expect "UNC (mensaje de commit): $k" $true @('-MessageFile', $msgU)
+        Remove-Item -LiteralPath $msgU -Force
+    }
+
     # --- Nombres de archivo ----------------------------------------------------------------------------------------------
     Reset-Repo
     Put $misc['name-hw'] "limpio`n"
@@ -418,10 +441,42 @@ try {
     Expect 'nombre no ASCII limpio' $false
 
     # --- spike/ y docs/spike-results.md -----------------------------------------------------------------------------------
+    # Las reglas de RUTAS rigen tambien en spike/ (antes se saltaban): unidad, perfil, WSL y UNC, en staging y en -All.
     Reset-Repo
     Put 'spike/notas.txt' ($misc['spike-paths'] + "`n")
     Stage-All
-    Expect 'spike/: las reglas de rutas no se aplican' $false
+    Expect 'spike/: las reglas de rutas SI se aplican (perfil y unidad)' $true
+    Expect 'spike/: las reglas de rutas SI se aplican (-All)' $true @('-All')
+    foreach ($k in 'perfil-windows', 'perfil-barras', 'perfil-unix', 'perfil-wsl', 'unidad-e', 'unidad-wsl', 'unc-clasica', 'unc-barras-normales') {
+        Reset-Repo
+        Put 'spike/notas.txt' ($bad[$k] + "`n")
+        Stage-All
+        Expect "spike/: $k falla" $true
+    }
+    Reset-Repo
+    Put 'spike/notas.txt' ("ruta C:\Users\<usuario>\x y C:\Windows\Temp y %USERPROFILE%\x y https://ejemplo.invalid/x`n")
+    Stage-All
+    Expect 'spike/: el marcador <usuario> y las rutas de sistema pasan' $false
+    # Lista CERRADA de dos archivos de la fase 0 con rutas sinteticas: pasan SOLO con el contenido exacto revisado.
+    foreach ($rel in 'spike/scripts/redact.py', 'spike/trash-bench/src/main.rs') {
+        $real = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) $rel
+        if (-not (Test-Path -LiteralPath $real)) { continue }
+        $realBytes = [System.IO.File]::ReadAllBytes($real)
+        Reset-Repo
+        PutBytes $rel $realBytes
+        Stage-All
+        Expect "spike/: $rel con el contenido revisado pasa (lista cerrada)" $false
+        Expect "spike/: $rel con el contenido revisado pasa en -All" $false @('-All')
+        Reset-Repo
+        PutBytes $rel ($realBytes + [byte[]](0x0A))
+        Stage-All
+        Expect "spike/: $rel con UN byte de mas vuelve a las reglas completas" $true
+        # Mismo contenido en otro nombre: la excepcion es por ruta Y por hash.
+        Reset-Repo
+        PutBytes 'spike/otro.txt' $realBytes
+        Stage-All
+        Expect "spike/: el contenido de $rel en otro archivo falla" $true
+    }
     Reset-Repo
     Put 'spike/notas.txt' ('tarjeta ' + $misc['gpu-word'] + "`n")
     Stage-All
@@ -616,6 +671,67 @@ try {
     PutBytes 'mixto.txt' ($utf8.GetBytes("canci" + [char]0xF3 + "n $sid`n") + [byte[]](0, 1, 2) + $utf8.GetBytes("fin`n"))
     Stage-All
     Expect 'NUL suelto con SID en UTF-8 del mismo archivo' $true
+    # --- Valores partidos por bytes NUL sueltos: se busca ADEMAS en el texto sin NUL -------------------------------------------
+    function Join-Nul([string[]]$Pieces) {
+        # Los trozos (UTF-8) unidos por un NUL suelto: ningun decodificador los ve juntos.
+        $b = New-Object System.Collections.Generic.List[byte]
+        for ($k = 0; $k -lt $Pieces.Count; $k++) {
+            if ($k -gt 0) { $b.Add(0) }
+            $b.AddRange($utf8.GetBytes($Pieces[$k]))
+        }
+        return , $b.ToArray()
+    }
+    $sidPieces = @($sid.Substring(0, 3), $sid.Substring(3, 4), $sid.Substring(7, 6), $sid.Substring(13))
+    $msg = Join-Path $repo 'MSG.txt'
+    Reset-Repo
+    PutBytes 'nulos.txt' (Join-Nul (@('cuenta ') + $sidPieces + @("`n")))
+    Stage-All
+    Expect 'SID partido por NUL sueltos (UTF-8)' $true
+    Expect 'SID partido por NUL sueltos (UTF-8, -All)' $true @('-All')
+    Reset-Repo
+    PutBytes 'nulos.txt' ([byte[]](0xEF, 0xBB, 0xBF) + (Join-Nul (@('cuenta ') + $sidPieces + @("`n"))))
+    Stage-All
+    Expect 'SID partido por NUL sueltos (UTF-8 con BOM)' $true
+    Reset-Repo
+    PutBytes 'nulos.bin' ([byte[]](0, 1, 2, 0, 255, 7) + (Join-Nul (@('cuenta ') + $sidPieces)) + [byte[]](0, 0, 9))
+    Stage-All
+    Expect 'SID partido por NUL sueltos dentro de un binario' $true
+    Reset-Repo
+    PutBytes 'nulos.txt' (Join-Nul @('ruta C:\Us', 'ers\bob\x', "`n"))
+    Stage-All
+    Expect 'ruta de perfil partida por NUL sueltos' $true
+    Reset-Repo
+    PutBytes 'nulos.txt' ([System.Text.Encoding]::Unicode.GetPreamble() + [System.Text.Encoding]::Unicode.GetBytes("cuenta " + $sid.Insert(9, [string][char]0) + "`n"))
+    Stage-All
+    Expect 'SID partido por un NUL en UTF-16 con BOM' $true
+    Reset-Repo
+    PutBytes 'nulos.txt' ([System.Text.Encoding]::Unicode.GetBytes("cuenta " + $sid.Insert(9, [string][char]0) + "`n"))
+    Stage-All
+    Expect 'SID partido por un NUL en UTF-16 sin BOM' $true
+    Reset-Repo
+    PutBytes 'nulos.txt' (Join-Nul @('nada que ver ', 'con la ', 'maquina', "`n"))
+    Stage-All
+    Expect 'texto limpio partido por NUL sueltos' $false
+    Reset-Repo
+    PutBytes 'nulos.bin' ([byte[]](0, 1, 2, 0, 255, 7) + (Join-Nul @('algo ', 'inocuo ', 'de ', 'relleno')) + [byte[]](0, 0, 9))
+    Stage-All
+    Expect 'binario limpio con NUL sueltos' $false
+    # Un binario grande con muchos NUL sigue revisandose en un tiempo razonable (el texto sin NUL es un texto mas).
+    $big = New-Object byte[] (3MB)
+    for ($k = 0; $k -lt $big.Length; $k += 3) { $big[$k] = 0x41 }
+    Reset-Repo
+    PutBytes 'grande.bin' $big
+    Stage-All
+    $swBig = [System.Diagnostics.Stopwatch]::StartNew()
+    Expect 'binario de 3 MiB con muchos NUL' $false
+    $script:total++
+    if ($swBig.Elapsed.TotalSeconds -gt 60) { $script:failures.Add("binario de 3 MiB con muchos NUL: tardo $([int]$swBig.Elapsed.TotalSeconds) s") }
+    # El mensaje de commit tambien.
+    [System.IO.File]::WriteAllBytes($msg, (Join-Nul (@('fix: ') + $sidPieces + @("`n"))))
+    Expect 'mensaje con un SID partido por NUL sueltos' $true @('-MessageFile', $msg)
+    [System.IO.File]::WriteAllBytes($msg, (Join-Nul @('fix: ', 'limpio', "`n")))
+    Expect 'mensaje limpio partido por NUL sueltos' $false @('-MessageFile', $msg)
+    Remove-Item -LiteralPath $msg -Force
     # Un PNG registrado de docs/img/ sigue permitido (tiene su excepcion propia, antes que la regla de opacos).
     Reset-Repo
     PutBytes $img $png
