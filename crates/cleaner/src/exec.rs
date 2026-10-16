@@ -920,13 +920,27 @@ impl Cleaner {
                     // 3. Juzgar cada elemento por lo que notificó la shell (con el handle de guarda aún abierto).
                     for (it, p) in &entries {
                         let ev = events.get(&PathKey::new(&p.path)).copied();
-                        let (status, o) = if vetoed.contains(&PathKey::new(&p.path)) {
+                        let (mut status, mut o) = if vetoed.contains(&PathKey::new(&p.path)) {
                             // `PreDeleteItem` vio otro objeto en la ruta aprobada y lo vetó: no se envió (sigue ahí, el
                             // sustituto) y consta como "cambió desde la confirmación".
                             (ItemStatus::Root(RootStatus::Changed), Outcome::Changed)
                         } else {
                             judge(p, ev, shell, outcome.any_aborted, outcome.sink_aborted)
                         };
+                        // R6: "la shell no tocó nada" de un DIRECTORIO solo vale si tampoco tocó lo que contiene: el
+                        // objeto carpeta intacto no dice nada de sus hijos. Se vuelve a medir (mismo recorrido relativo) y
+                        // tamaño y número de entradas tienen que ser los de justo antes del envío; si no (o si no se puede
+                        // medir) es un borrado definitivo, aunque sea parcial.
+                        if matches!(status, ItemStatus::NotRecycled(RecycleFail::Shell(_)))
+                            && it.is_dir()
+                            && ev.is_some_and(|e| {
+                                e.succeeded() && e.state == recycle::BinState::Deleted
+                            })
+                            && !self.dir_untouched(it, p, cancel)
+                        {
+                            status = ItemStatus::DeletedUnexpectedly;
+                            o = Outcome::DeletedUnexpectedly;
+                        }
                         let mut st = StatsSnapshot::default();
                         match status {
                             ItemStatus::Recycled => {
@@ -1133,7 +1147,17 @@ impl Cleaner {
             held,
             size,
             measured: !m.is_dir,
+            snapshot: None,
         })
+    }
+
+    /// R6: ¿sigue el directorio igual que justo antes del envío (mismo tamaño y mismo número de entradas)? Si la medida
+    /// falla o difiere en cualquier sentido, `false` (se trata como borrado, aunque sea parcial).
+    fn dir_untouched(&self, it: &PlanItem, p: &Pending, cancel: &Arc<AtomicBool>) -> bool {
+        match (self.remeasure(it, cancel), p.snapshot) {
+            (Remeasure::Now(after), Some(before)) => snap_of(&after) == before,
+            _ => false,
+        }
     }
 
     /// B2 + H6.2: un directorio pudo CRECER desde la aprobación. Se vuelve a medir con el mismo recorrido (relativo, sin
@@ -1160,6 +1184,7 @@ impl Cleaner {
                     return Err((ItemStatus::Root(RootStatus::Changed), Outcome::Changed));
                 }
                 p.size = fresh.bytes.max(fresh.logical).max(fresh.shared_bytes);
+                p.snapshot = Some(snap_of(&fresh));
                 p.measured = true;
                 Ok(())
             }
@@ -1217,6 +1242,23 @@ struct Pending {
     size: u64,
     /// ¿Ya se midió lo que ocupa AHORA? (Un archivo, al preparar; un directorio, justo antes de su operación.)
     measured: bool,
+    /// La medida del directorio hecha justo antes de entregarlo a la shell (tamaño y número de entradas): lo que
+    /// `dir_untouched` compara después si la shell dice "eliminado" sin dar elemento en la Papelera (R6).
+    snapshot: Option<DirSnap>,
+}
+
+/// Lo que se compara de un directorio antes y después: bytes en disco, tamaño lógico, archivos, directorios y lo compartido.
+type DirSnap = (u64, u64, u64, u64, u64, u64);
+
+fn snap_of(s: &StatsSnapshot) -> DirSnap {
+    (
+        s.bytes,
+        s.logical,
+        s.files,
+        s.dirs,
+        s.shared_files,
+        s.shared_bytes,
+    )
 }
 
 /// Espacio de la Papelera de un volumen.

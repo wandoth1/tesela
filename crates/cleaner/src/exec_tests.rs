@@ -2214,6 +2214,14 @@ impl RecycleShell for FakeShell {
                 // borrar" hasta soltarlo (R1). `fs::remove_file` usa semántica POSIX y no lo reproduciría.
                 sys::delete_legacy_for_test(p).unwrap();
                 BinState::Deleted
+            } else if p.is_dir()
+                && p.file_name()
+                    .is_some_and(|n| n.to_string_lossy().contains("parcial"))
+            {
+                // R6: la shell elimina definitivamente UN hijo y notifica "eliminado" de la carpeta, que sigue en su sitio.
+                let child = fs::read_dir(p).unwrap().flatten().next().unwrap().path();
+                sys::delete_legacy_for_test(&child).unwrap();
+                BinState::Deleted
             } else if intact {
                 // La shell notifica "eliminado" (nulo, con éxito) SIN haber tocado nada (medido con un archivo disperso).
                 BinState::Deleted
@@ -2436,6 +2444,112 @@ fn un_borrado_con_la_guarda_abierta_sigue_siendo_un_borrado_definitivo() {
     fs::rename(&g, sb.path("r/sustituido-ori.bin")).unwrap();
     sb.write("r/sustituido.bin", 10);
     assert!(!untouched_by_shell(&pg));
+}
+
+/// R6 (sin la Papelera real): la shell elimina definitivamente UN hijo de una carpeta y notifica "eliminado" de la carpeta, que
+/// sigue en su sitio. El objeto carpeta está intacto, pero lo que contiene no: NO es `ShellDeclined`, es un borrado definitivo
+/// (parcial) y el corte se mantiene. Con la carpeta realmente intacta, sigue siendo `ShellDeclined`.
+#[test]
+fn una_carpeta_que_pierde_hijos_no_es_shell_declined() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    // Una carpeta cuyo nombre hace que la shell simulada borre un hijo, y otra que deja intacta.
+    sb.write("Docs/parcial/a.bin", 3_000);
+    sb.write("Docs/parcial/b.bin", 3_000);
+    sb.write("Docs/intacto/a.bin", 3_000);
+    sb.write("Docs/intacto/b.bin", 3_000);
+    for (name, esperado) in [
+        ("parcial", ItemStatus::DeletedUnexpectedly),
+        ("intacto", ItemStatus::NotRecycled(RecycleFail::Shell(0))),
+    ] {
+        let mut b = Basket::new();
+        b.add_path(sb.long(&format!("Docs/{name}")), c.protection());
+        let plan = approve(&c, &b);
+        assert_eq!(plan.items.len(), 1, "{:?}", plan.rejected);
+        let rep = exec(&c, &plan, false, false, None).unwrap();
+        assert_eq!(rep.items[0].status, esperado, "{name}");
+        assert!(rep.recycle_stopped, "{name}: el corte se mantiene");
+        assert!(sb.path(&format!("Docs/{name}")).exists());
+        if name == "parcial" {
+            assert_eq!(rep.deleted_unexpectedly, 1);
+            assert_eq!(rep.stop_reason, Some(StopReason::DeletedUnexpectedly));
+            assert_eq!(sb.count_entries("Docs/parcial"), 1, "perdió un hijo");
+        } else {
+            assert_eq!(rep.deleted_unexpectedly, 0);
+            assert_eq!(rep.stop_reason, Some(StopReason::ShellDeclined));
+            assert_eq!(sb.count_entries("Docs/intacto"), 2);
+        }
+    }
+}
+
+/// R6 con la shell REAL (solo cosas propias, tras `TESELA_REAL_RECYCLE_TESTS=1`): una carpeta con un disperso enorme (que no
+/// cabe) y archivos pequeños. Se registra qué hace de verdad la shell y se exige el invariante: si el resultado es "la shell
+/// no tocó nada" (`NotRecycled`), todos los hijos siguen; si falta alguno, es `DeletedUnexpectedly`.
+#[test]
+fn con_la_shell_real_una_carpeta_con_un_disperso_enorme_no_pierde_hijos_sin_decirlo() {
+    use crate::exec::{BinRoom, RealShell};
+    let _lock = bin_lock();
+    if !bin_usable() {
+        return;
+    }
+    struct PassShell;
+    impl RecycleShell for PassShell {
+        fn recycle(&self, items: &[recycle::SendItem]) -> recycle::BatchOutcome {
+            RealShell.recycle(items)
+        }
+        fn bin_room(&self, _: &Path) -> BinRoom {
+            BinRoom {
+                max: Some(u64::MAX / 4),
+                used: Some(0),
+            }
+        }
+        fn fit(&self, _: &Path, _: u64) -> Fit {
+            Fit::Fits
+        }
+        fn is_bin_path(&self, p: &Path) -> bool {
+            RealShell.is_bin_path(p)
+        }
+    }
+    let before = ids();
+    let sb = Sandbox::new();
+    let _guard = BinGuard { uuid: sb.uuid() };
+    let c = cleaner_for(&sb).with_shell(Arc::new(PassShell));
+    let total = tesela_scanner::volume_space(&sb.long_root())
+        .map(|v| v.total)
+        .unwrap_or(1 << 40);
+    let len = total.saturating_mul(2).max(1 << 40);
+    sb.write("Docs/carpeta/a-pequeno.bin", 2_000);
+    crate::testutil::sparse_file(&sb.path("Docs/carpeta/b-enorme.bin"), len);
+    sb.write("Docs/carpeta/c-pequeno.bin", 2_000);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/carpeta"), c.protection());
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 1, "{:?}", plan.rejected);
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    let left = if sb.path("Docs/carpeta").exists() {
+        sb.count_entries("Docs/carpeta")
+    } else {
+        0
+    };
+    eprintln!(
+        "carpeta con disperso enorme (shell real): estado = {:?}, hijos que quedan = {left} de 3, recycle_stopped = {}",
+        rep.items[0].status, rep.recycle_stopped
+    );
+    match rep.items[0].status {
+        // La shell dice que no tocó nada: entonces los 3 hijos siguen.
+        ItemStatus::NotRecycled(_) => assert_eq!(left, 3, "faltan hijos sin decirlo"),
+        // Eliminado (entera o parcialmente) o movido a la Papelera: cualquiera es coherente con lo que quedó.
+        ItemStatus::DeletedUnexpectedly | ItemStatus::Recycled | ItemStatus::RecycledOther => {}
+        other => panic!("estado inesperado: {other:?}"),
+    }
+    let mine: Vec<BinItem> = recycle::list_bin()
+        .unwrap()
+        .into_iter()
+        .filter(|i| is_mine(i, &sb.uuid()))
+        .collect();
+    recycle::purge_items(&mine, &AtomicBool::new(false)).unwrap();
+    assert_eq!(ids(), before);
 }
 
 /// R1 con la shell REAL (solo un archivo propio, tras `TESELA_REAL_RECYCLE_TESTS=1`): un archivo disperso del doble del
@@ -2987,6 +3101,7 @@ fn pending(identity: FileIdentity, path: &Path, held_path: &Path) -> Pending {
         held: sys::open_path_for_rename(held_path).unwrap(),
         size: 0,
         measured: true,
+        snapshot: None,
     }
 }
 
