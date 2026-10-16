@@ -1,1 +1,6 @@
-//! Reglas de limpieza, protección, borrado definitivo y Papelera. Llega en el incremento 3.
+//! Limpieza de Tesela (PLAN.md §2.5 a §2.7 y §3.7).
+#![cfg(windows)]
+
+pub mod sys;
+#[cfg(test)]
+mod testutil;

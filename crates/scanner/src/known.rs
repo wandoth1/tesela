@@ -77,7 +77,7 @@ pub fn current_user_sid() -> Option<String> {
 }
 
 /// Una carpeta conocida de Windows (`SHGetKnownFolderPath`, usuario actual; puede estar redirigida), o `None` si falla.
-pub(crate) fn known_folder(id: &GUID) -> Option<PathBuf> {
+pub fn known_folder(id: &GUID) -> Option<PathBuf> {
     let mut out: *mut u16 = std::ptr::null_mut();
     // SAFETY: `id` apunta a un GUID válido (una constante `FOLDERID_*`); flags 0 y token nulo = usuario actual; `out` es
     // escribible.

@@ -45,11 +45,14 @@ uuid = { version = "1.28.0", features = ["v4"] }
 # wgpu solo con DX12 (PLAN.md §1; mismas features que spike/ui-treemap, feature wgpu-dx12).
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "dx12", "wgsl"] }
 windows-sys = "0.61.2"
+# COM (IFileOperation, la Papelera) del cleaner: ya está en el árbol (accesskit, wgpu); solo con las features que se usan.
+windows = { version = "0.62.2", default-features = false }
 
 # Crates internos.
 tesela-model = { version = "0.1.0", path = "crates/model" }
 tesela-scanner = { version = "0.1.0", path = "crates/scanner" }
 tesela-layout = { version = "0.1.0", path = "crates/layout" }
+tesela-cleaner = { version = "0.1.0", path = "crates/cleaner" }
 tesela-ui = { version = "0.1.0", path = "crates/ui" }
 
 [workspace.lints.rust]

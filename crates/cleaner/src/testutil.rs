@@ -1,0 +1,175 @@
+//! Utilidades de las pruebas: un árbol temporal `%TEMP%\tesela-test-<uuid>` con guarda RAII.
+//!
+//! SEGURIDAD: las pruebas solo escriben y borran dentro de esa carpeta, creada por la propia prueba. La guarda comprueba,
+//! antes de borrar nada, que la ruta es hija directa de `%TEMP%` y que su nombre empieza por `tesela-test-`. Los
+//! junctions se quitan antes como enlaces (nunca se entra en ellos) y sus destinos están dentro del mismo árbol.
+//! Ninguna prueba toca el `%TEMP%` real, las cachés de los navegadores ni la Papelera real salvo con elementos PROPIOS
+//! (ver `recycle`).
+#![allow(dead_code)]
+
+use std::fs;
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+
+pub struct Sandbox {
+    root: PathBuf,
+    junctions: Vec<PathBuf>,
+}
+
+impl Sandbox {
+    pub fn new() -> Sandbox {
+        let root = std::env::temp_dir().join(format!("tesela-test-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).expect("crea la carpeta temporal");
+        Sandbox {
+            root,
+            junctions: Vec::new(),
+        }
+    }
+
+    /// Raíz tal como se creó (`temp_dir()`; en algunos runners con componentes 8.3).
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// El uuid de esta carpeta (el sufijo de `tesela-test-<uuid>`).
+    pub fn uuid(&self) -> String {
+        self.root
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .trim_start_matches("tesela-test-")
+            .to_string()
+    }
+
+    /// Raíz en forma LARGA canónica (sin 8.3 y sin `\\?\`).
+    pub fn long_root(&self) -> PathBuf {
+        dunce::canonicalize(&self.root).expect("canonicaliza la raíz")
+    }
+
+    pub fn long(&self, rel: &str) -> PathBuf {
+        self.long_root().join(rel.replace('/', "\\"))
+    }
+
+    pub fn path(&self, rel: &str) -> PathBuf {
+        self.root.join(rel.replace('/', "\\"))
+    }
+
+    pub fn mkdir(&self, rel: &str) -> PathBuf {
+        let p = self.path(rel);
+        fs::create_dir_all(&p).expect("mkdir");
+        p
+    }
+
+    /// Crea un archivo de `size` bytes con contenido no nulo.
+    pub fn write(&self, rel: &str, size: usize) -> PathBuf {
+        let p = self.path(rel);
+        fs::create_dir_all(p.parent().unwrap()).expect("mkdir padre");
+        let mut f = fs::File::create(&p).expect("crea archivo");
+        let chunk: Vec<u8> = (0..4096u32).map(|i| (i % 251) as u8 + 1).collect();
+        let mut left = size;
+        while left > 0 {
+            let n = left.min(chunk.len());
+            f.write_all(&chunk[..n]).unwrap();
+            left -= n;
+        }
+        f.sync_all().ok();
+        p
+    }
+
+    /// Crea un archivo y fija su fecha de modificación y de creación a `age_hours` horas atrás.
+    pub fn write_aged(&self, rel: &str, size: usize, age_hours: u64) -> PathBuf {
+        let p = self.write(rel, size);
+        self.set_age(&p, age_hours);
+        p
+    }
+
+    /// Fija las cuatro fechas del objeto (creación, acceso, escritura y cambio) a `age_hours` horas atrás.
+    pub fn set_age(&self, p: &Path, age_hours: u64) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        // FILETIME: intervalos de 100 ns desde 1601.
+        let ft = ((now - age_hours * 3600) as i64 + 11_644_473_600) * 10_000_000;
+        crate::sys::set_all_times_for_test(p, ft).expect("fija las fechas");
+    }
+
+    pub fn hard_link(&self, from_rel: &str, to_rel: &str) {
+        let to = self.path(to_rel);
+        fs::create_dir_all(to.parent().unwrap()).unwrap();
+        fs::hard_link(self.path(from_rel), to).expect("hard_link");
+    }
+
+    /// `mklink /J` (no necesita administrador). El destino debe estar dentro de este mismo árbol.
+    pub fn junction(&mut self, link_rel: &str, target_rel: &str) {
+        let (link, target) = (self.path(link_rel), self.path(target_rel));
+        assert!(
+            target.starts_with(&self.root),
+            "el destino del junction debe estar dentro del árbol de prueba"
+        );
+        let out = Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(&link)
+            .arg(&target)
+            .output()
+            .expect("lanza cmd");
+        assert!(
+            out.status.success(),
+            "mklink /J falló: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        self.junctions.push(link);
+    }
+
+    /// Quita un junction creado con [`Sandbox::junction`] (solo el enlace; el destino queda intacto).
+    pub fn remove_junction(&mut self, link_rel: &str) {
+        let link = self.path(link_rel);
+        fs::remove_dir(&link).expect("quita el junction");
+        self.junctions.retain(|j| j != &link);
+    }
+
+    /// Cuenta las entradas (archivos y carpetas) bajo `rel` sin seguir enlaces.
+    pub fn count_entries(&self, rel: &str) -> usize {
+        fn go(p: &Path) -> usize {
+            let Ok(rd) = fs::read_dir(p) else { return 0 };
+            rd.flatten()
+                .map(|e| {
+                    let is_real_dir = e.file_type().is_ok_and(|t| t.is_dir())
+                        && !e.file_type().is_ok_and(|t| t.is_symlink());
+                    1 + if is_real_dir { go(&e.path()) } else { 0 }
+                })
+                .sum()
+        }
+        go(&self.path(rel))
+    }
+}
+
+impl Default for Sandbox {
+    fn default() -> Sandbox {
+        Sandbox::new()
+    }
+}
+
+impl Drop for Sandbox {
+    fn drop(&mut self) {
+        let temp = std::env::temp_dir();
+        let name_ok = self
+            .root
+            .file_name()
+            .is_some_and(|n| n.to_string_lossy().starts_with("tesela-test-"));
+        let parent_ok = self.root.parent().is_some_and(|p| p == temp);
+        if !(name_ok && parent_ok) {
+            eprintln!(
+                "Sandbox: ruta inesperada, no se borra nada: {}",
+                self.root.display()
+            );
+            return;
+        }
+        for j in &self.junctions {
+            // `remove_dir` sobre un junction borra el enlace y deja el destino intacto.
+            let _ = fs::remove_dir(j);
+        }
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
