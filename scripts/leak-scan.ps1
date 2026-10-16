@@ -32,8 +32,8 @@ function Find-LocalValueLeaks {
     if ($Bytes.Length -lt 2) { return , $leaks }
     $texts = @(
         [System.Text.Encoding]::GetEncoding(28591).GetString($Bytes),
-        # UTF-8 permisivo: cada secuencia invalida se convierte en U+FFFD, que no es letra ni digito y no puede formar una
-        # coincidencia falsa con un valor local (ni tapar una real: no cuenta como letra pegada).
+        # UTF-8 permisivo: cada secuencia invalida se convierte en U+FFFD (que no es una letra de la clase de limites de
+        # abajo). Solo ayuda en esta decodificacion: es la nativa del texto UTF-8; en las otras no hay nada que decida.
         (New-Object System.Text.UTF8Encoding($false, $false)).GetString($Bytes),
         [System.Text.Encoding]::Unicode.GetString($Bytes, 0, ($Bytes.Length -band -2)),
         [System.Text.Encoding]::Unicode.GetString($Bytes, 1, (($Bytes.Length - 1) -band -2))
@@ -46,11 +46,15 @@ function Find-LocalValueLeaks {
         foreach ($form in $forms) {
             # El usuario y el equipo son nombres cortos y sueltos: sin limites de palabra coincidirian con el nombre de un
             # autor en el texto de una licencia (p. ej. un "Alexander" para quien se llame "Alex"). Como fuga real solo
-            # cuentan si no estan pegados a otras letras o digitos (una ruta, un correo, un nombre de carpeta...). "Letra o
-            # digito" es Unicode (\p{L}\p{N}) y no solo A-Za-z0-9: con un valor como "Ren" y el texto "Renee" (con acento) el
-            # limite solo ASCII daria una fuga falsa, y con un valor que empieza o acaba en una letra acentuada el limite tiene
-            # que mirar letras acentuadas vecinas igual que mira las ASCII. Los NUL, los signos y U+FFFD no son letras.
-            $pattern = if ($k -eq 'USERNAME' -or $k -eq 'COMPUTERNAME') { '(?<![\p{L}\p{N}])' + [regex]::Escape($form) + '(?![\p{L}\p{N}])' } else { [regex]::Escape($form) }
+            # cuentan si no estan pegados a otras letras o digitos (una ruta, un correo, un nombre de carpeta...).
+            # La clase de "letra o digito" es ASCII mas las letras latinas acentuadas (U+00C0-U+024F sin la multiplicacion ni
+            # la division), NO \p{L}\p{N}: los mismos limites se aplican a las decodificaciones UTF-16 de binarios, donde el
+            # vecino de una cadena es un par de bytes cualquiera, y casi cualquier par es una letra Unicode (CJK, hangul...):
+            # con \p{L} se perdia casi toda la deteccion en UTF-16 (99,9 % antes frente a 5,9 %, medido con vecinos al azar).
+            # Con esta clase, un valor ASCII con una letra latina acentuada pegada ("Ren" en "Renee" con acento, en Latin-1 o
+            # UTF-8) deja de ser una fuga falsa. Coste aceptado y del lado seguro: un valor pegado a una letra cirilica, griega o CJK
+            # SI cuenta como fuga (falso positivo), y los limites no ayudan en los NUL, los signos ni U+FFFD.
+            $pattern = if ($k -eq 'USERNAME' -or $k -eq 'COMPUTERNAME') { '(?<![0-9A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u024F])' + [regex]::Escape($form) + '(?![0-9A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u024F])' } else { [regex]::Escape($form) }
             # CultureInvariant: la comparacion sin distinguir mayusculas no puede depender de la cultura del usuario (la
             # i turca, p. ej.).
             $options = [System.Text.RegularExpressions.RegexOptions]::IgnoreCase -bor [System.Text.RegularExpressions.RegexOptions]::CultureInvariant

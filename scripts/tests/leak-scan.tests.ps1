@@ -141,6 +141,43 @@ $near = ([string][char]0x00D3) + ([string][char]0x00F1) + 'igo-Prueba'
 $encs = Encodings ("usuario=" + $near + ';')
 foreach ($e in $encs.Keys) { Check "no ASCII: valor parecido (otra letra) en $e no cuenta" ((Leaks $encs[$e] 'USERNAME') -eq 0) }
 
+# --- UTF-16 con vecinos arbitrarios (los limites de palabra NO pueden depender de \p{L}) -----------------------------------------
+# Un par de bytes cualquiera leido como UTF-16 casi siempre es una letra Unicode (CJK, hangul...): si el limite de palabra contase
+# esas letras, un valor pegado a un vecino al azar no se veria nunca. Valor SINTETICO "Zorbaq" (no se parece a ningun usuario).
+$zNeedles = @{ 'USERNAME' = 'Zorbaq'; 'COMPUTERNAME' = 'ZORBAQ-PC' }
+function ZLeaks($Bytes, [string]$Key) {
+    $l = Find-LocalValueLeaks -Bytes $Bytes -Needles $zNeedles -Name 'a.exe'
+    return @($l | Where-Object { $_ -like "*'$Key'*" }).Count
+}
+$cjkL = [string][char]0x4E2D
+$cjkR = [string][char]0x6587
+foreach ($case in @(@('USERNAME', 'Zorbaq'), @('COMPUTERNAME', 'ZORBAQ-PC'))) {
+    $u16 = [System.Text.Encoding]::Unicode.GetBytes($cjkL + $case[1] + $cjkR)
+    Check "UTF-16 alineado: $($case[0]) entre dos caracteres CJK" ((ZLeaks (Pad $u16) $case[0]) -ge 1)
+    Check "UTF-16 desalineado: $($case[0]) entre dos caracteres CJK" ((ZLeaks ([byte[]](7) + (Pad $u16)) $case[0]) -ge 1)
+}
+# Vecinos al azar (semilla fija: determinista): al menos el 95 % tiene que verse en UTF-16, alineado y desalineado.
+$rnd = New-Object System.Random 20261016
+$hits = 0
+$tries = 400
+for ($i = 0; $i -lt $tries; $i++) {
+    $left = New-Object byte[] 2
+    $right = New-Object byte[] 2
+    $rnd.NextBytes($left)
+    $rnd.NextBytes($right)
+    $body = [System.Text.Encoding]::Unicode.GetBytes('Zorbaq')
+    $bytes = $left + $body + $right
+    if ($i % 2 -eq 1) { $bytes = [byte[]](7) + $bytes }
+    if ((ZLeaks $bytes 'USERNAME') -ge 1) { $hits++ }
+}
+Check "UTF-16 con vecinos al azar: $hits de $tries" ($hits -ge ($tries * 0.95))
+# Un valor ASCII pegado a una letra latina acentuada sigue sin contar en UTF-8 y UTF-16. (En un binario Latin-1 SI cuenta: la
+# decodificacion UTF-8 de ese byte suelto es U+FFFD, que no es letra; falso positivo del lado seguro.)
+$zAcc = 'Zorbaq' + $eAcute
+foreach ($pair in @(@('UTF-8', (Pad ($utf8nb.GetBytes($zAcc)))), @('UTF-16', (Pad ([System.Text.Encoding]::Unicode.GetBytes($zAcc)))))) {
+    Check "ASCII pegado a una letra acentuada no cuenta ($($pair[0]))" ((ZLeaks $pair[1] 'USERNAME') -eq 0)
+}
+
 if ($failures.Count -gt 0) {
     Write-Host "leak-scan.tests: $($failures.Count) de $total pruebas FALLAN" -ForegroundColor Red
     $failures | ForEach-Object { Write-Host "  - $_" }
