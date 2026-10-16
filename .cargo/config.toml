@@ -2,6 +2,7 @@
 # En Windows 10/11 el UCRT es del sistema; se enlaza estatico para no depender del runtime de VC++ redistribuible (el
 # instalador es por usuario y sin administrador, no puede instalarlo).
 # `scripts/build-release.ps1` repite este flag en CARGO_ENCODED_RUSTFLAGS (que tiene prioridad sobre este archivo y no se
-# combina con él) y comprueba la tabla de imports de cada .exe.
+# combina con él) y comprueba la tabla de imports de cada .exe. `/Brepro` hace el enlace reproducible (sin marca de
+# tiempo): el mismo commit da el mismo .exe, byte a byte, en cualquier carpeta.
 [target.'cfg(windows)']
-rustflags = ["-C", "target-feature=+crt-static"]
+rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=/Brepro"]

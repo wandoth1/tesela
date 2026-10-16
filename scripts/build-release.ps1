@@ -11,7 +11,7 @@
 
   CARGO_ENCODED_RUSTFLAGS tiene prioridad sobre `target.<cfg>.rustflags` de `.cargo/config.toml` (no se combinan), asi que
   el enlace estatico del runtime de C (`-Ctarget-feature=+crt-static`, que el config tambien fija para los builds de
-  desarrollo) se repite aqui: sin el, el release importaria VCRUNTIME140.dll y las `api-ms-win-crt-*`. En Windows 10/11 el
+  desarrollo) se repite aqui (y `/Brepro`, ver abajo): sin el, el release importaria VCRUNTIME140.dll y las `api-ms-win-crt-*`. En Windows 10/11 el
   UCRT es del sistema; se enlaza estatico para no depender del runtime de VC++ redistribuible (el instalador es por
   usuario y sin administrador). La validacion de abajo lo comprueba.
 
@@ -76,6 +76,10 @@ foreach ($r in $remaps) {
 }
 # Runtime de C enlazado de forma estatica (ver arriba): tiene que coincidir con .cargo/config.toml.
 $flags.Add('-Ctarget-feature=+crt-static')
+# Build reproducible: sin `/Brepro` el enlazador de MSVC graba una marca de tiempo (y un GUID de PDB) distintos en cada
+# compilacion. Con el, dos builds del mismo commit en carpetas distintas dan el MISMO SHA-256 (las rutas ya se normalizan
+# con --remap-path-prefix). Tiene que coincidir con .cargo/config.toml.
+$flags.Add('-Clink-arg=/Brepro')
 $env:CARGO_ENCODED_RUSTFLAGS = ($flags -join [string][char]0x1f)
 $env:RUSTFLAGS = $null
 
@@ -96,7 +100,8 @@ try {
     $artifacts = @()
     if (-not $CheckOnly) {
         # La salida estandar es JSON (una linea por mensaje); los diagnosticos del compilador siguen yendo a la consola.
-        $json = & cargo build --release @CargoArgs --message-format=json-render-diagnostics
+        # `--locked`: un release no puede cambiar Cargo.lock (ni resolver dependencias nuevas) por su cuenta.
+        $json = & cargo build --release --locked @CargoArgs --message-format=json-render-diagnostics
         if ($LASTEXITCODE -ne 0) { throw 'cargo build --release fallo' }
         foreach ($line in $json) {
             if (-not $line -or -not $line.StartsWith('{')) { continue }
