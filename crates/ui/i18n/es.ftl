@@ -292,7 +292,8 @@ confirm-more =
         [one] y { $count } más
        *[other] y { $count } más
     }
-confirm-group-unfit = Se eliminará definitivamente porque no cabe en la Papelera
+confirm-group-unfit = Se eliminará definitivamente porque no se puede enviar a la Papelera
+confirm-unfit-capacity-hint = Para poder enviarlo a la Papelera: abre las propiedades de la Papelera de reciclaje y fija un tamaño máximo para la unidad.
 confirm-unfit-check = Entiendo que esto no se podrá recuperar
 confirm-unfit-note = Sin marcar la casilla, estos elementos no se tocan.
 unfit-no-bin = la unidad no tiene Papelera
@@ -473,6 +474,11 @@ sum-bin-changed =
     }
 sum-log-failed = No se pudo escribir el registro de la limpieza, así que se detuvo en el siguiente punto seguro y no se tocó nada más. Lo que ya estaba hecho se queda y puede no constar entero en el registro.
 sum-log-truncated = El registro de la limpieza llegó a su tamaño máximo y dejó de anotar: lo que se hizo después no consta en él.
+sum-bin-unverifiable =
+    { $n ->
+        [one] { $count } elemento de la Papelera está en una unidad cuyo sistema de archivos no permite verificarlo (FAT o exFAT) y no se tocó.
+       *[other] { $count } elementos de la Papelera están en una unidad cuyo sistema de archivos no permite verificarlos (FAT o exFAT) y no se tocaron.
+    }
 sum-cancelled = Cancelaste la limpieza: lo que ya estaba hecho se queda.
 sum-diverge = "Eliminado definitivamente" y "liberado ahora" no coinciden: puede ser por enlaces duros, archivos que otro programa tenía abiertos o cambios del propio Windows.
 

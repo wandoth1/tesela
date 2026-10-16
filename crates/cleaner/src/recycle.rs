@@ -159,14 +159,48 @@ pub struct BinItem {
     pub data_id: Option<FileIdentity>,
     /// Identidad del `$I` hermano (los metadatos) al enumerar (misma regla).
     pub meta_id: Option<FileIdentity>,
+    /// El sistema de archivos del `$R` no da identidad (FAT, exFAT: `FileIdInfo` no existe): el elemento no se puede
+    /// verificar y no se purga, pero NO es que haya "cambiado": se cuenta aparte (H6.9).
+    pub no_identity: bool,
 }
 
 /// Identidad (volumen + FileId) de lo que hay en `p`, sin seguir enlaces. `None` si no se puede abrir o leer.
 fn identity_at(p: &Path) -> Option<FileIdentity> {
+    identity_result(p).ok()
+}
+
+/// Como [`identity_at`], con el código de Windows si falla.
+fn identity_result(p: &Path) -> std::result::Result<FileIdentity, sys::Win32> {
     sys::open_for_query(p)
         .and_then(|h| sys::meta(&h))
-        .ok()
         .map(|m| m.identity)
+}
+
+/// ¿Es el código de "este sistema de archivos no da `FileIdInfo`"? (`ERROR_INVALID_FUNCTION`, `ERROR_NOT_SUPPORTED`,
+/// `ERROR_INVALID_PARAMETER`, como en `plan::verify`.)
+fn is_no_identity_error(code: sys::Win32) -> bool {
+    matches!(code, 1 | 50 | 87)
+}
+
+/// Qué hacer con un elemento de la lista aprobada al purgar.
+#[derive(Debug, PartialEq, Eq)]
+enum BinCheck {
+    /// Sigue siendo el mismo: se purga.
+    Same,
+    /// Cambió desde que se enumeró: se salta ("cambió").
+    Changed,
+    /// Su sistema de archivos no da identidad: no se puede verificar, se salta (motivo propio).
+    Unverifiable,
+}
+
+fn check_bin_item(item: &BinItem) -> BinCheck {
+    if item.no_identity {
+        BinCheck::Unverifiable
+    } else if bin_item_unchanged(item) {
+        BinCheck::Same
+    } else {
+        BinCheck::Changed
+    }
 }
 
 /// El `$I` hermano EXACTO de un `$R`: `$R<token>[.ext]` -> `$I<token>[.ext]`. `None` si no es un `$R`.
@@ -244,7 +278,9 @@ pub fn list_bin() -> Result<Vec<BinItem>> {
             let size = item2.GetUInt64(&PKEY_Size).unwrap_or(0);
             // Las identidades del `$R` y del `$I`, para volver a comprobarlas al purgar (M3).
             let data = PathBuf::from(&id);
-            let data_id = identity_at(&data);
+            let data_res = identity_result(&data);
+            let no_identity = data_res.as_ref().is_err_and(|c| is_no_identity_error(*c));
+            let data_id = data_res.ok();
             let meta_id = meta_sibling(&data).and_then(|m| identity_at(&m));
             out.push(BinItem {
                 id,
@@ -254,6 +290,7 @@ pub fn list_bin() -> Result<Vec<BinItem>> {
                 size,
                 data_id,
                 meta_id,
+                no_identity,
             });
         }
         Ok(out)
@@ -344,8 +381,11 @@ pub struct BatchOutcome {
     /// Solo al enviar: elementos a los que `PreDeleteItem` puso veto (la identidad no era la aprobada).
     pub vetoed: Vec<Veto>,
     /// Solo al purgar: elementos de la lista que NO se purgaron porque su `$R` o su `$I` ya no tenían la identidad
-    /// capturada al enumerar (o no se pudo verificar): `id` de cada uno.
+    /// capturada al enumerar (o no se capturó): `id` de cada uno.
     pub changed_bin: Vec<OsString>,
+    /// Solo al purgar: elementos que NO se purgaron porque su sistema de archivos no da identidad (FAT, exFAT) y no se
+    /// pueden verificar: `id` de cada uno. No es que hayan cambiado (H6.9).
+    pub unverifiable_bin: Vec<OsString>,
 }
 
 /// Un elemento que se entrega a la shell: su ruta original y la IDENTIDAD aprobada (volumen + FileId).
@@ -703,6 +743,7 @@ impl Operation {
             sink_aborted: self.state.tripped.load(Ordering::SeqCst),
             vetoed,
             changed_bin: Vec::new(),
+            unverifiable_bin: Vec::new(),
         }
     }
 }
@@ -775,6 +816,8 @@ pub enum PurgeStep<'a> {
     Begin(&'a [&'a BinItem]),
     /// Elementos que se saltaron porque su `$R` o su `$I` ya no eran los de la enumeración.
     Skipped(&'a [&'a BinItem]),
+    /// Elementos que se saltaron porque su sistema de archivos no da identidad y no se pueden verificar.
+    Unverifiable(&'a [&'a BinItem]),
     /// Después de cada trozo: cada elemento con el `HRESULT` que notificó la shell (`None` = sin aviso).
     Done(&'a [(&'a BinItem, Option<i32>)]),
 }
@@ -811,6 +854,7 @@ fn purge_items_flags(
     let by_id: std::collections::HashMap<&OsString, &BinItem> =
         items.iter().map(|i| (&i.id, i)).collect();
     let mut changed: Vec<&BinItem> = Vec::new();
+    let mut unverifiable: Vec<&BinItem> = Vec::new();
     let mut found: Vec<(IShellItem, &BinItem)> = Vec::with_capacity(items.len());
     // SAFETY: COM está inicializado en este hilo; todas las interfaces y cadenas son propias de esta función y se
     // liberan con el RAII de `windows` o con `take_pwstr`.
@@ -831,12 +875,12 @@ fn purge_items_flags(
             {
                 // M3: el elemento se identifica por `id` (un nombre), pero antes de tocarlo se comprueba que el `$R` y el
                 // `$I` son los mismos objetos que al enumerar.
-                if bin_item_unchanged(approved) {
-                    found.push((item, approved));
-                } else {
-                    changed.push(approved);
+                match check_bin_item(approved) {
+                    BinCheck::Same => found.push((item, approved)),
+                    BinCheck::Changed => changed.push(approved),
+                    BinCheck::Unverifiable => unverifiable.push(approved),
                 }
-                if found.len() + changed.len() == by_id.len() {
+                if found.len() + changed.len() + unverifiable.len() == by_id.len() {
                     break;
                 }
             }
@@ -844,10 +888,14 @@ fn purge_items_flags(
     }
     let mut out = BatchOutcome {
         changed_bin: changed.iter().map(|i| i.id.clone()).collect(),
+        unverifiable_bin: unverifiable.iter().map(|i| i.id.clone()).collect(),
         ..BatchOutcome::default()
     };
     if !changed.is_empty() {
         obs(PurgeStep::Skipped(&changed));
+    }
+    if !unverifiable.is_empty() {
+        obs(PurgeStep::Unverifiable(&unverifiable));
     }
     for chunk in found.chunks(500) {
         if cancel.load(Ordering::Relaxed) {
@@ -1376,6 +1424,7 @@ mod tests {
                 size: 1234,
                 data_id,
                 meta_id,
+                no_identity: false,
             },
             data,
             meta,
@@ -1519,8 +1568,28 @@ mod tests {
             size: 5,
             data_id: identity_at(&data),
             meta_id: identity_at(&meta),
+            no_identity: false,
         };
         assert!(bin_item_unchanged(&item));
+        assert_eq!(check_bin_item(&item), BinCheck::Same);
+        // H6.9: sin FileId (FAT, exFAT) no es "cambió": motivo propio.
+        assert_eq!(
+            check_bin_item(&BinItem {
+                no_identity: true,
+                data_id: None,
+                ..item.clone()
+            }),
+            BinCheck::Unverifiable
+        );
+        assert_eq!(
+            check_bin_item(&BinItem {
+                data_id: None,
+                ..item.clone()
+            }),
+            BinCheck::Changed
+        );
+        assert!(is_no_identity_error(1) && is_no_identity_error(50) && is_no_identity_error(87));
+        assert!(!is_no_identity_error(5) && !is_no_identity_error(2));
         // Sin identidades capturadas: no se puede verificar.
         assert!(!bin_item_unchanged(&BinItem {
             data_id: None,

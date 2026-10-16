@@ -291,7 +291,8 @@ confirm-more =
         [one] and { $count } more
        *[other] and { $count } more
     }
-confirm-group-unfit = Will be deleted permanently because it does not fit in the Recycle Bin
+confirm-group-unfit = Will be deleted permanently because it cannot be sent to the Recycle Bin
+confirm-unfit-capacity-hint = To be able to send it to the Recycle Bin: open the Recycle Bin properties and set a maximum size for the drive.
 confirm-unfit-check = I understand this cannot be recovered
 confirm-unfit-note = Without checking the box, these items are not touched.
 unfit-no-bin = the drive has no Recycle Bin
@@ -472,6 +473,11 @@ sum-bin-changed =
     }
 sum-log-failed = The cleaning log could not be written, so the cleaning stopped at the next safe point and nothing else was touched. What was already done stays and may not be fully recorded in the log.
 sum-log-truncated = The cleaning log reached its maximum size and stopped recording: what was done afterwards is not in it.
+sum-bin-unverifiable =
+    { $n ->
+        [one] { $count } Recycle Bin item is on a drive whose file system cannot be verified (FAT or exFAT) and was not touched.
+       *[other] { $count } Recycle Bin items are on a drive whose file system cannot be verified (FAT or exFAT) and were not touched.
+    }
 sum-cancelled = You cancelled the cleanup: what was already done stays done.
 sum-diverge = "Deleted permanently" and "freed now" differ: this can be because of hard links, files another program had open, or changes made by Windows itself.
 

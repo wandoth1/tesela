@@ -380,6 +380,7 @@ impl Backend for DemoBackend {
                             size: 0,
                             data_id: None,
                             meta_id: None,
+                            no_identity: false,
                         })
                         .collect();
                     plan.bin = Some(BinPlan {
@@ -423,6 +424,7 @@ impl Backend for DemoBackend {
                 purged: b.items.len() as u64,
                 still_there: 0,
                 changed: 0,
+                unverifiable: 0,
                 bytes_hint: b.bytes_hint,
                 failed: false,
             });

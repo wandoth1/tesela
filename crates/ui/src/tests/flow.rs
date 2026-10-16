@@ -267,7 +267,7 @@ fn lo_que_no_cabe_en_la_papelera_sale_en_el_grupo_ambar_con_su_casilla() {
     h.run_steps(3);
     h.get_by_label_contains("Limpiar ").click();
     assert!(wait_contains(&mut h, "Revisa antes de limpiar"));
-    h.get_by_label("Se eliminará definitivamente porque no cabe en la Papelera");
+    h.get_by_label("Se eliminará definitivamente porque no se puede enviar a la Papelera");
     h.get_by_label_contains("supera el tamaño de la Papelera");
     let check = h.get_by_label("Entiendo que esto no se podrá recuperar");
     assert_eq!(check.accesskit_node().toggled(), Some(Toggled::False));

@@ -202,6 +202,9 @@ pub struct BinReport {
     /// De ellos, los que NO se tocaron porque su `$R` o su `$I` ya no eran los de la enumeración (cambiaron desde la
     /// confirmación) o no se pudieron verificar.
     pub changed: u64,
+    /// Elementos que no se tocaron porque su sistema de archivos no da identidad (FAT, exFAT) y no se pueden verificar.
+    /// No es que hayan cambiado (H6.9).
+    pub unverifiable: u64,
     /// Tamaño aproximado de la Papelera al confirmar.
     pub bytes_hint: u64,
     /// La shell no pudo hacer la operación.
@@ -611,6 +614,12 @@ impl Cleaner {
                     }
                     l.flush();
                 }
+                recycle::PurgeStep::Unverifiable(items) => {
+                    for i in items {
+                        l.write_bin_item(&i.original_path(), &i.id, i.size, "no-identity");
+                    }
+                    l.flush();
+                }
                 recycle::PurgeStep::Done(done) => {
                     for (i, hr) in done {
                         let out = match hr {
@@ -636,6 +645,7 @@ impl Cleaner {
                 rep.purged = purged.len() as u64;
                 rep.still_there = rep.requested - rep.purged;
                 rep.changed = out.changed_bin.len() as u64;
+                rep.unverifiable = out.unverifiable_bin.len() as u64;
                 rep.failed = out.error.is_some();
             }
             Err(_) => {

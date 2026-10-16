@@ -481,6 +481,12 @@ fn item_name(env: &Env, it: &PlanItem) -> String {
     }
 }
 
+/// ¿Alguno no cabe porque la Papelera de su unidad no tiene tamaño máximo configurado?
+fn has_capacity_unknown(fits: impl Iterator<Item = Fit>) -> bool {
+    fits.into_iter()
+        .any(|f| f == Fit::Unfit(UnfitReason::CapacityUnknown))
+}
+
 fn unfit_reason_key(r: UnfitReason) -> &'static str {
     match r {
         UnfitReason::NoBin => "unfit-no-bin",
@@ -805,6 +811,10 @@ fn confirm_groups(ui: &mut Ui, env: &mut Env, c: &mut Confirm, plan: &Plan) {
                         Some(&it.path.display().to_string()),
                     );
                 }
+                // Sin tamaño máximo configurado, cómo arreglarlo (H6.3).
+                if has_capacity_unknown(unfit.iter().map(|i| i.fit)) {
+                    note_line(ui, &pal, &env.tr.t("confirm-unfit-capacity-hint"), false);
+                }
                 ui.add_space(6.0);
                 let label = env.tr.t("confirm-unfit-check");
                 ui.checkbox(&mut c.allow_unfit, &label);
@@ -1086,8 +1096,14 @@ fn summary_lines(env: &Env, s: &Summary) -> Vec<(String, bool)> {
         if b.changed > 0 {
             v.push((n("sum-bin-changed", b.changed), true));
         }
-        if b.still_there > b.changed {
-            v.push((n("sum-bin-failed", b.still_there - b.changed), true));
+        if b.unverifiable > 0 {
+            v.push((n("sum-bin-unverifiable", b.unverifiable), true));
+        }
+        if b.still_there > b.changed + b.unverifiable {
+            v.push((
+                n("sum-bin-failed", b.still_there - b.changed - b.unverifiable),
+                true,
+            ));
         }
     }
     // Si "liberado ahora" y "eliminado" divergen, se dice por qué en una línea.
@@ -1285,7 +1301,28 @@ fn summary_ui(ui: &mut Ui, env: &mut Env, s: &Summary) -> Option<SummaryClick> {
 
 #[cfg(test)]
 mod log_gate_tests {
-    use super::abort_without_log;
+    use super::{abort_without_log, has_capacity_unknown};
+    use tesela_cleaner::{Fit, UnfitReason};
+
+    /// H6.3: la pista de "fija un tamaño máximo" solo sale si algo no cabe por `CapacityUnknown`.
+    #[test]
+    fn la_pista_de_la_capacidad_solo_sale_con_capacity_unknown() {
+        assert!(has_capacity_unknown(
+            [
+                Fit::Unfit(UnfitReason::TooBig),
+                Fit::Unfit(UnfitReason::CapacityUnknown)
+            ]
+            .into_iter()
+        ));
+        assert!(!has_capacity_unknown(
+            [
+                Fit::Unfit(UnfitReason::TooBig),
+                Fit::Unfit(UnfitReason::Policy)
+            ]
+            .into_iter()
+        ));
+        assert!(!has_capacity_unknown(std::iter::empty()));
+    }
 
     /// M4: sin registro, una ejecución REAL se aborta; la simulación y la demostración siguen.
     #[test]
