@@ -428,16 +428,22 @@ pub fn final_path(h: &Handle) -> Result<PathBuf, Win32> {
 }
 
 /// Quita el prefijo `verbatim` (`\\?\C:\x` -> `C:\x`; la forma con `UNC` vuelve a la de dos barras).
+///
+/// Trabaja sobre UTF-16: un nombre con unidades sueltas (válido en NTFS) pasa tal cual, sin `U+FFFD`.
 pub fn strip_verbatim(p: PathBuf) -> PathBuf {
-    let s = p.as_os_str().to_string_lossy();
-    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
-        return PathBuf::from(format!(r"\\{rest}"));
+    let w: Vec<u16> = p.as_os_str().encode_wide().collect();
+    let unc: Vec<u16> = r"\\?\UNC\".encode_utf16().collect();
+    let verbatim: Vec<u16> = r"\\?\".encode_utf16().collect();
+    if w.starts_with(&unc) {
+        let mut out: Vec<u16> = r"\\".encode_utf16().collect();
+        out.extend_from_slice(&w[unc.len()..]);
+        return std::ffi::OsString::from_wide(&out).into();
     }
-    if let Some(rest) = s.strip_prefix(r"\\?\")
-        && rest.len() >= 2
-        && rest.as_bytes()[1] == b':'
-    {
-        return PathBuf::from(rest.to_string());
+    if w.starts_with(&verbatim) {
+        let rest = &w[verbatim.len()..];
+        if rest.len() >= 2 && rest[1] == u16::from(b':') {
+            return std::ffi::OsString::from_wide(rest).into();
+        }
     }
     p
 }

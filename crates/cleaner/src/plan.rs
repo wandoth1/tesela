@@ -631,7 +631,7 @@ impl Cleaner {
             }
         };
         for e in entries {
-            let ckey = dir_key.join(&String::from_utf16_lossy(&e.name));
+            let ckey = dir_key.join(&crate::paths::wide_to_string(&e.name));
             let child = dir_path.join(OsString::from_wide(&e.name));
             match self.protection.child_action(&ckey) {
                 ChildAction::Skip => {

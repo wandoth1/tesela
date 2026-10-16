@@ -9,7 +9,23 @@
 //! una lista de protección es el lado seguro (se protege de más, nunca de menos).
 
 use crate::sys;
+use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
+
+/// UTF-16 a `String` SIN perder información. NTFS admite nombres con unidades sueltas (un sustituto sin pareja) y
+/// `to_string_lossy` los vuelve todos `U+FFFD`: dos nombres distintos darían la misma clave (y una comparación de
+/// identidad o de protección acertaría sin deber). Aquí una unidad suelta pasa a un carácter del plano 15 de uso privado
+/// (`U+F0000` + su desplazamiento), distinto para cada una.
+pub fn wide_to_string(units: &[u16]) -> String {
+    char::decode_utf16(units.iter().copied())
+        .map(|r| {
+            r.unwrap_or_else(|e| {
+                char::from_u32(0xF0000 + (u32::from(e.unpaired_surrogate()) - 0xD800))
+                    .unwrap_or('\u{FFFD}')
+            })
+        })
+        .collect()
+}
 
 /// Clave de comparación de una ruta (ver el módulo).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
@@ -27,7 +43,8 @@ impl PathKey {
     /// nombres 8.3 ni enlaces: para eso, [`canonical_key`].
     pub fn new(path: &Path) -> PathKey {
         let sys_path = sys::strip_verbatim(path.to_path_buf());
-        let s = sys_path.to_string_lossy().replace('/', "\\");
+        let wide: Vec<u16> = sys_path.as_os_str().encode_wide().collect();
+        let s = wide_to_string(&wide).replace('/', "\\");
         // Prefijo: letra de unidad (`c:`) o el inicio de una ruta de red (dos barras).
         let (prefix, rest, is_drive) = if s.len() >= 2 && s.as_bytes()[1] == b':' {
             (s[..2].to_string(), &s[2..], true)
@@ -196,6 +213,40 @@ mod tests {
         assert_eq!(k(r"C:\").join("X"), k(r"C:\x"));
         let anc = k(r"C:\a\b\c").ancestors();
         assert_eq!(anc, vec![k(r"C:\a\b"), k(r"C:\a"), k(r"C:\")]);
+    }
+
+    #[test]
+    fn los_nombres_con_unidades_sueltas_no_se_confunden() {
+        use std::ffi::OsString;
+        use std::os::windows::ffi::OsStringExt;
+        let a = OsString::from_wide(&[b'C' as u16, b':' as u16, b'\\' as u16, 0x61, 0xD800]);
+        let b = OsString::from_wide(&[b'C' as u16, b':' as u16, b'\\' as u16, 0x61, 0xD801]);
+        let c = OsString::from_wide(&[b'C' as u16, b':' as u16, b'\\' as u16, 0x61, 0xFFFD]);
+        // Con `to_string_lossy` las tres darían la misma clave.
+        assert_eq!(a.to_string_lossy(), b.to_string_lossy());
+        let (ka, kb, kc) = (
+            PathKey::new(Path::new(&a)),
+            PathKey::new(Path::new(&b)),
+            PathKey::new(Path::new(&c)),
+        );
+        assert_ne!(ka, kb);
+        assert_ne!(ka, kc);
+        assert_ne!(kb, kc);
+        // Y el mismo nombre da siempre la misma clave (con y sin verbatim).
+        let v = OsString::from_wide(
+            &[
+                r"\\?\".encode_utf16().collect::<Vec<_>>(),
+                a.encode_wide().collect(),
+            ]
+            .concat(),
+        );
+        assert_eq!(PathKey::new(Path::new(&v)), ka);
+        // Los nombres de hijo del listado van por el mismo camino.
+        let child = wide_to_string(&[0x61, 0xD800]);
+        assert_eq!(k(r"C:\").join(&child), ka);
+        assert_ne!(k(r"C:\").join(&wide_to_string(&[0x61, 0xD801])), ka);
+        // Un par válido (fuera del plano básico) se conserva tal cual.
+        assert_eq!(wide_to_string(&[0xD83D, 0xDE00]), "\u{1F600}");
     }
 
     #[test]

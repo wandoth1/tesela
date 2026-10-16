@@ -382,8 +382,9 @@ struct Shared {
     outstanding: AtomicUsize,
 }
 
+/// Nombre de una entrada para construir claves de comparación: sin pérdida (ver `paths::wide_to_string`).
 fn lossy(name: &[u16]) -> String {
-    String::from_utf16_lossy(name)
+    crate::paths::wide_to_string(name)
 }
 
 fn join_name(base: &Path, name: &[u16]) -> PathBuf {

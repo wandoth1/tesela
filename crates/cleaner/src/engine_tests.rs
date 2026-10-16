@@ -672,3 +672,25 @@ fn los_eventos_llevan_ruta_identidad_y_tamano() {
         .collect();
     assert_eq!(ids.len(), 1);
 }
+
+/// Dos nombres que solo se diferencian en una unidad UTF-16 suelta (válida en NTFS) no se confunden: con `U+FFFD` por
+/// medio la protección de uno alcanzaría al otro (o al revés).
+#[test]
+fn los_nombres_con_unidades_sueltas_se_protegen_y_se_borran_por_separado() {
+    use std::os::windows::ffi::OsStringExt;
+    let sb = Sandbox::new();
+    sb.mkdir("R");
+    let name = |last: u16| OsString::from_wide(&[b'n' as u16, last]);
+    let (a, b) = (name(0xD800), name(0xD801));
+    fs::write(sb.path("R").join(&a), vec![1u8; 2_000]).unwrap();
+    fs::write(sb.path("R").join(&b), vec![2u8; 2_000]).unwrap();
+    // Se protege solo el primero (su ruta canónica larga, con la unidad suelta).
+    let prot = Arc::new(Protection::new(&ProtectionRoots {
+        denied: vec![sb.long("R").join(&a)],
+        ..ProtectionRoots::default()
+    }));
+    let r = run_contents(&sb, "R", Mode::Delete, 0, prot, 2);
+    assert!(sb.path("R").join(&a).exists(), "el protegido se queda");
+    assert!(!sb.path("R").join(&b).exists(), "el otro se borra");
+    assert_eq!(r.stats().protected, 1);
+}
