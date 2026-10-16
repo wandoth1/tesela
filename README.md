@@ -3,7 +3,7 @@
 **Mira qué ocupa tu disco y libera espacio sin miedo.**
 Analizador visual de espacio en disco para Windows, escrito en Rust: rápido, ligero y claro.
 
-> 🚧 **Estado: MVP v0.1 en construcción.** Hechos el modelo, el escáner, la interfaz (mapa, lista, detalles, escaneo con progreso real, es/en, claro/oscuro) y **la limpieza**: Recomendaciones, cesta, confirmación y resumen, con borrado seguro por handle y envío a la Papelera. **Esta versión borra de verdad** (solo lo que apruebas en la confirmación): pruébala primero con `--dry-run` o con `--demo`. Falta el instalador. Conclusiones de la fase 0 en [docs/fase-0-conclusiones.md](docs/fase-0-conclusiones.md); el plan completo está en [docs/PLAN.md](docs/PLAN.md).
+> 🚧 **Estado: MVP v0.1 en construcción.** Hechos el modelo, el escáner, la interfaz (mapa, lista, detalles, escaneo con progreso real, es/en, claro/oscuro) y **la limpieza**: Recomendaciones, cesta, confirmación y resumen, con borrado seguro por handle y envío a la Papelera. **Esta versión borra de verdad** (solo lo que apruebas en la confirmación): pruébala primero con `--dry-run` o con `--demo`. El instalador MSI por usuario ya está hecho (ver [Instalación](#instalación)); falta publicar la primera release. Conclusiones de la fase 0 en [docs/fase-0-conclusiones.md](docs/fase-0-conclusiones.md); el plan completo está en [docs/PLAN.md](docs/PLAN.md).
 
 ## Qué será
 
@@ -13,6 +13,71 @@ Analizador visual de espacio en disco para Windows, escrito en Rust: rápido, li
 - **Nada se borra a ciegas.** Todo pasa por una cesta de revisión. Lo regenerable (temporales, cachés) se borra; tus archivos van a la Papelera. Las carpetas del sistema están protegidas.
 - **Honesto con los números.** Solo cuenta como liberado lo que realmente se ha liberado, y enseña qué parte del disco no ha podido medir.
 - **Ligero.** Binario único, sin Electron ni WebView, sin telemetría ni cuentas. Funciona sin permisos de administrador y tiene un modo rápido opcional que lee directamente la tabla de archivos (MFT) de NTFS.
+
+## Instalación
+
+Windows 10 22H2 o Windows 11, x64. **No necesita administrador.** Descarga los archivos de la última release en
+[github.com/wandoth1/tesela/releases](https://github.com/wandoth1/tesela/releases) (mientras no haya ninguna publicada, el
+instalador solo se puede construir desde el código: `pwsh -File scripts/build-msi.ps1`).
+
+### Instalador MSI (recomendado)
+
+1. Descarga `tesela-<versión>-x64.msi`.
+2. Haz doble clic. Se instala **solo para tu usuario** en `%LOCALAPPDATA%\Programs\Tesela`, sin pedir permisos de administrador,
+   con un acceso **Tesela** en el menú Inicio y una entrada en *Configuración > Aplicaciones > Aplicaciones instaladas*. (En
+   silencio: `msiexec /i tesela-<versión>-x64.msi /qn`.)
+3. **Actualizar:** instala encima el MSI de la versión nueva; sustituye a la anterior sin dejar duplicados. Instalar una versión
+   **más antigua** que la instalada se bloquea con un mensaje (desinstala primero la nueva si de verdad quieres volver atrás).
+4. **Reparar:** *Aplicaciones instaladas* no ofrece "Modificar" (no hay nada que elegir); para reparar, ejecuta
+   `msiexec /fa tesela-<versión>-x64.msi` con el MSI de la versión instalada.
+
+### Zip portable
+
+`tesela-<versión>-x64-portable.zip` trae `tesela.exe`, `tesela-scan.exe`, las licencias y los avisos de terceros. Descomprímelo
+donde quieras y ejecuta `tesela.exe`; no instala nada ni toca el registro. Para quitarlo, borra la carpeta.
+
+### Verificar la descarga
+
+Cada release incluye `SHA256SUMS.txt` y una *attestation* de procedencia (GitHub certifica que los archivos salen del flujo
+público `release.yml` de este repositorio, sin manipular).
+
+```powershell
+# 1. La suma SHA-256 tiene que ser la de SHA256SUMS.txt:
+Get-FileHash .	esela-0.1.0-x64.msi -Algorithm SHA256
+# 2. La procedencia (necesita GitHub CLI: https://cli.github.com):
+gh attestation verify .	esela-0.1.0-x64.msi --repo wandoth1/tesela
+```
+
+### Aviso de Windows SmartScreen
+
+La v0.1 **todavía no está firmada** (la firma con [SignPath Foundation](CODE_SIGNING.md) se solicitará más adelante), así que
+Windows SmartScreen puede mostrar *"Windows protegió su PC"* al abrir el MSI o el `.exe`: no conoce al editor ni el archivo,
+**no** es que haya detectado nada. Si has verificado la descarga (arriba):
+
+1. Pulsa **Más información**.
+2. Pulsa **Ejecutar de todos modos**.
+
+(Si el navegador bloquea la descarga, usa *Conservar* en su lista de descargas.) Con la versión firmada el aviso desaparecerá
+al ganar reputación. Si tu antivirus pone en cuarentena el instalador, no añadas excepciones a ciegas: abre una issue con el
+nombre de la detección.
+
+### Desinstalar y qué queda
+
+*Aplicaciones instaladas > Tesela > Desinstalar* (o `msiexec /x tesela-<versión>-x64.msi`). Se quitan la carpeta del programa,
+el acceso del menú Inicio, la entrada de Aplicaciones instaladas y los valores que el instalador escribió en
+`HKCU\Software\Tesela`.
+
+**No se borran tus datos** (el instalador no los conoce; son tuyos):
+
+- `%APPDATA%\Tesela\config.toml`: tus ajustes (tema e idioma).
+- `%LOCALAPPDATA%\Tesela`: `history.jsonl` (resúmenes de limpiezas) y los registros `limpieza-<fecha>.jsonl` (ruta e identidad
+  de cada elemento limpiado).
+
+Para borrarlos a mano tras desinstalar (o antes, con *Ajustes > Borrar el historial*, que quita el historial y los registros):
+
+```powershell
+Remove-Item -Recurse -Force "$env:APPDATA\Tesela", "$env:LOCALAPPDATA\Tesela"
+```
 
 ## Uso
 
@@ -84,6 +149,7 @@ cargo run --release -p tesela-scan -- <ruta> --top 20   # solo lectura; opciones
 cargo run -p tesela-app -- --demo                        # la interfaz con datos sintéticos
 cargo test -p tesela-layout --release -- --ignored relayout   # benchmark del layout (20k rectángulos)
 pwsh -File scripts/build-release.ps1                     # release SIN rutas de la máquina en los binarios (y lo comprueba)
+pwsh -File scripts/build-msi.ps1                         # MSI por usuario + zip portable + SHA256SUMS.txt (necesita WiX 5.0.2: installer/README.md)
 python -I -m unittest discover -s scripts/tests -p "test_*.py"   # pruebas de scripts/check-pe.py
 ```
 
