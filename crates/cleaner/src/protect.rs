@@ -103,8 +103,14 @@ impl Protection {
         }
     }
 
-    fn is_exempt(&self, key: &PathKey) -> bool {
-        self.exempt.iter().any(|e| key.is_same_or_under(e))
+    /// ¿Levanta alguna excepción la denegación que está en `zone` (un ancestro de `key` o él mismo)? Solo si `key` cuelga
+    /// de una raíz exenta `e` y `zone` está en `e` o POR ENCIMA de ella: una denegación entre la raíz exenta (exclusive) y
+    /// `key` sigue en pie. Así, por ejemplo, la carpeta de la propia aplicación nunca se borra aunque esté dentro de un
+    /// temporal exento.
+    fn lifts(&self, key: &PathKey, zone: &PathKey) -> bool {
+        self.exempt
+            .iter()
+            .any(|e| key.is_same_or_under(e) && e.is_same_or_under(zone))
     }
 
     /// ¿Es una entrada de sistema de la raíz de un volumen (`$Recycle.Bin`, `$MFT`, `System Volume Information`,
@@ -116,27 +122,16 @@ impl Protection {
         }
     }
 
-    /// ¿Está `key` o algún ancestro suyo denegado (y no exento)?
+    /// ¿Está `key` o algún ancestro suyo denegado, sin que una excepción lo levante (ver [`Protection::lifts`])?
     fn is_denied(&self, key: &PathKey) -> bool {
-        if self.is_exempt(key) {
-            return false;
-        }
-        let hit = |k: &PathKey| self.denied.contains(k) || Self::is_system_entry(k);
-        if hit(key) {
-            return true;
-        }
-        key.ancestors().iter().any(|a| {
-            // Un ancestro exento no deniega lo que cuelga de él, y una denegación por encima de una excepción no la
-            // alcanza: `is_exempt(key)` ya lo resolvió arriba para `key`.
-            hit(a)
-        })
+        let hit = |k: &PathKey| {
+            (self.denied.contains(k) || Self::is_system_entry(k)) && !self.lifts(key, k)
+        };
+        hit(key) || key.ancestors().iter().any(hit)
     }
 
     /// Veredicto de `key` como DESTINO de la cesta.
     pub fn target_verdict(&self, key: &PathKey) -> Verdict {
-        if self.is_exempt(key) {
-            return Verdict::Allowed;
-        }
         if self.is_denied(key) {
             return Verdict::Denied;
         }
@@ -335,6 +330,52 @@ mod tests {
         ] {
             assert_eq!(p.target_verdict(&k(s)), Verdict::Denied, "{s}");
         }
+    }
+
+    #[test]
+    fn una_excepcion_no_levanta_una_denegacion_que_esta_dentro_de_ella() {
+        // El temporal del usuario es una raíz exenta y la carpeta de la propia aplicación está DENTRO de él: la exención
+        // levanta lo que hay por encima, no esa denegación.
+        let p = Protection::new(&ProtectionRoots {
+            denied: pb(&[
+                r"C:\Users\<usuario>\AppData\Local\Temp\app",
+                r"C:\Users\<usuario>\AppData\Local\Tesela",
+            ]),
+            untouchable: pb(&[r"C:\Users\<usuario>\AppData\Local"]),
+            content_roots: Vec::new(),
+            exempt: pb(&[r"C:\Users\<usuario>\AppData\Local\Temp"]),
+        });
+        let t = r"C:\Users\<usuario>\AppData\Local\Temp";
+        for s in [
+            format!(r"{t}\app"),
+            format!(r"{t}\app\tesela.exe"),
+            format!(r"{t}\app\datos\x.bin"),
+        ] {
+            assert_eq!(p.target_verdict(&k(&s)), Verdict::Denied, "{s}");
+            assert_eq!(p.child_action(&k(&s)), ChildAction::Skip, "{s}");
+        }
+        // Lo demás del temporal sigue siendo limpiable, y el temporal en sí no se borra como destino (contiene la app).
+        for s in [
+            format!(r"{t}\x.tmp"),
+            format!(r"{t}\apps"),
+            format!(r"{t}\otra\x"),
+        ] {
+            assert_eq!(p.target_verdict(&k(&s)), Verdict::Allowed, "{s}");
+            assert_eq!(p.child_action(&k(&s)), ChildAction::Delete, "{s}");
+        }
+        assert_eq!(p.target_verdict(&k(t)), Verdict::Untouchable);
+        assert_eq!(p.child_action(&k(t)), ChildAction::Descend);
+        // Una denegación EXACTAMENTE sobre la raíz exenta sí se levanta (es el caso de `Windows\Temp` dentro de Windows).
+        let w = Protection::new(&ProtectionRoots {
+            denied: pb(&[r"C:\Windows", r"C:\Windows\Temp"]),
+            exempt: pb(&[r"C:\Windows\Temp"]),
+            ..ProtectionRoots::default()
+        });
+        assert_eq!(w.target_verdict(&k(r"C:\Windows\Temp\x")), Verdict::Allowed);
+        assert_eq!(
+            w.target_verdict(&k(r"C:\Windows\System32")),
+            Verdict::Denied
+        );
     }
 
     #[test]

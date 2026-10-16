@@ -4,8 +4,10 @@
 //! las cachés ni la Papelera reales.
 //!
 //! `%TEMP%` no es una carpeta conocida. Se pregunta a Windows (`GetTempPathW`) y SOLO se ofrece como "Temporales del
-//! usuario" si, ya canonicalizada, cuelga de `%LOCALAPPDATA%` (el sitio por defecto): un `TEMP` redirigido a otra parte
-//! (Documentos, la raíz de una unidad...) no puede volver "seguro" lo que hay allí.
+//! usuario" si, ya canonicalizada, es `%LOCALAPPDATA%\Temp` (el sitio por defecto, con `%LOCALAPPDATA%` de
+//! `SHGetKnownFolderPath`) o cuelga de ella: un `TEMP` redirigido a otra parte (Documentos, la raíz de una unidad,
+//! `%LOCALAPPDATA%` entero o `Local\Programs`...) no puede volver "seguro" lo que hay allí. Cualquier otro valor descarta
+//! la categoría.
 
 use crate::paths::{PathKey, canonical_path};
 use crate::protect::{Protection, ProtectionRoots};
@@ -43,6 +45,11 @@ fn kf(id: &windows_sys::core::GUID) -> Option<PathBuf> {
     known_folder(id).and_then(|p| canon(&p))
 }
 
+/// ¿Se acepta `temp` (canónica) como "Temporales del usuario"? Solo si es `<local>\Temp` o cuelga de ella.
+pub(crate) fn accept_user_temp(temp: &Path, local: Option<&Path>) -> bool {
+    local.is_some_and(|l| PathKey::new(temp).is_same_or_under(&PathKey::new(&l.join("Temp"))))
+}
+
 /// Las carpetas de usuario de otros perfiles: los hijos de `users_dir` que no son `current_profile`.
 fn other_profiles(users_dir: &Path, current_profile: Option<&Path>) -> Vec<PathBuf> {
     let cur = current_profile.map(PathBuf::from).map(|p| PathKey::new(&p));
@@ -69,14 +76,10 @@ impl Roots {
         let program_data = kf(&FOLDERID_ProgramData);
         let public = kf(&FOLDERID_Public);
 
-        // %TEMP%: solo si, canonicalizado, cuelga de %LOCALAPPDATA%.
+        // %TEMP%: solo si, canonicalizado, es %LOCALAPPDATA%\Temp o cuelga de ella.
         let user_temp = crate::volume::temp_path()
             .and_then(|t| canon(&t))
-            .filter(|t| {
-                local
-                    .as_ref()
-                    .is_some_and(|l| PathKey::new(t).is_same_or_under(&PathKey::new(l)))
-            });
+            .filter(|t| accept_user_temp(t, local.as_deref()));
         let windows_temp = windows.as_ref().and_then(|w| canon(&w.join("Temp")));
 
         let mut denied: Vec<PathBuf> = Vec::new();
@@ -255,14 +258,26 @@ mod tests {
     }
 
     #[test]
-    fn un_temp_fuera_de_localappdata_no_se_ofrece() {
-        // `from_system` solo acepta TEMP si cuelga de LocalAppData: se comprueba la regla con claves.
-        let local = PathKey::new(Path::new(r"C:\Users\<usuario>\AppData\Local"));
-        let ok = PathKey::new(Path::new(r"C:\Users\<usuario>\AppData\Local\Temp"));
-        let docs = PathKey::new(Path::new(r"C:\Users\<usuario>\Documents"));
-        let root = PathKey::new(Path::new(r"C:\"));
-        assert!(ok.is_same_or_under(&local));
-        assert!(!docs.is_same_or_under(&local));
-        assert!(!root.is_same_or_under(&local));
+    fn solo_se_acepta_un_temp_que_es_localappdata_temp_o_cuelga_de_el() {
+        let local = Path::new(r"C:\Users\<usuario>\AppData\Local");
+        let ok = |s: &str| accept_user_temp(Path::new(s), Some(local));
+        // El sitio por defecto, con otra capitalización, con el prefijo verbatim y un subdirectorio.
+        assert!(ok(r"C:\Users\<usuario>\AppData\Local\Temp"));
+        assert!(ok(r"c:\users\<USUARIO>\appdata\local\TEMP"));
+        assert!(ok(r"\\?\C:\Users\<usuario>\AppData\Local\Temp"));
+        assert!(ok(r"C:\Users\<usuario>\AppData\Local\Temp\sub"));
+        // TEMP = %LOCALAPPDATA% entero, otras carpetas de Local, Documentos o la raíz de la unidad: la categoría se descarta.
+        assert!(!ok(r"C:\Users\<usuario>\AppData\Local"));
+        assert!(!ok(r"C:\Users\<usuario>\AppData\Local\Programs"));
+        assert!(!ok(r"C:\Users\<usuario>\AppData\Local\Temporal"));
+        assert!(!ok(r"C:\Users\<usuario>\AppData\Local\Microsoft\Temp"));
+        assert!(!ok(r"C:\Users\<usuario>\Documents"));
+        assert!(!ok(r"C:\"));
+        assert!(!ok(r"C:\Windows\Temp"));
+        // Sin LocalAppData conocida no se ofrece nada.
+        assert!(!accept_user_temp(
+            Path::new(r"C:\Users\<usuario>\AppData\Local\Temp"),
+            None
+        ));
     }
 }
