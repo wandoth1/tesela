@@ -17,6 +17,7 @@
 //! * `--mem`: imprime el private working set (antes, pico muestreado y en régimen con el árbol vivo).
 //! * `--verbose`: lista las rutas prioritarias y las muestras de error.
 
+mod dll_hardening;
 mod memory;
 
 use serde_json::json;
@@ -474,6 +475,8 @@ fn write_json(
 }
 
 fn main() -> ExitCode {
+    // LO PRIMERO: la búsqueda de DLL se limita a System32 (ver `dll_hardening`).
+    let _ = dll_hardening::restrict_dll_search();
     // `--version` (o `-V`) como primer argumento: imprime la version por la salida estandar y sale (sin escanear).
     if matches!(std::env::args().nth(1).as_deref(), Some("--version" | "-V")) {
         println!("tesela-scan {}", env!("CARGO_PKG_VERSION"));

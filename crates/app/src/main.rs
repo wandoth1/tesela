@@ -6,6 +6,7 @@
 mod cli;
 mod config;
 mod console;
+mod dll_hardening;
 mod memory;
 mod output;
 mod shell;
@@ -15,6 +16,9 @@ use config::{Config, MIN_SIZE};
 use tesela_ui::{CleanStart, DemoOptions, MapStart, Options, StartScreen, TeselaUi};
 
 fn main() -> eframe::Result {
+    // LO PRIMERO, antes de analizar argumentos y de que eframe y wgpu carguen nada por nombre: la búsqueda de DLL se
+    // limita a System32 (ver `dll_hardening`). Si Windows lo rechaza se sigue con el orden predeterminado.
+    let _ = dll_hardening::restrict_dll_search();
     let cli = match cli::parse(std::env::args().skip(1)) {
         Ok(c) => c,
         Err(e) => {
@@ -84,6 +88,11 @@ fn main() -> eframe::Result {
     if let eframe::egui_wgpu::WgpuSetup::CreateNew(c) = &mut native.wgpu_options.wgpu_setup {
         // Solo DX12 (PLAN.md §1): si no hay GPU, wgpu ofrece el adaptador WARP de Windows.
         c.instance_descriptor.backends = eframe::wgpu::Backends::DX12;
+        // Compilador de sombreadores FIJO: FXC (`d3dcompiler_47.dll`, del sistema). Con el `Auto` predeterminado wgpu
+        // intenta antes cargar `dxcompiler.dll` por nombre, que no existe en un Windows normal; así también se ignora la
+        // variable de entorno `WGPU_DX12_COMPILER`.
+        c.instance_descriptor.backend_options.dx12.shader_compiler =
+            eframe::wgpu::Dx12Compiler::Fxc;
     }
 
     let demo = cli.demo.then_some(DemoOptions {
