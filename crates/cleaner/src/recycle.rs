@@ -417,23 +417,89 @@ impl Guard {
         }
     }
 
-    /// ¿Es `path` lo aprobado? Abre por ruta sin seguir enlaces y compara la identidad. Lo que cuelga de un elemento
-    /// aprobado (la shell puede notificar hijos de una carpeta) pasa: su ancestro ya se verificó. Lo que no cuelga de nada
-    /// aprobado se veta.
+    /// ¿Es `path` lo aprobado? Abre por ruta sin seguir enlaces y compara la identidad. SOLO pasa lo que está aprobado
+    /// por esa ruta exacta: un hijo de un elemento aprobado, un alias (otro nombre del mismo objeto) o cualquier otra cosa
+    /// se vetan (`NotApproved`). Con la shell real una carpeta emite un único evento, así que la rama "los hijos pasan"
+    /// era inalcanzable y fallar cerrado es mejor (H6.1).
     fn check(&self, path: &OsString) -> std::result::Result<(), VetoKind> {
         let key = PathKey::new(Path::new(path));
-        if let Some((_, want)) = self.approved.iter().find(|(k, _)| *k == key) {
-            return match sys::open_for_query(Path::new(path)).and_then(|h| sys::meta(&h)) {
-                Ok(m) if m.identity == *want => Ok(()),
-                Ok(_) => Err(VetoKind::IdentityMismatch),
-                Err(c) => Err(VetoKind::OpenFailed(c)),
-            };
+        let Some((_, want)) = self.approved.iter().find(|(k, _)| *k == key) else {
+            return Err(VetoKind::NotApproved);
+        };
+        match sys::open_for_query(Path::new(path)).and_then(|h| sys::meta(&h)) {
+            Ok(m) if m.identity == *want => Ok(()),
+            Ok(_) => Err(VetoKind::IdentityMismatch),
+            Err(c) => Err(VetoKind::OpenFailed(c)),
         }
-        if self.approved.iter().any(|(k, _)| key.is_same_or_under(k)) {
-            Ok(())
-        } else {
-            Err(VetoKind::NotApproved)
+    }
+}
+
+/// El estado de un elemento según `psiNewlyCreated` de `PostDeleteItem`: `None` = nulo (eliminado definitivamente);
+/// `Some(None)` = hay elemento pero no se pudo leer su ruta; `Some(Some(ruta))` = está en la Papelera. Pura.
+fn bin_state(newly_created: Option<Option<PathBuf>>) -> BinState {
+    match newly_created {
+        None => BinState::Deleted,
+        Some(Some(p)) => BinState::InBin(p),
+        Some(None) => BinState::InBinUnknownPath,
+    }
+}
+
+/// ¿Debe el receptor cortar el lote tras este `PostDeleteItem`? Solo al ENVIAR (`sending`: al purgar el borrado
+/// definitivo es lo esperado) y solo si la shell dijo que fue bien pero el elemento no está verificablemente en la
+/// Papelera: eliminado definitivamente (`Deleted`) o sin ruta (`InBinUnknownPath`). Pura.
+fn post_delete_aborts(sending: bool, hrdelete: i32, state: &BinState) -> bool {
+    sending && hrdelete >= 0 && matches!(state, BinState::Deleted | BinState::InBinUnknownPath)
+}
+
+/// La lógica del receptor SIN COM (así se prueba en cualquier equipo): `Recorder` solo traduce los argumentos de la shell
+/// y llama aquí.
+struct SinkCore {
+    events: Events,
+    state: Arc<SinkState>,
+    guard: Option<Guard>,
+}
+
+impl SinkCore {
+    /// `PreDeleteItem`: `true` = la shell puede seguir con este elemento; `false` = el receptor debe devolver `E_ABORT`.
+    fn pre_delete(&self, item: OsString) -> bool {
+        let Some(guard) = &self.guard else {
+            return true;
+        };
+        // Defensa: si el lote ya está cancelado, ningún elemento más se procesa aunque la shell siguiera.
+        if self.state.tripped.load(Ordering::SeqCst) {
+            return false;
         }
+        match guard.check(&item) {
+            Ok(()) => true,
+            Err(kind) => {
+                // Veto: el sustituto NO se envía y se cancela el resto del lote (falla cerrado).
+                self.state.tripped.store(true, Ordering::SeqCst);
+                self.state
+                    .vetoes
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(Veto { item, kind });
+                false
+            }
+        }
+    }
+
+    /// `PostDeleteItem`: registra el evento PRIMERO. `true` = el receptor debe devolver `E_ABORT` (y el lote queda
+    /// cancelado).
+    fn post_delete(&self, item: OsString, hrdelete: i32, state: BinState) -> bool {
+        let abort = post_delete_aborts(self.guard.is_some(), hrdelete, &state);
+        self.events
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push(DeleteEvent {
+                item,
+                hr: hrdelete,
+                state,
+            });
+        if abort {
+            self.state.tripped.store(true, Ordering::SeqCst);
+        }
+        abort
     }
 }
 
@@ -443,9 +509,7 @@ impl Guard {
 /// método del receptor hace que la shell cancele lo que quedara pendiente: es exactamente lo que se quiere.
 #[implement(IFileOperationProgressSink)]
 struct Recorder {
-    events: Events,
-    state: Arc<SinkState>,
-    guard: Option<Guard>,
+    core: SinkCore,
 }
 
 impl IFileOperationProgressSink_Impl for Recorder_Impl {
@@ -514,29 +578,14 @@ impl IFileOperationProgressSink_Impl for Recorder_Impl {
         Ok(())
     }
     fn PreDeleteItem(&self, _dwflags: u32, psiitem: Ref<IShellItem>) -> windows::core::Result<()> {
-        let Some(guard) = &self.guard else {
-            return Ok(());
-        };
-        // Defensa: si el lote ya está cancelado, ningún elemento más se procesa aunque la shell siguiera.
-        if self.state.tripped.load(Ordering::SeqCst) {
-            return Err(E_ABORT.into());
-        }
         let item = psiitem
             .as_ref()
             .and_then(|i| display(i, SIGDN_DESKTOPABSOLUTEPARSING))
             .unwrap_or_default();
-        match guard.check(&item) {
-            Ok(()) => Ok(()),
-            Err(kind) => {
-                // Veto: el sustituto NO se envía y se cancela el resto del lote (falla cerrado).
-                self.state.tripped.store(true, Ordering::SeqCst);
-                self.state
-                    .vetoes
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .push(Veto { item, kind });
-                Err(E_ABORT.into())
-            }
+        if self.core.pre_delete(item) {
+            Ok(())
+        } else {
+            Err(E_ABORT.into())
         }
     }
     fn PostDeleteItem(
@@ -550,30 +599,16 @@ impl IFileOperationProgressSink_Impl for Recorder_Impl {
             .as_ref()
             .and_then(|i| display(i, SIGDN_DESKTOPABSOLUTEPARSING))
             .unwrap_or_default();
-        let state = match psinewlycreated.as_ref() {
-            None => BinState::Deleted,
-            Some(n) => match display(n, SIGDN_FILESYSPATH) {
-                Some(p) => BinState::InBin(PathBuf::from(p)),
-                None => BinState::InBinUnknownPath,
-            },
-        };
-        // Con éxito, `psiNewlyCreated` nulo = eliminado definitivamente y sin ruta = no se puede verificar: en ambos casos
-        // el lote se corta. El evento se registra ANTES de devolver el error.
-        let unsafe_outcome =
-            hrdelete.0 >= 0 && matches!(state, BinState::Deleted | BinState::InBinUnknownPath);
-        self.events
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(DeleteEvent {
-                item,
-                hr: hrdelete.0,
-                state,
-            });
-        if self.guard.is_some() && unsafe_outcome {
-            self.state.tripped.store(true, Ordering::SeqCst);
-            return Err(E_ABORT.into());
+        let state = bin_state(
+            psinewlycreated
+                .as_ref()
+                .map(|n| display(n, SIGDN_FILESYSPATH).map(PathBuf::from)),
+        );
+        if self.core.post_delete(item, hrdelete.0, state) {
+            Err(E_ABORT.into())
+        } else {
+            Ok(())
         }
-        Ok(())
     }
     fn PreNewItem(
         &self,
@@ -622,9 +657,11 @@ impl Operation {
         let events: Events = Arc::new(Mutex::new(Vec::new()));
         let state = Arc::new(SinkState::default());
         let sink: IFileOperationProgressSink = Recorder {
-            events: events.clone(),
-            state: state.clone(),
-            guard,
+            core: SinkCore {
+                events: events.clone(),
+                state: state.clone(),
+                guard,
+            },
         }
         .into();
         // SAFETY: COM está inicializado en este hilo (lo garantiza quien llama); `sink` es una interfaz viva que `Advise`
@@ -1613,6 +1650,142 @@ mod tests {
         assert_eq!(left, vec![mine[2].clone()]);
         purge_items(&left, &AtomicBool::new(false)).unwrap();
         assert_eq!(ids(), before);
+    }
+
+    fn send_item(sb: &Sandbox, rel: &str, size: usize) -> SendItem {
+        SendItem::capture(&sb.write(rel, size))
+    }
+
+    /// H3 (sin COM): la comprobación de `PreDeleteItem` por ruta. Misma identidad pasa; otra identidad, un archivo que ya no
+    /// está, un hijo, un alias (otro nombre del mismo objeto) y cualquier ruta no aprobada se vetan.
+    #[test]
+    fn el_guard_solo_deja_pasar_la_ruta_aprobada_con_su_identidad() {
+        let sb = Sandbox::new();
+        let a = send_item(&sb, "g/a.txt", 100);
+        let dir = SendItem::capture(&sb.mkdir("g/carpeta"));
+        sb.write("g/carpeta/hijo.txt", 50);
+        let guard = Guard::new(&[a.clone(), dir.clone()]);
+        let os = |p: &Path| p.as_os_str().to_os_string();
+        // La misma ruta con la misma identidad: pasa (también con otra capitalización).
+        assert_eq!(guard.check(&os(&a.path)), Ok(()));
+        assert_eq!(guard.check(&os(&dir.path)), Ok(()));
+        let upper = PathBuf::from(a.path.to_string_lossy().to_uppercase());
+        assert_eq!(guard.check(&os(&upper)), Ok(()));
+        // Un hijo de un elemento aprobado: se veta (la shell real emite un solo evento por carpeta).
+        assert_eq!(
+            guard.check(&os(&dir.path.join("hijo.txt"))),
+            Err(VetoKind::NotApproved)
+        );
+        // Algo que no estaba en la lista.
+        let otro = sb.write("g/otro.txt", 10);
+        assert_eq!(guard.check(&os(&otro)), Err(VetoKind::NotApproved));
+        // Un alias del objeto aprobado (enlace duro con OTRO nombre): misma identidad pero no es la ruta aprobada.
+        sb.hard_link("g/a.txt", "g/alias.txt");
+        assert_eq!(
+            guard.check(&os(&sb.path("g/alias.txt"))),
+            Err(VetoKind::NotApproved)
+        );
+        // El aprobado se aparta y otro objeto ocupa su nombre: identidad distinta.
+        std::fs::remove_file(sb.path("g/alias.txt")).unwrap();
+        std::fs::rename(sb.path("g/a.txt"), sb.path("g/a-original.txt")).unwrap();
+        sb.write("g/a.txt", 100);
+        assert_eq!(guard.check(&os(&a.path)), Err(VetoKind::IdentityMismatch));
+        // Un enlace duro a OTRO objeto en el nombre aprobado: identidad distinta.
+        std::fs::remove_file(sb.path("g/a.txt")).unwrap();
+        sb.write("g/ajeno.txt", 100);
+        sb.hard_link("g/ajeno.txt", "g/a.txt");
+        assert_eq!(guard.check(&os(&a.path)), Err(VetoKind::IdentityMismatch));
+        // Un enlace duro al MISMO objeto aprobado en su nombre: la identidad coincide (lo que lo detecta es m1, que
+        // compara `NumberOfLinks`, no esta comprobación).
+        std::fs::remove_file(sb.path("g/a.txt")).unwrap();
+        sb.hard_link("g/a-original.txt", "g/a.txt");
+        assert_eq!(guard.check(&os(&a.path)), Ok(()));
+        // El nombre aprobado ya no existe: no se puede comprobar, se veta.
+        std::fs::remove_file(sb.path("g/a.txt")).unwrap();
+        assert!(matches!(
+            guard.check(&os(&a.path)),
+            Err(VetoKind::OpenFailed(2 | 3))
+        ));
+    }
+
+    /// H3 (sin COM): el estado según `psiNewlyCreated` y la decisión de cortar el lote tras `PostDeleteItem`.
+    #[test]
+    fn la_decision_de_cortar_el_lote_es_pura_y_cubre_todos_los_casos() {
+        let p = PathBuf::from(r"C:\$Recycle.Bin\S\$R1");
+        assert_eq!(bin_state(None), BinState::Deleted);
+        assert_eq!(bin_state(Some(None)), BinState::InBinUnknownPath);
+        assert_eq!(bin_state(Some(Some(p.clone()))), BinState::InBin(p.clone()));
+        let ok = 0;
+        let fail = 0x8007_0005u32 as i32;
+        // Al ENVIAR con éxito: eliminado o sin ruta cortan; en la Papelera, no.
+        assert!(post_delete_aborts(true, ok, &BinState::Deleted));
+        assert!(post_delete_aborts(true, ok, &BinState::InBinUnknownPath));
+        assert!(post_delete_aborts(true, 0x0027_0003, &BinState::Deleted));
+        assert!(!post_delete_aborts(true, ok, &BinState::InBin(p)));
+        // Si la shell falló, no se corta por esto (el fallo ya consta como error del elemento).
+        assert!(!post_delete_aborts(true, fail, &BinState::Deleted));
+        assert!(!post_delete_aborts(true, fail, &BinState::InBinUnknownPath));
+        // Al PURGAR el borrado definitivo es lo esperado: nunca corta.
+        assert!(!post_delete_aborts(false, ok, &BinState::Deleted));
+        assert!(!post_delete_aborts(false, ok, &BinState::InBinUnknownPath));
+    }
+
+    fn core_for(items: &[SendItem], sending: bool) -> SinkCore {
+        SinkCore {
+            events: Arc::new(Mutex::new(Vec::new())),
+            state: Arc::new(SinkState::default()),
+            guard: sending.then(|| Guard::new(items)),
+        }
+    }
+
+    /// H3 (sin COM): el receptor registra el evento ANTES de decidir cortar, y una vez cortado niega todo lo posterior.
+    #[test]
+    fn el_receptor_registra_primero_corta_despues_y_niega_lo_posterior() {
+        let sb = Sandbox::new();
+        let a = send_item(&sb, "r/a.txt", 10);
+        let b = send_item(&sb, "r/b.txt", 10);
+        let core = core_for(&[a.clone(), b.clone()], true);
+        let os = |p: &Path| p.as_os_str().to_os_string();
+        assert!(core.pre_delete(os(&a.path)));
+        // Eliminado definitivamente con éxito: el evento consta y se pide cortar.
+        assert!(core.post_delete(os(&a.path), 0, BinState::Deleted));
+        {
+            let ev = core.events.lock().unwrap();
+            assert_eq!(ev.len(), 1);
+            assert_eq!((ev[0].hr, &ev[0].state), (0, &BinState::Deleted));
+        }
+        assert!(core.state.tripped.load(Ordering::SeqCst));
+        // Cortado: el siguiente `PreDeleteItem` se niega aunque sea lo aprobado.
+        assert!(!core.pre_delete(os(&b.path)));
+        // Un lote en el que todo va a la Papelera no corta y registra cada evento.
+        let ok = core_for(std::slice::from_ref(&a), true);
+        let bin = PathBuf::from(r"C:\$Recycle.Bin\S\$R1");
+        assert!(!ok.post_delete(os(&a.path), 0, BinState::InBin(bin)));
+        assert!(!ok.state.tripped.load(Ordering::SeqCst));
+        // Al purgar (sin guarda) nada corta ni veta.
+        let purge = core_for(&[], false);
+        assert!(purge.pre_delete(os(&a.path)));
+        assert!(!purge.post_delete(os(&a.path), 0, BinState::Deleted));
+        assert!(!purge.state.tripped.load(Ordering::SeqCst));
+        assert_eq!(purge.events.lock().unwrap().len(), 1);
+    }
+
+    /// H3 (sin COM): un veto registra su motivo, corta y niega lo siguiente.
+    #[test]
+    fn un_veto_del_receptor_registra_el_motivo_y_corta_el_lote() {
+        let sb = Sandbox::new();
+        let a = send_item(&sb, "v/a.txt", 10);
+        let b = send_item(&sb, "v/b.txt", 10);
+        let core = core_for(&[a.clone(), b.clone()], true);
+        let os = |p: &Path| p.as_os_str().to_os_string();
+        std::fs::rename(sb.path("v/a.txt"), sb.path("v/a-ori.txt")).unwrap();
+        sb.write("v/a.txt", 10);
+        assert!(!core.pre_delete(os(&a.path)), "el sustituto se veta");
+        let vetoes = core.state.vetoes.lock().unwrap().clone();
+        assert_eq!(vetoes.len(), 1);
+        assert_eq!(vetoes[0].kind, VetoKind::IdentityMismatch);
+        assert!(core.state.tripped.load(Ordering::SeqCst));
+        assert!(!core.pre_delete(os(&b.path)), "lo siguiente, también");
     }
 
     /// S1: las banderas de envío y de purga llevan `FOF_NO_CONNECTED_ELEMENTS` (aprobar `pagina.html` no puede arrastrar
