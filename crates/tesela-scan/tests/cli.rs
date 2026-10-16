@@ -243,3 +243,16 @@ fn overwrite_sin_json_de_archivo_es_un_error_de_uso() {
     ]);
     assert_eq!(code, 2);
 }
+
+#[test]
+fn version_se_imprime_por_la_salida_estandar_y_no_escanea() {
+    for flag in ["--version", "-V"] {
+        let (code, out, err) = run(&[Path::new(flag)]);
+        assert_eq!(code, 0, "{err}");
+        assert_eq!(
+            out.trim(),
+            format!("tesela-scan {}", env!("CARGO_PKG_VERSION"))
+        );
+        assert!(err.is_empty(), "{err}");
+    }
+}

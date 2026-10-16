@@ -49,7 +49,7 @@ struct Args {
     verbose: bool,
 }
 
-const USAGE: &str = "uso: tesela-scan <ruta> [--threads N] [--top N] [--json archivo|-] [--overwrite] [--no-priority] [--fallback] [--stop-after SEGUNDOS] [--mem] [--verbose]
+const USAGE: &str = "uso: tesela-scan <ruta> [--threads N] [--top N] [--json archivo|-] [--overwrite] [--no-priority] [--fallback] [--stop-after SEGUNDOS] [--mem] [--verbose] | --version
   --json archivo   escribe el resumen en JSON; NO pisa un archivo que ya exista
   --json -         escribe el JSON por la salida estandar (el informe legible va a la de errores)
   --overwrite      con --json archivo: reemplaza el archivo si ya existe";
@@ -470,6 +470,11 @@ fn write_json(
 }
 
 fn main() -> ExitCode {
+    // `--version` (o `-V`) como primer argumento: imprime la version por la salida estandar y sale (sin escanear).
+    if matches!(std::env::args().nth(1).as_deref(), Some("--version" | "-V")) {
+        println!("tesela-scan {}", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
     let args = match parse_args(std::env::args().skip(1)) {
         Ok(a) => a,
         Err(msg) => {

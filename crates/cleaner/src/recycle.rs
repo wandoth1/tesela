@@ -756,13 +756,18 @@ pub(crate) mod bintest {
     /// Variable de entorno que activa las pruebas con la Papelera REAL del usuario (`TESELA_REAL_RECYCLE_TESTS=1`).
     pub const REAL_RECYCLE_VAR: &str = "TESELA_REAL_RECYCLE_TESTS";
 
+    /// ¿Está definida `TESELA_REAL_RECYCLE_TESTS=1`? (Sin imprimir nada.)
+    pub fn real_recycle_requested() -> bool {
+        std::env::var(REAL_RECYCLE_VAR).is_ok_and(|v| v == "1")
+    }
+
     /// ¿Están activadas las pruebas con la Papelera real? Solo con `TESELA_REAL_RECYCLE_TESTS=1`. El CI de GitHub
     /// (`windows-latest`, Windows Server sin sesión interactiva) no tiene una Papelera de usuario fiable: la shell la
     /// lista pero no devuelve lo que se envía a ella, y esas pruebas fallaban allí por el entorno, no por el código. En
     /// un equipo de escritorio la suite completa se lanza con la variable (ver el README). Sin ella, estas pruebas se
     /// saltan con un mensaje; las aserciones NO se han debilitado.
     pub fn real_recycle_enabled() -> bool {
-        if std::env::var(REAL_RECYCLE_VAR).is_ok_and(|v| v == "1") {
+        if real_recycle_requested() {
             return true;
         }
         eprintln!(
@@ -1048,6 +1053,27 @@ mod tests {
         assert_eq!(left, vec![mine[2].clone()]);
         purge_items(&left, &AtomicBool::new(false)).unwrap();
         assert_eq!(ids(), before);
+    }
+
+    /// Centinela: sin `TESELA_REAL_RECYCLE_TESTS=1` las pruebas que usan la Papelera real se saltan EN SILENCIO (pasan sin
+    /// ejecutar nada). Esta prueba lo dice con una cifra: cuántas se han saltado (las llamadas a `bin_usable()` de este
+    /// archivo y de `exec_tests.rs`). Cargo oculta la salida de las pruebas que pasan: se ve con `cargo test -- --nocapture`.
+    #[test]
+    fn centinela_pruebas_de_la_papelera_real_saltadas() {
+        if bintest::real_recycle_requested() {
+            return;
+        }
+        let call = concat!("if !bin_", "usable()");
+        let n = include_str!("recycle.rs").matches(call).count()
+            + include_str!("exec_tests.rs").matches(call).count();
+        assert!(
+            n > 0,
+            "el centinela no encuentra ninguna prueba de la Papelera real"
+        );
+        eprintln!(
+            "{n} tests de la Papelera real NO se han ejecutado (defina {}=1 para ejecutarlos)",
+            bintest::REAL_RECYCLE_VAR
+        );
     }
 
     #[test]
