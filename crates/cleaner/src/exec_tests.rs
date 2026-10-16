@@ -1745,6 +1745,42 @@ fn sin_registro_no_hay_ninguna_accion_destructiva() {
     assert!(sb.path("Temp/viejo.tmp").exists() && sb.path("Docs/b.txt").exists());
 }
 
+/// H6.8: una ejecución rechazada antes de tocar nada (`NeedsReconfirm`, `LogRequired`) no deja un registro con solo la línea
+/// de arranque ocupando una plaza de la retención.
+#[test]
+fn una_ejecucion_rechazada_no_deja_registro() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    let mut plan = plan_de(&sb, &c, &[("a.txt", 100, 100)]);
+    // El encaje cambió desde la confirmación: lo aprobado dice "no cabe" y ahora cabe.
+    plan.items[0].fit = Fit::Unfit(UnfitReason::TooBig);
+    let log = Arc::new(LogWriter::create(&sb.path("Tesela"), false).unwrap());
+    let path = log.path().to_path_buf();
+    assert!(path.exists());
+    let r = exec(&c, &plan, false, false, Some(log));
+    assert!(matches!(r, Err(ExecError::NeedsReconfirm(_))), "{r:?}");
+    assert!(
+        !path.exists(),
+        "el registro de una ejecución que no se hizo se borra"
+    );
+    assert!(sb.path("Docs/a.txt").exists());
+    // Con un registro ya fallido tampoco queda.
+    let plan2 = plan_de(&sb, &c, &[("b.txt", 100, 100)]);
+    let bad = Arc::new(LogWriter::create_failing_after(&sb.path("Tesela2"), false, 400).unwrap());
+    for i in 0..60 {
+        bad.write_note(
+            "x",
+            &format!("relleno largo para agotar el presupuesto {i}"),
+        );
+    }
+    bad.flush();
+    let bad_path = bad.path().to_path_buf();
+    let r2 = exec(&c, &plan2, false, false, Some(bad));
+    assert_eq!(r2.err(), Some(ExecError::LogRequired));
+    assert!(!bad_path.exists());
+}
+
 /// M4: un registro que no se puede crear es un error (la interfaz no ejecuta nada): aquí, la carpeta de datos es un archivo.
 #[test]
 fn un_registro_que_no_se_puede_crear_es_un_error() {

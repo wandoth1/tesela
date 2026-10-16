@@ -6,9 +6,14 @@
 //!   historial" de Ajustes los borra también ([`history_clear`]).
 //!
 //! # Retención (m2)
-//! La retención ([`KEEP_LOGS`] reales y [`KEEP_SIM_LOGS`] de simulación, cada clase por separado) solo la ejecuta una
-//! limpieza REAL al crear su registro. Una SIMULACIÓN (`--dry-run`) no poda nada: antes, 31 simulaciones seguidas
-//! desplazaban los registros reales (que son los que sirven para reconstruir lo borrado) por orden de fecha.
+//! Hay dos clases de registro, con retención PROPIA e independiente: los reales ([`KEEP_LOGS`]) y los de simulación
+//! (`-simulacion`, [`KEEP_SIM_LOGS`]). Al crear su registro, cada ejecución poda SOLO su clase: una limpieza real, los
+//! reales; una simulación (`--dry-run`), las simulaciones. Una simulación nunca toca un registro real: antes, 31
+//! simulaciones seguidas desplazaban los registros reales (los que sirven para reconstruir lo borrado) por orden de fecha.
+//!
+//! Un registro que no llegó a usarse (la ejecución se rechazó antes de tocar nada: p. ej. `NeedsReconfirm`) se BORRA
+//! ([`LogWriter::discard`]): contiene solo la línea de arranque y ocuparía una plaza de la retención de los registros
+//! con contenido. Es lo más simple y seguro: no hay que decidir cuándo "empezar" a registrar ni excluir nada de la poda.
 //!
 //! # Garantías del registro (M4)
 //! * **Sin registro no hay acción destructiva.** Quien ejecuta exige un registro (salvo en simulación) y lo comprueba.
@@ -229,10 +234,12 @@ impl LogWriter {
         // La línea de arranque ya está en disco (con `sync_all`): aunque la aplicación muera enseguida, consta que hubo
         // una limpieza.
         w.sync()?;
-        // La retención solo la ejecuta una limpieza real: una simulación no toca los registros que ya había (m2).
-        if !dry_run {
-            prune(dir, KEEP_LOGS, KEEP_SIM_LOGS);
-        }
+        // Cada ejecución poda SOLO su clase: una simulación nunca toca un registro real (m2).
+        prune(
+            dir,
+            dry_run,
+            if dry_run { KEEP_SIM_LOGS } else { KEEP_LOGS },
+        );
         Ok(w)
     }
 
@@ -272,6 +279,12 @@ impl LogWriter {
         self.bytes
             .fetch_add(line.len() as u64 + 1, Ordering::Relaxed);
         self.checked(r)
+    }
+
+    /// Borra el archivo del registro: para una ejecución que se rechazó antes de tocar nada (ver el módulo). No hace falta
+    /// cerrar nada antes: Windows admite borrar un archivo abierto con compartición de borrado.
+    pub fn discard(&self) {
+        let _ = fs::remove_file(&self.path);
     }
 
     /// ¿Va bien el registro? `false` en cuanto falló una escritura o un volcado (ya no se puede confiar en que conste lo
@@ -399,31 +412,25 @@ fn is_sim_log(name: &str) -> bool {
     name.contains("-simulacion")
 }
 
-/// Deja los `keep_real` registros reales y los `keep_sim` de simulación más recientes de `dir` (por nombre, que lleva la
-/// fecha). Cada clase se poda por separado: las simulaciones nunca desplazan a los reales.
-fn prune(dir: &Path, keep_real: usize, keep_sim: usize) {
+/// Deja los `keep` registros más recientes de UNA clase (`sim`: simulaciones; si no, reales) de `dir` (por nombre, que
+/// lleva la fecha). La otra clase no se toca.
+fn prune(dir: &Path, sim: bool, keep: usize) {
     let Ok(rd) = fs::read_dir(dir) else { return };
-    let mut real: Vec<PathBuf> = Vec::new();
-    let mut sim: Vec<PathBuf> = Vec::new();
-    for p in rd.flatten().map(|e| e.path()) {
-        let Some(name) = p.file_name().map(|n| n.to_string_lossy().into_owned()) else {
-            continue;
-        };
-        if p.extension().is_none_or(|x| x != "jsonl") || !name.starts_with("limpieza-") {
-            continue;
-        }
-        if is_sim_log(&name) {
-            sim.push(p);
-        } else {
-            real.push(p);
-        }
-    }
-    for (mut logs, keep) in [(real, keep_real), (sim, keep_sim)] {
-        logs.sort();
-        if logs.len() > keep {
-            for old in &logs[..logs.len() - keep] {
-                let _ = fs::remove_file(old);
-            }
+    let mut logs: Vec<PathBuf> = rd
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| {
+            p.extension().is_some_and(|x| x == "jsonl")
+                && p.file_name().is_some_and(|n| {
+                    let n = n.to_string_lossy();
+                    n.starts_with("limpieza-") && is_sim_log(&n) == sim
+                })
+        })
+        .collect();
+    logs.sort();
+    if logs.len() > keep {
+        for old in &logs[..logs.len() - keep] {
+            let _ = fs::remove_file(old);
         }
     }
 }
@@ -565,7 +572,7 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().starts_with("limpieza-"))
             .count();
         assert_eq!(n, KEEP_LOGS + 5 + 1, "{n}");
-        // Una limpieza REAL sí poda: los reales quedan en `KEEP_LOGS` (el nuevo cuenta) y la simulación se conserva.
+        // Una limpieza REAL sí poda sus reales: quedan en `KEEP_LOGS` (el nuevo cuenta) y la simulación se conserva.
         let real = LogWriter::create(&dir, false).unwrap();
         let (mut reales, mut sims) = (0, 0);
         for e in fs::read_dir(&dir).unwrap().flatten() {
@@ -583,50 +590,38 @@ mod tests {
         assert!(real.path().exists());
     }
 
-    /// m2: 31 registros reales y una simulación: siguen los 31 reales (antes, la simulación podaba y se llevaba el más
-    /// antiguo). Ni siquiera muchas simulaciones seguidas desplazan a los reales.
+    /// m2 y H6.6: 31 registros reales y una simulación: siguen los 31 reales (la simulación nunca toca un registro real).
+    /// Las simulaciones se podan SOLO entre sí (a `KEEP_SIM_LOGS`) y una limpieza real poda solo los reales.
     #[test]
-    fn una_simulacion_no_poda_los_registros_reales() {
+    fn cada_clase_de_registro_se_poda_solo_a_si_misma() {
         let sb = Sandbox::new();
         let dir = sb.mkdir("Tesela");
         for i in 0..31 {
             fs::write(dir.join(format!("limpieza-2001-{i:03}.jsonl")), b"{}").unwrap();
         }
-        let reales = |dir: &Path| {
+        let count = |dir: &Path, sim: bool| {
             fs::read_dir(dir)
                 .unwrap()
                 .flatten()
                 .map(|e| e.file_name().to_string_lossy().into_owned())
-                .filter(|n| n.starts_with("limpieza-2001-"))
+                .filter(|n| n.starts_with("limpieza-") && n.contains("-simulacion") == sim)
                 .count()
         };
         let sim = LogWriter::create(&dir, true).unwrap();
         assert!(sim.path().exists());
-        assert_eq!(reales(&dir), 31, "la simulación no debe podar");
-        // 40 simulaciones seguidas (en el mismo segundo los nombres llevan sufijo): los reales intactos y nada se poda.
+        assert_eq!(count(&dir, false), 31, "la simulación no toca los reales");
+        // 40 simulaciones seguidas (en el mismo segundo los nombres llevan sufijo): los reales intactos y las
+        // simulaciones, podadas entre sí.
         let sims: Vec<LogWriter> = (0..40)
             .map(|_| LogWriter::create(&dir, true).unwrap())
             .collect();
-        assert_eq!(reales(&dir), 31);
-        let n_sim = fs::read_dir(&dir)
-            .unwrap()
-            .flatten()
-            .filter(|e| e.file_name().to_string_lossy().contains("-simulacion"))
-            .count();
-        assert_eq!(n_sim, 41, "las simulaciones tampoco se podan entre sí");
+        assert_eq!(count(&dir, false), 31);
+        assert_eq!(count(&dir, true), KEEP_SIM_LOGS);
         drop(sims);
-        // Una limpieza real poda cada clase por separado: reales a `KEEP_LOGS`, simulaciones a `KEEP_SIM_LOGS`.
+        // Una limpieza real poda SOLO los reales (a `KEEP_LOGS`) y deja las simulaciones como están.
         let _real = LogWriter::create(&dir, false).unwrap();
-        let (mut r, mut s) = (0, 0);
-        for e in fs::read_dir(&dir).unwrap().flatten() {
-            let name = e.file_name().to_string_lossy().into_owned();
-            if name.contains("-simulacion") {
-                s += 1;
-            } else if name.starts_with("limpieza-") {
-                r += 1;
-            }
-        }
-        assert_eq!((r, s), (KEEP_LOGS, KEEP_SIM_LOGS));
+        assert_eq!(count(&dir, false), KEEP_LOGS);
+        assert_eq!(count(&dir, true), KEEP_SIM_LOGS);
     }
 
     fn event(i: usize, path_len: usize) -> Event {
@@ -639,6 +634,18 @@ mod tests {
             links: 1,
             outcome: Outcome::Deleted,
         }
+    }
+
+    /// H6.8: un registro descartado desaparece (no queda un archivo con solo la línea de arranque ocupando plaza).
+    #[test]
+    fn un_registro_descartado_no_deja_archivo() {
+        let sb = Sandbox::new();
+        let dir = sb.mkdir("Tesela");
+        let log = LogWriter::create(&dir, false).unwrap();
+        let path = log.path().to_path_buf();
+        assert!(path.exists());
+        log.discard();
+        assert!(!path.exists());
     }
 
     #[test]

@@ -290,6 +290,9 @@ impl Cleaner {
         progress.set_phase(Phase::Preparing);
         // M4: SIN REGISTRO UTILIZABLE NO HAY ACCIÓN DESTRUCTIVA. La simulación sí puede seguir sin él.
         if !opts.dry_run && opts.log.as_ref().is_none_or(|l| !l.ok()) {
+            if let Some(l) = &opts.log {
+                l.discard();
+            }
             return Err(ExecError::LogRequired);
         }
         // Un error de escritura del registro activa la cancelación: la limpieza se detiene en el siguiente punto seguro.
@@ -319,6 +322,10 @@ impl Cleaner {
             .map(|i| i.id)
             .collect();
         if !changed.is_empty() {
+            // Nada se ejecutó: el registro (solo la línea de arranque) no debe ocupar una plaza de la retención.
+            if let Some(l) = &opts.log {
+                l.discard();
+            }
             return Err(ExecError::NeedsReconfirm(changed));
         }
 
