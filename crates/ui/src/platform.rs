@@ -57,6 +57,9 @@ pub struct DriveInfo {
     /// Bytes disponibles para el usuario (ámbito usuario): menor que `free` si hay una cuota de disco. Solo se
     /// enseña como nota aparte en la tarjeta; nunca se resta de `total`.
     pub available: u64,
+    /// `total` y `free` son del VOLUMEN. Es `false` con una cuota cuando Windows no da la capacidad real: entonces son
+    /// las cifras del usuario (coherentes entre sí) y la tarjeta lo avisa.
+    pub volume_scope: bool,
 }
 
 impl DriveInfo {
@@ -191,6 +194,7 @@ fn query_drive(letter: char, kind: DriveKind) -> Option<DriveInfo> {
             total: space.total,
             free: space.free,
             available: space.available,
+            volume_scope: space.volume_scope,
         })
     } else {
         None
@@ -665,6 +669,7 @@ mod tests {
             total: 1000,
             free: 250,
             available: 250,
+            volume_scope: true,
         };
         assert_eq!(d.used_percent(), 75);
         // La cuota no cambia el porcentaje usado del volumen.

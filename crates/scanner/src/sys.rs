@@ -9,7 +9,7 @@ use std::mem::{offset_of, size_of};
 use std::os::windows::ffi::OsStrExt;
 use std::path::Path;
 use windows_sys::Wdk::Storage::FileSystem::{
-    FileFsFullSizeInformation, NtQueryVolumeInformationFile,
+    FileFsFullSizeInformation, FileFsFullSizeInformationEx, NtQueryVolumeInformationFile,
 };
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_INVALID_DATA, ERROR_NO_MORE_FILES, ERROR_NOT_SUPPORTED, GetLastError,
@@ -400,26 +400,30 @@ pub fn enum_dir_find(path: &[u16], emit: &mut dyn FnMut(&RawEntry)) -> Result<()
     }
 }
 
-/// Espacio de un volumen en TRES magnitudes de ámbitos distintos que no se pueden mezclar:
+/// Espacio de un volumen. El ÁMBITO de cada cifra importa y no se mezcla:
 ///
-/// * `total`: la CAPACIDAD del volumen (ámbito volumen).
-/// * `free`: el espacio libre del VOLUMEN entero (ámbito volumen). `total - free` es lo usado en el volumen, y es lo único
-///   con lo que se puede comparar lo escaneado para el "espacio no explicado".
-/// * `available`: lo disponible para el USUARIO que escanea (ámbito usuario): menor que `free` si hay una cuota de disco.
+/// * Con `volume_scope == true`: `total` es la CAPACIDAD del volumen y `free` lo libre del VOLUMEN entero (`total - free`
+///   es lo usado en el volumen, lo único comparable con lo escaneado para el "espacio no explicado"); `available` es lo
+///   disponible para el USUARIO (menor que `free` si hay cuota de disco).
+/// * Con `volume_scope == false` (hay una cuota y Windows no da la capacidad real del volumen): `total` y `free` son
+///   AMBOS del usuario (su cuota y lo que le queda), coherentes entre sí para enseñarlos, pero NO sirven para el
+///   residuo: no hay "espacio no explicado".
 ///
-/// `GetDiskFreeSpaceExW` mezcla ámbitos (`lpTotalNumberOfBytes` y `lpFreeBytesAvailableToCaller` respetan la cuota,
-/// `lpTotalNumberOfFreeBytes` es del volumen), así que aquí se usa `FileFsFullSizeInformation`, que da las tres por
-/// separado. Si esa consulta no está soportada, solo se recurre a `GetDiskFreeSpaceExW` cuando no hay ninguna cuota que
-/// lo estropee (caller libre == libre del volumen); con cuota no hay forma fiable de saber la capacidad del volumen y se
-/// devuelve un error (el escaneo sigue sin "espacio no explicado").
+/// Consultas, por orden (`NtQueryVolumeInformationFile`):
+/// 1. `FileFsFullSizeInformationEx` (clase 14, Windows 10 1809+): `ActualTotalAllocationUnits` (volumen),
+///    `ActualAvailableAllocationUnits` (volumen) y `CallerAvailableAllocationUnits` (usuario).
+/// 2. `FileFsFullSizeInformation` (clase 7): con cuota, `TotalAllocationUnits` es lo disponible PARA EL USUARIO (no la
+///    capacidad del volumen), así que solo vale como ámbito de volumen cuando `CallerAvailable == ActualAvailable`.
+/// 3. `GetDiskFreeSpaceExW`: igual, `lpTotalNumberOfBytes` respeta la cuota; solo vale si no hay cuota.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VolumeSizes {
     pub total: u64,
     pub free: u64,
     pub available: u64,
+    pub volume_scope: bool,
 }
 
-/// `FILE_FS_FULL_SIZE_INFORMATION` (WDK `ntddk.h`): unidades de asignación del volumen.
+/// `FILE_FS_FULL_SIZE_INFORMATION` (clase 7, `ntifs.h`).
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 struct FsFullSize {
@@ -430,44 +434,116 @@ struct FsFullSize {
     bytes_per_sector: u32,
 }
 
+/// `FILE_FS_FULL_SIZE_INFORMATION_EX` (clase 14, `ntifs.h`; Windows 10 1809+).
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct FsFullSizeEx {
+    actual_total_units: u64,
+    actual_available_units: u64,
+    actual_pool_unavailable_units: u64,
+    caller_total_units: u64,
+    caller_available_units: u64,
+    caller_pool_unavailable_units: u64,
+    used_units: u64,
+    total_reserved_units: u64,
+    volume_storage_reserve_units: u64,
+    available_committed_units: u64,
+    pool_available_units: u64,
+    sectors_per_unit: u32,
+    bytes_per_sector: u32,
+}
+
+// El diseño de las estructuras FFI tiene que ser el del SDK: 3 × 8 + 2 × 4 y 11 × 8 + 2 × 4 bytes.
+const _: () = assert!(size_of::<FsFullSize>() == 32);
+const _: () = assert!(size_of::<FsFullSizeEx>() == 96);
+const _: () = assert!(std::mem::offset_of!(FsFullSizeEx, sectors_per_unit) == 88);
+const _: () = assert!(std::mem::offset_of!(FsFullSize, sectors_per_unit) == 24);
+
+fn units_to_bytes(units: u64, unit: u128) -> u64 {
+    ((units as u128) * unit).min(u64::MAX as u128) as u64
+}
+
 impl FsFullSize {
     fn sizes(&self) -> Option<VolumeSizes> {
         let unit = (self.sectors_per_unit as u128) * (self.bytes_per_sector as u128);
         if unit == 0 || self.total_units <= 0 {
             return None;
         }
-        let bytes =
-            |units: i64| -> u64 { ((units.max(0) as u128) * unit).min(u64::MAX as u128) as u64 };
-        let total = bytes(self.total_units);
-        let free = bytes(self.actual_available_units).min(total);
-        let available = bytes(self.caller_available_units).min(free);
+        let b = |u: i64| units_to_bytes(u.max(0) as u64, unit);
+        let (total, caller, actual) = (
+            b(self.total_units),
+            b(self.caller_available_units),
+            b(self.actual_available_units),
+        );
+        if caller == actual {
+            // Sin cuota que lo distinga: `total` es la capacidad del volumen.
+            let free = actual.min(total);
+            Some(VolumeSizes {
+                total,
+                free,
+                available: free,
+                volume_scope: true,
+            })
+        } else {
+            // Con cuota, `total` es lo del usuario: se enseña con lo que le queda a él, y no vale para el residuo.
+            let free = caller.min(total);
+            Some(VolumeSizes {
+                total,
+                free,
+                available: free,
+                volume_scope: false,
+            })
+        }
+    }
+}
+
+impl FsFullSizeEx {
+    fn sizes(&self) -> Option<VolumeSizes> {
+        let unit = (self.sectors_per_unit as u128) * (self.bytes_per_sector as u128);
+        if unit == 0 || self.actual_total_units == 0 {
+            return None;
+        }
+        let total = units_to_bytes(self.actual_total_units, unit);
+        let free = units_to_bytes(self.actual_available_units, unit).min(total);
+        let available = units_to_bytes(self.caller_available_units, unit).min(free);
         Some(VolumeSizes {
             total,
             free,
             available,
+            volume_scope: true,
         })
     }
 }
 
-/// `NtQueryVolumeInformationFile(FileFsFullSizeInformation)` sobre el handle. Devuelve el NTSTATUS si falla.
-fn nt_full_size(h: &DirHandle) -> Result<VolumeSizes, i32> {
-    let mut info = FsFullSize::default();
+/// `NtQueryVolumeInformationFile` de la clase `class` sobre el handle, escribiendo en `info`. Devuelve el NTSTATUS si falla.
+fn nt_query<T>(h: &DirHandle, info: &mut T, class: i32) -> Result<(), i32> {
     // SAFETY: `IO_STATUS_BLOCK` es un POD (un puntero/entero y un usize): todo-ceros es válido.
     let mut iosb: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
-    // SAFETY: `h.0` es un handle de archivo válido; `iosb` y `info` son escribibles y `info` mide exactamente lo que se
-    // indica (la estructura es `repr(C)` con el diseño de FILE_FS_FULL_SIZE_INFORMATION: 3 × i64 y 2 × u32).
+    // SAFETY: `h.0` es un handle de archivo válido; `iosb` e `info` son escribibles y a la API se le pasa el tamaño EXACTO
+    // de `T`, una estructura `repr(C)` con el diseño del SDK (comprobado por los `const assert` de arriba).
     let status = unsafe {
         NtQueryVolumeInformationFile(
             h.0,
             &mut iosb,
-            &mut info as *mut FsFullSize as *mut c_void,
-            size_of::<FsFullSize>() as u32,
-            FileFsFullSizeInformation,
+            info as *mut T as *mut c_void,
+            size_of::<T>() as u32,
+            class,
         )
     };
-    if status < 0 {
-        return Err(status);
-    }
+    if status < 0 { Err(status) } else { Ok(()) }
+}
+
+/// Clase 14 (`FileFsFullSizeInformationEx`). `Err` si el sistema no la soporta (Windows anterior a 1809) o falla.
+fn nt_full_size_ex(h: &DirHandle) -> Result<VolumeSizes, i32> {
+    let mut info = FsFullSizeEx::default();
+    nt_query(h, &mut info, FileFsFullSizeInformationEx)?;
+    info.sizes().ok_or(-1)
+}
+
+/// Clase 7 (`FileFsFullSizeInformation`): su ámbito depende de si hay cuota (ver [`FsFullSize::sizes`]).
+fn nt_full_size(h: &DirHandle) -> Result<VolumeSizes, i32> {
+    let mut info = FsFullSize::default();
+    nt_query(h, &mut info, FileFsFullSizeInformation)?;
     info.sizes().ok_or(-1)
 }
 
@@ -486,35 +562,56 @@ fn ex_space(path: &[u16]) -> Result<(u64, u64, u64), u32> {
 
 /// Espacio del volumen que contiene `path` (ver [`VolumeSizes`]).
 pub fn volume_space(path: &[u16]) -> Result<VolumeSizes, u32> {
+    // Las dos consultas NT comparten el handle (un solo `CreateFileW`).
+    let handle = open_dir(path, FILE_READ_ATTRIBUTES, false);
     volume_space_with(
         path,
-        |p| {
-            let h = open_dir(p, FILE_READ_ATTRIBUTES, false)?;
-            nt_full_size(&h).map_err(|_| ERROR_NOT_SUPPORTED)
+        |_| match &handle {
+            Ok(h) => nt_full_size_ex(h).map_err(|_| ERROR_NOT_SUPPORTED),
+            Err(c) => Err(*c),
+        },
+        |_| match &handle {
+            Ok(h) => nt_full_size(h).map_err(|_| ERROR_NOT_SUPPORTED),
+            Err(c) => Err(*c),
         },
         ex_space,
     )
 }
 
-/// Igual que [`volume_space`] con las dos consultas inyectables (los tests simulan cuotas y fallos).
+/// Igual que [`volume_space`] con las tres consultas inyectables (los tests simulan cuotas y fallos).
 fn volume_space_with(
     path: &[u16],
-    full: impl FnOnce(&[u16]) -> Result<VolumeSizes, u32>,
-    ex: impl FnOnce(&[u16]) -> Result<(u64, u64, u64), u32>,
+    class14: impl FnOnce(&[u16]) -> Result<VolumeSizes, u32>,
+    class7: impl FnOnce(&[u16]) -> Result<VolumeSizes, u32>,
+    win32: impl FnOnce(&[u16]) -> Result<(u64, u64, u64), u32>,
 ) -> Result<VolumeSizes, u32> {
-    if let Ok(v) = full(path) {
+    if let Ok(v) = class14(path) {
         return Ok(v);
     }
-    let (avail, total, free) = ex(path)?;
-    if total == 0 || avail != free {
-        // Con cuota (o con valores incoherentes) `total` puede ser el de la cuota y no el del volumen: no se mezclan.
+    if let Ok(v) = class7(path) {
+        return Ok(v);
+    }
+    let (avail, total, free) = win32(path)?;
+    if total == 0 {
         return Err(ERROR_NOT_SUPPORTED);
     }
-    Ok(VolumeSizes {
-        total,
-        free: free.min(total),
-        available: avail.min(total),
-    })
+    if avail == free {
+        Ok(VolumeSizes {
+            total,
+            free: free.min(total),
+            available: avail.min(total),
+            volume_scope: true,
+        })
+    } else {
+        // Con cuota, `total` es el de la cuota: se enseña junto a lo que le queda al usuario y no sirve para el residuo.
+        let left = avail.min(total);
+        Ok(VolumeSizes {
+            total,
+            free: left,
+            available: left,
+            volume_scope: false,
+        })
+    }
 }
 
 /// Bytes por cluster del volumen que contiene `path` (para estimar `alloc` cuando solo hay `FindFirstFileExW`).
@@ -700,45 +797,70 @@ mod tests {
         assert_eq!(dir_meta(&h).unwrap().reparse_tag, 0);
     }
 
-    #[test]
-    fn la_consulta_real_de_nt_da_las_tres_magnitudes_coherentes() {
-        let path = manifest_dir();
-        let h = open_dir(&path, FILE_READ_ATTRIBUTES, false).unwrap();
-        let v = nt_full_size(&h).expect("FileFsFullSizeInformation");
-        assert!(v.total > 0);
-        assert!(v.available <= v.free && v.free <= v.total, "{v:?}");
-        // Es la misma que da `volume_space`.
-        let w = volume_space(&path).unwrap();
-        assert_eq!(w.total, v.total);
+    /// Estructura de la clase 7 con cuota: `TotalAllocationUnits` es lo disponible PARA EL USUARIO (su cuota), no la
+    /// capacidad del volumen; 8 sectores de 512 B = unidades de 4096 B.
+    fn class7(total: i64, caller: i64, actual: i64) -> FsFullSize {
+        FsFullSize {
+            total_units: total,
+            caller_available_units: caller,
+            actual_available_units: actual,
+            sectors_per_unit: 8,
+            bytes_per_sector: 512,
+        }
     }
 
     #[test]
-    fn con_cuota_la_capacidad_y_lo_libre_siguen_siendo_del_volumen() {
-        // 1000 unidades de 512 B en el volumen; el usuario solo puede usar 100 (cuota); 400 libres de verdad.
-        let info = FsFullSize {
-            total_units: 1000,
-            caller_available_units: 100,
+    fn el_diseno_de_las_estructuras_ffi_es_el_del_sdk() {
+        assert_eq!(size_of::<FsFullSize>(), 32);
+        assert_eq!(size_of::<FsFullSizeEx>(), 96);
+        assert_eq!(std::mem::offset_of!(FsFullSize, caller_available_units), 8);
+        assert_eq!(std::mem::offset_of!(FsFullSize, actual_available_units), 16);
+        assert_eq!(
+            std::mem::offset_of!(FsFullSizeEx, actual_available_units),
+            8
+        );
+        assert_eq!(
+            std::mem::offset_of!(FsFullSizeEx, caller_available_units),
+            32
+        );
+        assert_eq!(std::mem::offset_of!(FsFullSizeEx, bytes_per_sector), 92);
+    }
+
+    #[test]
+    fn la_clase_14_con_cuota_da_capacidad_y_libre_del_volumen_y_lo_disponible_del_usuario() {
+        // Volumen de 1000 unidades (4096 B), 400 libres de verdad; cuota del usuario de 100 unidades con 60 libres.
+        let info = FsFullSizeEx {
+            actual_total_units: 1000,
             actual_available_units: 400,
-            sectors_per_unit: 1,
+            caller_total_units: 100,
+            caller_available_units: 60,
+            sectors_per_unit: 8,
             bytes_per_sector: 512,
+            ..FsFullSizeEx::default()
         };
         let v = info.sizes().unwrap();
-        assert_eq!(v.total, 512_000);
-        assert_eq!(v.free, 204_800);
-        assert_eq!(v.available, 51_200);
-        // Usado del volumen = total - libre del volumen (no total - disponible del usuario).
-        assert_eq!(v.total - v.free, 307_200);
-        // Magnitudes absurdas (cuota mayor que lo libre) se recortan: available <= free <= total.
-        let odd = FsFullSize {
+        assert_eq!(
+            v,
+            VolumeSizes {
+                total: 4_096_000,
+                free: 1_638_400,
+                available: 245_760,
+                volume_scope: true
+            }
+        );
+        // Usado del volumen = total - libre del volumen (ámbito único).
+        assert_eq!(v.total - v.free, 2_457_600);
+        // Valores absurdos se recortan: available <= free <= total.
+        let odd = FsFullSizeEx {
             caller_available_units: 900,
+            actual_available_units: 2000,
             ..info
         };
         let o = odd.sizes().unwrap();
         assert!(o.available <= o.free && o.free <= o.total);
-        // Unidad de tamaño 0 o volumen vacío: sin datos.
-        assert!(FsFullSize::default().sizes().is_none());
+        assert!(FsFullSizeEx::default().sizes().is_none());
         assert!(
-            FsFullSize {
+            FsFullSizeEx {
                 bytes_per_sector: 0,
                 ..info
             }
@@ -748,37 +870,95 @@ mod tests {
     }
 
     #[test]
-    fn si_nt_falla_solo_se_usa_ex_cuando_no_hay_cuota_y_nunca_se_mezclan_ambitos() {
+    fn la_clase_7_con_cuota_no_da_residuo_y_sin_cuota_si() {
+        // Con cuota: `TotalAllocationUnits` (100) es de la cuota; lo libre real del volumen (400) es mayor que lo que le
+        // queda al usuario (60). `total - free` mezclaría ámbitos: se marca fuera del ámbito de volumen (sin residuo) y se
+        // enseñan las cifras DEL USUARIO, coherentes entre sí.
+        let v = class7(100, 60, 400).sizes().unwrap();
+        assert!(!v.volume_scope);
+        assert_eq!((v.total, v.free, v.available), (409_600, 245_760, 245_760));
+        // Sin cuota: lo disponible para el usuario es lo libre del volumen y `total` es la capacidad.
+        let v = class7(1000, 400, 400).sizes().unwrap();
+        assert!(v.volume_scope);
+        assert_eq!(
+            (v.total, v.free, v.available),
+            (4_096_000, 1_638_400, 1_638_400)
+        );
+        // Sin datos.
+        assert!(class7(0, 0, 0).sizes().is_none());
+        assert!(
+            FsFullSize {
+                bytes_per_sector: 0,
+                ..class7(10, 5, 5)
+            }
+            .sizes()
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn las_consultas_reales_de_nt_son_coherentes() {
         let path = manifest_dir();
-        let nt_falla = |_: &[u16]| Err(ERROR_NOT_SUPPORTED);
-        // Sin cuota: lo disponible para el usuario es igual a lo libre del volumen: se puede usar.
-        let v = volume_space_with(&path, nt_falla, |_| Ok((400, 1000, 400))).unwrap();
+        let h = open_dir(&path, FILE_READ_ATTRIBUTES, false).unwrap();
+        // La clase 7 existe en todo Windows soportado; la 14 (1809+) también en los equipos de prueba, pero si el sistema
+        // no la soporta la consulta falla con un NTSTATUS y la cadena sigue con la 7.
+        let v7 = nt_full_size(&h).expect("FileFsFullSizeInformation");
+        assert!(
+            v7.total > 0 && v7.available <= v7.free && v7.free <= v7.total,
+            "{v7:?}"
+        );
+        if let Ok(v14) = nt_full_size_ex(&h) {
+            assert!(v14.volume_scope);
+            assert!(v14.total > 0 && v14.available <= v14.free && v14.free <= v14.total);
+            // Sin cuota en el equipo, las dos clases coinciden en la capacidad.
+            if v7.volume_scope {
+                assert_eq!(v7.total, v14.total);
+            }
+        }
+        let w = volume_space(&path).unwrap();
+        assert!(w.total > 0 && w.available <= w.free && w.free <= w.total);
+    }
+
+    #[test]
+    fn la_cadena_de_consultas_elige_la_primera_que_da_ambito_de_volumen() {
+        let path = manifest_dir();
+        let fail = |_: &[u16]| Err(ERROR_NOT_SUPPORTED);
+        let ok14 = VolumeSizes {
+            total: 100,
+            free: 40,
+            available: 10,
+            volume_scope: true,
+        };
+        // La clase 14 manda: ni se consultan las demás.
+        assert_eq!(
+            volume_space_with(&path, |_| Ok(ok14), |_| panic!("no"), |_| panic!("no")).unwrap(),
+            ok14
+        );
+        // Sin clase 14 (Windows < 1809): la clase 7 con cuota da cifras del usuario y NO ámbito de volumen.
+        let v = volume_space_with(
+            &path,
+            fail,
+            |_| Ok(class7(100, 60, 400).sizes().unwrap()),
+            |_| panic!("no"),
+        )
+        .unwrap();
+        assert!(!v.volume_scope);
+        // Sin clase 14 ni 7: GetDiskFreeSpaceExW solo vale sin cuota.
+        let v = volume_space_with(&path, fail, fail, |_| Ok((400, 1000, 400))).unwrap();
         assert_eq!(
             v,
             VolumeSizes {
                 total: 1000,
                 free: 400,
-                available: 400
+                available: 400,
+                volume_scope: true
             }
         );
-        // Con cuota (disponible != libre del volumen): el total podría ser el de la cuota. No se inventa nada.
-        assert_eq!(
-            volume_space_with(&path, nt_falla, |_| Ok((100, 1000, 400))),
-            Err(ERROR_NOT_SUPPORTED)
-        );
-        // Total 0 o error de Ex: error.
-        assert!(volume_space_with(&path, nt_falla, |_| Ok((0, 0, 0))).is_err());
-        assert_eq!(volume_space_with(&path, nt_falla, |_| Err(5)), Err(5));
-        // Con Nt bien, Ex ni se consulta.
-        let ok = VolumeSizes {
-            total: 10,
-            free: 4,
-            available: 1,
-        };
-        assert_eq!(
-            volume_space_with(&path, |_| Ok(ok), |_| panic!("no hace falta")).unwrap(),
-            ok
-        );
+        let v = volume_space_with(&path, fail, fail, |_| Ok((100, 1000, 400))).unwrap();
+        assert!(!v.volume_scope);
+        assert_eq!((v.total, v.free, v.available), (1000, 100, 100));
+        assert!(volume_space_with(&path, fail, fail, |_| Ok((0, 0, 0))).is_err());
+        assert_eq!(volume_space_with(&path, fail, fail, |_| Err(5)), Err(5));
     }
 
     #[test]

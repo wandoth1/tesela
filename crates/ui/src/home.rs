@@ -165,7 +165,14 @@ fn card(ui: &mut Ui, env: &mut Env, d: &DriveInfo) {
                 .color(pal.text_muted),
             );
             // Con una cuota de disco, lo que el usuario puede usar es menos que lo libre del volumen: nota aparte.
-            if d.available < d.free {
+            if !d.volume_scope {
+                // Hay cuota y Windows no da la capacidad del volumen: las cifras de arriba son las de tu cuenta.
+                ui.label(
+                    RichText::new(env.tr.t("drive-quota-scope"))
+                        .size(12.0)
+                        .color(pal.text_muted),
+                );
+            } else if d.available < d.free {
                 ui.label(
                     RichText::new(
                         env.tr

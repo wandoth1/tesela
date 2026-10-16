@@ -41,6 +41,7 @@ drive-used = { $pct }% used
 drive-used-word = used
 drive-free-of = { $free } free of { $total }
 drive-quota = Available to your account (quota): { $avail }
+drive-quota-scope = Figures for your account (disk quota)
 drive-almost-full = Almost full
 drive-local-disk = Local disk
 drive-removable-disk = Removable disk

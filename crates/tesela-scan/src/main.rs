@@ -232,7 +232,13 @@ fn report(out: &mut dyn Write, args: &Args, r: &ScanResult, mem: Option<(u64, u6
                 gib(v.total),
                 gib(v.free)
             );
-            if v.quota_limited() {
+            if !v.volume_scope {
+                outln!(
+                    out,
+                    "Cuota de disco: las cifras de arriba son las de tu usuario (disponible {}); Windows no da aquí la capacidad real del volumen, así que no se calcula el espacio no explicado",
+                    gib(v.available)
+                );
+            } else if v.quota_limited() {
                 outln!(
                     out,
                     "Cuota de disco: disponible para tu usuario {} (menos que lo libre del volumen; el espacio no explicado usa solo magnitudes del volumen)",
@@ -398,7 +404,7 @@ fn json_doc(args: &Args, r: &ScanResult) -> String {
             "groups": st.hardlink_groups, "extra_entries": st.hardlink_extra_entries,
             "alloc_saved": st.hardlink_alloc_saved, "logical_saved": st.hardlink_logical_saved,
         },
-        "volume": s.volume.map(|v| json!({"total": v.total, "free": v.free, "available": v.available})),
+        "volume": s.volume.map(|v| json!({"total": v.total, "free": v.free, "available": v.available, "volume_scope": v.volume_scope})),
         "errors_by_code": s.errors_by_code,
         "ids_exhausted": s.ids_exhausted,
         "top": top,

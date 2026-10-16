@@ -1665,6 +1665,19 @@ fn con_cuota_de_disco_la_tarjeta_distingue_lo_libre_del_volumen_de_lo_disponible
         // La nota sale (solo en la unidad con cuota) y lo libre del volumen se sigue mostrando entero.
         assert_eq!(h.query_all_by_label_contains(quota_label).count(), 1);
         assert!(h.query_all_by_label_contains(free_label).count() >= 3);
+        // Con cuota y SIN la capacidad real del volumen (`volume_scope == false`), la tarjeta avisa de que las cifras son
+        // las de la cuenta del usuario.
+        let scope_label = if lang == LangPref::Es {
+            "Cifras de tu cuenta (cuota de disco)"
+        } else {
+            "Figures for your account (disk quota)"
+        };
+        assert!(h.query_by_label_contains(scope_label).is_none());
+        let mut drives = crate::demo::drives();
+        drives[1].volume_scope = false;
+        h.state_mut().ui_mut().set_drives(drives);
+        h.run_steps(3);
+        assert_eq!(h.query_all_by_label_contains(scope_label).count(), 1);
     }
 }
 

@@ -123,12 +123,16 @@ discos reales ni resultados de escaneos (los ejemplos, capturas y fixtures son s
   atrasado. Su tamaño propio es 0 en el listado del padre (el espacio real que ocupa el directorio va al bloque de datos del
   sistema, es decir, al "espacio no explicado").
 
-- **Espacio del volumen y cuotas de disco:** se distinguen tres magnitudes de ámbitos distintos (`NtQueryVolumeInformationFile`
-  con `FileFsFullSizeInformation`; `GetDiskFreeSpaceExW` mezcla la cuota del usuario con el libre del volumen y solo es el
-  respaldo cuando no hay cuota): la **capacidad** y el **libre del volumen**, y lo **disponible para el usuario** (menor si hay una cuota).
-  La interfaz enseña el anillo de uso, "X libres de Y" y el "espacio no explicado" SOLO con las dos del volumen
-  (`total - libre - escaneado`); si hay cuota añade una línea aparte "Disponible para tu cuenta (cuota)". Si no se puede
-  conocer la capacidad real del volumen (cuota y consulta no soportada), no se calcula el espacio no explicado.
+- **Espacio del volumen y cuotas de disco:** `NtQueryVolumeInformationFile` da tres magnitudes de ámbitos distintos, por
+  este orden de consulta: `FileFsFullSizeInformationEx` (clase 14, Windows 10 1809+: `ActualTotalAllocationUnits` y
+  `ActualAvailableAllocationUnits` son del VOLUMEN, `CallerAvailableAllocationUnits` es del usuario); si no está soportada,
+  `FileFsFullSizeInformation` (clase 7), cuyo `TotalAllocationUnits` con cuota es lo disponible PARA EL USUARIO y por eso solo
+  vale como capacidad del volumen cuando `CallerAvailable == ActualAvailable`; y por último `GetDiskFreeSpaceExW`, con la misma
+  condición. El "espacio no explicado" (`total - libre - escaneado`) usa SOLO cifras con ámbito de volumen: con una cuota y sin
+  la clase 14 no hay residuo (restar ámbitos distintos daría un número inventado), y la tarjeta de la unidad enseña las cifras
+  del usuario con el aviso "Cifras de tu cuenta (cuota de disco)". Con ámbito de volumen y una cuota que limita, la tarjeta
+  añade una línea aparte "Disponible para tu cuenta (cuota)". El anillo de uso y "X libres de Y" usan siempre dos cifras del
+  mismo ámbito.
 
 ### Licencias de terceros
 

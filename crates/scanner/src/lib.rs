@@ -146,12 +146,16 @@ pub enum ApiUsed {
 /// dos del volumen (`total - free`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VolumeSpace {
-    /// Capacidad del volumen en bytes (ámbito volumen, no la cuota del usuario).
+    /// Capacidad en bytes: la del volumen si `volume_scope`; si no, la cuota del usuario.
     pub total: u64,
-    /// Bytes libres en el volumen entero (ámbito volumen).
+    /// Bytes libres: los del volumen entero si `volume_scope`; si no, los que le quedan al usuario.
     pub free: u64,
     /// Bytes disponibles para el usuario que escanea (ámbito usuario): menor que `free` si hay una cuota de disco.
     pub available: u64,
+    /// `total` y `free` son del VOLUMEN (comparables con lo escaneado). Es `false` cuando hay una cuota y Windows no da la
+    /// capacidad real (clase `FileFsFullSizeInformationEx` no soportada): entonces `total` y `free` son del usuario y NO se
+    /// calcula el "espacio no explicado" (restar ámbitos distintos daría un residuo inventado).
+    pub volume_scope: bool,
 }
 
 impl VolumeSpace {
@@ -161,12 +165,13 @@ impl VolumeSpace {
             total,
             free,
             available: free,
+            volume_scope: true,
         }
     }
 
-    /// ¿Limita una cuota de disco lo que el usuario puede usar (menos disponible para él que libre en el volumen)?
+    /// ¿Limita una cuota de disco lo que el usuario puede usar?
     pub fn quota_limited(&self) -> bool {
-        self.available < self.free
+        !self.volume_scope || self.available < self.free
     }
 
     /// Usado en el volumen (`total - free`), el único valor comparable con lo escaneado.
@@ -181,6 +186,7 @@ impl From<sys::VolumeSizes> for VolumeSpace {
             total: v.total,
             free: v.free,
             available: v.available,
+            volume_scope: v.volume_scope,
         }
     }
 }
@@ -565,7 +571,10 @@ fn run(ctx: Ctx) -> ScanResult {
     let mut fo = FinishOptions::new(now_unix);
     fo.dedup_hard_links = dedup;
     if full_volume && volume_gap && !cancelled && build_err.is_none() {
-        fo.volume_used = volume.map(|v| v.total.saturating_sub(v.free));
+        // Solo con magnitudes del VOLUMEN (con cuota y sin la clase Ex, `total` y `free` son del usuario: sin residuo).
+        fo.volume_used = volume
+            .filter(|v| v.volume_scope)
+            .map(|v| v.total.saturating_sub(v.free));
     }
     let t1 = Instant::now();
     let tree = builder.finish(&fo);

@@ -87,6 +87,23 @@ fn el_espacio_no_explicado_se_calcula_de_punta_a_punta_con_un_volumen_inyectado(
     let rq = scan(oq).unwrap();
     assert_eq!(rq.tree.stats().unexplained_alloc, used - st.scanned_alloc);
     assert_eq!(rq.summary.volume, Some(quota));
+    // Con cuota y SIN la capacidad real del volumen (clase 14 no soportada), `total` y `free` son del usuario: no hay
+    // residuo (restarlos al escaneado mezclaría ámbitos) y no se añade el bloque del sistema.
+    let mut user_scope = VolumeSpace::new(10 << 30, 4 << 30);
+    user_scope.volume_scope = false;
+    assert!(user_scope.quota_limited());
+    let mut ou = o.clone();
+    ou.volume_override = Some(user_scope);
+    let ru = scan(ou).unwrap();
+    ru.tree.check_invariants().unwrap();
+    assert_eq!(ru.tree.stats().unexplained_alloc, 0);
+    assert!(
+        ru.tree
+            .nodes()
+            .iter()
+            .all(|n| n.flags & flags::SYSTEM_INFO == 0)
+    );
+    assert_eq!(ru.summary.volume, Some(user_scope));
     // Si lo usado es menor que lo escaneado se recorta a 0 y no hay nodo.
     o.volume_override = Some(VolumeSpace::new(10 << 30, (10 << 30) - 100));
     let r = scan(o).unwrap();

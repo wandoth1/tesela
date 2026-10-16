@@ -37,6 +37,7 @@ pub fn drives() -> Vec<DriveInfo> {
             total: 476 * GIB,
             free: 38 * GIB,
             available: 38 * GIB,
+            volume_scope: true,
         },
         DriveInfo {
             letter: 'E',
@@ -45,6 +46,7 @@ pub fn drives() -> Vec<DriveInfo> {
             total: 932 * GIB,
             free: 722 * GIB,
             available: 722 * GIB,
+            volume_scope: true,
         },
         DriveInfo {
             letter: 'F',
@@ -53,6 +55,7 @@ pub fn drives() -> Vec<DriveInfo> {
             total: 64 * GIB,
             free: 52 * GIB,
             available: 52 * GIB,
+            volume_scope: true,
         },
     ]
 }
