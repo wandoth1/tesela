@@ -7,7 +7,8 @@
   valores se leen del entorno EN TIEMPO DE EJECUCION y nunca se escriben. Cada valor se busca en tres formas de ruta
   (tal cual, con `/` y con `\`), decodificando los bytes como Latin-1 (ASCII y el ANSI de Windows), UTF-8 (lo que escribe
   el compilador de Rust en las rutas incrustadas; un valor con acentos solo coincide asi) y UTF-16 (ambas alineaciones),
-  sin distinguir mayusculas.
+  sin distinguir mayusculas. Ademas, si hay bytes NUL, busca tambien en el Latin-1 y el UTF-8 de los bytes SIN NUL (un valor
+  partido por NUL sueltos). Limite documentado: el texto codificado en base64 u otra transformacion no se ve.
   El script es solo ASCII a proposito (Windows PowerShell 5.1 lee los .ps1 sin BOM como ANSI).
 #>
 
@@ -38,6 +39,15 @@ function Find-LocalValueLeaks {
         [System.Text.Encoding]::Unicode.GetString($Bytes, 0, ($Bytes.Length -band -2)),
         [System.Text.Encoding]::Unicode.GetString($Bytes, 1, (($Bytes.Length - 1) -band -2))
     )
+    # Un valor partido por bytes NUL sueltos (`Zo\0rbaq`) no coincide en ninguna de las decodificaciones de arriba. Se anaden,
+    # ADEMAS (nunca en su lugar: UTF-16 sigue leyendose con sus NUL), el Latin-1 y el UTF-8 de los bytes SIN NUL. Latin-1 es una
+    # biyeccion de bytes: quitar los NUL del texto es quitar los bytes NUL, y de ahi se sale a bytes para el UTF-8.
+    $noNul = $texts[0].Replace([string][char]0, '')
+    $utf8NoNul = $null
+    if ($noNul.Length -lt $texts[0].Length) {
+        $texts += $noNul
+        $utf8NoNul = (New-Object System.Text.UTF8Encoding($false, $false)).GetString([System.Text.Encoding]::GetEncoding(28591).GetBytes($noNul))
+    }
     foreach ($k in $Needles.Keys) {
         $v = $Needles[$k]
         if (-not $v -or $v.Length -lt 3) { continue }
@@ -62,12 +72,17 @@ function Find-LocalValueLeaks {
             # CultureInvariant: la comparacion sin distinguir mayusculas no puede depender de la cultura del usuario (la
             # i turca, p. ej.).
             $options = [System.Text.RegularExpressions.RegexOptions]::IgnoreCase -bor [System.Text.RegularExpressions.RegexOptions]::CultureInvariant
+            $hit = $false
             foreach ($t in $texts) {
-                if ([regex]::IsMatch($t, $pattern, $options)) {
-                    $leaks.Add("${Name}: contiene el valor local '$k'")
-                    break
-                }
+                if ([regex]::IsMatch($t, $pattern, $options)) { $hit = $true; break }
             }
+            if (-not $hit -and $null -ne $utf8NoNul) {
+                # En el UTF-8 de los bytes sin NUL una letra acentuada suelta (la e acentuada de un UTF-16 sin sus NUL) es U+FFFD:
+                # aqui cuenta como letra, para no inventar la fuga que el UTF-16 NATIVO descarta (ver arriba).
+                $pattern8 = $pattern.Replace('\u00F8-\u024F]', '\u00F8-\u024F\uFFFD]')
+                $hit = [regex]::IsMatch($utf8NoNul, $pattern8, $options)
+            }
+            if ($hit) { $leaks.Add("${Name}: contiene el valor local '$k'") }
         }
     }
     return , $leaks
