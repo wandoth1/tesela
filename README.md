@@ -3,7 +3,7 @@
 **Mira qué ocupa tu disco y libera espacio sin miedo.**
 Analizador visual de espacio en disco para Windows, escrito en Rust: rápido, ligero y claro.
 
-> 🚧 **Estado: MVP v0.1 en construcción.** Hechos el modelo, el escáner y la **interfaz de solo lectura** (mapa, lista, detalles, escaneo con progreso real, es/en, claro/oscuro). **Todavía no borra nada:** la cesta y la limpieza llegan en el siguiente incremento. Conclusiones de la fase 0 en [docs/fase-0-conclusiones.md](docs/fase-0-conclusiones.md); el plan completo está en [docs/PLAN.md](docs/PLAN.md).
+> 🚧 **Estado: MVP v0.1 en construcción.** Hechos el modelo, el escáner, la interfaz (mapa, lista, detalles, escaneo con progreso real, es/en, claro/oscuro) y **la limpieza**: Recomendaciones, cesta, confirmación y resumen, con borrado seguro por handle y envío a la Papelera. **Esta versión borra de verdad** (solo lo que apruebas en la confirmación): pruébala primero con `--dry-run` o con `--demo`. Falta el instalador. Conclusiones de la fase 0 en [docs/fase-0-conclusiones.md](docs/fase-0-conclusiones.md); el plan completo está en [docs/PLAN.md](docs/PLAN.md).
 
 ## Qué será
 
@@ -16,25 +16,38 @@ Analizador visual de espacio en disco para Windows, escrito en Rust: rápido, li
 
 ## Uso
 
-Windows 10 22H2 y Windows 11. En esta versión la aplicación es de **solo lectura**: no borra, mueve ni escribe nada de tus archivos (solo guarda sus ajustes en `%APPDATA%\Tesela\config.toml`).
+Windows 10 22H2 y Windows 11. La aplicación **solo borra o mueve lo que aprobaste en la confirmación** (nunca al escanear, ni en `--demo`). Guarda sus ajustes en `%APPDATA%\Tesela\config.toml` y en `%LOCALAPPDATA%\Tesela` un registro de cada limpieza (`limpieza-<fecha>.jsonl`: ruta, identidad y resultado de cada elemento; solo en tu equipo, se conservan los últimos 30) y `history.jsonl` con resúmenes (fecha, unidad y cifras, sin rutas). El historial se borra desde Ajustes.
 
 ```powershell
 tesela                      # pantalla de inicio: elige una unidad o "Analizar una carpeta…"
 tesela --scan C:\           # analiza esa unidad (o carpeta) nada más arrancar
-tesela --demo               # modo demostración: árbol SINTÉTICO y unidades ficticias; no lee tu disco
+tesela --scan C:\ --dry-run # modo simulación: hace todo salvo borrar o mover (mide y registra qué habría pasado)
+tesela --demo               # modo demostración: árbol SINTÉTICO y unidades ficticias; no lee tu disco ni borra nada
 tesela --help
 ```
 
-El modo `--demo` es el único con el que se hacen capturas y pruebas: todo lo que enseña (carpetas, tamaños, unidades) está inventado y es siempre el mismo. Admite `--screen home|scan|map|list`, `--open Users/usuario`, `--select Descargas`, `--stopped` (un análisis detenido, con carpetas incompletas), `--theme light|dark`, `--lang es|en` y `--size 1280x800`.
+El modo `--demo` es el único con el que se hacen capturas y pruebas: todo lo que enseña (carpetas, tamaños, unidades) está inventado y es siempre el mismo. Admite `--screen home|scan|map|list|recs|confirm|summary`, `--open Users/usuario`, `--select Descargas`, `--stopped` (un análisis detenido, con carpetas incompletas), `--theme light|dark`, `--lang es|en` y `--size 1280x800`.
 
 ![Mapa de una carpeta de usuario en el modo demostración, tema claro](docs/img/mapa-claro.png)
 ![Mapa de una unidad en el modo demostración, tema oscuro](docs/img/mapa-oscuro.png)
+![Recomendaciones en el modo demostración: lo seguro ya marcado, lo que conviene revisar y lo que solo se explica](docs/img/recomendaciones.png)
+![Confirmación antes de limpiar, con lo que se borra y lo que va a la Papelera](docs/img/confirmacion.png)
+![Resumen de una limpieza: lo liberado ahora, lo eliminado y lo movido a la Papelera](docs/img/resumen.png)
 
 - **Mapa:** un bloque por carpeta o archivo, proporcional a lo que ocupa **en disco**, coloreado por tipo (paleta apta para daltonismo). Se insinúa el nivel siguiente dentro de cada bloque. Los bloques demasiado pequeños se agrupan en **"Otros (N elementos, X)"**, que se abre con doble clic. Las carpetas que el análisis no llegó a recorrer entera llevan rayas diagonales y un "≥".
 - **Grises con significado:** el bloque "Windows y otros datos del sistema" (lo que ocupa el disco pero tu usuario no puede ver), `pagefile.sys` y `hiberfil.sys` ("solo informar") y "Mixto" (carpetas sin un tipo dominante).
 - **Lista:** las mismas carpetas con cifras exactas; es la vista accesible (lector de pantalla) y comparte la selección con el mapa.
 - **Teclado:** doble clic o `Intro` entra en una carpeta; `Retroceso` sube; las flechas mueven la selección; `Ctrl+F` busca; `F5` reescanea. Clic derecho: abrir en el Explorador, copiar la ruta y Propiedades.
-- **Ajustes (⚙):** tema (sistema, claro u oscuro) e idioma (sistema, español o English).
+- **Ajustes (⚙):** tema (sistema, claro u oscuro), idioma (sistema, español o English) y borrar el historial de limpiezas.
+
+### Limpieza
+
+- **Recomendaciones:** temporales del usuario y de Windows (solo lo de más de 24 h), cachés de Edge, Chrome y Firefox (con el navegador cerrado), y, como **Revisar**, Descargas y la Papelera. `pagefile.sys`, `hiberfil.sys` y `swapfile.sys` solo se explican. "Puedes liberar X sin riesgo" suma **solo** lo Seguro, y es una estimación: la cifra buena la mide la limpieza.
+- **Todo pasa por la cesta y una confirmación** que agrupa por destino: lo regenerable se **borra** (se vuelve a crear solo) y tus archivos van a la **Papelera**. Lo que no cabe en la Papelera sale aparte, en ámbar, y solo se elimina si lo marcas expresamente. Los cinco archivos tuyos más grandes se nombran siempre.
+- **Protegido:** Windows, Archivos de programa, `AppData` entero, las carpetas clave del perfil (solo se limpia su contenido), el propio Tesela y lo que no se pueda comprobar. Se ve con candado y borde punteado y no se puede añadir.
+- **Borrado seguro:** se comprueba la identidad de cada elemento (volumen, id de archivo y enlaces) justo antes de tocarlo, se abre en exclusiva y se borra por handle, sin entrar nunca en puntos de reparse (junctions, enlaces simbólicos); un enlace duro no cuenta como liberado. Lo que está en uso se **salta**, no se fuerza.
+- **"Liberado ahora"** es lo que ha cambiado de verdad en el espacio libre de la unidad; lo enviado a la Papelera se cuenta aparte, porque no libera hasta que se vacía.
+- El árbol se actualiza **sin reescanear** (los histogramas quedan marcados como aproximados hasta reescanear).
 
 ## Hoja de ruta
 
@@ -58,13 +71,13 @@ Rust · [egui/eframe](https://github.com/emilk/egui) · [windows-rs](https://git
 
 Workspace de Cargo en la raíz (`crates/`); `spike/` es el código de medición de la fase 0, con su propio workspace.
 Estado del MVP v0.1: hechos el modelo (`tesela-model`), el escáner de solo lectura (`tesela-scanner`) con su CLI
-`tesela-scan`, el layout del treemap (`tesela-layout`), la interfaz (`tesela-ui`) y el ejecutable (`tesela-app`, binario
-`tesela`); la cesta y la limpieza (`tesela-cleaner`) llegan en el siguiente incremento.
+`tesela-scan`, el layout del treemap (`tesela-layout`), la limpieza (`tesela-cleaner`: reglas, protecciones, borrado por
+handle y Papelera), la interfaz (`tesela-ui`) y el ejecutable (`tesela-app`, binario `tesela`).
 
 ```powershell
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace            # los tests solo usan árboles sintéticos en %TEMP%\tesela-test-<uuid>
+cargo test --workspace            # los tests solo tocan carpetas de prueba en %TEMP%\tesela-test-<uuid> (y, para la Papelera, solo elementos propios)
 cargo deny check
 cargo run --release -p tesela-scan -- <ruta> --top 20   # solo lectura; opciones en la cabecera de crates/tesela-scan/src/main.rs
 cargo run -p tesela-app -- --demo                        # la interfaz con datos sintéticos
