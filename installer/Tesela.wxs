@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Instalador MSI de Tesela (WiX Toolset 5.0.2, MS-RL; solo es una herramienta de compilacion, no se redistribuye).
+  Se compila con scripts/build-msi.ps1, que pasa estas variables del preprocesador:
+    -d Version=<x.y.z>    version del producto (sale del workspace de Cargo; la 4a cifra la ignora Windows Installer)
+    -d SourceDir=<carpeta> carpeta con EXACTAMENTE los 5 archivos que se instalan (la prepara el script a partir de lo que
+                          produce scripts/build-release.ps1)
+    -d IconFile=<ruta.ico> icono extraido de tesela.exe con scripts/extract-ico.py
+
+  Decisiones (PLAN.md §1 y §3.11):
+    * POR USUARIO y SIN administrador: Scope="perUser" (no hay propiedad ALLUSERS y el Summary Information declara que
+      no hace falta elevar). Carpeta: %LOCALAPPDATA%\Programs\Tesela. Todo el paquete escribe solo en el perfil del
+      usuario (archivos, menu Inicio y HKCU).
+    * Sin acciones personalizadas que ejecuten codigo, sin interfaz propia (solo la barra de progreso estandar), sin
+      acceso en el escritorio y sin tocar el PATH.
+    * Al DESINSTALAR no se borran %APPDATA%\Tesela\config.toml ni %LOCALAPPDATA%\Tesela (historial y registros): el
+      instalador no los conoce, son del usuario (README, "Instalacion").
+    * MajorUpgrade: una version nueva sustituye a la anterior (se desinstala la vieja y se instala la nueva) sin
+      duplicados; instalar una anterior se bloquea con un mensaje. Con la aplicacion abierta, Windows Installer usa el
+      Administrador de reinicio (Restart Manager) para pedirle que se cierre y, si no puede, deja los archivos en uso
+      para sustituirlos al reiniciar.
+-->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <!--
+    UpgradeCode: identifica a Tesela como PRODUCTO para siempre. NO CAMBIARLO NUNCA: con otro valor, una version nueva no
+    reconoceria a la anterior y las dos quedarian instaladas a la vez. El ProductCode, en cambio, es nuevo en cada
+    compilacion (Id="*" por defecto), como exige MajorUpgrade.
+  -->
+  <Package
+    Name="Tesela"
+    Manufacturer="Tesela contributors"
+    Version="$(Version)"
+    UpgradeCode="7E8F4B67-A7D4-415B-9F8F-2E0B88AA88BB"
+    Scope="perUser"
+    Language="1033"
+    Compressed="yes">
+
+    <SummaryInformation
+      Description="Tesela - visual disk space analyzer and cleaner / Analizador visual de espacio en disco"
+      Manufacturer="Tesela contributors" />
+
+    <MajorUpgrade
+      AllowSameVersionUpgrades="yes"
+      DowngradeErrorMessage="Ya hay instalada una version mas reciente de Tesela. Desinstalala antes si quieres volver a esta. / A newer version of Tesela is already installed. Uninstall it first if you want to go back to this one." />
+
+    <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
+
+    <!-- Icono de Aplicaciones instaladas y del acceso directo: el MISMO que lleva tesela.exe, extraido del ejecutable ya
+         compilado (scripts/extract-ico.py). Apuntar la tabla Icon al .exe incrustaria una copia entera de el. -->
+    <Icon Id="TeselaIcon.ico" SourceFile="$(IconFile)" />
+    <Property Id="ARPPRODUCTICON" Value="TeselaIcon.ico" />
+    <Property Id="ARPURLINFOABOUT" Value="https://github.com/wandoth1/tesela" />
+    <Property Id="ARPHELPLINK" Value="https://github.com/wandoth1/tesela/issues" />
+    <!-- No hay nada que "modificar": solo reparar o desinstalar. -->
+    <Property Id="ARPNOMODIFY" Value="1" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="ProgramsFolder" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="Tesela" />
+      </Directory>
+    </StandardDirectory>
+    <StandardDirectory Id="ProgramMenuFolder" />
+
+    <!--
+      Un componente por archivo. En una instalacion por usuario cada componente lleva como KeyPath un valor de HKCU
+      (ICE38: los archivos del perfil no pueden ser su propio KeyPath); Windows Installer los quita al desinstalar.
+      Con archivo Y valor de registro WiX no puede generar el GUID del componente, asi que van FIJOS (no cambiarlos:
+      Windows Installer identifica el componente por su GUID entre versiones).
+    -->
+    <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
+      <Component Id="TeselaExe" Guid="B684DA7F-4E1F-49DD-9ED7-A7D2C72A1B22">
+        <File Id="TeselaExe" Source="$(SourceDir)\tesela.exe" />
+        <RegistryValue Root="HKCU" Key="Software\Tesela" Name="tesela.exe" Type="integer" Value="1" KeyPath="yes" />
+        <!-- Quitan las carpetas SOLO si quedan vacias (si el usuario dejo algo suyo dentro, se respeta). -->
+        <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
+        <RemoveFolder Id="RemoveProgramsFolder" Directory="ProgramsFolder" On="uninstall" />
+      </Component>
+      <Component Id="TeselaScanExe" Guid="F6AC4BAC-3E83-4784-ACA7-50ED49A1D3D9">
+        <File Id="TeselaScanExe" Source="$(SourceDir)\tesela-scan.exe" />
+        <RegistryValue Root="HKCU" Key="Software\Tesela" Name="tesela-scan.exe" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+      <Component Id="LicenseMit" Guid="1B50C86F-50F5-4EEF-B97B-BE62D82BBB9D">
+        <File Id="LicenseMit" Source="$(SourceDir)\LICENSE-MIT" />
+        <RegistryValue Root="HKCU" Key="Software\Tesela" Name="LICENSE-MIT" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+      <Component Id="LicenseApache" Guid="100B9CE0-2501-4884-8A2D-FE074CF71F06">
+        <File Id="LicenseApache" Source="$(SourceDir)\LICENSE-APACHE" />
+        <RegistryValue Root="HKCU" Key="Software\Tesela" Name="LICENSE-APACHE" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+      <Component Id="ThirdPartyNotices" Guid="0FFBF222-BD3C-4B09-A7A1-97CA3D105F13">
+        <File Id="ThirdPartyNotices" Source="$(SourceDir)\THIRD-PARTY-NOTICES.md" />
+        <RegistryValue Root="HKCU" Key="Software\Tesela" Name="THIRD-PARTY-NOTICES.md" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <!-- Acceso directo del menu Inicio del usuario (directamente en Programas, sin carpeta propia). -->
+    <ComponentGroup Id="StartMenu" Directory="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut">
+        <Shortcut
+          Id="StartMenuShortcut"
+          Name="Tesela"
+          Description="Visual disk space analyzer and cleaner"
+          Target="[INSTALLFOLDER]tesela.exe"
+          WorkingDirectory="INSTALLFOLDER"
+          Icon="TeselaIcon.ico" />
+        <RegistryValue Root="HKCU" Key="Software\Tesela" Name="StartMenuShortcut" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </ComponentGroup>
+
+    <Feature Id="Main" Title="Tesela" Level="1">
+      <ComponentGroupRef Id="AppFiles" />
+      <ComponentGroupRef Id="StartMenu" />
+    </Feature>
+  </Package>
+</Wix>
