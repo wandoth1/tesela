@@ -43,10 +43,30 @@ pub(crate) struct InfoRow {
     pub bytes: u64,
 }
 
+/// Por qué una categoría no está disponible.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Unavailable {
+    /// Hay un enlace (junction, symlink, punto de montaje) en la ruta de su carpeta.
+    Link,
+    /// La carpeta cambió mientras se comprobaba.
+    Changed,
+    /// La carpeta temporal está redirigida fuera de los datos locales del usuario.
+    Outside,
+}
+
+/// Una categoría que existe en el equipo pero que `cleaner` no ofrece, con el motivo (H4).
+#[derive(Clone, Debug)]
+pub(crate) struct UnavailableRow {
+    pub id: CategoryId,
+    pub why: Unavailable,
+}
+
 /// Todas las recomendaciones.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Recs {
     pub rows: Vec<RecRow>,
+    /// Categorías que el `cleaner` descartó con un motivo que el usuario debe conocer (se enseñan como "no disponible").
+    pub unavailable: Vec<UnavailableRow>,
     pub info: Vec<InfoRow>,
     pub downloads: Option<(NodeId, u64)>,
     pub recycle: Option<(NodeId, u64)>,
@@ -152,6 +172,27 @@ pub(crate) fn compute(
             parts.push(RecPart { node, bytes });
         }
         if parts.is_empty() {
+            // Descartada por seguridad (un enlace en su ruta...): no desaparece en silencio. Solo se dice si es de la unidad
+            // que se está viendo.
+            let on_this_drive = |p: &std::path::Path| {
+                let a = p.to_string_lossy().chars().next();
+                let b = tree.name_lossy(tree.root()).chars().next();
+                a.zip(b).is_some_and(|(x, y)| x.eq_ignore_ascii_case(&y))
+            };
+            if let Some((_, why)) = backend
+                .unavailable_roots(id)
+                .into_iter()
+                .find(|(p, _)| on_this_drive(p))
+            {
+                use tesela_cleaner::roots::RootRejection as R;
+                let why = match why {
+                    R::ReparseInChain { .. } => Unavailable::Link,
+                    R::NotCanonical => Unavailable::Changed,
+                    R::OutsideLocalAppData => Unavailable::Outside,
+                    R::Os(_) => continue,
+                };
+                recs.unavailable.push(UnavailableRow { id, why });
+            }
             continue;
         }
         let bytes = parts.iter().map(|p| p.bytes).sum();

@@ -295,6 +295,13 @@ impl Cleaner {
         // Un error de escritura del registro activa la cancelación: la limpieza se detiene en el siguiente punto seguro.
         if let Some(l) = &opts.log {
             l.cancel_on_error(progress.cancel.clone());
+            // Lo que no llegó al plan consta en el registro con su motivo (una raíz descartada por un enlace, p. ej.).
+            for r in &plan.rejected {
+                l.write_note(
+                    "rejected",
+                    &format!("{} -> {:?}", r.path.display(), r.reason),
+                );
+            }
         }
         // 0. Lo que cabe en la Papelera se recalcula AL EJECUTAR; si cambió, se pide confirmar otra vez ANTES de tocar nada.
         let changed: Vec<usize> = plan

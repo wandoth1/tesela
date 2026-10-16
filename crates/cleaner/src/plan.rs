@@ -434,7 +434,11 @@ impl Cleaner {
                     continue;
                 }
                 // Capa 1 de B1: la cadena tiene un enlace (o cambió): la categoría no se ofrece para esta raíz.
-                Err(RootRejection::ReparseInChain { .. } | RootRejection::NotCanonical) => {
+                Err(
+                    RootRejection::ReparseInChain { .. }
+                    | RootRejection::NotCanonical
+                    | RootRejection::OutsideLocalAppData,
+                ) => {
                     plan.rejected.push(Rejected {
                         path: check.raw,
                         reason: RejectReason::ReparseAncestor,

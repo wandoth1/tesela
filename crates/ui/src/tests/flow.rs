@@ -317,6 +317,44 @@ fn la_simulacion_no_cambia_el_arbol_y_lo_dice() {
     assert!(!explore(&h).cleaned);
 }
 
+/// H4: una categoría descartada por un enlace en su ruta (p. ej. `User Data` de Edge movida a otra unidad con un junction)
+/// no desaparece en silencio: sale como "No disponible" con su motivo, en español y en inglés.
+#[test]
+fn una_categoria_descartada_por_un_enlace_sale_como_no_disponible_con_su_motivo() {
+    for en in [false, true] {
+        let be = std::sync::Arc::new(crate::demo_backend::DemoBackend::new(
+            std::time::Duration::ZERO,
+        ));
+        be.set_unavailable(
+            CategoryId::EdgeCache,
+            tesela_cleaner::roots::RootRejection::ReparseInChain {
+                component: "User Data".into(),
+            },
+        );
+        let mut o = clean_opts(CleanStart::Recommendations);
+        if en {
+            o.settings.language = LangPref::En;
+        }
+        o.backend = Some(crate::app::BackendRef(be.clone()));
+        let mut h = harness(o);
+        h.run_steps(3);
+        let (title, why) = if en {
+            ("Not available", "the folder is a link (junction)")
+        } else {
+            ("No disponible", "la carpeta es un enlace (junction)")
+        };
+        h.get_by_label(title);
+        h.get_by_label_contains(why);
+        // Chrome sigue disponible; Edge ya no aparece como casilla utilizable.
+        assert!(
+            !explore(&h)
+                .flow
+                .basket
+                .contains_category(CategoryId::EdgeCache)
+        );
+    }
+}
+
 #[test]
 fn un_navegador_abierto_puede_volver_a_comprobarse() {
     let be = std::sync::Arc::new(crate::demo_backend::DemoBackend::new(

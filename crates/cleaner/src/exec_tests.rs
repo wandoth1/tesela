@@ -32,6 +32,7 @@ fn cleaner_for(sb: &Sandbox) -> Cleaner {
             roaming_appdata: Some(sb.long("Roaming")),
         },
         downloads: None,
+        startup_rejections: Vec::new(),
         protection: ProtectionRoots {
             denied: vec![sb.long("Local/Google/Chrome/User Data"), sb.long("Prot")],
             untouchable: vec![sb.long("Local"), sb.long("Roaming")],
@@ -996,6 +997,7 @@ fn la_propia_aplicacion_dentro_del_temporal_nunca_se_borra() {
         windows_temp: None,
         browser: BrowserRoots::default(),
         downloads: None,
+        startup_rejections: Vec::new(),
         protection: ProtectionRoots {
             denied: vec![sb.long("Temp/app")],
             untouchable: vec![],
@@ -1038,6 +1040,7 @@ fn roots_with_raw(sb: &Sandbox, local: PathBuf, user_temp: Option<PathBuf>) -> R
             roaming_appdata: Some(sb.long("Roaming")),
         },
         downloads: None,
+        startup_rejections: Vec::new(),
         protection: ProtectionRoots {
             denied: vec![sb.long("Prot"), local.join(r"Google\Chrome\User Data")],
             untouchable: vec![sb.long("Roaming")],
@@ -1115,6 +1118,58 @@ fn un_junction_por_encima_de_user_data_no_vuelve_borrable_lo_protegido() {
     ] {
         assert!(sb.path(rel).exists(), "{rel}");
     }
+}
+
+/// H4: una raíz descartada por un enlace en su ruta no desaparece en silencio: `unavailable_roots` da el motivo (lo que la
+/// interfaz enseña como "no disponible"), las raíces descartadas al arrancar también se devuelven, y el registro de la
+/// ejecución anota lo rechazado con su motivo.
+#[test]
+fn una_raiz_descartada_deja_su_motivo_visible_y_en_el_registro() {
+    let mut sb = Sandbox::new();
+    sb.write_aged("Prot/UD/ShaderCache/s.bin", 4_000, 72);
+    sb.mkdir("Local/Google/Chrome");
+    sb.junction("Local/Google/Chrome/User Data", "Prot/UD");
+    let mut roots = roots_with_raw(&sb, sb.path("Local"), None);
+    // Y una raíz que `from_system` descartó al arrancar (p. ej. un %TEMP% redirigido).
+    roots.startup_rejections.push((
+        CategoryId::UserTemp,
+        sb.path("Redirigida"),
+        crate::roots::RootRejection::OutsideLocalAppData,
+    ));
+    let c = Cleaner::new(roots);
+    let un = c.roots().unavailable_roots(CategoryId::ChromeCache);
+    assert!(!un.is_empty());
+    assert!(un.iter().all(|(_, why)| matches!(
+        why,
+        crate::roots::RootRejection::ReparseInChain { component } if component == "User Data"
+    )));
+    let temp = c.roots().unavailable_roots(CategoryId::UserTemp);
+    assert_eq!(temp.len(), 1);
+    assert_eq!(temp[0].1, crate::roots::RootRejection::OutsideLocalAppData);
+    // Lo que no es de seguridad (no existe, sin permiso) no se enseña como "no disponible".
+    assert!(
+        !crate::roots::RootRejection::Os(5).is_user_visible()
+            && crate::roots::RootRejection::NotCanonical.is_user_visible()
+    );
+    // La aprobación lo rechaza y el registro lo anota.
+    let mut b = Basket::new();
+    b.set_category(CategoryId::ChromeCache, true);
+    b.set_category(CategoryId::UserTemp, true);
+    let plan = approve(&c, &b);
+    assert!(plan.items.is_empty());
+    assert!(
+        plan.rejected
+            .iter()
+            .all(|r| r.reason == RejectReason::ReparseAncestor)
+    );
+    let log = Arc::new(LogWriter::create(&sb.path("Tesela"), false).unwrap());
+    exec(&c, &plan, false, false, Some(log.clone())).unwrap();
+    let text = fs::read_to_string(log.path()).unwrap();
+    assert!(
+        text.lines()
+            .any(|l| l.contains("\"rejected\"") && l.contains("ReparseAncestor")),
+        "{text}"
+    );
 }
 
 /// B1 (capa 2, aislada): aunque una raíz "canónica" llegue a `Prot\UD\ShaderCache` por el camino que sea (aquí la capa 1

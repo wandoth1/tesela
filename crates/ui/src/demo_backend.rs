@@ -32,6 +32,8 @@ pub struct DemoBackend {
     root: String,
     prot: Arc<Protection>,
     browsers: Mutex<Vec<Browser>>,
+    /// Categorías "no disponibles" (lo pone una prueba de la interfaz).
+    unavailable: Mutex<Vec<(CategoryId, tesela_cleaner::roots::RootRejection)>>,
     /// Cuánto dura la ejecución simulada (para que se vea el progreso). 0 en las pruebas.
     delay: Duration,
     cache_dirs: Vec<(CategoryId, PathBuf)>,
@@ -123,9 +125,16 @@ impl DemoBackend {
             root,
             prot: Arc::new(prot),
             browsers: Mutex::new(vec![Browser::Chrome]),
+            unavailable: Mutex::new(Vec::new()),
             delay,
             cache_dirs,
         }
+    }
+
+    /// Marca una categoría como "no disponible" (como si una raíz se hubiera descartado por un enlace en su ruta): las
+    /// pruebas de la interfaz lo usan.
+    pub fn set_unavailable(&self, id: CategoryId, why: tesela_cleaner::roots::RootRejection) {
+        *self.unavailable.lock().unwrap_or_else(|e| e.into_inner()) = vec![(id, why)];
     }
 
     /// Navegadores "abiertos" (en la demostración, Chrome por defecto; las pruebas lo cambian).
@@ -233,7 +242,29 @@ impl DemoBackend {
 }
 
 impl Backend for DemoBackend {
+    fn unavailable_roots(
+        &self,
+        id: CategoryId,
+    ) -> Vec<(PathBuf, tesela_cleaner::roots::RootRejection)> {
+        self.unavailable
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .filter(|(c, _)| *c == id)
+            .map(|(_, why)| (p(&self.root, "Users\\ejemplo\\no-disponible"), why.clone()))
+            .collect()
+    }
+
     fn category_roots(&self, id: CategoryId) -> Vec<PathBuf> {
+        if self
+            .unavailable
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .any(|(c, _)| *c == id)
+        {
+            return Vec::new();
+        }
         match id {
             CategoryId::UserTemp => vec![p(
                 &self.root,

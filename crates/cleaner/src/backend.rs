@@ -6,6 +6,7 @@ use crate::exec::{ExecError, ExecOptions, Progress, Report};
 use crate::plan::{ApproveOptions, Cleaner, Plan};
 use crate::process::{self, Browser};
 use crate::protect::Protection;
+use crate::roots::RootRejection;
 use crate::rules::CategoryId;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -15,6 +16,11 @@ use std::sync::atomic::AtomicBool;
 pub trait Backend: Send + Sync {
     /// Raíces (directorios) de una categoría con acción `Contents`: la UI las busca en el árbol escaneado para dar tamaños.
     fn category_roots(&self, id: CategoryId) -> Vec<PathBuf>;
+    /// Las raíces de una categoría que se descartaron por un motivo que el usuario debe conocer (un enlace en su ruta...),
+    /// con ese motivo. La UI muestra la categoría como "no disponible" en vez de dejarla desaparecer en silencio.
+    fn unavailable_roots(&self, _id: CategoryId) -> Vec<(PathBuf, RootRejection)> {
+        Vec::new()
+    }
     /// La carpeta Descargas.
     fn downloads_dir(&self) -> Option<PathBuf>;
     /// La carpeta de la Papelera del usuario en la unidad `drive_root` (`C:\$Recycle.Bin\<SID>`).
@@ -43,6 +49,9 @@ pub trait Backend: Send + Sync {
 impl Backend for Cleaner {
     fn category_roots(&self, id: CategoryId) -> Vec<PathBuf> {
         self.roots().category_roots(id)
+    }
+    fn unavailable_roots(&self, id: CategoryId) -> Vec<(PathBuf, RootRejection)> {
+        self.roots().unavailable_roots(id)
     }
     fn downloads_dir(&self) -> Option<PathBuf> {
         self.roots().downloads.clone()

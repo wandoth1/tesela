@@ -436,6 +436,7 @@ impl Explore {
                 });
                 ui.add_space(14.0);
                 if recs.rows.is_empty()
+                    && recs.unavailable.is_empty()
                     && recs.info.is_empty()
                     && recs.downloads.is_none()
                     && recs.recycle.is_none()
@@ -500,6 +501,38 @@ impl Explore {
         .collect();
         if !browsers.is_empty() {
             self.safe_card(ui, env, &browsers, CategoryId::ChromeCache);
+        }
+        // H4: lo que existe pero Tesela no ofrece, con su motivo, en vez de desaparecer en silencio.
+        if !recs.unavailable.is_empty() {
+            card_frame(&pal).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.label(
+                    RichText::new(env.tr.t("recs-unavailable-title"))
+                        .font(theme::font_semibold(15.0))
+                        .color(pal.text),
+                );
+                for u in &recs.unavailable {
+                    let name = if u.id.is_browser_cache() {
+                        browser_label(env, u.id)
+                    } else {
+                        category_name(env, u.id)
+                    };
+                    let why = env.tr.t(match u.why {
+                        recs::Unavailable::Link => "recs-unavailable-link",
+                        recs::Unavailable::Changed => "recs-unavailable-changed",
+                        recs::Unavailable::Outside => "recs-unavailable-outside",
+                    });
+                    let line = env.tr.ta(
+                        "recs-unavailable-line",
+                        args!["name" => name, "detail" => why],
+                    );
+                    ui.add(
+                        egui::Label::new(RichText::new(line).size(13.0).color(pal.text_muted))
+                            .wrap(),
+                    );
+                }
+            });
+            ui.add_space(10.0);
         }
     }
 

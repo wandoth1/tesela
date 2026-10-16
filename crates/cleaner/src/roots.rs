@@ -33,6 +33,9 @@ pub struct Roots {
     pub browser: BrowserRoots,
     /// La carpeta Descargas.
     pub downloads: Option<PathBuf>,
+    /// Raíces que `from_system` descartó al arrancar (con su motivo): `category_root_checks` las devuelve como rechazos,
+    /// de modo que una categoría que desaparece por un enlace en su ruta no lo hace en silencio (H4).
+    pub startup_rejections: Vec<(CategoryId, PathBuf, RootRejection)>,
     /// Qué proteger.
     pub protection: ProtectionRoots,
 }
@@ -50,8 +53,18 @@ pub enum RootRejection {
     ReparseInChain { component: String },
     /// La ruta resuelta por el handle no es la que se recorrió (cambió mientras se comprobaba).
     NotCanonical,
+    /// La carpeta temporal del usuario está redirigida fuera de `%LOCALAPPDATA%` (no es `Local\Temp` ni cuelga de ella).
+    OutsideLocalAppData,
     /// La ruta no es utilizable (no es absoluta con letra de unidad, no existe o no se abre): código de Windows.
     Os(u32),
+}
+
+impl RootRejection {
+    /// ¿Es algo que el usuario debe saber (la categoría "desaparece" por un motivo de seguridad que puede no esperar)?
+    /// Un `Os` (no existe, sin permiso) no lo es: simplemente no hay nada que limpiar.
+    pub fn is_user_visible(&self) -> bool {
+        !matches!(self, RootRejection::Os(_))
+    }
 }
 
 /// La raíz de una categoría ya comprobada: su ruta canónica y la ÚNICA zona denegada que puede levantar.
@@ -142,12 +155,32 @@ impl Roots {
 
         // %TEMP%: solo si su cadena (tal como la da Windows, SIN canonicalizar) no tiene reparse points y, ya
         // canonicalizada, es %LOCALAPPDATA%\Temp o cuelga de ella.
-        let user_temp = crate::volume::temp_path()
-            .and_then(|t| verify_chain(&t).ok().map(|(p, _)| p))
-            .filter(|t| accept_user_temp(t, local.as_deref()));
-        let windows_temp = windows
-            .as_ref()
-            .and_then(|w| verify_chain(&w.join("Temp")).ok().map(|(p, _)| p));
+        let mut startup_rejections: Vec<(CategoryId, PathBuf, RootRejection)> = Vec::new();
+        let user_temp = crate::volume::temp_path().and_then(|t| match verify_chain(&t) {
+            Ok((p, _)) if accept_user_temp(&p, local.as_deref()) => Some(p),
+            Ok(_) => {
+                startup_rejections.push((
+                    CategoryId::UserTemp,
+                    t,
+                    RootRejection::OutsideLocalAppData,
+                ));
+                None
+            }
+            Err(e) => {
+                startup_rejections.push((CategoryId::UserTemp, t, e));
+                None
+            }
+        });
+        let windows_temp = windows.as_ref().and_then(|w| {
+            let raw = w.join("Temp");
+            match verify_chain(&raw) {
+                Ok((p, _)) => Some(p),
+                Err(e) => {
+                    startup_rejections.push((CategoryId::WindowsTemp, raw, e));
+                    None
+                }
+            }
+        });
 
         let mut denied: Vec<PathBuf> = Vec::new();
         denied.extend(windows.iter().cloned());
@@ -213,6 +246,7 @@ impl Roots {
                 roaming_appdata: roaming,
             },
             downloads,
+            startup_rejections,
             protection: ProtectionRoots {
                 denied,
                 untouchable,
@@ -261,7 +295,16 @@ impl Roots {
             }
             _ => Vec::new(),
         };
-        raws.into_iter()
+        let startup = self
+            .startup_rejections
+            .iter()
+            .filter(|(c, ..)| *c == id)
+            .map(|(_, raw, why)| RootCheck {
+                raw: raw.clone(),
+                result: Err(why.clone()),
+            });
+        let checked = raws
+            .into_iter()
             .map(|raw| {
                 let result = verify_chain(&raw).map(|(path, identity)| VerifiedRoot {
                     zone: self.zone_of(id, &path),
@@ -270,6 +313,17 @@ impl Roots {
                 });
                 RootCheck { raw, result }
             })
+            .collect::<Vec<_>>();
+        startup.chain(checked).collect()
+    }
+
+    /// Las raíces de la categoría que se descartaron y el motivo (solo las que el usuario debe conocer: ver
+    /// [`RootRejection::is_user_visible`]).
+    pub fn unavailable_roots(&self, id: CategoryId) -> Vec<(PathBuf, RootRejection)> {
+        self.category_root_checks(id)
+            .into_iter()
+            .filter_map(|c| c.result.err().map(|e| (c.raw, e)))
+            .filter(|(_, e)| e.is_user_visible())
             .collect()
     }
 
