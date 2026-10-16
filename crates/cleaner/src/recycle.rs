@@ -2410,6 +2410,145 @@ mod tests {
         assert!(!core.pre_delete(os(&b.path)), "lo siguiente, también");
     }
 
+    // ---- A-m1: los CALLBACKS COM del receptor, llamados directamente (sin una operación de la Papelera real) ---------------------
+    //
+    // Hasta ahora solo se probaba la lógica pura (`SinkCore`): el mutante `PreDeleteItem -> Ok(())` y el `PostDeleteItem -> Ok(())`
+    // sobrevivían, porque nada comprobaba que los métodos de `IFileOperationProgressSink` llamaran a esa lógica y tradujeran
+    // su resultado a `E_ABORT`. Aquí se crea el receptor como interfaz COM y se llama a sus métodos con `IShellItem`s
+    // creados con `SHCreateItemFromParsingName` sobre archivos propios en el sandbox. Hace falta COM inicializado en el hilo
+    // de la prueba, pero NO una operación de la shell ni la Papelera: corre en el CI.
+
+    /// Un `IShellItem` de una ruta del sandbox.
+    fn shell_item(path: &Path) -> IShellItem {
+        let name = parsing_name(path);
+        // SAFETY: `name` termina en NUL y vive durante la llamada; COM está inicializado por quien llama.
+        unsafe { SHCreateItemFromParsingName::<_, _, IShellItem>(PCWSTR(name.as_ptr()), None) }
+            .expect("crea el IShellItem")
+    }
+
+    /// El receptor COM con su estado compartido, para inspeccionarlo después.
+    fn com_sink(guard: Option<Guard>) -> (IFileOperationProgressSink, Events, Arc<SinkState>) {
+        let events: Events = Arc::new(Mutex::new(Vec::new()));
+        let state = Arc::new(SinkState::default());
+        let sink: IFileOperationProgressSink = Recorder {
+            core: SinkCore {
+                events: events.clone(),
+                state: state.clone(),
+                guard,
+            },
+        }
+        .into();
+        (sink, events, state)
+    }
+
+    fn is_abort(r: windows::core::Result<()>) -> bool {
+        r.is_err_and(|e| e.code() == E_ABORT)
+    }
+
+    /// A-m1: `PreDeleteItem` por la interfaz COM. Lo aprobado pasa; un sustituto en la ruta se veta con `E_ABORT` (y consta el
+    /// veto); una vez cortado el lote, lo siguiente se niega aunque sea lo aprobado. (Un mutante `PreDeleteItem -> Ok(())` falla.)
+    #[test]
+    fn el_callback_pre_delete_item_veta_con_e_abort_lo_que_no_es_lo_aprobado() {
+        let _com = Com::init().unwrap();
+        let sb = Sandbox::new();
+        let a = send_item(&sb, "c/a.txt", 100);
+        let b = send_item(&sb, "c/b.txt", 100);
+        let (sink, _events, state) = com_sink(Some(Guard::new(&[a.clone(), b.clone()])));
+        // SAFETY: interfaz COM viva y en su hilo; `IShellItem` vivos.
+        unsafe {
+            assert!(sink.PreDeleteItem(0, &shell_item(&a.path)).is_ok());
+            // Después de comprobar, `a.txt` se sustituye por otro archivo con el mismo nombre.
+            std::fs::rename(sb.path("c/a.txt"), sb.path("c/a-original.txt")).unwrap();
+            std::fs::write(sb.path("c/a.txt"), vec![7u8; 100]).unwrap();
+            let veto = sink.PreDeleteItem(0, &shell_item(&a.path));
+            assert!(is_abort(veto), "el sustituto se veta con E_ABORT");
+            assert!(state.tripped.load(Ordering::SeqCst));
+            assert_eq!(state.vetoes.lock().unwrap().len(), 1);
+            assert_eq!(
+                state.vetoes.lock().unwrap()[0].kind,
+                VetoKind::IdentityMismatch
+            );
+            // El lote está cortado: `b.txt` es lo aprobado y aun así se niega.
+            assert!(is_abort(sink.PreDeleteItem(0, &shell_item(&b.path))));
+        }
+    }
+
+    /// A-m1: `PostDeleteItem` por la interfaz COM: registra el evento (con su `HRESULT` y el estado según `psiNewlyCreated`) y
+    /// devuelve `E_ABORT` solo cuando la shell eliminó definitivamente con éxito (nulo) o no dio la ruta. (Un mutante
+    /// `PostDeleteItem -> Ok(())` falla: no registraría nada ni cortaría.)
+    #[test]
+    fn el_callback_post_delete_item_registra_el_evento_y_corta_tras_un_borrado_definitivo() {
+        let _com = Com::init().unwrap();
+        let sb = Sandbox::new();
+        let a = send_item(&sb, "d/a.txt", 100);
+        let b = send_item(&sb, "d/b.txt", 100);
+        let dest = sb.write("d/bin/R1.txt", 10);
+        let (sink, events, state) = com_sink(Some(Guard::new(&[a.clone(), b.clone()])));
+        // SAFETY: interfaz COM viva y en su hilo; `IShellItem` vivos.
+        unsafe {
+            // Éxito con elemento en la Papelera: se registra y NO se corta.
+            let r = sink.PostDeleteItem(0, &shell_item(&a.path), HRESULT(0), &shell_item(&dest));
+            assert!(r.is_ok());
+            assert!(!state.tripped.load(Ordering::SeqCst));
+            // Éxito con `psiNewlyCreated` nulo: la shell lo eliminó definitivamente -> se corta con `E_ABORT`.
+            let r = sink.PostDeleteItem(0, &shell_item(&b.path), HRESULT(0), None::<&IShellItem>);
+            assert!(is_abort(r), "borrado definitivo con éxito: E_ABORT");
+            assert!(state.tripped.load(Ordering::SeqCst));
+        }
+        let ev = events.lock().unwrap().clone();
+        assert_eq!(ev.len(), 2, "el evento se registra ANTES de decidir cortar");
+        assert_eq!(PathKey::new(Path::new(&ev[0].item)), PathKey::new(&a.path));
+        assert_eq!(ev[0].hr, 0);
+        assert!(
+            matches!(&ev[0].state, BinState::InBin(p) if PathKey::new(p) == PathKey::new(&dest)),
+            "{:?}",
+            ev[0].state
+        );
+        assert_eq!(ev[1].state, BinState::Deleted);
+        // Con un FALLO de la shell (y nulo) no se corta, pero consta.
+        let (sink, events, state) = com_sink(Some(Guard::new(std::slice::from_ref(&a))));
+        // SAFETY: igual que arriba.
+        unsafe {
+            let fail = HRESULT(0x8007_0005u32 as i32);
+            let r = sink.PostDeleteItem(0, &shell_item(&a.path), fail, None::<&IShellItem>);
+            assert!(r.is_ok(), "un fallo no corta por esto");
+            assert!(!state.tripped.load(Ordering::SeqCst));
+        }
+        assert_eq!(events.lock().unwrap()[0].hr, 0x8007_0005u32 as i32);
+        // Al PURGAR, el borrado definitivo es lo esperado: se registra y no se corta.
+        let (sink, events, state) = com_sink(None);
+        // SAFETY: igual que arriba.
+        unsafe {
+            let r = sink.PostDeleteItem(0, &shell_item(&a.path), HRESULT(0), None::<&IShellItem>);
+            assert!(r.is_ok());
+            assert!(sink.PreDeleteItem(0, &shell_item(&a.path)).is_ok());
+        }
+        assert_eq!(events.lock().unwrap().len(), 1);
+        assert!(!state.tripped.load(Ordering::SeqCst));
+    }
+
+    /// A-m1 + A-M4: la guarda de una PURGA por la interfaz COM, con elementos sintéticos de la Papelera: el `PreDeleteItem` que
+    /// recibe el nombre de análisis del elemento comprueba el `$R` y el `$I` y veta con `E_ABORT` el `$R` sustituido.
+    #[test]
+    fn el_callback_pre_delete_item_de_una_purga_veta_el_r_sustituido() {
+        let _com = Com::init().unwrap();
+        let sb = Sandbox::new();
+        let a = synthetic_bin_item(&sb, "AAAA01", b"datos a");
+        let b = synthetic_bin_item(&sb, "BBBB02", b"datos b");
+        let (sink, _events, state) = com_sink(Some(Guard::purge(&[&a, &b])));
+        // SAFETY: interfaz COM viva y en su hilo; `IShellItem` vivos.
+        unsafe {
+            assert!(sink.PreDeleteItem(0, &shell_item(Path::new(&a.id))).is_ok());
+            std::fs::remove_file(PathBuf::from(&b.id)).unwrap();
+            std::fs::write(PathBuf::from(&b.id), b"datos b").unwrap();
+            assert!(is_abort(
+                sink.PreDeleteItem(0, &shell_item(Path::new(&b.id)))
+            ));
+        }
+        assert_eq!(state.vetoes.lock().unwrap().len(), 1);
+        assert_eq!(state.vetoes.lock().unwrap()[0].item, b.id);
+    }
+
     /// S1: las banderas de envío y de purga llevan `FOF_NO_CONNECTED_ELEMENTS` (aprobar `pagina.html` no puede arrastrar
     /// `pagina_files\`), y el envío conserva las que lo hacen recuperable y sin diálogos.
     #[test]
