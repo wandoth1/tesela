@@ -240,10 +240,11 @@ fn validate(r: &Rule) -> Result<(), String> {
     // M-1/m-7: la Papelera por elementos de estas categorías solo es seguro con una antigüedad mínima (la comparación de
     // `prepare_recycle` y de `fresh_size` la exige) y borrando el contenido de las raíces.
     if r.id.is_diagnostic()
-        && (r.min_age < Duration::from_secs(7 * 24 * 3600) || r.action != Action::Contents)
+        && (r.min_age != Duration::from_secs(7 * 24 * 3600) || r.action != Action::Contents)
     {
+        // Exactamente 7 días: los textos de la interfaz dicen "7 días" fijo.
         return Err(format!(
-            "{k}: los informes de errores y los volcados exigen action = contents y min_age_hours >= 168"
+            "{k}: los informes de errores y los volcados exigen action = contents y min_age_hours = 168"
         ));
     }
     if r.id == CategoryId::Downloads && (r.risk == Risk::Safe || r.selectable) {
@@ -394,7 +395,12 @@ mod tests {
             let e = Rules::parse(&rule("safe", "recycle")).unwrap_err();
             assert!(e.contains(id) && e.contains("Revisar"), "{e}");
             // m-7: sin antigüedad mínima de 7 días, o sin borrar el contenido de la raíz, tampoco valen.
-            for (hours, action) in [(0, "contents"), (167, "contents"), (168, "none")] {
+            for (hours, action) in [
+                (0, "contents"),
+                (167, "contents"),
+                (169, "contents"),
+                (168, "none"),
+            ] {
                 let e = Rules::parse(&with(&format!(
                     "[[rule]]\nid = \"{id}\"\nrisk = \"review\"\ndestination = \"recycle\"\naction = \"{action}\"\nmin_age_hours = {hours}\nselectable = true\n"
                 )))

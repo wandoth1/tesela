@@ -278,6 +278,7 @@ confirm-subtitle =
 confirm-elevated = Tesela is running as administrator; for safety, cleaning only works without elevation. Close it and open it normally.
 confirm-no-log = The cleaning log could not be created, so nothing was done. Check that the Tesela data folder (in your local app data) is writable and try again. Simulation still works without a log.
 confirm-empty = There is nothing to clean with this basket.
+confirm-empty-young = There is nothing to clean right now: what is there was modified less than 7 days ago.
 confirm-dry-banner = Simulation mode: nothing will be deleted or moved; only what would be done is logged.
 confirm-reconfirm = Something changed since you confirmed (what fits in the Recycle Bin). Review again before cleaning.
 confirm-group-permanent = Deleted and recreated on its own
@@ -307,7 +308,7 @@ confirm-only-kept = There is nothing to clean right now: what is here does not f
 confirm-group-kept = They do not fit in the Recycle Bin: left where they are
 confirm-kept-note = They do not fit in the Recycle Bin; they are not deleted permanently because they help diagnose failures.
 confirm-diag-note = Each report or dump records a specific failure and is not recreated; a program's support may ask for it. The space is only really freed when you empty the Recycle Bin.
-confirm-diag-many = That is { $count } reports or dumps, sent to the Recycle Bin one at a time: it may take several minutes. You can cancel at any time; what was already sent stays in the Recycle Bin.
+confirm-diag-many = That is { $count } reports or dumps, sent to the Recycle Bin one at a time: it may take a few minutes. You can cancel at any time; what was already sent stays in the Recycle Bin.
 confirm-young =
     { $n ->
         [one] { $count } report or dump is left alone: something in it was modified less than 7 days ago.

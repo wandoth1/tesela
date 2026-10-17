@@ -84,6 +84,8 @@ enum Stage {
 /// Aviso breve (toast) pendiente de pintar.
 pub(crate) enum Note {
     NothingToClean,
+    /// No queda nada que ofrecer porque todo se modificó hace menos de la antigüedad mínima (7 días).
+    NothingYoung,
     /// No se pudo crear el registro local: sin registro no se limpia (M4). No se ha tocado nada.
     NoLog,
     /// Lo que cabe en la Papelera cambió desde la confirmación: hay que revisar y confirmar otra vez.
@@ -137,6 +139,21 @@ fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
+}
+
+/// El aviso de un plan vacío, si lo es: "nada que limpiar", o, si TODO lo rechazado es "demasiado reciente" (un plan sin
+/// elementos y solo con rechazos `Young`), el aviso que lo explica. Un plan vacío con otros rechazos se enseña (con su motivo).
+pub(crate) fn empty_plan_note(plan: &Plan) -> Option<Note> {
+    if !plan.is_empty() {
+        return None;
+    }
+    if plan.rejected.is_empty() {
+        return Some(Note::NothingToClean);
+    }
+    plan.rejected
+        .iter()
+        .all(|r| r.reason == RejectReason::Young)
+        .then_some(Note::NothingYoung)
 }
 
 /// Cuántos elementos se tocarían de verdad: los del plan sin los que "se quedan donde están" (`kept`), más la Papelera si se
@@ -274,8 +291,8 @@ impl CleanFlow {
             Stage::Approving { rx, reconfirm, .. } => match rx.try_recv() {
                 Ok(plan) => {
                     let reconfirm = *reconfirm;
-                    if plan.is_empty() && plan.rejected.is_empty() {
-                        self.note = Some(Note::NothingToClean);
+                    if let Some(note) = empty_plan_note(&plan) {
+                        self.note = Some(note);
                         self.stage = Stage::Idle;
                     } else {
                         self.stage = Stage::Confirm(Box::new(Confirm {
@@ -392,6 +409,7 @@ impl CleanFlow {
         if let Some(note) = &self.note {
             let (key, secs) = match note {
                 Note::NothingToClean => ("confirm-empty", 4.0),
+                Note::NothingYoung => ("confirm-empty-young", 8.0),
                 // Más larga: explica por qué no pasó nada.
                 Note::NoLog => ("confirm-no-log", 12.0),
                 Note::Reconfirm => ("confirm-reconfirm", 8.0),
@@ -1463,7 +1481,25 @@ fn summary_ui(ui: &mut Ui, env: &mut Env, s: &Summary) -> Option<SummaryClick> {
 
 #[cfg(test)]
 mod actionable_tests {
-    use super::actionable_count;
+    use super::{Note, actionable_count, empty_plan_note};
+    use std::path::PathBuf;
+    use tesela_cleaner::{Plan, RejectReason, Rejected};
+
+    /// m-12: un plan vacío con solo rechazos "demasiado reciente" vuelve a dar el aviso de "nada que limpiar", con su texto; con
+    /// otros rechazos se enseña la confirmación para que se vea el motivo.
+    #[test]
+    fn un_plan_vacio_con_solo_recientes_da_el_aviso_de_que_no_hay_nada() {
+        let rej = |reason| Rejected {
+            path: PathBuf::from("x"),
+            reason,
+        };
+        let mut plan = Plan::default();
+        assert!(matches!(empty_plan_note(&plan), Some(Note::NothingToClean)));
+        plan.rejected = vec![rej(RejectReason::Young), rej(RejectReason::Young)];
+        assert!(matches!(empty_plan_note(&plan), Some(Note::NothingYoung)));
+        plan.rejected.push(rej(RejectReason::Missing));
+        assert!(empty_plan_note(&plan).is_none());
+    }
 
     /// Lo que "se queda donde está" no cuenta; sin nada que tocar (ni Papelera que vaciar) el botón se desactiva.
     #[test]

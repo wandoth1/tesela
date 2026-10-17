@@ -236,6 +236,7 @@ impl DemoBackend {
             },
             cloud_synced: n.flags & tesela_model::flags::CLOUD != 0,
             hard_linked: false,
+            diagnostic_path: false,
             volume: Some(PathBuf::from(&self.root)),
         });
     }
@@ -338,6 +339,7 @@ impl Backend for DemoBackend {
                             },
                             cloud_synced: false,
                             hard_linked: false,
+                            diagnostic_path: false,
                             volume: Some(PathBuf::from(&self.root)),
                         });
                     }

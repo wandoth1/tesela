@@ -132,6 +132,9 @@ pub struct PlanItem {
     pub hard_linked: bool,
     /// Volumen (raíz) en el que está.
     pub volume: Option<PathBuf>,
+    /// Cuelga de una raíz de diagnóstico (`ReportArchive`, `ReportQueue` o `CrashDumps`), aunque se añadiera a mano como "Tu
+    /// archivo": nunca se borra definitivamente por su RUTA, no solo por su categoría (ver [`PlanItem::never_permanent`]).
+    pub diagnostic_path: bool,
 }
 
 impl PlanItem {
@@ -147,13 +150,15 @@ impl PlanItem {
     }
     /// ¿Se le prohíbe el borrado DEFINITIVO en cualquier caso (también con la casilla de "no cabe en la Papelera")?
     ///
-    /// * Los informes de errores y los volcados de bloqueo (categorías de diagnóstico) nunca se borran definitivamente.
+    /// * Los informes de errores y los volcados de bloqueo (categorías de diagnóstico) nunca se borran definitivamente, ni
+    ///   por categoría ni por ruta (`diagnostic_path`: algo que cuelga de sus raíces y se añadió a mano).
     /// * Una unidad `Entry` con antigüedad mínima: el recorrido definitivo no vuelve a comprobar la antigüedad de cada hijo
     ///   ni exige la huella de la carpeta (dejaría un informe partido: lo antiguo borrado y lo reciente en su sitio), así
     ///   que falla cerrado. Hoy solo las crean las categorías de diagnóstico; esto impide que otra regla lo estrene sin
     ///   revisar esa comparación.
     pub fn never_permanent(&self) -> bool {
         self.category.is_some_and(CategoryId::is_diagnostic)
+            || self.diagnostic_path
             || (matches!(self.spec, UnitSpec::Entry { .. }) && !self.min_age.is_zero())
     }
     /// Bytes que liberará (sin los enlaces duros compartidos).
@@ -524,6 +529,13 @@ impl Cleaner {
             })
             .collect();
         engine::run(&units, self.threads);
+        // Las raíces de diagnóstico (comprobadas): lo que cuelga de ellas nunca se borra definitivamente, tampoco si se añadió a
+        // mano como "Tu archivo".
+        let diag_roots: Vec<PathKey> = [CategoryId::WerReports, CategoryId::CrashDumps]
+            .into_iter()
+            .flat_map(|id| self.roots.category_roots(id))
+            .map(|p| PathKey::new(&p))
+            .collect();
         for (c, u) in cands.into_iter().zip(units) {
             let est = u.stats.snapshot();
             let id = plan.items.len();
@@ -557,6 +569,8 @@ impl Cleaner {
             } else {
                 Fit::Fits
             };
+            let canon_key = PathKey::new(&c.canon);
+            let diagnostic_path = diag_roots.iter().any(|r| canon_key.is_same_or_under(r));
             plan.items.push(PlanItem {
                 id,
                 category: c.category,
@@ -570,6 +584,7 @@ impl Cleaner {
                 cloud_synced: c.cloud || est.cloud > 0,
                 hard_linked: c.links > 1,
                 volume: c.volume,
+                diagnostic_path,
             });
         }
         plan

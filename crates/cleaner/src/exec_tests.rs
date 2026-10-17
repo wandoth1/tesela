@@ -2034,6 +2034,11 @@ fn lo_que_se_toca_tras_aprobar_deja_de_cumplir_los_7_dias_y_no_se_envia() {
         );
     }
     assert_eq!(status_of(&rep, "Informe_c"), ItemStatus::Recycled);
+    // S-7: lo que se rechaza por reciente al ejecutar consta en el registro como "demasiado reciente" (el volcado y la fecha de
+    // la propia carpeta A), no como un cambio cualquiera; lo de dentro de la B (la huella) sigue siendo un cambio.
+    let log = std::fs::read_to_string(rep.log_path.as_ref().expect("registro")).unwrap();
+    let young = log.matches("too-recent").count();
+    assert!((2..=3).contains(&young), "{young}: {log}");
     for kept in [
         "Local/CrashDumps/app.1111.dmp".to_string(),
         format!("{WER_REL}/ReportArchive/Informe_a/Report.wer"),
@@ -2045,6 +2050,51 @@ fn lo_que_se_toca_tras_aprobar_deja_de_cumplir_los_7_dias_y_no_se_envia() {
         !sb.path(&format!("{WER_REL}/ReportArchive/Informe_c"))
             .exists()
     );
+}
+
+/// Residuo 1: lo que cuelga de una raíz de diagnóstico y se añade a mano como "Tu archivo" tampoco se borra definitivamente: si
+/// no cabe en la Papelera, no entra en el grupo ámbar y ni con la casilla se toca. Un archivo cualquiera sí sigue yendo al ámbar.
+#[test]
+fn una_carpeta_de_informe_anadida_a_mano_que_no_cabe_no_va_al_grupo_ambar() {
+    let sb = Sandbox::new();
+    sb.write_aged(
+        &format!("{WER_REL}/ReportArchive/Informe_a/Report.wer"),
+        3_000,
+        240,
+    );
+    sb.write_aged("Local/CrashDumps/app.1111.dmp", 3_000, 240);
+    sb.write_aged("Docs/mio.txt", 6_000, 240);
+    let fake = FakeShell::new(&sb, Some(1_000), 0, "nunca");
+    let c = diag_cleaner(&sb, fake.clone());
+    let mut b = Basket::new();
+    b.add_path(
+        sb.long(&format!("{WER_REL}/ReportArchive/Informe_a")),
+        c.protection(),
+    );
+    b.add_path(sb.long("Local/CrashDumps/app.1111.dmp"), c.protection());
+    b.add_path(sb.long("Docs/mio.txt"), c.protection());
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 3, "{:?}", plan.rejected);
+    for it in &plan.items {
+        // Añadidos a mano: sin categoría y sin antigüedad mínima; solo la ruta los distingue.
+        assert_eq!(it.category, None);
+        assert!(it.min_age.is_zero());
+        assert_eq!(it.fit, Fit::Unfit(UnfitReason::TooBig), "{:?}", it.path);
+    }
+    assert_eq!(plan.kept_unfit_items().count(), 2);
+    let amber: Vec<_> = plan.unfit_items().collect();
+    assert_eq!(amber.len(), 1);
+    assert!(amber[0].path.ends_with("mio.txt"));
+    let rep = exec(&c, &plan, false, true, None).unwrap();
+    assert_eq!(status_of(&rep, "Informe_a"), ItemStatus::SkippedUnfit);
+    assert_eq!(status_of(&rep, "app.1111.dmp"), ItemStatus::SkippedUnfit);
+    assert_eq!(status_of(&rep, "mio.txt"), ItemStatus::Done);
+    assert!(
+        sb.path(&format!("{WER_REL}/ReportArchive/Informe_a/Report.wer"))
+            .exists()
+    );
+    assert!(sb.path("Local/CrashDumps/app.1111.dmp").exists());
+    assert!(!sb.path("Docs/mio.txt").exists());
 }
 
 /// M-2: los informes y los volcados NUNCA se borran definitivamente. Si no caben en la Papelera (sin `MaxCapacity` o por
@@ -2143,6 +2193,8 @@ fn una_unidad_suelta_con_antiguedad_minima_nunca_llega_a_la_rama_definitiva() {
     assert!(sb.path("Local/CrashDumps/app.1111.dmp").exists());
     // 3. Control: lo mismo con antigüedad cero (un archivo "Tu archivo") sí puede ir a la rama definitiva.
     plan.items[0].min_age = Duration::ZERO;
+    // (El volcado cuelga de `CrashDumps`: sin la marca de ruta tampoco, para aislar la regla de la antigüedad.)
+    plan.items[0].diagnostic_path = false;
     assert!(!plan.items[0].never_permanent());
     assert_eq!(plan.unfit_items().count(), 1);
 }

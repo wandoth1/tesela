@@ -279,6 +279,7 @@ confirm-subtitle =
 confirm-elevated = Tesela se está ejecutando como administrador; por seguridad la limpieza solo funciona sin elevar. Ciérrala y ábrela normalmente.
 confirm-no-log = No se pudo crear el registro de la limpieza, así que no se ha hecho nada. Comprueba que se puede escribir en la carpeta de datos de Tesela (en tu carpeta de datos locales) y vuelve a intentarlo. La simulación sigue funcionando sin registro.
 confirm-empty = No hay nada que limpiar con esta cesta.
+confirm-empty-young = No hay nada que limpiar ahora: lo que hay se modificó hace menos de 7 días.
 confirm-dry-banner = Modo simulación: no se borrará ni se moverá nada; solo se registra lo que se haría.
 confirm-reconfirm = Algo cambió desde que lo confirmaste (lo que cabe en la Papelera). Revisa de nuevo antes de limpiar.
 confirm-group-permanent = Se borra y se vuelve a crear sola
@@ -308,7 +309,7 @@ confirm-only-kept = No hay nada que limpiar ahora: lo que hay no cabe en la Pape
 confirm-group-kept = No caben en la Papelera: se dejan donde están
 confirm-kept-note = No caben en la Papelera; no se borran definitivamente porque sirven para diagnosticar fallos.
 confirm-diag-note = Cada informe o volcado guarda un fallo concreto y no se vuelve a crear; puede ser lo que pida el soporte de un programa. El espacio se libera de verdad al vaciar la Papelera.
-confirm-diag-many = Son { $count } informes o volcados y van a la Papelera de uno en uno: puede tardar varios minutos. Puedes cancelar cuando quieras; lo que ya se haya enviado se queda en la Papelera.
+confirm-diag-many = Son { $count } informes o volcados y van a la Papelera de uno en uno: puede tardar unos minutos. Puedes cancelar cuando quieras; lo que ya se haya enviado se queda en la Papelera.
 confirm-young =
     { $n ->
         [one] { $count } informe o volcado se deja donde está: algo de él se modificó hace menos de 7 días.

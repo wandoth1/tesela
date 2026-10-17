@@ -1422,7 +1422,7 @@ impl Cleaner {
         // identidad y el tamaño no bastan: un volcado "tocado" tras la confirmación conserva ambos.
         if too_young(it, m.newest_filetime) {
             st.changed += 1;
-            return Prepared::Rejected(ItemStatus::Root(RootStatus::Changed), Outcome::Changed);
+            return Prepared::Rejected(ItemStatus::Root(RootStatus::Changed), Outcome::Young);
         }
         let final_path = match sys::final_path(&h) {
             Ok(p) => p,
@@ -1539,6 +1539,12 @@ impl Cleaner {
             st.changed += 1;
             Err((ItemStatus::Root(RootStatus::Changed), Outcome::Changed))
         };
+        // Lo que ya no cumple la antigüedad mínima: el mismo estado ("cambió desde la confirmación"), pero en el registro consta
+        // como "demasiado reciente" (S-7), no como un cambio cualquiera.
+        let young = |st: &mut StatsSnapshot| {
+            st.changed += 1;
+            Err((ItemStatus::Root(RootStatus::Changed), Outcome::Young))
+        };
         if !it.is_dir() {
             // Por el handle de guarda: el objeto que se aprobó, no lo que haya ahora en la ruta.
             let Ok(m) = sys::meta(&p.held) else {
@@ -1549,7 +1555,7 @@ impl Cleaner {
             }
             // M-1: otra vez la antigüedad mínima, ahora justo antes de la operación.
             if too_young(it, m.newest_filetime) {
-                return changed(st);
+                return young(st);
             }
             let fresh = m.alloc.max(m.logical);
             // Si creció frente a lo APROBADO o frente a la última medida real (la de `prepare_recycle` y las posteriores),
@@ -1569,7 +1575,8 @@ impl Cleaner {
         // entrada). Sin leerla, o con otro objeto, no se envía.
         match sys::meta(&p.held) {
             Ok(m) if !too_young(it, m.newest_filetime) => {}
-            _ => return changed(st),
+            Ok(_) => return young(st),
+            Err(_) => return changed(st),
         }
         // A3-M1: la vigilancia de cambios se abre ANTES del recorrido (lo que cambie antes no se vería) y vive hasta el
         // `PreDeleteItem` de su operación: una carpeta puede crecer MIENTRAS se mide (el recorrido ya contó el primer archivo
