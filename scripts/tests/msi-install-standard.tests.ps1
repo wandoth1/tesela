@@ -8,9 +8,9 @@
   the marker created by msi-install.tests.ps1 is missing (only created on a GitHub Actions runner). Runs ONE phase,
   performs a real install or uninstall with msiexec /qn (no UI), and writes one result line per check to -ResultFile
   (the runner administrator cannot see this user's HKCU or profile, so the user reports its own state):
-      ok|<texto>
-      FAIL|<texto>|<detalle>
-      INFO|<texto>
+      ok|<text>
+      FAIL|<text>|<detail>
+      INFO|<text>
   Phases:
     machine-attempt  `ALLUSERS=1 /qn` as standard user: must FAIL (no one can grant administrator rights) and leave nothing
                      in Program Files or HKLM. Has a timeout: if Windows waits for consent it cannot display in a headless
@@ -45,10 +45,10 @@ $ErrorActionPreference = 'Stop'
 # With Start-Process -Credential, the process does NOT inherit runner environment variables (GITHUB_ACTIONS...), so the
 # guard is a marker that only msi-install.tests.ps1 creates in the shared directory after verifying a GitHub-hosted runner.
 if ($Shared -ne 'C:\TeselaCiStd' -or -not (Test-Path -LiteralPath (Join-Path $Shared '.tesela-ci-marker'))) {
-    throw 'msi-install-standard.tests.ps1 solo corre dentro de msi-install.tests.ps1, en un runner de GitHub Actions'
+    throw 'msi-install-standard.tests.ps1 runs only from msi-install.tests.ps1 on a GitHub Actions runner'
 }
 $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-if ($isAdmin) { throw 'esta prueba tiene que correr como usuario ESTANDAR, y este proceso es administrador' }
+if ($isAdmin) { throw 'this test must run as a STANDARD USER, but this process is an administrator' }
 
 $UpgradeCode = '{7E8F4B67-A7D4-415B-9F8F-2E0B88AA88BB}'
 $ExpectedFiles = @('tesela.exe', 'tesela-scan.exe', 'LICENSE-MIT', 'LICENSE-APACHE', 'THIRD-PARTY-NOTICES.md')
@@ -58,7 +58,7 @@ function Out-Result([string]$Kind, [string]$Text, [string]$Detail = '') {
 }
 # Process environment diagnostics (no personal data: this is a disposable user): with Start-Process -Credential, the
 # profile and user variables may be missing, so record whether that happened.
-Out-Result 'INFO' ("entorno: usuario=" + [Environment]::UserName + " USERPROFILE=[" + $env:USERPROFILE + "] LOCALAPPDATA=[" + $env:LOCALAPPDATA + "] APPDATA=[" + $env:APPDATA + "] HKCU=[" + [Microsoft.Win32.Registry]::CurrentUser.Name + "] GetFolderPath(LocalApplicationData)=[" + [Environment]::GetFolderPath('LocalApplicationData') + "]")
+Out-Result 'INFO' ("environment: user=" + [Environment]::UserName + " USERPROFILE=[" + $env:USERPROFILE + "] LOCALAPPDATA=[" + $env:LOCALAPPDATA + "] APPDATA=[" + $env:APPDATA + "] HKCU=[" + [Microsoft.Win32.Registry]::CurrentUser.Name + "] GetFolderPath(LocalApplicationData)=[" + [Environment]::GetFolderPath('LocalApplicationData') + "]")
 function Get-UserFolder([string]$Special, [string]$Relative) {
     # The directory returned by Windows, or, if no profile is loaded (returns an empty string), the same path under the account's default profile.
     $f = [Environment]::GetFolderPath($Special)
@@ -105,62 +105,62 @@ function Invoke-Msi([string[]]$MsiArgs, [string]$Name, [int]$TimeoutSeconds = 60
     return [pscustomobject]@{ Code = $p.ExitCode; TimedOut = $false; Log = $log }
 }
 
-Out-Result 'INFO' "fase $Phase como usuario estandar ($([Environment]::UserName); administrador: $isAdmin; LocalAppData $localAppData)"
+Out-Result 'INFO' "phase $Phase as standard user ($([Environment]::UserName); administrator: $isAdmin; LocalAppData $localAppData)"
 try {
 switch ($Phase) {
     'machine-attempt' {
         # No UI: with credentials no one can enter, a per-machine install must fail rather than install.
         $r = Invoke-Msi @('/i', "`"$Msi`"", 'ALLUSERS=1') 'machine' 120
         if ($r.TimedOut) {
-            Out-Result 'INFO' 'ALLUSERS=1 como estandar: Windows se quedo esperando y se corto a los 120 s (no se da por pasada: queda como no concluyente)'
-            Out-Result 'FAIL' 'ALLUSERS=1 como usuario estandar no termino (se esperaba un error de privilegios, p. ej. 1925)' 'tiempo agotado'
+            Out-Result 'INFO' 'ALLUSERS=1 as standard user: Windows waited until the 120 s timeout (inconclusive, not a pass)'
+            Out-Result 'FAIL' 'ALLUSERS=1 as standard user did not finish (expected a privilege error, e.g. 1925)' 'timed out'
         } else {
-            Out-Result 'INFO' "ALLUSERS=1 como estandar termino con el codigo $($r.Code)"
-            Check "ALLUSERS=1 /qn como usuario estandar FALLA por falta de privilegios (codigo $($r.Code); se espera 1925; 1625 seria la directiva DisableMsi del Windows Server, no una decision del paquete)" ($r.Code -ne 0 -and $r.Code -ne 1625) "codigo $($r.Code): 0 = instalo para todos sin ser administrador; 1625 = la directiva del sistema lo impidio antes"
-            foreach ($l in @(Select-String -LiteralPath $r.Log -Pattern 'MSI_LUA|sufficient privileges|Elevation required|credential|1925|dual mode' | Select-Object -First 8)) { Out-Result 'INFO' ('registro: ' + $l.Line.Trim()) }
-            Check 'el motor trato el paquete como de doble modo y pidio privilegios para todos (registro de msiexec)' (Select-String -LiteralPath $r.Log -Pattern 'sufficient privileges|Elevation required|credentials|1925' -Quiet) 'ninguna linea del registro habla de privilegios, elevacion o credenciales'
+            Out-Result 'INFO' "ALLUSERS=1 as standard user exited with code $($r.Code)"
+            Check "ALLUSERS=1 /qn as standard user FAILS for insufficient privileges (code $($r.Code); expected 1925; 1625 would be Windows Server DisableMsi policy, not a package decision)" ($r.Code -ne 0 -and $r.Code -ne 1625) "code $($r.Code): 0 = installed for everyone without administrator rights; 1625 = blocked earlier by system policy"
+            foreach ($l in @(Select-String -LiteralPath $r.Log -Pattern 'MSI_LUA|sufficient privileges|Elevation required|credential|1925|dual mode' | Select-Object -First 8)) { Out-Result 'INFO' ('log: ' + $l.Line.Trim()) }
+            Check 'MSI engine treated the package as dual mode and requested machine privileges (msiexec log)' (Select-String -LiteralPath $r.Log -Pattern 'sufficient privileges|Elevation required|credentials|1925' -Quiet) 'no log line mentions privileges, elevation, or credentials'
         }
-        Check 'nada en Program Files' (-not (Test-Path -LiteralPath $machineDefault))
-        Check 'nada en HKLM\SOFTWARE\Tesela' ($null -eq (Get-RegValue 'HKLM:\SOFTWARE\Tesela' 'InstallFolder'))
-        Check 'nada en la carpeta por usuario (no se instalo por usuario "de rebote")' (-not (Test-Path -LiteralPath $userDefault))
-        Check 'ningun producto Tesela instalado' (@(Get-Products).Count -eq 0)
+        Check 'nothing in Program Files' (-not (Test-Path -LiteralPath $machineDefault))
+        Check 'nothing in HKLM\SOFTWARE\Tesela' ($null -eq (Get-RegValue 'HKLM:\SOFTWARE\Tesela' 'InstallFolder'))
+        Check 'nothing in the per-user folder (no fallback per-user installation)' (-not (Test-Path -LiteralPath $userDefault))
+        Check 'no Tesela product installed' (@(Get-Products).Count -eq 0)
     }
     'user-install' {
         $r = Invoke-Msi @('/i', "`"$Msi`"") 'install' 600
-        Check "instalar por usuario SIN elevacion termina con 0 (codigo $($r.Code))" ((-not $r.TimedOut) -and $r.Code -eq 0) "codigo $($r.Code), tiempo agotado: $($r.TimedOut)"
-        Check 'los 5 archivos estan en su %LOCALAPPDATA%\Programs\Tesela' (Test-Files $userDefault)
-        Check 'nada en Program Files' (-not (Test-Path -LiteralPath $machineDefault))
-        Check 'nada en HKLM\SOFTWARE\Tesela' ($null -eq (Get-RegValue 'HKLM:\SOFTWARE\Tesela' 'InstallFolder'))
-        Check 'HKCU\Software\Tesela\InstallFolder es su carpeta' ((Get-RegValue 'HKCU:\Software\Tesela' 'InstallFolder') -ieq ($userDefault + '\'))
-        Check 'acceso directo en su menu Inicio' (Test-Path -LiteralPath $startMenu)
-        Check 'un solo producto para este usuario' (@(Get-Products).Count -eq 1)
+        Check "per-user installation WITHOUT elevation exits 0 (code $($r.Code))" ((-not $r.TimedOut) -and $r.Code -eq 0) "code $($r.Code), timed out: $($r.TimedOut)"
+        Check 'all 5 files are under the user %LOCALAPPDATA%\Programs\Tesela' (Test-Files $userDefault)
+        Check 'nothing in Program Files' (-not (Test-Path -LiteralPath $machineDefault))
+        Check 'nothing in HKLM\SOFTWARE\Tesela' ($null -eq (Get-RegValue 'HKLM:\SOFTWARE\Tesela' 'InstallFolder'))
+        Check 'HKCU\Software\Tesela\InstallFolder points to the user folder' ((Get-RegValue 'HKCU:\Software\Tesela' 'InstallFolder') -ieq ($userDefault + '\'))
+        Check 'shortcut exists in the user Start menu' (Test-Path -LiteralPath $startMenu)
+        Check 'exactly one product for this user' (@(Get-Products).Count -eq 1)
     }
     'user-upgrade' {
         $before = @(Get-Products)
-        Out-Result 'INFO' "productos visibles antes de actualizar: $($before.Count)"
+        Out-Result 'INFO' "products visible before upgrade: $($before.Count)"
         $r = Invoke-Msi @('/i', "`"$Msi`"") 'upgrade' 600
-        Check "actualizar su instalacion por usuario SIN elevacion y con otra cuenta que instalo para todos termina con 0 (codigo $($r.Code))" ((-not $r.TimedOut) -and $r.Code -eq 0) "codigo $($r.Code), tiempo agotado: $($r.TimedOut); mira el registro std-user-upgrade-upgrade.log"
-        Check 'los 5 archivos siguen en su carpeta por usuario' (Test-Files $userDefault)
-        Check 'HKCU\Software\Tesela\InstallFolder sigue siendo su carpeta' ((Get-RegValue 'HKCU:\Software\Tesela' 'InstallFolder') -ieq ($userDefault + '\'))
+        Check "upgrading the per-user installation WITHOUT elevation while another account installed for everyone exits 0 (code $($r.Code))" ((-not $r.TimedOut) -and $r.Code -eq 0) "code $($r.Code), timed out: $($r.TimedOut); see std-user-upgrade-upgrade.log"
+        Check 'all 5 files remain in the per-user folder' (Test-Files $userDefault)
+        Check 'HKCU\Software\Tesela\InstallFolder still points to the user folder' ((Get-RegValue 'HKCU:\Software\Tesela' 'InstallFolder') -ieq ($userDefault + '\'))
         $after = @(Get-Products)
-        Out-Result 'INFO' "productos visibles despues de actualizar: $($after.Count)"
+        Out-Result 'INFO' "products visible after upgrade: $($after.Count)"
     }
     'user-uninstall' {
         $prods = @(Get-Products)
-        Check 'hay exactamente un producto que desinstalar para este usuario' ($prods.Count -eq 1) "hay $($prods.Count)"
+        Check 'exactly one product is available to uninstall for this user' ($prods.Count -eq 1) "found $($prods.Count)"
         if ($prods.Count -eq 1) {
             $r = Invoke-Msi @('/x', $prods[0].Code) 'uninstall' 600
-            Check "desinstalar SIN elevacion termina con 0 (codigo $($r.Code))" ((-not $r.TimedOut) -and $r.Code -eq 0) "codigo $($r.Code)"
+            Check "uninstall WITHOUT elevation exits 0 (code $($r.Code))" ((-not $r.TimedOut) -and $r.Code -eq 0) "code $($r.Code)"
         }
-        Check 'su carpeta ya no existe' (-not (Test-Path -LiteralPath $userDefault))
-        Check 'sin InstallFolder en su HKCU' ($null -eq (Get-RegValue 'HKCU:\Software\Tesela' 'InstallFolder'))
+        Check 'the per-user folder no longer exists' (-not (Test-Path -LiteralPath $userDefault))
+        Check 'no InstallFolder in the user HKCU' ($null -eq (Get-RegValue 'HKCU:\Software\Tesela' 'InstallFolder'))
         Check 'no Tesela key remains in its HKCU' (-not (Test-Path -LiteralPath 'HKCU:\Software\Tesela'))
-        Check 'sin acceso directo en su menu Inicio' (-not (Test-Path -LiteralPath $startMenu))
-        Check 'ningun producto Tesela para este usuario' (@(Get-Products).Count -eq 0)
+        Check 'no shortcut in the user Start menu' (-not (Test-Path -LiteralPath $startMenu))
+        Check 'no Tesela product for this user' (@(Get-Products).Count -eq 0)
     }
 }
 } catch {
-    Out-Result 'FAIL' "la fase $Phase fallo con una excepcion" ($_.Exception.Message + ' @' + $_.InvocationInfo.ScriptLineNumber)
+    Out-Result 'FAIL' "phase $Phase raised an exception" ($_.Exception.Message + ' @' + $_.InvocationInfo.ScriptLineNumber)
 }
-Out-Result 'INFO' "fase $Phase terminada"
+Out-Result 'INFO' "phase $Phase completed"
 exit 0
