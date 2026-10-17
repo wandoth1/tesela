@@ -78,7 +78,7 @@ function Remove-Repo {
 
 function Invoke-Git {
     & git @args 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "git $args fallo" }
+    if ($LASTEXITCODE -ne 0) { throw "git $args failed" }
 }
 
 function Put([string]$Rel, [string]$Text) {
@@ -163,7 +163,7 @@ function Expect([string]$Case, [bool]$ShouldFail, [string[]]$CheckArgs = @()) {
     $failed = ($r.Code -ne 0)
     if ($failed -ne $ShouldFail) {
         $want = if ($ShouldFail) { 'FAILED' } else { 'OK' }
-        $script:failures.Add("$Case (esperado: $want, codigo $($r.Code)) $($r.Out)")
+        $script:failures.Add("$Case (expected: $want, exit code $($r.Code)) $($r.Out)")
     }
 }
 
@@ -517,7 +517,7 @@ try {
     Expect 'docs/spike-results.md ya no esta exento (existir es un fallo)' $true
     Expect 'docs/spike-results.md en -All' $true @('-All')
 
-    # --- Valores locales y lista negra -------------------------------------------------------------------------------------
+    # --- Local values and denylist -------------------------------------------------------------------------------------
     if ($env:USERNAME -and $env:USERNAME.Length -ge 3) {
         Reset-Repo
         Put 'u.txt' ('hola ' + $env:USERNAME + " adios`n")
@@ -751,7 +751,7 @@ try {
     $swBig = [System.Diagnostics.Stopwatch]::StartNew()
     Expect 'binario de 3 MiB con muchos NUL' $false
     $script:total++
-    if ($swBig.Elapsed.TotalSeconds -gt 60) { $script:failures.Add("binario de 3 MiB con muchos NUL: tardo $([int]$swBig.Elapsed.TotalSeconds) s") }
+    if ($swBig.Elapsed.TotalSeconds -gt 60) { $script:failures.Add("3 MiB binary with many NULs: took $([int]$swBig.Elapsed.TotalSeconds) s") }
     # Commit messages too.
     [System.IO.File]::WriteAllBytes($msg, (Join-Nul (@('fix: ') + $sidPieces + @("`n"))))
     Expect 'mensaje con un SID partido por NUL sueltos' $true @('-MessageFile', $msg)
@@ -839,7 +839,7 @@ try {
     Push-Location $repo
     try {
         $hookOut = & pwsh -NoProfile -File scripts/install-hooks.ps1 2>&1
-        if ($LASTEXITCODE -ne 0) { throw "install-hooks fallo: $hookOut" }
+        if ($LASTEXITCODE -ne 0) { throw "install-hooks failed: $hookOut" }
     } finally { Pop-Location }
     function Try-Commit([string[]]$GitArgs) {
         # Return $true if the commit succeeded (the hook allowed it). Always use --allow-empty and no editor.
@@ -855,7 +855,7 @@ try {
         $ok = Try-Commit $GitArgs
         if ($ok -ne $ShouldPass) {
             $want = if ($ShouldPass) { 'COMMIT' } else { 'BLOQUEO' }
-            $script:failures.Add("$Case (esperado: $want, resultado: $(if ($ok) { 'commit hecho' } else { 'bloqueado' }))")
+            $script:failures.Add("$Case (expected: $want, result: $(if ($ok) { 'commit created' } else { 'blocked' }))")
         }
     }
     $msgFile = Join-Path $repo 'MSGF.txt'
@@ -1046,7 +1046,7 @@ try {
         )) {
         $script:total++
         $out = (Run-Check @('-From', $case[1], '-To', $case[0])).Out
-        if ($out -notlike ('*' + $case[2] + ': Windows SID*') -or $out -like '*mensaje:*') { $script:failures.Add("etiqueta del campo $($case[2]): $out") }
+        if ($out -notlike ('*' + $case[2] + ': Windows SID*') -or $out -like '*mensaje:*') { $script:failures.Add("field label $($case[2]): $out") }
     }
     Reset-Repo
     Invoke-Git -C $repo checkout -q -f -B cuerpo $base
@@ -1055,7 +1055,7 @@ try {
     try { & git -C $repo commit -q --allow-empty --no-verify -m "chore: linea 1`n`nlinea 3`n$sid" 2>&1 | Out-Null } finally { $ErrorActionPreference = $prevEap2 }
     $script:total++
     $out = (Run-Check @('-From', $base, '-To', (Sha 'HEAD'))).Out
-    if ($out -notlike '*mensaje:4: Windows SID*') { $script:failures.Add("numero de linea del cuerpo (se esperaba mensaje:4): $out") }
+    if ($out -notlike '*mensaje:4: Windows SID*') { $script:failures.Add("body line number (expected mensaje:4): $out") }
 
     # HISTORICAL --demo screenshots: their hashes are in the script's closed list (only in -To mode), not in any README.
     Reset-Repo
@@ -1134,12 +1134,12 @@ try {
                 $script:total++
                 $listed = [regex]::IsMatch($r.Out, '(?m)^\s*' + [regex]::Escape("e/$n") + ':')
                 if ($listed -ne $ShouldFail) {
-                    $want = if ($ShouldFail) { 'DETECTADO' } else { 'LIMPIO' }
-                    $script:failures.Add("$Case [$n] (esperado: $want, codigo $($r.Code))")
+                    $want = if ($ShouldFail) { 'DETECTED' } else { 'CLEAN' }
+                    $script:failures.Add("$Case [$n] (expected: $want, exit code $($r.Code))")
                 }
             }
             $script:total++
-            if (($r.Code -ne 0) -ne $ShouldFail) { $script:failures.Add("$Case (codigo de salida $($r.Code), esperado " + $(if ($ShouldFail) { 'distinto de 0' } else { '0' }) + ")") }
+            if (($r.Code -ne 0) -ne $ShouldFail) { $script:failures.Add("$Case (exit code $($r.Code), expected " + $(if ($ShouldFail) { 'nonzero' } else { '0' }) + ")") }
         }
         Expect-Each 'usuario local con letras no ASCII, suelto' ("hola`nusuario $uUser fin`n") $true
         Expect-Each 'usuario local con letras no ASCII, entre parentesis' ("(" + $uUser + ")`n") $true
@@ -1163,7 +1163,7 @@ try {
         $lineNos = @([regex]::Matches($r.Out, 'ln/lat\.txt:(\d+):') | ForEach-Object { $_.Groups[1].Value })
         $script:total++
         if ($r.Code -eq 0 -or $lineNos.Count -lt 1 -or @($lineNos | Where-Object { $_ -ne '2' }).Count -gt 0) {
-            $script:failures.Add("numero de linea de un hallazgo solo Latin-1: se esperaba solo la linea 2, salio: $($lineNos -join ',') ($($r.Out))")
+            $script:failures.Add("line number for finding in Latin-1 only: expected line 2 only, got: $($lineNos -join ',') ($($r.Out))")
         }
         # A synthetic ASCII value between two CJK characters in UTF-16 WITHOUT BOM (binary): neighbors must not hide it.
         $env:USERNAME = 'Zorbaq'
@@ -1190,7 +1190,7 @@ try {
         $prevEap = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
         try { $null = & $Shell -NoProfile -Command $cmd 2>&1; $trCode = $LASTEXITCODE } finally { $ErrorActionPreference = $prevEap; Pop-Location }
-        if ($trCode -eq 0) { $script:failures.Add('IQZORB frente a iqzorb con la cultura tr-TR: no se detecto (la i turca)') }
+        if ($trCode -eq 0) { $script:failures.Add('IQZORB versus iqzorb under tr-TR culture: not detected (Turkish i)') }
         $env:USERNAME = $uUser
         # Commit messages use the same decoding.
         foreach ($case in @(
@@ -1207,7 +1207,7 @@ try {
         $env:USERNAME = $oldUser
         $env:COMPUTERNAME = $oldPc
     }
-    # --- CI definido y -Local, USERDOMAIN --------------------------------------------------------------------------------
+    # --- CI set and -Local, USERDOMAIN --------------------------------------------------------------------------------
     if ($env:USERNAME -and $env:USERNAME.Length -ge 3) {
         Reset-Repo
         Put 'u.txt' ('hola ' + $env:USERNAME + " adios`n")
@@ -1237,15 +1237,15 @@ try {
 
 if ($nulFiles.Count -gt 0) {
     $total++
-    $failures.Add("archivos de texto versionados con bytes NUL (grep los tomaria por binarios): $($nulFiles -join ', ')")
+    $failures.Add("versioned text files contain NUL bytes (grep would treat them as binary): $($nulFiles -join ', ')")
 } else {
     $total++
 }
 
 if ($failures.Count -gt 0) {
-    Write-Host "privacy-check.tests ($Shell): $($failures.Count) de $total pruebas FALLAN" -ForegroundColor Red
+    Write-Host "privacy-check.tests ($Shell): $($failures.Count) of $total tests FAILED" -ForegroundColor Red
     $failures | ForEach-Object { Write-Host "  - $_" }
     exit 1
 }
-Write-Host "privacy-check.tests ($Shell): $total pruebas OK"
+Write-Host "privacy-check.tests ($Shell): $total tests passed"
 exit 0
