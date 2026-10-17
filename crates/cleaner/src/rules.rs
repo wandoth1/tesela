@@ -237,6 +237,15 @@ fn validate(r: &Rule) -> Result<(), String> {
             "{k}: los informes de errores y los volcados son «Revisar» y van a la Papelera, nunca «seguros»"
         ));
     }
+    // M-1/m-7: la Papelera por elementos de estas categorías solo es seguro con una antigüedad mínima (la comparación de
+    // `prepare_recycle` y de `fresh_size` la exige) y borrando el contenido de las raíces.
+    if r.id.is_diagnostic()
+        && (r.min_age < Duration::from_secs(7 * 24 * 3600) || r.action != Action::Contents)
+    {
+        return Err(format!(
+            "{k}: los informes de errores y los volcados exigen action = contents y min_age_hours >= 168"
+        ));
+    }
     if r.id == CategoryId::Downloads && (r.risk == Risk::Safe || r.selectable) {
         return Err("downloads: es informativo, nunca «seguro» ni con casilla".into());
     }
@@ -384,6 +393,14 @@ mod tests {
             assert!(e.contains("definitivo"), "{e}");
             let e = Rules::parse(&rule("safe", "recycle")).unwrap_err();
             assert!(e.contains(id) && e.contains("Revisar"), "{e}");
+            // m-7: sin antigüedad mínima de 7 días, o sin borrar el contenido de la raíz, tampoco valen.
+            for (hours, action) in [(0, "contents"), (167, "contents"), (168, "none")] {
+                let e = Rules::parse(&with(&format!(
+                    "[[rule]]\nid = \"{id}\"\nrisk = \"review\"\ndestination = \"recycle\"\naction = \"{action}\"\nmin_age_hours = {hours}\nselectable = true\n"
+                )))
+                .unwrap_err();
+                assert!(e.contains(id) && e.contains("168"), "{hours} {action}: {e}");
+            }
         }
         // «Solo informar» con destino.
         let e = Rules::parse(&with("[[rule]]\nid = \"pagefile\"\nrisk = \"info\"\ndestination = \"recycle\"\naction = \"none\"\n")).unwrap_err();

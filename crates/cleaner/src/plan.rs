@@ -83,8 +83,21 @@ pub enum RejectReason {
     /// que cambiaron durante el recorrido...): con el tamaño real desconocido no se puede repartir ni comprobar que cabe, y
     /// al ejecutar fallaría siempre. Lleva cuántas entradas no se pudieron leer. No se ofrece.
     Incomplete(u64),
+    /// Una categoría con antigüedad mínima (informes de errores, volcados): el elemento, o algo de su interior, se modificó
+    /// hace menos que esa antigüedad (7 días). No se ofrece; consta en el plan y en el registro, no desaparece en silencio.
+    Young,
     /// Cualquier otro error del sistema.
     Other(u32),
+}
+
+impl RejectReason {
+    /// El texto con el que consta en el registro.
+    pub fn log_text(&self) -> String {
+        match self {
+            RejectReason::Young => "Young (modified less than the minimum age ago)".to_string(),
+            other => format!("{other:?}"),
+        }
+    }
 }
 
 /// Una entrada de la cesta que no pasó la aprobación.
@@ -132,11 +145,26 @@ impl PlanItem {
     pub fn is_unfit(&self) -> bool {
         self.destination == Destination::Recycle && matches!(self.fit, Fit::Unfit(_))
     }
+    /// ¿Se le prohíbe el borrado DEFINITIVO en cualquier caso (también con la casilla de "no cabe en la Papelera")?
+    ///
+    /// * Los informes de errores y los volcados de bloqueo (categorías de diagnóstico) nunca se borran definitivamente.
+    /// * Una unidad `Entry` con antigüedad mínima: el recorrido definitivo no vuelve a comprobar la antigüedad de cada hijo
+    ///   ni exige la huella de la carpeta (dejaría un informe partido: lo antiguo borrado y lo reciente en su sitio), así
+    ///   que falla cerrado. Hoy solo las crean las categorías de diagnóstico; esto impide que otra regla lo estrene sin
+    ///   revisar esa comparación.
+    pub fn never_permanent(&self) -> bool {
+        self.category.is_some_and(CategoryId::is_diagnostic)
+            || (matches!(self.spec, UnitSpec::Entry { .. }) && !self.min_age.is_zero())
+    }
     /// Bytes que liberará (sin los enlaces duros compartidos).
     pub fn bytes(&self) -> u64 {
         self.estimate.bytes
     }
 }
+
+/// A partir de cuántos informes o volcados la confirmación avisa de que puede tardar varios minutos: la Papelera recibe una
+/// operación por carpeta (≈ 0,15 s cada una según PLAN §3.7.4).
+pub const MANY_DIAGNOSTIC_ITEMS: usize = 200;
 
 /// La Papelera capturada al confirmar (alcance enumerado).
 #[derive(Clone, Debug)]
@@ -179,9 +207,43 @@ impl Plan {
             .filter(|i| i.destination == Destination::Recycle && !i.is_unfit())
     }
 
-    /// Elementos que irían a la Papelera pero no caben (grupo ámbar: "se eliminará definitivamente").
+    /// Elementos que irían a la Papelera pero no caben Y pueden borrarse definitivamente si el usuario lo confirma (grupo
+    /// ámbar: "se eliminará definitivamente"). No incluye los que [`PlanItem::never_permanent`] prohíbe.
     pub fn unfit_items(&self) -> impl Iterator<Item = &PlanItem> {
-        self.items.iter().filter(|i| i.is_unfit())
+        self.items
+            .iter()
+            .filter(|i| i.is_unfit() && !i.never_permanent())
+    }
+
+    /// Elementos que no caben en la Papelera y NUNCA se borran definitivamente (informes de errores, volcados): se dejan donde
+    /// están y la confirmación lo dice, sin casilla.
+    pub fn kept_unfit_items(&self) -> impl Iterator<Item = &PlanItem> {
+        self.items
+            .iter()
+            .filter(|i| i.is_unfit() && i.never_permanent())
+    }
+
+    /// Cuántos elementos de diagnóstico (informes de errores, volcados) van a la Papelera, si son muchos (más de
+    /// [`MANY_DIAGNOSTIC_ITEMS`]): la confirmación avisa de que puede tardar varios minutos.
+    pub fn many_diagnostic_items(&self) -> Option<usize> {
+        let n = self
+            .items
+            .iter()
+            .filter(|i| {
+                i.destination == Destination::Recycle
+                    && !i.is_unfit()
+                    && i.category.is_some_and(CategoryId::is_diagnostic)
+            })
+            .count();
+        (n > MANY_DIAGNOSTIC_ITEMS).then_some(n)
+    }
+
+    /// Cuántos elementos se dejaron por ser demasiado recientes (ver [`RejectReason::Young`]).
+    pub fn young_count(&self) -> usize {
+        self.rejected
+            .iter()
+            .filter(|r| r.reason == RejectReason::Young)
+            .count()
     }
 
     pub fn permanent_bytes(&self) -> u64 {
@@ -298,6 +360,11 @@ pub(crate) fn path_units(p: &Path) -> usize {
 
 impl Cleaner {
     pub fn new(roots: Roots) -> Cleaner {
+        // La protección (con las exenciones de las raíces de las categorías) se construye UNA vez, aquí. Una carpeta que
+        // aparece después (p. ej. WER crea `ReportQueue` con el primer fallo, ya con Tesela abierta) se ofrece en
+        // Recomendaciones, que lee las raíces en caliente, pero la aprobación la rechaza como protegida hasta reiniciar.
+        // Falla cerrado (no se toca nada de más); el motivo mostrado no es el real. Aceptado: reconstruirla en cada
+        // aprobación costaría unas aperturas por categoría y no cambia la seguridad.
         let protection = Arc::new(roots.protection());
         let data_dir = roots
             .browser
@@ -468,6 +535,10 @@ impl Cleaner {
                 && !c.min_age.is_zero()
                 && est.young > 0
             {
+                plan.rejected.push(Rejected {
+                    path: c.canon,
+                    reason: RejectReason::Young,
+                });
                 continue;
             }
             // m-4: lo que va a la Papelera exige una medida COMPLETA (ver `StatsSnapshot::is_complete`).
@@ -513,6 +584,9 @@ impl Cleaner {
         for check in self.roots.category_root_checks(id) {
             let (root, chain_identity) = match check.result {
                 Ok(v) => (v.path, v.identity),
+                // Una raíz que no existe (p. ej. aún no hay `ReportQueue`) está simplemente vacía: ni rechazo ni aviso. Solo
+                // para las categorías de diagnóstico, cuyas carpetas Windows crea cuando hace falta.
+                Err(RootRejection::Os(2 | 3)) if id.is_diagnostic() => continue,
                 Err(RootRejection::Os(c)) => {
                     plan.rejected.push(Rejected {
                         path: check.raw,
@@ -768,21 +842,27 @@ impl Cleaner {
                 continue;
             }
             if min_ft > 0 && now_ft - e.newest_filetime < min_ft {
+                plan.rejected.push(Rejected {
+                    path: child,
+                    reason: RejectReason::Young,
+                });
                 continue;
             }
-            self.candidate_child(h, volume_serial, &child, &e, out, plan);
+            self.candidate_child(h, volume_serial, &child, &e, min_age, out, plan);
         }
     }
 
     /// GM-B2: un hijo de una carpeta ya abierta (`dir`), abierto RELATIVO a ese handle y con el `FileId` y el volumen del
     /// listado. Antes se volvía a abrir por ruta tras listar: entre las dos cosas se podía cambiar el hijo (o un ancestro) y
     /// la aprobación capturaba la identidad del objeto equivocado.
+    #[allow(clippy::too_many_arguments)]
     fn candidate_child(
         &self,
         dir: &sys::Handle,
         volume_serial: u64,
         child: &Path,
         e: &sys::DirEntry,
+        min_age: Duration,
         out: &mut Vec<Candidate>,
         plan: &mut Plan,
     ) {
@@ -803,7 +883,8 @@ impl Cleaner {
                 return;
             }
         };
-        let same = sys::meta(&h).is_ok_and(|m| {
+        let meta = sys::meta(&h);
+        let same = meta.as_ref().is_ok_and(|m| {
             m.identity.file_id == e.file_id && m.identity.volume_serial == volume_serial
         });
         if !same {
@@ -811,6 +892,20 @@ impl Cleaner {
             plan.rejected.push(Rejected {
                 path: child.to_path_buf(),
                 reason: RejectReason::Other(0),
+            });
+            return;
+        }
+        // M-1: la antigüedad mínima también se comprueba con la fecha del HANDLE (la del listado puede ir por detrás de un
+        // archivo que otro proceso acaba de escribir). Con `min_age` cero no hace nada.
+        let min_ft = engine::duration_to_ft(min_age);
+        if min_ft > 0
+            && meta
+                .as_ref()
+                .is_ok_and(|m| engine::now_filetime() - m.newest_filetime < min_ft)
+        {
+            plan.rejected.push(Rejected {
+                path: child.to_path_buf(),
+                reason: RejectReason::Young,
             });
             return;
         }
@@ -973,7 +1068,15 @@ impl Cleaner {
                             reason: RejectReason::Reparse,
                         });
                     } else {
-                        self.candidate_child(dir, volume_serial, &child, &e, out, plan);
+                        self.candidate_child(
+                            dir,
+                            volume_serial,
+                            &child,
+                            &e,
+                            Duration::ZERO,
+                            out,
+                            plan,
+                        );
                     }
                 }
             }
