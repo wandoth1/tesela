@@ -1,5 +1,5 @@
-//! `tesela-scan`: escanea una ruta en SOLO LECTURA con el escáner de Tesela e imprime el top-N por tamaño en disco, los
-//! totales, los enlaces duros deduplicados, el espacio no explicado, el tiempo y los errores.
+//! `tesela-scan`: scans a path READ-ONLY with the Tesela scanner and prints the top N entries by allocated size,
+//! totals, deduplicated hard links, unexplained space, elapsed time, and errors.
 //!
 //! ```text
 //! tesela-scan <ruta> [--threads N] [--top N] [--json archivo|-] [--overwrite] [--no-priority] [--fallback]
@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 use tesela_model::{NodeId, Tree, flags};
 use tesela_scanner::{ApiUsed, ScanOptions, ScanResult, start};
 
-/// Destino del JSON.
+/// JSON output destination.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum JsonTarget {
     /// `--json -`: la salida estándar.
@@ -144,7 +144,7 @@ fn unexplained_applies(
     full_volume && !cancelled && volume_scope && incomplete_dirs == 0 && !build_error
 }
 
-/// Tamaño legible con la unidad que corresponda (B, KiB, MiB, GiB o TiB).
+/// Human-readable size with the appropriate unit (B, KiB, MiB, GiB, or TiB).
 fn gib(b: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
     let mut v = b as f64;

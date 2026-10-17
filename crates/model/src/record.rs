@@ -1,21 +1,21 @@
-//! Registros planos y lotes (`Batch`) que los escáneres entregan al `TreeBuilder` (PLAN.md §3.2).
+//! Flat records and batches (`Batch`) delivered by scanners to `TreeBuilder` (PLAN.md §3.2).
 //!
-//! # Identificadores provisionales
-//! Cada escáner numera sus entradas como quiera (el walker, con un `AtomicU32::fetch_add` por directorio, de modo que
-//! los hijos de un directorio ocupan ids contiguos `base_id..base_id + n`). El `TreeBuilder` no exige ningún orden: ni
-//! de llegada de los lotes ni de los ids. Solo se pide:
-//! * el id `0` es la raíz (su `parent` se escribe como `0`);
-//! * `parent` apunta al id provisional de un directorio;
-//! * un id no se usa dos veces.
+//! # Provisional identifiers
+//! Each scanner numbers its entries as it chooses (the walker uses one `AtomicU32::fetch_add` per directory, so a
+//! directory's children occupy contiguous ids `base_id..base_id + n`). `TreeBuilder` requires no ordering of batches or
+//! ids. It only requires:
+//! * id `0` is the root (its `parent` is written as `0`);
+//! * `parent` points to a directory's provisional id;
+//! * no id is used twice.
 //!
-//! Un hueco (`Batch::push_hole`) reserva un id sin entrada (p. ej. un directorio ya adoptado por otro camino).
+//! A hole (`Batch::push_hole`) reserves an id without an entry (e.g. a directory already adopted through another path).
 
 use crate::wtf8;
 
-/// Marca de "sin entrada" en `Record::parent`. También es el `parent` de la raíz en el `Tree` final.
+/// "No entry" marker in `Record::parent`. It is also the root's `parent` in the final `Tree`.
 pub const NO_PARENT: u32 = u32::MAX;
 
-/// Registro plano de una entrada (32 B). Los nombres viven aparte, en el arena del lote o del builder.
+/// Flat record for an entry (32 B). Names are stored separately in the batch or builder arena.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(C)]
 pub struct Record {
@@ -37,11 +37,11 @@ pub struct Record {
 
 const _: () = assert!(
     size_of::<Record>() == 32,
-    "Record debe medir 32 B (PLAN.md §3.2)"
+    "Record must be 32 B (PLAN.md §3.2)"
 );
 
 impl Record {
-    /// Registro vacío que marca un hueco.
+    /// Empty record marking a hole.
     pub const HOLE: Record = Record {
         alloc: 0,
         logical: 0,
@@ -52,37 +52,37 @@ impl Record {
         flags: 0,
     };
 
-    /// ¿Es una entrada real (no un hueco ni un id sin recibir)?
+    /// Is this a real entry (not a hole or an id that has not arrived)?
     pub fn is_present(&self) -> bool {
         self.parent != NO_PARENT
     }
 }
 
-/// Datos de una entrada al añadirla a un lote.
+/// Entry data when adding it to a batch.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct EntryData {
     /// Flags de [`crate::flags`].
     pub flags: u16,
-    /// Bytes ocupados en disco.
+    /// Bytes allocated on disk.
     pub alloc: u64,
-    /// Tamaño lógico.
+    /// Logical size.
     pub logical: u64,
-    /// Última modificación en segundos Unix.
+    /// Last modification time in Unix seconds.
     pub mtime: u32,
-    /// `FileId` de 128 bits del archivo (0 = desconocido: ese archivo no participa en la deduplicación de enlaces).
+    /// 128-bit file `FileId` (0 = unknown: this file does not participate in hard-link deduplication).
     pub file_id: u128,
 }
 
-/// Resultado de listar un directorio.
+/// Result of listing a directory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DirOutcome {
-    /// Listado completo.
+    /// Listing completed.
     Listed,
-    /// No se pudo listar (código de error del sistema); el directorio queda con el flag `ERROR`.
+    /// Could not list (system error code); the directory gets the `ERROR` flag.
     Error(u32),
 }
 
-/// Entradas de un directorio (o un grupo de entradas sueltas) con sus nombres.
+/// Entries of a directory (or a group of detached entries), with their names.
 #[derive(Debug)]
 pub struct Batch {
     pub(crate) dir: Option<u32>,
@@ -94,15 +94,15 @@ pub struct Batch {
 }
 
 impl Batch {
-    /// Lote con el contenido del directorio `dir`; sus entradas ocupan los ids `base_id..`.
+    /// Batch containing directory `dir`'s contents; its entries occupy ids `base_id..`.
     ///
-    /// Entregar un lote por CADA directorio, aunque esté vacío o falle, es lo que permite al builder distinguir un
-    /// directorio vacío de uno que nunca se llegó a listar (`INCOMPLETE`).
+    /// Delivering a batch for EVERY directory, even if it is empty or listing failed, lets the builder distinguish an
+    /// empty directory from one that was never listed (`INCOMPLETE`).
     pub fn listing(dir: u32, base_id: u32) -> Batch {
         Batch::new(Some(dir), base_id, 0, 0)
     }
 
-    /// Como [`Batch::listing`], reservando espacio para `entries` entradas y `name_bytes` bytes de nombres.
+    /// Like [`Batch::listing`], reserving space for `entries` entries and `name_bytes` bytes of names.
     pub fn listing_with_capacity(
         dir: u32,
         base_id: u32,
@@ -112,13 +112,13 @@ impl Batch {
         Batch::new(Some(dir), base_id, entries, name_bytes)
     }
 
-    /// Lote sin directorio asociado (la raíz, o los ancestros precreados por la cola prioritaria): el `parent` de
-    /// cada entrada se indica en [`Batch::push`].
+    /// Batch without an associated directory (the root, or ancestors precreated by the priority queue): each entry's
+    /// `parent` is specified in [`Batch::push`].
     pub fn detached(base_id: u32) -> Batch {
         Batch::new(None, base_id, 0, 0)
     }
 
-    /// Lote vacío que indica que el directorio `dir` no se pudo listar (`code` = error del sistema).
+    /// Empty batch indicating that directory `dir` could not be listed (`code` = system error).
     pub fn failed(dir: u32, code: u32) -> Batch {
         let mut b = Batch::new(Some(dir), 0, 0, 0);
         b.outcome = DirOutcome::Error(code);
@@ -136,23 +136,23 @@ impl Batch {
         }
     }
 
-    /// Primer id de este lote.
+    /// First id in this batch.
     pub fn base_id(&self) -> u32 {
         self.base_id
     }
 
-    /// Número de ids que ocupa el lote (entradas más huecos).
+    /// Number of ids occupied by this batch (entries plus holes).
     pub fn len(&self) -> usize {
         self.records.len()
     }
 
-    /// ¿No ocupa ningún id?
+    /// Does it occupy no ids?
     pub fn is_empty(&self) -> bool {
         self.records.is_empty()
     }
 
-    /// Añade una entrada con el nombre en WTF-8 y devuelve su id provisional (`base_id + índice`).
-    /// Los nombres de más de 65 535 bytes se recortan (Windows no pasa de 255 unidades UTF-16).
+    /// Add an entry with a WTF-8 name and return its provisional id (`base_id + index`).
+    /// Names longer than 65,535 bytes are truncated (Windows names are at most 255 UTF-16 code units).
     pub fn push(&mut self, parent: u32, name_wtf8: &[u8], e: EntryData) -> u32 {
         let name = &name_wtf8[..name_wtf8.len().min(u16::MAX as usize)];
         let off = self.names.len() as u32;
@@ -160,7 +160,7 @@ impl Batch {
         self.push_record(parent, off, name.len() as u16, e)
     }
 
-    /// Como [`Batch::push`] con el nombre en UTF-16 (lo que devuelve Windows), convirtiéndolo a WTF-8.
+    /// Like [`Batch::push`], but with the name in UTF-16 (as returned by Windows), converting it to WTF-8.
     pub fn push_utf16(&mut self, parent: u32, name: &[u16], e: EntryData) -> u32 {
         let off = self.names.len();
         wtf8::encode_utf16(name, &mut self.names);
@@ -169,7 +169,7 @@ impl Batch {
         self.push_record(parent, off as u32, len as u16, e)
     }
 
-    /// Reserva un id sin entrada.
+    /// Reserve an id without an entry.
     pub fn push_hole(&mut self) -> u32 {
         self.records.push(Record::HOLE);
         self.file_ids.push(0);

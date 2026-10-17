@@ -1,10 +1,10 @@
-//! Tipos de archivo (por extensión) y tramos de antigüedad, usados por los histogramas.
+//! File types (by extension) and age bands, used by histograms.
 
 use rustc_hash::FxHashMap;
 use serde::Deserialize;
 use std::sync::OnceLock;
 
-/// Tipo de archivo. El orden de las variantes es el de `Hist::type_pct`.
+/// File type. Variant order matches `Hist::type_pct`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum FileType {
@@ -18,9 +18,9 @@ pub enum FileType {
 }
 
 impl FileType {
-    /// Número de tipos (longitud de `Hist::type_pct`).
+    /// Number of types (length of `Hist::type_pct`).
     pub const COUNT: usize = 7;
-    /// Todos los tipos, en orden de índice.
+    /// All types, in index order.
     pub const ALL: [FileType; Self::COUNT] = [
         FileType::Video,
         FileType::Image,
@@ -31,13 +31,13 @@ impl FileType {
         FileType::Other,
     ];
 
-    /// Tipo a partir de su índice (0..7).
+    /// Type by index (0..7).
     pub fn from_index(i: u8) -> Option<FileType> {
         Self::ALL.get(i as usize).copied()
     }
 
-    /// Clasifica un nombre de archivo (bytes WTF-8) por su extensión, sin distinguir mayúsculas.
-    /// Sin extensión (o solo un punto inicial, como `.gitignore`) es [`FileType::Other`].
+    /// Classify a file name (WTF-8 bytes) by extension, ignoring case.
+    /// A name without an extension (or with only a leading dot, like `.gitignore`) is [`FileType::Other`].
     pub fn classify(name: &[u8]) -> FileType {
         let Some(dot) = name.iter().rposition(|&b| b == b'.') else {
             return FileType::Other;
@@ -60,7 +60,7 @@ impl FileType {
     }
 }
 
-/// Las extensiones más largas que esto se consideran "otros" (ninguna de la tabla se acerca).
+/// Extensions longer than this are treated as "other" (none in the table come close).
 const MAX_EXT: usize = 15;
 
 #[derive(Deserialize)]
@@ -73,10 +73,10 @@ struct TypesFile {
     program: Vec<String>,
 }
 
-/// Fuente embebida de la tabla extensión -> tipo.
+/// Embedded source for the extension-to-type table.
 pub const TYPES_TOML: &str = include_str!("../data/types.toml");
 
-/// Interpreta una tabla TOML. Devuelve el mapa o un mensaje de error (extensión repetida entre tipos, TOML inválido).
+/// Parse a TOML table. Returns the map or an error message (extension repeated across types, invalid TOML).
 pub fn parse_table(src: &str) -> Result<FxHashMap<Box<[u8]>, FileType>, String> {
     let f: TypesFile = toml::from_str(src).map_err(|e| e.to_string())?;
     let mut map: FxHashMap<Box<[u8]>, FileType> = FxHashMap::default();
@@ -91,10 +91,10 @@ pub fn parse_table(src: &str) -> Result<FxHashMap<Box<[u8]>, FileType>, String> 
     for (ty, exts) in groups {
         for e in exts {
             if e.is_empty() || e.len() > MAX_EXT || e != e.to_ascii_lowercase() || e.contains('.') {
-                return Err(format!("extensión inválida: {e:?}"));
+                return Err(format!("invalid extension: {e:?}"));
             }
             if let Some(prev) = map.insert(e.as_bytes().into(), ty) {
-                return Err(format!("extensión repetida: {e:?} ({prev:?} y {ty:?})"));
+                return Err(format!("duplicate extension: {e:?} ({prev:?} and {ty:?})"));
             }
         }
     }
@@ -104,18 +104,18 @@ pub fn parse_table(src: &str) -> Result<FxHashMap<Box<[u8]>, FileType>, String> 
 fn table() -> &'static FxHashMap<Box<[u8]>, FileType> {
     static TABLE: OnceLock<FxHashMap<Box<[u8]>, FileType>> = OnceLock::new();
     TABLE.get_or_init(|| {
-        parse_table(TYPES_TOML).expect("types.toml embebido inválido (lo cubre un test)")
+        parse_table(TYPES_TOML).expect("embedded types.toml is invalid (covered by a test)")
     })
 }
 
-/// Número de tramos de antigüedad (longitud de `Hist::age_pct`).
+/// Number of age bands (length of `Hist::age_pct`).
 pub const AGE_BUCKETS: usize = 5;
 
 const DAY: u32 = 86_400;
 
-/// Tramo de antigüedad de un `mtime` (segundos Unix) respecto a `now` (segundos Unix):
-/// 0 = menos de 1 mes (30 días), 1 = menos de 6 meses (180), 2 = menos de 1 año (365), 3 = menos de 3 años (1095),
-/// 4 = más. Un `mtime` en el futuro cuenta como reciente.
+/// Age band for an `mtime` (Unix seconds) relative to `now` (Unix seconds):
+/// 0 = less than 1 month (30 days), 1 = less than 6 months (180), 2 = less than 1 year (365), 3 = less than 3 years (1095),
+/// 4 = older. An `mtime` in the future counts as recent.
 pub fn age_bucket(now: u32, mtime: u32) -> usize {
     let age = now.saturating_sub(mtime);
     match age {
