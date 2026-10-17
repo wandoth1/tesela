@@ -13,6 +13,13 @@ una línea con exactamente esta forma:
 
 El hash va con la imagen: si cambia un solo byte hay que volver a registrarla (`sha256sum docs/img/<nombre>.png`).
 
+## Al regenerar una captura
+
+Registra la nueva (hash y orden) **y** añade el SHA-256 de la anterior a `$legacyDemoImages` en `scripts/privacy-check.ps1`: en el
+modo de rango (`-To`, el que revisa toda la historia al publicar una etiqueta) solo vale el registro de este archivo en el commit
+`To`, y la imagen vieja sigue en la historia pública; sin su hash en esa lista, el job de privacidad del push de la etiqueta falla.
+(`sha256sum` de la imagen vieja, antes de sustituirla.)
+
 ## Imágenes registradas
 
 - mapa-claro.png | sha256: 86c3498396bfe928dc2f44a94a495764dd42b9131b298f3b9e70f0fd84185455 | `cargo run -p tesela-app --features capture -- --demo --screen map --open Users/usuario --select Descargas --theme light --lang es --size 1280x800 --screenshot docs/img/mapa-claro.png --overwrite`
