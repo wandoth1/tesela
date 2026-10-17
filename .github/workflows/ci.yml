@@ -222,12 +222,17 @@ jobs:
       - name: cargo check (aarch64-pc-windows-msvc)
         run: cargo check --workspace --all-targets --locked --target aarch64-pc-windows-msvc
 
-  # Construye el MSI y el zip portable (sin publicar nada) para detectar roturas del empaquetado en cada PR y en main.
+  # Construye el MSI y el zip portable (sin publicar nada) para detectar roturas del empaquetado en cada PR y en main,
+  # y PRUEBA LA INSTALACION de verdad en el runner (que es un administrador desechable): por usuario, para todos, actualizar
+  # desde la v0.1.4 publicada, cambio de ambito bloqueado, acceso directo del escritorio. Ver scripts/tests/msi-install.tests.ps1.
   # scripts/build-msi.ps1 vuelve a compilar el release con build-release.ps1 (LTO completo) y valida el paquete.
   msi:
     if: github.event_name != 'schedule' && (github.event_name != 'push' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
     runs-on: windows-latest
     timeout-minutes: 60
+    permissions:
+      contents: read
+      attestations: read # `gh attestation verify` de la v0.1.4 que se baja para probar la actualizacion
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -250,5 +255,43 @@ jobs:
           $msi = @(Get-ChildItem -LiteralPath "$env:RUNNER_TEMP/dist" -Filter '*.msi')
           if ($msi.Count -ne 1) { throw 'se esperaba exactamente un MSI' }
           ./scripts/tests/msi-validate.tests.ps1 -Msi $msi[0].FullName
-      # El MSI no se instala en el runner: el ciclo de instalar, actualizar, reparar y desinstalar se prueba en un equipo de
-      # escritorio (docs de la v0.1). No se sube ningun artefacto.
+      # PRUEBAS DE INSTALACION. Solo aqui: el runner es un administrador con la sesion elevada y desechable, y la prueba se niega a
+      # correr fuera de un runner hospedado de GitHub Actions. En local no se instala nada desde un agente.
+      # 1) La v0.1.4 publicada se baja de la release y se VERIFICA (procedencia con `gh attestation verify`, igual que el job
+      #    `verify` de release.yml, y suma SHA-256) antes de instalarla: es lo que tienen los usuarios y de donde se actualiza.
+      - name: Bajar y verificar la v0.1.4 publicada
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/tesela-v014"
+          cd "$RUNNER_TEMP/tesela-v014"
+          gh release download v0.1.4 --repo "$REPO" --pattern 'tesela-0.1.4-x64.msi' --pattern 'SHA256SUMS.txt'
+          for f in tesela-0.1.4-x64.msi SHA256SUMS.txt; do
+            echo "verificando $f"
+            gh attestation verify "$f" --repo "$REPO" \
+              --signer-workflow "$REPO/.github/workflows/release.yml" \
+              --source-ref refs/tags/v0.1.4
+          done
+          grep ' tesela-0.1.4-x64.msi$' SHA256SUMS.txt | sha256sum -c -
+      # 2) Instalar, reparar, actualizar, bajar de version (bloqueado), para todos, cambio de ambito (bloqueado), acceso directo
+      #    del escritorio y desinstalar sin restos, siempre sin interfaz (/qn). Escribe en el resumen del job que comprobo. NO
+      #    prueba la interfaz (ventanas), la peticion de administrador ni las propiedades seguras con un usuario sin privilegios
+      #    (el runner es administrador): eso lo prueba una persona (README del instalador).
+      - name: Pruebas de instalacion del MSI (por usuario, para todos, actualizacion, cambio de ambito, escritorio)
+        shell: pwsh
+        run: |
+          $msi = @(Get-ChildItem -LiteralPath "$env:RUNNER_TEMP/dist" -Filter '*.msi')
+          if ($msi.Count -ne 1) { throw 'se esperaba exactamente un MSI' }
+          ./scripts/tests/msi-install.tests.ps1 -NewMsi $msi[0].FullName -OldMsi "$env:RUNNER_TEMP/tesela-v014/tesela-0.1.4-x64.msi"
+      # Si algo falla, los registros de msiexec (sin datos personales: es un runner desechable) ayudan a ver por que.
+      - name: Registros de las pruebas de instalacion (solo si fallan)
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: msi-install-logs
+          path: ${{ runner.temp }}/tesela-install-tests-*/*.log
+          retention-days: 7
+          if-no-files-found: ignore
