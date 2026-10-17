@@ -24,7 +24,7 @@
 //! can be restored). This does NOT guarantee that a replacement will end up there; see the residual risk below.
 //!
 //! Flags (determined by tests, see `tests::wantnukewarning_*`):
-//! * enviar: `FOF_NO_UI | FOF_ALLOWUNDO | FOFX_RECYCLEONDELETE | FOF_NO_CONNECTED_ELEMENTS`;
+//! * send to the Recycle Bin: `FOF_NO_UI | FOF_ALLOWUNDO | FOFX_RECYCLEONDELETE | FOF_NO_CONNECTED_ELEMENTS`;
 //! * purge Recycle Bin items: `FOF_NO_UI | FOF_NO_CONNECTED_ELEMENTS`.
 //!
 //! `FOF_NO_CONNECTED_ELEMENTS` (S1): without it, approving `page.html` can also include `page_files\`, which was not approved.
@@ -134,7 +134,7 @@ impl Com {
         // SAFETY: `CoInitializeEx` has no preconditions; the reserved pointer is null, as required by the API.
         let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
         if hr.is_ok() {
-            // S_OK y S_FALSE ("ya inicializado en este hilo") se equilibran cada uno con su `CoUninitialize`.
+            // Both S_OK and S_FALSE ("already initialized on this thread") must be balanced with `CoUninitialize`.
             Ok(Com { uninit: true })
         } else if hr.0 == 0x8001_0106u32 as i32 {
             Ok(Com { uninit: false })
@@ -165,61 +165,61 @@ const SCID_DATE_DELETED: PROPERTYKEY = PROPERTYKEY {
     pid: PID_DISPLACED_DATE,
 };
 
-/// Ruta en la forma que acepta `SHCreateItemFromParsingName` (sin `\\?\`), UTF-16 con NUL final.
+/// Path in the form accepted by `SHCreateItemFromParsingName` (without `\\?\`), as UTF-16 with a trailing NUL.
 fn parsing_name(path: &Path) -> Vec<u16> {
     let p = crate::sys::strip_verbatim(path.to_path_buf());
     p.as_os_str().encode_wide().chain(Some(0)).collect()
 }
 
-/// Un elemento de la Papelera tal como lo ve la shell.
+/// A Recycle Bin item as seen by the shell.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct BinItem {
-    /// Nombre de análisis absoluto en la Papelera (el identificador estable del elemento).
+    /// Absolute parsing name in the Recycle Bin (the item's stable identifier).
     pub id: OsString,
-    /// Nombre con el que se ve en la Papelera (el original; la shell puede ocultar la extensión).
+    /// Name displayed in the Recycle Bin (the original name; the shell may hide the extension).
     pub name: OsString,
-    /// Carpeta de la que se borró.
+    /// Folder the item was deleted from.
     pub original_parent: PathBuf,
-    /// Cuándo se borró (segundos Unix).
+    /// When the item was deleted (Unix seconds).
     pub time_deleted: i64,
-    /// Tamaño que da la shell (`System.Size`; 0 si no lo da, como en las carpetas).
+    /// Size reported by the shell (`System.Size`; 0 if unavailable, as with folders).
     pub size: u64,
-    /// Identidad (volumen + FileId) del `$R` (los datos) al enumerar. Al purgar se vuelve a leer: si no coincide, el
-    /// elemento cambió y se salta. `None` = no se pudo leer al enumerar: no se puede verificar y no se purga.
+    /// Identity (volume + FileId) of `$R` (the data) at enumeration. It is read again before purging; if it differs, the
+    /// item changed and is skipped. `None` means it could not be read during enumeration, so it cannot be verified or purged.
     pub data_id: Option<FileIdentity>,
-    /// Identidad del `$I` hermano (los metadatos) al enumerar (misma regla).
+    /// Identity of the sibling `$I` (metadata) at enumeration (same rule).
     pub meta_id: Option<FileIdentity>,
-    /// El sistema de archivos del `$R` no da identidad (FAT, exFAT: `FileIdInfo` no existe): el elemento no se puede
-    /// verificar y no se purga, pero NO es que haya "cambiado": se cuenta aparte (H6.9).
+    /// The file system for `$R` does not provide identity (FAT, exFAT: no `FileIdInfo`): the item cannot be verified and
+    /// is not purged, but this does NOT mean it "changed"; it is counted separately (H6.9).
     pub no_identity: bool,
 }
 
-/// Identidad (volumen + FileId) de lo que hay en `p`, sin seguir enlaces. `None` si no se puede abrir o leer.
+/// Identity (volume + FileId) of the object at `p`, without following links. Returns `None` if it cannot be opened or read.
 fn identity_at(p: &Path) -> Option<FileIdentity> {
     identity_result(p).ok()
 }
 
-/// Como [`identity_at`], con el código de Windows si falla.
+/// Like [`identity_at`], but returns the Windows error code on failure.
 fn identity_result(p: &Path) -> std::result::Result<FileIdentity, sys::Win32> {
     sys::open_for_query(p)
         .and_then(|h| sys::meta(&h))
         .map(|m| m.identity)
 }
 
-/// ¿Es el código de "este sistema de archivos no da `FileIdInfo`"? (`ERROR_INVALID_FUNCTION`, `ERROR_NOT_SUPPORTED`,
-/// `ERROR_INVALID_PARAMETER`, como en `plan::verify`.)
+/// Is this the error code meaning "this file system does not provide `FileIdInfo`"? (`ERROR_INVALID_FUNCTION`,
+/// `ERROR_NOT_SUPPORTED`, `ERROR_INVALID_PARAMETER`, as in `plan::verify`.)
 fn is_no_identity_error(code: sys::Win32) -> bool {
     matches!(code, 1 | 50 | 87)
 }
 
-/// Qué hacer con un elemento de la lista aprobada al purgar.
+/// What to do with an approved list item during purging.
 #[derive(Debug, PartialEq, Eq)]
 enum BinCheck {
-    /// Sigue siendo el mismo: se purga.
+    /// It is still the same item: purge it.
     Same,
-    /// Cambió desde que se enumeró: se salta ("cambió").
+    /// It changed since enumeration: skip it ("changed").
     Changed,
-    /// Su sistema de archivos no da identidad: no se puede verificar, se salta (motivo propio).
+    /// Its file system does not provide identity: it cannot be verified, so skip it (a separate reason).
     Unverifiable,
 }
 
@@ -233,7 +233,7 @@ fn check_bin_item(item: &BinItem) -> BinCheck {
     }
 }
 
-/// El `$I` hermano EXACTO de un `$R`: `$R<token>[.ext]` -> `$I<token>[.ext]`. `None` si no es un `$R`.
+/// The EXACT sibling `$I` for an `$R`: `$R<token>[.ext]` -> `$I<token>[.ext]`. `None` if this is not an `$R`.
 fn meta_sibling(data: &Path) -> Option<PathBuf> {
     let name = data.file_name()?.to_str()?;
     (name.starts_with("$R") && name.len() > 2)
@@ -253,7 +253,7 @@ fn bin_item_unchanged(item: &BinItem) -> bool {
 }
 
 impl BinItem {
-    /// Ruta de la que se borró el elemento.
+    /// Path the item was deleted from.
     pub fn original_path(&self) -> PathBuf {
         self.original_parent.join(&self.name)
     }
@@ -289,8 +289,8 @@ pub fn list_bin() -> Result<Vec<BinItem>> {
     list_bin_counted().map(|(items, _)| items)
 }
 
-/// Como [`list_bin`], y además cuántos elementos se SALTARON por tener los metadatos ilegibles (m1 de la auditoría): quien
-/// llama lo anota en el plan, en el registro y en el informe, y no cuenta su tamaño en lo que promete vaciar.
+/// Like [`list_bin`], and also the number of items SKIPPED because their metadata was unreadable (audit M1). The caller
+/// records this in the plan, log, and report, and excludes their size from the amount it promises to empty.
 pub fn list_bin_counted() -> Result<(Vec<BinItem>, u64)> {
     let _com = Com::init()?;
     // SAFETY: COM is initialized on this thread; all interfaces and strings obtained here belong to this function and
@@ -318,7 +318,7 @@ pub fn list_bin_counted() -> Result<(Vec<BinItem>, u64)> {
     }
 }
 
-/// Añade el elemento si se pudo leer; si no (su `$I` está corrupto), lo salta (GM-S1). Devuelve si se añadió.
+/// Adds the item if it could be read; otherwise (if its `$I` is corrupt), skips it (GM-S1). Returns whether it was added.
 fn push_readable(out: &mut Vec<BinItem>, item: Result<BinItem>) -> bool {
     match item {
         Ok(i) => {
@@ -329,10 +329,10 @@ fn push_readable(out: &mut Vec<BinItem>, item: Result<BinItem>) -> bool {
     }
 }
 
-/// Lee un elemento enumerado de la Papelera (nombre, origen, fecha, tamaño e identidades del `$R` y del `$I`).
+/// Reads an enumerated Recycle Bin item (name, origin, date, size, and identities of `$R` and `$I`).
 ///
 /// # Safety
-/// `item` debe ser una interfaz viva, y COM debe estar inicializado en el hilo que llama.
+/// `item` must be a live interface, and COM must be initialized on the calling thread.
 unsafe fn read_bin_item(item: &IShellItem) -> Result<BinItem> {
     // SAFETY: the caller guarantees this; strings are freed with `take_pwstr` and the rest uses `windows` RAII.
     unsafe {
@@ -344,7 +344,7 @@ unsafe fn read_bin_item(item: &IShellItem) -> Result<BinItem> {
         let original_parent = PathBuf::from(OsString::from_wide(&loc));
         let time_deleted = filetime_to_unix(item2.GetFileTime(&SCID_DATE_DELETED)?);
         let size = item2.GetUInt64(&PKEY_Size).unwrap_or(0);
-        // Las identidades del `$R` y del `$I`, para volver a comprobarlas al purgar (M3).
+        // Capture `$R` and `$I` identities so they can be checked again during purging (M3).
         let data = PathBuf::from(&id);
         let data_res = identity_result(&data);
         let no_identity = data_res.as_ref().is_err_and(|c| is_no_identity_error(*c));
@@ -376,26 +376,26 @@ pub fn bin_totals() -> Result<(u64, u64)> {
 
 /// What happened to an item, according to the shell (`IFileOperationProgressSink::PostDeleteItem`).
 ///
-/// Semántica (documentación de Microsoft, `PostDeleteItem`, learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/
-/// nf-shobjidl_core-ifileoperationprogresssink-postdeleteitem): `hrDelete` es el resultado de la eliminación real (no el
-/// de `DeleteItem`, que solo la encola) y `psiNewlyCreated` es "el elemento eliminado, ahora en la Papelera"; si el
-/// elemento se eliminó por completo, es NULL.
+/// Semantics (Microsoft documentation for `PostDeleteItem`, learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/
+/// nf-shobjidl_core-ifileoperationprogresssink-postdeleteitem): `hrDelete` is the result of the actual deletion (not the
+/// result of `DeleteItem`, which only queues it), and `psiNewlyCreated` is "the deleted item, now in the Recycle Bin";
+/// if the item was permanently deleted, it is NULL.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum BinState {
-    /// `psiNewlyCreated` es nulo: la shell lo eliminó definitivamente (por ejemplo, porque no cabía en la Papelera).
+    /// `psiNewlyCreated` is null: the shell permanently deleted the item (for example, because it did not fit in the Recycle Bin).
     Deleted,
-    /// Está en la Papelera; esta es su ruta real (`$R…`), que se puede abrir para comprobar su identidad.
+    /// It is in the Recycle Bin; this is its actual path (`$R…`), which can be opened to check its identity.
     InBin(PathBuf),
-    /// Está en la Papelera pero la shell no dio su ruta real.
+    /// It is in the Recycle Bin, but the shell did not provide its actual path.
     InBinUnknownPath,
 }
 
-/// Lo que la shell notificó de un elemento.
+/// What the shell reported about an item.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DeleteEvent {
-    /// Nombre de análisis del elemento original: su ruta, o el `id` de un elemento de la Papelera.
+    /// Parsing name of the original item: its path or the `id` of a Recycle Bin item.
     pub item: OsString,
-    /// `hrDelete`: `>= 0` es éxito.
+    /// `hrDelete`: `>= 0` means success.
     pub hr: i32,
     pub state: BinState,
 }
@@ -406,7 +406,7 @@ impl DeleteEvent {
     }
 }
 
-/// Lo que ocupa la Papelera del usuario EN UN VOLUMEN (`root`, p. ej. la raíz de la unidad), según la shell.
+/// Space used by the user's Recycle Bin on ONE VOLUME (`root`, for example a drive root), according to the shell.
 pub fn bin_size_on(root: &Path) -> Result<u64> {
     let mut info = SHQUERYRBINFO {
         cbSize: size_of::<SHQUERYRBINFO>() as u32,
@@ -418,15 +418,14 @@ pub fn bin_size_on(root: &Path) -> Result<u64> {
     Ok(info.i64Size.max(0) as u64)
 }
 
-/// ¿Está `p` dentro de una Papelera (`<raíz del volumen>\$Recycle.Bin\...`)? La raíz del volumen es la de una unidad con letra o
-/// la de un volumen montado en una carpeta (GM-M6: `C:\montajes\datos\$Recycle.Bin\...`); se consulta a Windows
-/// (`GetVolumePathNameW`) por la raíz de `p`.
+/// Is `p` inside a Recycle Bin (`<volume root>\$Recycle.Bin\...`)? The volume root may be a drive-letter root or a volume
+/// mounted in a folder (GM-M6: `C:\mounts\data\$Recycle.Bin\...`); query Windows (`GetVolumePathNameW`) for the root of `p`.
 pub fn is_recycle_bin_path(p: &Path) -> bool {
     is_recycle_bin_path_on(p, crate::volume::volume_root(p).as_deref())
 }
 
-/// [`is_recycle_bin_path`] con la raíz del volumen de `p` ya conocida (`None` = no se sabe: solo valen las raíces de unidad
-/// con letra). Mira la forma de la ruta, sin consultar al sistema.
+/// [`is_recycle_bin_path`] when the volume root of `p` is already known (`None` means unknown, so only drive-letter roots
+/// count). Checks the path's form without querying the system.
 pub(crate) fn is_recycle_bin_path_on(p: &Path, volume_root: Option<&Path>) -> bool {
     use crate::paths::PathKey;
     let key = PathKey::new(p);
@@ -439,59 +438,57 @@ pub(crate) fn is_recycle_bin_path_on(p: &Path, volume_root: Option<&Path>) -> bo
     is_bin(&key) || key.ancestors().iter().any(is_bin)
 }
 
-/// Resultado de una operación por lotes de la shell.
+/// Result of a shell batch operation.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct BatchOutcome {
-    /// Un evento por cada elemento que la shell llegó a procesar (en el orden en que los procesó).
+    /// One event for each item the shell processed, in processing order.
     pub events: Vec<DeleteEvent>,
-    /// `GetAnyOperationsAborted`: la shell abortó al menos una operación (sin decir cuál).
+    /// `GetAnyOperationsAborted`: the shell aborted at least one operation (without identifying which one).
     pub any_aborted: bool,
-    /// `PerformOperations` falló (la parte que ya se hizo consta en `events`).
+    /// `PerformOperations` failed (completed work is recorded in `events`).
     pub error: Option<ShellError>,
-    /// Solo al purgar: `$I` de elementos purgados que la shell dejó huérfanos y que se quitaron (ver
-    /// [`remove_orphan_meta`]).
+    /// Purging only: `$I` metadata left orphaned by the shell for purged items and then removed (see [`remove_orphan_meta`]).
     pub meta_removed: u64,
-    /// Solo al enviar: el receptor CANCELÓ el lote (devolvió un error de aborto) por un veto o por un borrado definitivo
-    /// inesperado. Lo que no tiene evento sigue en su sitio.
+    /// Sending only: the receiver CANCELLED the batch (returned an abort error) because of a veto or unexpected permanent
+    /// deletion. Items without an event remain in place.
     pub sink_aborted: bool,
-    /// Solo al enviar: elementos a los que `PreDeleteItem` puso veto (la identidad no era la aprobada).
+    /// Sending only: items vetoed by `PreDeleteItem` (their identity did not match the approved identity).
     pub vetoed: Vec<Veto>,
-    /// Solo al purgar: elementos de la lista que NO se purgaron porque su `$R` o su `$I` ya no tenían la identidad
-    /// capturada al enumerar (o no se capturó): `id` de cada uno.
+    /// Purging only: list items NOT purged because `$R` or `$I` no longer had the identity captured during enumeration (or
+    /// no identity was captured): the `id` of each item.
     pub changed_bin: Vec<OsString>,
-    /// Solo al purgar: elementos cuya purga la shell dio por buena pero cuyo objeto aprobado NO se eliminó (se borró otro
-    /// objeto con su nombre tras la última comprobación): `id` de cada uno. No cuentan como purgados.
+    /// Purging only: items the shell reported as successfully purged even though the approved object was NOT deleted (a
+    /// different object with its name was deleted after the final check): the `id` of each item. They do not count as purged.
     pub replaced_bin: Vec<OsString>,
-    /// Solo al purgar: elementos que NO se purgaron porque su sistema de archivos no da identidad (FAT, exFAT) y no se
-    /// pueden verificar: `id` de cada uno. No es que hayan cambiado (H6.9).
+    /// Purging only: items NOT purged because their file system does not provide identity (FAT, exFAT), so they cannot be
+    /// verified: the `id` of each item. This does not mean they changed (H6.9).
     pub unverifiable_bin: Vec<OsString>,
-    /// Solo al purgar (M2): elementos cuyo `$R` lleva reparse points dentro (junction, symlink, enlace de WSL, archivo de la
-    /// nube) o no se pudo comprobar entero: se EXCLUYEN antes de entregarlos a la shell (no se purgan y no cortan el lote).
+    /// Purging only (M2): items whose `$R` contains reparse points (junction, symlink, WSL link, cloud file) or could not be
+    /// fully checked: EXCLUDED before submission to the shell (not purged and do not stop the batch).
     pub linked_bin: Vec<OsString>,
 }
 
-/// Un elemento que se entrega a la shell: su ruta original y la IDENTIDAD aprobada (volumen + FileId).
+/// An item submitted to the shell: its original path and approved IDENTITY (volume + FileId).
 #[derive(Clone, Debug)]
 pub struct SendItem {
     pub path: PathBuf,
     pub identity: FileIdentity,
-    /// A2-B1: solo un ARCHIVO que viaja en un lote con otros. `PreDeleteItem` vuelve a medirlo por su handle de guarda (sin
-    /// reabrir la ruta) y veta si ocupa más de lo que se contó para el presupuesto. Un directorio va siempre solo en su
-    /// operación y se mide justo antes de entregarlo: no lleva comprobación aquí.
+    /// A2-B1: only a FILE submitted in a batch with other items. `PreDeleteItem` remeasures it through its guard handle
+    /// (without reopening the path) and vetoes it if it exceeds the size counted in the budget. A directory always runs
+    /// alone and is measured immediately before submission, so it is not checked here.
     pub size_guard: Option<SizeGuard>,
-    /// A3-M1: solo un DIRECTORIO. La vigilancia de cambios abierta ANTES de medirlo y viva hasta ahora: si algo cambió dentro
-    /// desde que se midió, la medida no es cierta. `PreDeleteItem` la consulta (veto) y, si pasa, la para.
+    /// A3-M1: directories only. The change monitor was opened BEFORE measurement and remains active; if anything inside
+    /// changed since measurement, the measurement is stale. `PreDeleteItem` checks it (vetoing on change) and stops it if clear.
     pub watch: Option<Arc<sys::DirWatch>>,
 }
 
-/// Cómo vuelve a medirse un archivo en `PreDeleteItem` (A2-B1): su handle de guarda y el tamaño con el que se contó en el
-/// reparto.
+/// How a file is remeasured in `PreDeleteItem` (A2-B1): its guard handle and the size counted in the allocation.
 #[derive(Clone)]
 pub struct SizeGuard {
-    /// El handle de guarda del ejecutor (`DELETE | READ_ATTRIBUTES`, compartiéndolo todo). Sigue abierto durante toda la
-    /// operación.
+    /// The executor's guard handle (`DELETE | READ_ATTRIBUTES`, sharing all access). It remains open for the entire
+    /// operation.
     pub handle: Arc<sys::Handle>,
-    /// Lo que se contó para el presupuesto de la operación: el mayor entre bytes en disco y tamaño lógico.
+    /// Amount counted in the operation budget: the larger of on-disk bytes and logical size.
     pub budget: u64,
 }
 
@@ -504,8 +501,8 @@ impl std::fmt::Debug for SizeGuard {
 }
 
 impl SizeGuard {
-    /// ¿Sigue el archivo dentro de lo que se contó? Lo lee por el handle de guarda: no hay reapertura por ruta ni ventana de
-    /// sustitución. Si no se puede leer, se veta (falla cerrado).
+    /// Is the file still within the counted size? Read it through the guard handle: there is no path reopen or replacement
+    /// window. If it cannot be read, veto it (fail closed).
     fn check(&self) -> std::result::Result<(), VetoKind> {
         match sys::sizes(&self.handle) {
             Ok(s) if s.charge() > self.budget => Err(VetoKind::Grew),
@@ -529,37 +526,36 @@ impl SendItem {
     }
 }
 
-/// Por qué `PreDeleteItem` vetó un elemento.
+/// Why `PreDeleteItem` vetoed an item.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum VetoKind {
-    /// Lo que hay ahora en esa ruta no es el objeto aprobado (sustituido tras la comprobación).
+    /// The object currently at that path is not the approved object (it was replaced after the check).
     IdentityMismatch,
-    /// No se pudo abrir o leer (código de Windows): ante la duda no se envía.
+    /// Could not open or read it (Windows error code): when in doubt, do not submit it.
     OpenFailed(u32),
-    /// La shell va a borrar algo que no estaba en la lista aprobada (por ejemplo un elemento conectado).
+    /// The shell is about to delete something that was not on the approved list (for example, a connected item).
     NotApproved,
-    /// A2-B1: un archivo del lote ocupa ahora MÁS de lo que se contó para el presupuesto de la operación (creció desde que
-    /// se midió). Se veta: el reparto se hizo con un tamaño que ya no es cierto.
+    /// A2-B1: a file in the batch now exceeds the size counted in the operation budget (it grew after measurement). Veto it:
+    /// the budget allocation used a size that is no longer accurate.
     Grew,
-    /// A3-M1: algo DENTRO de un directorio cambió desde que se midió (la vigilancia que lo cubre lo vio, se desbordó o falló):
-    /// la medida ya no es cierta y el reparto se hizo con ella. Se veta.
+    /// A3-M1: something INSIDE a directory changed after measurement (the monitor covering it detected a change, overflowed,
+    /// or failed): the measurement is no longer accurate, and the budget allocation used it. Veto the item.
     Modified,
 }
 
-/// Un veto del receptor.
+/// A receiver veto.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Veto {
-    /// Nombre de análisis de lo que se vetó (su ruta). Al purgar una CARPETA de la Papelera es la ruta de un HIJO.
+    /// Parsing name of the vetoed item (its path). When purging a Recycle Bin FOLDER, this is the path of a CHILD.
     pub item: OsString,
-    /// El `id` (ruta del `$R`) del elemento aprobado de la lista al que pertenece lo vetado, si lo había (un hijo de una
-    /// carpeta de la Papelera): a quien llama le sirve para saber QUÉ elemento de su lista se vetó (M-2). `None` si no
-    /// pertenecía a ninguno.
+    /// The `id` (path of `$R`) of the approved list item to which the vetoed item belongs, if any (a child of a Recycle Bin
+    /// folder). The caller uses this to identify WHICH list item was vetoed (M-2). `None` if it belonged to none.
     pub owner: Option<OsString>,
     pub kind: VetoKind,
 }
 
 impl Veto {
-    /// El elemento de la lista aprobada al que se atribuye el veto: su dueño si lo hay y, si no, la propia ruta.
+    /// Approved list item to which the veto is attributed: its owner, if any, or otherwise the path itself.
     pub fn id(&self) -> &OsString {
         self.owner.as_ref().unwrap_or(&self.item)
     }
@@ -567,31 +563,31 @@ impl Veto {
 
 type Events = Arc<Mutex<Vec<DeleteEvent>>>;
 
-/// Nombre de análisis o ruta de un elemento de la shell, si se puede.
+/// Parsing name or path of a shell item, if available.
 fn display(item: &IShellItem, sigdn: SIGDN) -> Option<OsString> {
     // SAFETY: `item` is a live interface; the returned string is owned by COM and `take_pwstr` frees it exactly once.
     unsafe { item.GetDisplayName(sigdn).ok().map(|p| take_pwstr(p)) }
 }
 
-/// Estado que el receptor comparte con quien lo creó.
+/// State shared by the receiver and its creator.
 #[derive(Default)]
 struct SinkState {
-    /// El lote está cancelado: cualquier `PreDeleteItem` posterior falla (defensa por si la shell sigue tras un error).
+    /// The batch is cancelled: any later `PreDeleteItem` fails (defense in case the shell continues after an error).
     tripped: AtomicBool,
     vetoes: Mutex<Vec<Veto>>,
 }
 
-/// Qué se aprobó para una ruta.
+/// What was approved for a path.
 enum Approved {
-    /// Al ENVIAR: la identidad del objeto en su ruta original y, en un archivo de un lote, cómo volver a medirlo (A2-B1).
+    /// When SENDING: identity of the object at its original path and, for a file in a batch, how to remeasure it (A2-B1).
     Object {
         identity: FileIdentity,
         size: Option<SizeGuard>,
-        /// A3-M1: la vigilancia de cambios de un directorio (ver [`SendItem::watch`]).
+        /// A3-M1: change monitor for a directory (see [`SendItem::watch`]).
         watch: Option<Arc<sys::DirWatch>>,
     },
-    /// Al PURGAR (A-M4): las identidades del `$R` (los datos) y del `$I` hermano (los metadatos) capturadas al enumerar. La
-    /// ruta es la del `$R` (el `id` del elemento de la Papelera).
+    /// When PURGING (A-M4): identities of `$R` (data) and sibling `$I` (metadata) captured during enumeration. The path is
+    /// that of `$R` (the Recycle Bin item's `id`).
     Bin {
         data_path: PathBuf,
         data: FileIdentity,
@@ -600,18 +596,18 @@ enum Approved {
     },
 }
 
-/// Lo aprobado, por ruta: lo que `PreDeleteItem` comprueba antes de que la shell actúe.
+/// Approved items indexed by path: what `PreDeleteItem` checks before the shell acts.
 struct Guard {
     approved: Vec<(PathKey, Approved)>,
-    /// El nombre EXACTO (tal como se entregó) de cada elemento de `approved`, en el mismo orden (GM-M5): en un directorio
-    /// sensible a mayúsculas dos nombres que solo difieren en ellas tienen la misma `PathKey` (que pliega mayúsculas).
+    /// The EXACT name (as submitted) of each item in `approved`, in the same order (GM-M5): in a case-sensitive directory,
+    /// two names differing only by case have the same `PathKey` (which folds case).
     names: Vec<OsString>,
-    /// Es la guarda de una PURGA de la Papelera (si no, de un envío).
+    /// This is a Recycle Bin PURGE guard (otherwise, a send guard).
     purge: bool,
 }
 
 impl Guard {
-    /// Guarda de un ENVÍO a la Papelera (ruta original + identidad aprobada).
+    /// Guard for a SEND to the Recycle Bin (original path + approved identity).
     fn new(items: &[SendItem]) -> Guard {
         Guard {
             names: items
@@ -635,8 +631,8 @@ impl Guard {
         }
     }
 
-    /// Guarda de una PURGA (A-M4): cada elemento de la lista con las identidades de su `$R` y de su `$I` capturadas al
-    /// enumerar. Sin las dos, el elemento no se purga (nunca llega aquí: ver `check_bin_item`); si falta alguna se vetaría.
+    /// Guard for a PURGE (A-M4): each list item with the identities of its `$R` and `$I` captured during enumeration.
+    /// Without both, the item is not purged (it never reaches here; see `check_bin_item`); if either is missing, it is vetoed.
     fn purge(items: &[&BinItem]) -> Guard {
         let kept: Vec<&&BinItem> = items
             .iter()
@@ -669,16 +665,16 @@ impl Guard {
         }
     }
 
-    /// ¿Es una guarda de ENVÍO? Solo al enviar un borrado definitivo inesperado corta el lote (al purgar es lo esperado).
+    /// Is this a SEND guard? Only an unexpected permanent deletion during sending stops the batch (during purging, it is expected).
     fn sends(&self) -> bool {
         !self.purge
     }
 
-    /// El elemento aprobado al que corresponde `path`. Al PURGAR, un elemento de la Papelera que es una CARPETA llega a
-    /// `PreDeleteItem` hijo a hijo (medido con la shell real: `...\$R<token>\hijo.txt`), no con la ruta de su `$R`: lo que
-    /// cuelga de un `$R` aprobado se atribuye a ESE `$R`. Al ENVIAR vale solo la ruta exacta (un evento por carpeta).
+    /// Approved item corresponding to `path`. During PURGING, a Recycle Bin FOLDER reaches `PreDeleteItem` one child at a
+    /// time (measured with the real shell: `...\$R<token>\child.txt`), not with its `$R` path: anything under an approved
+    /// `$R` is attributed to THAT `$R`. During SENDING, only an exact path matches (one event per folder).
     fn find(&self, path: &OsString) -> Option<&(PathKey, Approved)> {
-        // GM-M5: primero el nombre exacto; la clave (que pliega mayúsculas) solo si no hay ambigüedad.
+        // GM-M5: try the exact name first; use the key (which folds case) only when unambiguous.
         if let Some(i) = crate::paths::owner_index(&self.names, path) {
             return self.approved.get(i);
         }
@@ -688,8 +684,8 @@ impl Guard {
             .flatten()
     }
 
-    /// El `id` (ruta del `$R`) del elemento de una purga al que pertenece `path` (él mismo o uno de sus hijos); `None` si no
-    /// pertenece a ninguno o si es una guarda de envío.
+    /// The `id` (path of `$R`) of the purge item to which `path` belongs (itself or one of its children); `None` if it
+    /// belongs to none or if this is a send guard.
     fn owner_of(&self, path: &OsString) -> Option<OsString> {
         match self.find(path) {
             Some((_, Approved::Bin { data_path, .. })) => {
@@ -699,10 +695,10 @@ impl Guard {
         }
     }
 
-    /// ¿Es `path` lo aprobado? Abre por ruta sin seguir enlaces y compara la identidad. SOLO pasa lo que está aprobado
-    /// por esa ruta exacta: un hijo de un elemento aprobado, un alias (otro nombre del mismo objeto) o cualquier otra cosa
-    /// se vetan (`NotApproved`). Con la shell real una carpeta emite un único evento, así que la rama "los hijos pasan"
-    /// era inalcanzable y fallar cerrado es mejor (H6.1). Al purgar se comprueban el `$R` y el `$I`.
+    /// Is `path` approved? Opens by path without following links and compares identity. ONLY what is approved at that exact
+    /// path passes: a child of an approved item, an alias (another name for the same object), and anything else are vetoed
+    /// (`NotApproved`). With the real shell, a folder emits one event, so the "children pass" branch was unreachable and
+    /// failing closed is safer (H6.1). During purging, both `$R` and `$I` are checked.
     fn check(&self, path: &OsString) -> std::result::Result<(), VetoKind> {
         let Some((_, want)) = self.find(path) else {
             return Err(VetoKind::NotApproved);
@@ -721,15 +717,15 @@ impl Guard {
                 watch,
             } => {
                 same(Path::new(path), identity)?;
-                // A2-B1: lo aprobado sigue siendo lo que había, pero un archivo que creció desde que se midió ya no cabe en lo
-                // que se repartió: se mide por el handle de guarda (el mismo objeto), no por la ruta.
+                // A2-B1: the approved object is still the same, but a file that grew after measurement no longer fits the
+                // allocated budget: measure it through the guard handle (the same object), not by path.
                 if let Some(g) = size {
                     g.check()?;
                 }
-                // A3-M1: un directorio lleva la vigilancia de cambios que se abrió ANTES de medirlo. Si algo cambió dentro (o
-                // la vigilancia falló), la medida no vale. Si no, es la última comprobación y se PARA aquí: no queda un handle
-                // con E/S pendiente sobre el directorio mientras la shell lo mueve (y se vuelve a mirar tras parar: lo que
-                // cayera en el último instante consta).
+                // A3-M1: a directory carries the change monitor opened BEFORE measurement. If anything changed inside (or
+                // monitoring failed), the measurement is invalid. Otherwise, this is the final check and the monitor is
+                // STOPPED here: no handle remains with pending I/O on the directory while the shell moves it (and it is
+                // checked again after stopping, so a last-moment change is recorded).
                 if let Some(w) = watch {
                     if w.changed() {
                         return Err(VetoKind::Modified);
@@ -747,10 +743,10 @@ impl Guard {
                 meta_path,
                 meta,
             } => {
-                // GM-m5: al purgar una CARPETA de la Papelera la shell pregunta por sus hijos (`...\$R<token>\hijo`). Un hijo
-                // solo vale si, abierto por su ruta sin seguir enlaces, no es un reparse point (un junction dentro del `$R`
-                // llevaría el borrado fuera), está en el MISMO volumen que el `$R` aprobado y su ruta final cuelga de ese `$R`
-                // (un ancestro enlazado la sacaría de él). Antes bastaba con que el texto de la ruta empezase por el `$R`.
+                // GM-M5: when purging a Recycle Bin FOLDER, the shell asks about its children (`...\$R<token>\child`). A child
+                // is accepted only if, when opened by path without following links, it is not a reparse point (a junction
+                // inside `$R` would redirect deletion outside it), is on the SAME volume as the approved `$R`, and its final
+                // path is beneath that `$R` (a linked ancestor would escape it). Previously, a path text prefix was enough.
                 if PathKey::new(Path::new(path)) != PathKey::new(data_path) {
                     let h = sys::open_for_query(Path::new(path)).map_err(VetoKind::OpenFailed)?;
                     let m = sys::meta(&h).map_err(VetoKind::OpenFailed)?;
@@ -764,7 +760,7 @@ impl Guard {
                         return Err(VetoKind::NotApproved);
                     }
                 }
-                // El `$R` aprobado (no el hijo por el que se pregunta, si es el caso) y su `$I`.
+                // The approved `$R` (not the child being checked, if applicable) and its `$I`.
                 same(data_path, data)?;
                 same(meta_path, meta)
             }
@@ -772,8 +768,8 @@ impl Guard {
     }
 }
 
-/// El estado de un elemento según `psiNewlyCreated` de `PostDeleteItem`: `None` = nulo (eliminado definitivamente);
-/// `Some(None)` = hay elemento pero no se pudo leer su ruta; `Some(Some(ruta))` = está en la Papelera. Pura.
+/// Item state based on `psiNewlyCreated` from `PostDeleteItem`: `None` = null (permanently deleted);
+/// `Some(None)` = item exists but its path could not be read; `Some(Some(path))` = it is in the Recycle Bin. Pure function.
 fn bin_state(newly_created: Option<Option<PathBuf>>) -> BinState {
     match newly_created {
         None => BinState::Deleted,
@@ -782,26 +778,26 @@ fn bin_state(newly_created: Option<Option<PathBuf>>) -> BinState {
     }
 }
 
-/// ¿Debe el receptor cortar el lote tras este `PostDeleteItem`? Solo al ENVIAR (`sending`: al purgar el borrado
-/// definitivo es lo esperado y cada elemento es independiente) y en dos casos:
-/// * la shell dijo que fue bien pero el elemento no está verificablemente en la Papelera: eliminado definitivamente
-///   (`Deleted`) o sin ruta (`InBinUnknownPath`);
-/// * (A2-M1) el resultado es un FALLO (`hrdelete < 0`): un fallo no prueba que la shell no tocara nada (puede haber perdido
-///   un hijo de una carpeta antes de fallar) y no hay forma de garantizar que lo siguiente del lote no sufra lo mismo; se
-///   corta lo pendiente por precaución. El ejecutor juzga después el elemento fallido por su objeto y su contenido.
+/// Should the receiver stop the batch after this `PostDeleteItem`? Only when SENDING (`sending`; permanent deletion is
+/// expected during purging and each item is independent), and in two cases:
+/// * the shell reported success, but the item is not verifiably in the Recycle Bin: it was permanently deleted
+///   (`Deleted`) or has no path (`InBinUnknownPath`);
+/// * (A2-M1) the result is a FAILURE (`hrdelete < 0`): a failure does not prove the shell left everything untouched (it
+///   may have deleted a folder child before failing), and there is no way to ensure later items in the batch are safe; stop
+///   the remaining work as a precaution. The executor then judges the failed item by its object and contents.
 ///
-/// Pura.
+/// Pure function.
 fn post_delete_aborts(sending: bool, hrdelete: i32, state: &BinState) -> bool {
     sending && (hrdelete < 0 || matches!(state, BinState::Deleted | BinState::InBinUnknownPath))
 }
 
-/// La lógica del receptor SIN COM (así se prueba en cualquier equipo): `Recorder` solo traduce los argumentos de la shell
-/// y llama aquí.
+/// Receiver logic WITHOUT COM (so it can be tested on any machine): `Recorder` only translates shell arguments and calls
+/// this code.
 pub(crate) struct SinkCore {
     events: Events,
     state: Arc<SinkState>,
-    /// Obligatoria (M-3): sin guarda no hay receptor, así que una operación que borra (enviar o purgar) sin comprobar
-    /// identidades no compila.
+    /// Required (M-3): there is no receiver without a guard, so a deleting operation (sending or purging) cannot compile
+    /// without identity checks.
     guard: Guard,
 }
 
@@ -826,20 +822,20 @@ impl SinkCore {
         (events, vetoes, self.state.tripped.load(Ordering::SeqCst))
     }
 
-    /// `PreDeleteItem`: `true` = la shell puede seguir con este elemento; `false` = el receptor debe devolver `E_ABORT`.
+    /// `PreDeleteItem`: `true` means the shell can continue with this item; `false` means the receiver must return `E_ABORT`.
     pub(crate) fn pre_delete(&self, item: OsString) -> bool {
         // SOLO PRUEBAS: gancho de la etapa 2 (justo antes de comprobar el elemento), también con la shell real.
         #[cfg(test)]
         crate::engine::test_hooks::before_pre_delete(Path::new(&item));
         let guard = &self.guard;
-        // Defensa: si el lote ya está cancelado, ningún elemento más se procesa aunque la shell siguiera.
+        // Defense: if the batch is already cancelled, do not process more items even if the shell continues.
         if self.state.tripped.load(Ordering::SeqCst) {
             return false;
         }
         match guard.check(&item) {
             Ok(()) => true,
             Err(kind) => {
-                // Veto: el sustituto NO se envía y se cancela el resto del lote (falla cerrado).
+                // Veto: do NOT submit the replacement; cancel the rest of the batch (fail closed).
                 self.state.tripped.store(true, Ordering::SeqCst);
                 self.state
                     .vetoes
@@ -855,8 +851,7 @@ impl SinkCore {
         }
     }
 
-    /// `PostDeleteItem`: registra el evento PRIMERO. `true` = el receptor debe devolver `E_ABORT` (y el lote queda
-    /// cancelado).
+    /// `PostDeleteItem`: record the event FIRST. `true` means the receiver must return `E_ABORT` (and the batch is cancelled).
     pub(crate) fn post_delete(&self, item: OsString, hrdelete: i32, state: BinState) -> bool {
         let abort = post_delete_aborts(self.guard.sends(), hrdelete, &state);
         self.events
@@ -874,10 +869,10 @@ impl SinkCore {
     }
 }
 
-/// El receptor de eventos de `IFileOperation`. Implementa la interfaz COM con `windows::core::implement` (la vtable,
-/// `QueryInterface`, `AddRef` y `Release` los genera la macro). Al PURGAR solo registra. Al ENVIAR (con `guard`) además
-/// vigila: veta lo que no es lo aprobado y corta el lote tras el primer borrado definitivo (ver el módulo). Un error de un
-/// método del receptor hace que la shell cancele lo que quedara pendiente: es exactamente lo que se quiere.
+/// `IFileOperation` event receiver. Implements the COM interface with `windows::core::implement` (the macro generates the
+/// vtable, `QueryInterface`, `AddRef`, and `Release`). During PURGING it only records events. During SENDING (with `guard`)
+/// it also checks items: vetoes anything not approved and stops the batch after the first permanent deletion (see the module
+/// docs). An error from a receiver method makes the shell cancel pending work, as intended.
 #[implement(IFileOperationProgressSink)]
 struct Recorder {
     core: SinkCore,
@@ -1015,7 +1010,7 @@ impl IFileOperationProgressSink_Impl for Recorder_Impl {
     }
 }
 
-/// Una operación `IFileOperation` con su receptor ya conectado.
+/// An `IFileOperation` with its receiver already connected.
 struct Operation {
     op: IFileOperation,
     cookie: u32,
@@ -1036,7 +1031,7 @@ impl Operation {
         }
         .into();
         // SAFETY: COM is initialized on this thread (the caller guarantees this); `sink` is a live interface that `Advise`
-        // retiene (AddRef) hasta `Unadvise`.
+        // retains it (AddRef) until `Unadvise`.
         unsafe {
             let op: IFileOperation = CoCreateInstance(&FileOperation, None, CLSCTX_ALL)?;
             op.SetOperationFlags(flags)?;
@@ -1050,7 +1045,7 @@ impl Operation {
         }
     }
 
-    /// Ejecuta lo encolado y devuelve lo que la shell notificó.
+    /// Performs the queued operations and returns what the shell reported.
     fn perform(self) -> BatchOutcome {
         // SAFETY: COM is initialized on this thread; `self.op` is a live interface and `cookie` is from its `Advise` call.
         let (error, aborted) = unsafe {
@@ -1081,10 +1076,10 @@ impl Operation {
     }
 }
 
-/// Qué banderas se usan al enviar a la Papelera.
+/// Flags used when sending items to the Recycle Bin.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecycleMode {
-    /// `FOF_NO_UI | FOF_ALLOWUNDO | FOFX_RECYCLEONDELETE`: lo que usa la aplicación.
+    /// `FOF_NO_UI | FOF_ALLOWUNDO | FOFX_RECYCLEONDELETE`: used by the application.
     Normal,
     /// Lo mismo más `FOF_WANTNUKEWARNING`: solo existe en las pruebas (§3.7.4). Con `FOF_NO_UI` la shell se queda
     /// esperando una respuesta que nadie puede dar: la aplicación NUNCA la usa.
@@ -1092,8 +1087,8 @@ pub enum RecycleMode {
     WithNukeWarning,
 }
 
-/// Las banderas con las que se envía a la Papelera (S1: `FOF_NO_CONNECTED_ELEMENTS` evita que aprobar `pagina.html`
-/// arrastre `pagina_files\`, que nadie aprobó). `FOF_WANTNUKEWARNING` solo existe en las pruebas.
+/// Flags for sending items to the Recycle Bin (S1: `FOF_NO_CONNECTED_ELEMENTS` prevents approving `page.html` from also
+/// submitting `page_files\`, which was not approved). `FOF_WANTNUKEWARNING` is test-only.
 pub(crate) fn send_flags(mode: RecycleMode) -> FILEOPERATION_FLAGS {
     let base = FOF_NO_UI | FOF_ALLOWUNDO | FOFX_RECYCLEONDELETE | FOF_NO_CONNECTED_ELEMENTS;
     match mode {
@@ -1103,16 +1098,16 @@ pub(crate) fn send_flags(mode: RecycleMode) -> FILEOPERATION_FLAGS {
     }
 }
 
-/// Las banderas con las que se purgan elementos de la Papelera (también sin elementos conectados).
+/// Flags for purging Recycle Bin items (also excludes connected items).
 pub(crate) fn purge_flags() -> FILEOPERATION_FLAGS {
     FOF_NO_UI | FOF_NO_CONNECTED_ELEMENTS
 }
 
-/// Envía las rutas (una operación `IFileOperation` con todas) a la Papelera POR SU RUTA ORIGINAL. La shell abre cada
-/// elemento por su cuenta: entre que quien llama cierra su handle y ese momento hay una ventana, acotada por el destino
-/// (un sustituto puesto por el mismo usuario puede llegar a la shell, que lo mueve a la Papelera si cabe, o lo elimina). Por
-/// eso el resultado trae, por elemento, la ruta real del elemento en la Papelera: quien llama compara su IDENTIDAD con la
-/// aprobada.
+/// Sends paths to the Recycle Bin in one `IFileOperation`, using each item's ORIGINAL PATH. The shell opens each item
+/// itself, leaving a race window after the caller closes its handle and before the shell opens it. The destination bounds
+/// the risk: a replacement created by the same user may reach the shell, which moves it to the Recycle Bin if it fits or
+/// deletes it. Therefore the result includes each item's actual Recycle Bin path so the caller can compare its IDENTITY
+/// with the approved identity.
 pub(crate) fn recycle_paths(items: &[SendItem], mode: RecycleMode) -> Result<BatchOutcome> {
     if items.is_empty() {
         return Ok(BatchOutcome::default());
@@ -1122,8 +1117,8 @@ pub(crate) fn recycle_paths(items: &[SendItem], mode: RecycleMode) -> Result<Bat
     let mut added = 0usize;
     for it in items {
         let name = parsing_name(&it.path);
-        // Una ruta que la shell no entiende (demasiado larga...) no aborta el lote: ese elemento no genera evento y
-        // quien llama lo verá (sigue existiendo).
+        // A path the shell cannot handle (for example, because it is too long) does not abort the batch: that item produces
+        // no event, and the caller will see that it still exists.
         // SAFETY: `name` is NUL-terminated and remains alive for the call.
         let Ok(item) = (unsafe {
             SHCreateItemFromParsingName::<_, _, IShellItem>(PCWSTR(name.as_ptr()), None)
@@ -1141,26 +1136,25 @@ pub(crate) fn recycle_paths(items: &[SendItem], mode: RecycleMode) -> Result<Bat
     Ok(op.perform())
 }
 
-/// Un paso de la purga, para el registro local (M4): lo que se va a hacer, lo que se saltó y lo que pasó, ELEMENTO A
-/// ELEMENTO.
+/// A purge step for the local log (M4): what will be done, what was skipped, and what happened, ITEM BY ITEM.
 pub enum PurgeStep<'a> {
-    /// Antes de cada trozo: los elementos que se van a entregar a la shell (la INTENCIÓN). Si quien observa no puede
-    /// dejarla escrita, cancela (`cancel`) y el trozo NO se entrega.
+    /// Before each batch: the items to be submitted to the shell (the INTENT). If the observer cannot record it, cancel
+    /// (`cancel`) and do NOT submit the batch.
     Begin(&'a [&'a BinItem]),
-    /// Elementos que se saltaron porque su `$R` o su `$I` ya no eran los de la enumeración.
+    /// Items skipped because their `$R` or `$I` no longer matches the one seen during enumeration.
     Skipped(&'a [&'a BinItem]),
-    /// Elementos que se saltaron porque su sistema de archivos no da identidad y no se pueden verificar.
+    /// Items skipped because their file system does not provide identity, so they cannot be verified.
     Unverifiable(&'a [&'a BinItem]),
-    /// Elementos cuya purga la shell notificó con éxito pero cuyo objeto aprobado NO está eliminado (A-M4): entre la comprobación
-    /// del receptor y el borrado de la shell se sustituyó el `$R` y se borró lo que había con ese nombre.
+    /// Items the shell reported as successfully purged even though the approved object was NOT deleted (A-M4): `$R` was
+    /// replaced between the receiver's check and the shell's deletion, and the replacement was deleted instead.
     Replaced(&'a [&'a BinItem]),
-    /// Elementos a los que `PreDeleteItem` puso veto (A-M4): entre la enumeración y el instante en que la shell iba a
-    /// borrarlos, su `$R` o su `$I` dejaron de ser los capturados. No se purgaron.
+    /// Items vetoed by `PreDeleteItem` (A-M4): between enumeration and the shell's deletion attempt, their `$R` or `$I` no
+    /// longer matched the captured identity. They were not purged.
     Vetoed(&'a [&'a BinItem]),
-    /// Elementos que NO se purgaron porque su `$R` lleva reparse points dentro o no se pudo comprobar entero (M2): se saltan
-    /// ANTES de entregar el trozo y el resto del lote sigue.
+    /// Items NOT purged because their `$R` contains reparse points or could not be fully checked (M2): skipped BEFORE the
+    /// batch is submitted, while the rest of the batch continues.
     Linked(&'a [&'a BinItem]),
-    /// Después de cada trozo: cada elemento con el `HRESULT` que notificó la shell (`None` = sin aviso).
+    /// After each batch: each item with the `HRESULT` reported by the shell (`None` = no notification).
     Done(&'a [(&'a BinItem, Option<i32>)]),
 }
 
@@ -1175,7 +1169,7 @@ pub(crate) fn purge_items(items: &[BinItem], cancel: &AtomicBool) -> Result<Batc
     purge_items_flags(items, cancel, purge_flags(), &mut |_| {})
 }
 
-/// Como [`purge_items`], pero avisa de cada paso (ver [`PurgeStep`]) para dejarlo en el registro.
+/// Like [`purge_items`], but reports each step (see [`PurgeStep`]) so it can be written to the log.
 pub(crate) fn purge_items_observed(
     items: &[BinItem],
     cancel: &AtomicBool,
