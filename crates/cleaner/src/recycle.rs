@@ -429,6 +429,9 @@ pub struct SendItem {
     /// reabrir la ruta) y veta si ocupa más de lo que se contó para el presupuesto. Un directorio va siempre solo en su
     /// operación y se mide justo antes de entregarlo: no lleva comprobación aquí.
     pub size_guard: Option<SizeGuard>,
+    /// A3-M1: solo un DIRECTORIO. La vigilancia de cambios abierta ANTES de medirlo y viva hasta ahora: si algo cambió dentro
+    /// desde que se midió, la medida no es cierta. `PreDeleteItem` la consulta (veto) y, si pasa, la para.
+    pub watch: Option<Arc<sys::DirWatch>>,
 }
 
 /// Cómo vuelve a medirse un archivo en `PreDeleteItem` (A2-B1): su handle de guarda y el tamaño con el que se contó en el
@@ -471,6 +474,7 @@ impl SendItem {
             path: path.to_path_buf(),
             identity: sys::meta(&h).expect("lee la identidad").identity,
             size_guard: None,
+            watch: None,
         }
     }
 }
@@ -487,6 +491,9 @@ pub enum VetoKind {
     /// A2-B1: un archivo del lote ocupa ahora MÁS de lo que se contó para el presupuesto de la operación (creció desde que
     /// se midió). Se veta: el reparto se hizo con un tamaño que ya no es cierto.
     Grew,
+    /// A3-M1: algo DENTRO de un directorio cambió desde que se midió (la vigilancia que lo cubre lo vio, se desbordó o falló):
+    /// la medida ya no es cierta y el reparto se hizo con ella. Se veta.
+    Modified,
 }
 
 /// Un veto del receptor.
@@ -530,6 +537,8 @@ enum Approved {
     Object {
         identity: FileIdentity,
         size: Option<SizeGuard>,
+        /// A3-M1: la vigilancia de cambios de un directorio (ver [`SendItem::watch`]).
+        watch: Option<Arc<sys::DirWatch>>,
     },
     /// Al PURGAR (A-M4): las identidades del `$R` (los datos) y del `$I` hermano (los metadatos) capturadas al enumerar. La
     /// ruta es la del `$R` (el `id` del elemento de la Papelera).
@@ -560,6 +569,7 @@ impl Guard {
                         Approved::Object {
                             identity: i.identity,
                             size: i.size_guard.clone(),
+                            watch: i.watch.clone(),
                         },
                     )
                 })
@@ -637,14 +647,31 @@ impl Guard {
             Err(c) => Err(VetoKind::OpenFailed(c)),
         };
         match want {
-            Approved::Object { identity, size } => {
+            Approved::Object {
+                identity,
+                size,
+                watch,
+            } => {
                 same(Path::new(path), identity)?;
                 // A2-B1: lo aprobado sigue siendo lo que había, pero un archivo que creció desde que se midió ya no cabe en lo
                 // que se repartió: se mide por el handle de guarda (el mismo objeto), no por la ruta.
-                match size {
-                    Some(g) => g.check(),
-                    None => Ok(()),
+                if let Some(g) = size {
+                    g.check()?;
                 }
+                // A3-M1: un directorio lleva la vigilancia de cambios que se abrió ANTES de medirlo. Si algo cambió dentro (o
+                // la vigilancia falló), la medida no vale. Si no, es la última comprobación y se PARA aquí: no queda un handle
+                // con E/S pendiente sobre el directorio mientras la shell lo mueve (y se vuelve a mirar tras parar: lo que
+                // cayera en el último instante consta).
+                if let Some(w) = watch {
+                    if w.changed() {
+                        return Err(VetoKind::Modified);
+                    }
+                    w.stop();
+                    if w.changed() {
+                        return Err(VetoKind::Modified);
+                    }
+                }
+                Ok(())
             }
             Approved::Bin {
                 data_path,

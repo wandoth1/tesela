@@ -2367,6 +2367,8 @@ impl RecycleShell for FakeShell {
         for (i, p) in paths.iter().enumerate() {
             // `PreDeleteItem`: lo que hay ahora en la ruta debe ser el objeto aprobado (y un archivo no puede haber crecido);
             // si no, veto y se corta el lote.
+            // Etapa 2 de los ganchos: dentro de la operación, justo antes de que el receptor compruebe el elemento.
+            crate::engine::test_hooks::before_pre_delete(p);
             if !core.pre_delete(p.clone().into_os_string()) {
                 // Como la shell REAL (medido): del elemento vetado avisa con `PostDeleteItem(E_ABORT)` y sin elemento nuevo.
                 // El ejecutor no puede tomar ese `E_ABORT` del propio receptor por un error de Windows.
@@ -3892,6 +3894,292 @@ impl RecycleShell for FlakyRoom {
     }
 }
 
+/// A3-M1 (repetición de Astra): una carpeta con dos archivos de 1 000 bytes y una Papelera simulada de 100 000. Cuando el
+/// recorrido ya contó el primer archivo, ese archivo se agranda a 1 MiB. El recorrido no se entera (ya lo contó) y la huella
+/// que se compara con la aprobada es la de lo que VIO, así que antes la medida se aceptaba y la carpeta llegaba como
+/// `Recycled`. Con la vigilancia de cambios abierta antes del recorrido, la medida no vale: no se envía.
+#[test]
+fn una_carpeta_que_crece_durante_su_propio_recorrido_no_se_envia() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(100_000), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone()).with_threads(1);
+    sb.write("Docs/d/f1.bin", 1_000);
+    sb.write("Docs/d/f2.bin", 1_000);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/d"), c.protection());
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 1, "{:?}", plan.rejected);
+    assert_eq!(plan.items[0].fit, Fit::Fits);
+    // Al abrir el SEGUNDO archivo del recorrido de ejecución (el primero ya está contado), el primero crece a 1 MiB. El hook
+    // de la aprobación ya pasó: solo se instala ahora.
+    let seen: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
+    let _hook = {
+        let seen = seen.clone();
+        crate::engine::test_hooks::install(sb.long("Docs/d"), move |p| {
+            if p.extension().is_none_or(|e| e != "bin") {
+                return;
+            }
+            let mut first = seen.lock().unwrap();
+            match first.as_ref() {
+                None => *first = Some(p.to_path_buf()),
+                Some(counted) if counted != p => {
+                    fs::write(counted, vec![1u8; 1 << 20]).unwrap();
+                }
+                _ => {}
+            }
+        })
+    };
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    assert!(seen.lock().unwrap().is_some(), "el gancho corrió");
+    assert_eq!(
+        rep.items[0].status,
+        ItemStatus::Root(crate::engine::RootStatus::Changed),
+        "{:?}",
+        rep.items[0]
+    );
+    assert!(fake.names().is_empty(), "no llegó a la shell");
+    assert!(rep.totals.changed >= 1);
+    assert!(
+        *fake.used.lock().unwrap() < 90_000,
+        "lo enviado nunca pasa del 90 %"
+    );
+}
+
+/// A3-M1: un cambio DESPUÉS del recorrido y ANTES de entregar la carpeta a la shell (la ventana de `before_shell`) no la deja
+/// llegar a la shell: "cambió desde la confirmación".
+#[test]
+fn un_cambio_entre_el_recorrido_y_la_entrega_no_llega_a_la_shell() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(100_000), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    sb.write("Docs/d/f1.bin", 1_000);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/d"), c.protection());
+    let plan = approve(&c, &b);
+    let _hook = crate::engine::test_hooks::install_before_shell(sb.long("Docs"), |p| {
+        if p.ends_with("d") {
+            fs::write(p.join("f1.bin"), vec![1u8; 1 << 20]).unwrap();
+        }
+    });
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    assert_eq!(
+        rep.items[0].status,
+        ItemStatus::Root(crate::engine::RootStatus::Changed),
+        "{:?}",
+        rep.items[0]
+    );
+    assert!(fake.names().is_empty(), "no se entrega");
+    assert!(sb.path("Docs/d/f1.bin").exists());
+}
+
+/// A3-M1: un cambio DESPUÉS de entregar la operación y ANTES del `PreDeleteItem` (con la operación ya en marcha) lo veta el
+/// receptor con `E_ABORT`: el estado es el mismo ("cambió desde la confirmación") y el envío se detiene. Dos casos: una
+/// carpeta que gana un archivo nuevo (alta, notificación inmediata) y otra a la que se renombra uno.
+#[test]
+fn un_cambio_antes_del_pre_delete_item_veta_la_carpeta() {
+    for change in ["alta", "renombrado"] {
+        let sb = Sandbox::new();
+        let fake = FakeShell::new(&sb, Some(100_000), 0, "nunca");
+        let c = cleaner_for(&sb).with_shell(fake.clone());
+        sb.write("Docs/d/f1.bin", 1_000);
+        sb.write("Docs/otra/g.bin", 1_000);
+        let mut b = Basket::new();
+        b.add_path(sb.long("Docs/d"), c.protection());
+        b.add_path(sb.long("Docs/otra"), c.protection());
+        let plan = approve(&c, &b);
+        assert_eq!(plan.items.len(), 2, "{:?}", plan.rejected);
+        let _hook =
+            crate::engine::test_hooks::install_before_pre_delete(sb.long("Docs"), move |p| {
+                if p.ends_with("d") {
+                    match change {
+                        "alta" => {
+                            fs::write(p.join("nuevo.bin"), b"x").unwrap();
+                        }
+                        _ => fs::rename(p.join("f1.bin"), p.join("f2.bin")).unwrap(),
+                    }
+                }
+            });
+        let rep = exec(&c, &plan, false, false, None).unwrap();
+        let st = |n: &str| {
+            rep.items
+                .iter()
+                .find(|i| i.path.ends_with(n))
+                .unwrap()
+                .status
+        };
+        assert_eq!(
+            st("d"),
+            ItemStatus::Root(crate::engine::RootStatus::Changed),
+            "{change}"
+        );
+        // Llegó a la operación (el veto es del receptor), y el veto detiene lo que queda.
+        assert_eq!(fake.names(), vec![vec!["d"]], "{change}");
+        assert!(rep.recycle_stopped, "{change}");
+        assert_eq!(rep.stop_reason, Some(StopReason::Changed), "{change}");
+        assert_eq!(
+            st("otra"),
+            ItemStatus::NotRecycled(RecycleFail::Stopped),
+            "{change}"
+        );
+        assert!(sb.path("Docs/d").exists() && sb.path("Docs/otra/g.bin").exists());
+    }
+}
+
+/// A3-M1: sin vigilancia no se envía (falla cerrado). Si el segundo handle del directorio no se puede abrir, la carpeta NO
+/// llega a la shell y el estado dice por qué (error del sistema); lo demás sigue su camino.
+#[test]
+fn si_no_se_puede_abrir_la_vigilancia_la_carpeta_no_se_envia() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(100_000), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    sb.write("Docs/d/f1.bin", 1_000);
+    sb.write("Docs/a.txt", 100);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/d"), c.protection());
+    b.add_path(sb.long("Docs/a.txt"), c.protection());
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 2, "{:?}", plan.rejected);
+    let _fail = crate::sys::fail_watch_under(&sb.long("Docs/d"));
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    let it = |n: &str| rep.items.iter().find(|i| i.path.ends_with(n)).unwrap();
+    assert_eq!(
+        it("d").status,
+        ItemStatus::Root(crate::engine::RootStatus::Failed(crate::sys::ACCESS_DENIED))
+    );
+    assert!(it("d").stats.other_errors >= 1);
+    assert_eq!(
+        it("a.txt").status,
+        ItemStatus::Recycled,
+        "un archivo no lleva vigilancia"
+    );
+    assert_eq!(
+        fake.names(),
+        vec![vec!["a.txt"]],
+        "la carpeta no llegó a la shell"
+    );
+    assert!(sb.path("Docs/d/f1.bin").exists());
+    // Control: sin el fallo forzado, la misma carpeta se envía.
+    drop(_fail);
+    let sb2 = Sandbox::new();
+    let fake2 = FakeShell::new(&sb2, Some(100_000), 0, "nunca");
+    let c2 = cleaner_for(&sb2).with_shell(fake2.clone());
+    sb2.write("Docs/d/f1.bin", 1_000);
+    let mut b2 = Basket::new();
+    b2.add_path(sb2.long("Docs/d"), c2.protection());
+    let plan2 = approve(&c2, &b2);
+    let rep2 = exec(&c2, &plan2, false, false, None).unwrap();
+    assert_eq!(rep2.items[0].status, ItemStatus::Recycled);
+}
+
+/// A3-M1: una carpeta que nadie toca se envía (la vigilancia no tiene falsos positivos con el propio recorrido, la guarda ni
+/// el receptor), incluso con subcarpetas, y sigue teniendo la vigilancia parada al terminar (la shell mueve la carpeta). En
+/// simulación (`dry_run`) también se mide y se vigila, y no se toca nada.
+#[test]
+fn una_carpeta_que_nadie_toca_se_envia_con_su_vigilancia() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    sb.write("Docs/d/a.bin", 5_000);
+    sb.write("Docs/d/sub/b.bin", 5_000);
+    sb.write("Docs/d/sub/hondo/c.bin", 5_000);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/d"), c.protection());
+    let plan = approve(&c, &b);
+    let dry = exec(&c, &plan, true, false, None).unwrap();
+    assert_eq!(dry.items[0].status, ItemStatus::WouldRecycle);
+    assert!(sb.path("Docs/d/sub/hondo/c.bin").exists());
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    assert_eq!(
+        rep.items[0].status,
+        ItemStatus::Recycled,
+        "{:?}",
+        rep.items[0]
+    );
+    assert_eq!(fake.names(), vec![vec!["d"]]);
+    assert!(!sb.path("Docs/d").exists(), "la carpeta se movió");
+}
+
+/// A3-M1 (receptor, sin COM): la vigilancia que lleva un directorio la consulta `PreDeleteItem`: sin cambios pasa (y la para);
+/// con un cambio entre el arranque y el `PreDeleteItem` veta con `VetoKind::Modified`.
+#[test]
+fn el_receptor_veta_el_directorio_que_cambio_y_deja_pasar_el_que_no() {
+    for cambia in [false, true] {
+        let sb = Sandbox::new();
+        sb.write("Docs/d/f.bin", 1_000);
+        let dir = sb.long("Docs/d");
+        let mut item = recycle::SendItem::capture(&dir);
+        // Lo que hizo la aprobación antes de que arrancase la vigilancia.
+        drop(sys::open_dir_for_listing(&dir).unwrap());
+        drop(sys::open_for_query(&dir.join("f.bin")).unwrap());
+        let w = Arc::new(sys::DirWatch::start(&dir, item.identity).unwrap());
+        item.watch = Some(w.clone());
+        let core = recycle::SinkCore::for_send(std::slice::from_ref(&item));
+        if cambia {
+            fs::write(dir.join("f.bin"), vec![1u8; 1 << 20]).unwrap();
+            // La notificación llega de forma asíncrona.
+            for _ in 0..40 {
+                if w.changed() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
+        let pasa = core.pre_delete(dir.clone().into_os_string());
+        let (_, vetoes, tripped) = core.finish();
+        if cambia {
+            assert!(!pasa && tripped);
+            assert_eq!(vetoes[0].kind, recycle::VetoKind::Modified);
+        } else {
+            assert!(pasa && vetoes.is_empty());
+        }
+    }
+}
+
+/// A3-M1 (coste medido): abrir la vigilancia, un recorrido de medida, comprobar y parar sobre 50 carpetas de 4 archivos. Se
+/// imprime con `--nocapture`; no afirma tiempos (dependen del equipo), solo que ninguna da falso positivo.
+#[test]
+fn medicion_a3_m1_coste_de_la_vigilancia_por_directorio() {
+    let sb = Sandbox::new();
+    let c = cleaner_for(&sb);
+    let mut dirs = Vec::new();
+    for i in 0..50 {
+        for j in 0..4 {
+            sb.write(&format!("Docs/m{i}/s/f{j}.bin"), 100);
+        }
+        dirs.push(sb.long(&format!("Docs/m{i}")));
+    }
+    // Lo que hizo la aprobación antes de vigilar.
+    let mut b = Basket::new();
+    for d in &dirs {
+        b.add_path(d.clone(), c.protection());
+    }
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 50);
+    let (mut watch, mut measure, mut stop) = (Duration::ZERO, Duration::ZERO, Duration::ZERO);
+    for it in &plan.items {
+        let UnitSpec::Entry { approved, .. } = &it.spec else {
+            panic!("entrada")
+        };
+        let t = std::time::Instant::now();
+        let w = sys::DirWatch::start(&it.path, *approved).unwrap();
+        watch += t.elapsed();
+        let t = std::time::Instant::now();
+        let r = c.remeasure(it, &cancel());
+        measure += t.elapsed();
+        assert!(matches!(r, Remeasure::Now(_)));
+        assert!(!w.changed(), "sin falsos positivos: {:?}", it.path);
+        let t = std::time::Instant::now();
+        w.stop();
+        stop += t.elapsed();
+    }
+    eprintln!(
+        "A3-M1 coste por directorio (50 carpetas, 4 archivos): abrir+arrancar {:?}, recorrido de medida {:?}, parar {:?}",
+        watch / 50,
+        measure / 50,
+        stop / 50
+    );
+}
+
 /// A3-M2 (repetición de Astra): capacidad 100 000, la Papelera vacía al empezar la medida y con 99 000 ocupados al acabar el
 /// recorrido; una carpeta de 4 000 bytes se enviaba con la lectura vieja (vacía). Ahora la ocupación se lee también DESPUÉS
 /// del recorrido y manda la MAYOR de las dos: `NoRoom`, sin llegar a la shell.
@@ -4702,6 +4990,7 @@ fn pending(identity: FileIdentity, path: &Path, held_path: &Path) -> Pending {
         snapshot: None,
         disk: 0,
         logical: 0,
+        watch: None,
     }
 }
 

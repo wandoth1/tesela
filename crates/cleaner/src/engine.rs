@@ -1420,6 +1420,14 @@ pub(crate) mod test_hooks {
         install_at(0, root, f)
     }
 
+    /// Instala un gancho que solo se ejecuta para rutas bajo `root`, justo antes de que el receptor de la shell las compruebe.
+    pub fn install_before_pre_delete(
+        root: PathBuf,
+        f: impl Fn(&Path) + Send + Sync + 'static,
+    ) -> HookGuard {
+        install_at(2, root, f)
+    }
+
     /// Instala un gancho que solo se ejecuta para rutas bajo `root`, justo antes de entregarlas a la shell.
     pub fn install_before_shell(
         root: PathBuf,
@@ -1468,6 +1476,12 @@ pub(crate) mod test_hooks {
 
     pub fn before_open(p: &Path) {
         run(0, p);
+    }
+
+    /// Etapa 2: justo ANTES de que el receptor de la shell compruebe un elemento (`PreDeleteItem`), ya con la operación en
+    /// marcha (A3-M1: la ventana entre la última comprobación del ejecutor y la del receptor).
+    pub fn before_pre_delete(p: &Path) {
+        run(2, p);
     }
 
     pub fn before_shell(p: &Path) {

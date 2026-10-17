@@ -1051,6 +1051,8 @@ impl Cleaner {
                         .map(|(it, p)| recycle::SendItem {
                             path: p.path.clone(),
                             identity: p.identity,
+                            // A3-M1: un DIRECTORIO lleva la vigilancia de cambios abierta antes de medirlo.
+                            watch: p.watch.clone(),
                             size_guard: (!it.is_dir()).then(|| recycle::SizeGuard {
                                 handle: p.held.clone(),
                                 budget: p.size,
@@ -1073,6 +1075,29 @@ impl Cleaner {
                                 (
                                     ItemStatus::Root(RootStatus::Cancelled),
                                     StatsSnapshot::default(),
+                                ),
+                            );
+                        }
+                        drop(entries);
+                        continue;
+                    }
+                    // A3-M1: lo último antes de la shell. Si algo cambió dentro del directorio desde que se midió (la vigilancia
+                    // lo vio), la medida no es cierta: no se entrega ("cambió desde la confirmación"). Un directorio va solo en
+                    // su operación; en la shell, `PreDeleteItem` vuelve a consultar la misma vigilancia (y, si pasa, la para).
+                    if entries
+                        .iter()
+                        .any(|(_, p)| p.watch.as_ref().is_some_and(|w| w.changed()))
+                    {
+                        for (it, _) in &entries {
+                            emit(it, None, 0, Outcome::Changed);
+                            results.insert(
+                                it.id,
+                                (
+                                    ItemStatus::Root(RootStatus::Changed),
+                                    StatsSnapshot {
+                                        changed: 1,
+                                        ..StatsSnapshot::default()
+                                    },
                                 ),
                             );
                         }
@@ -1386,6 +1411,7 @@ impl Cleaner {
                 m.logical
             },
             snapshot: None,
+            watch: None,
         }))
     }
 
@@ -1453,7 +1479,20 @@ impl Cleaner {
             p.logical = m.logical;
             return Ok(());
         }
+        // A3-M1: la vigilancia de cambios se abre ANTES del recorrido (lo que cambie antes no se vería) y vive hasta el
+        // `PreDeleteItem` de su operación: una carpeta puede crecer MIENTRAS se mide (el recorrido ya contó el primer archivo
+        // cuando este se agranda) y el recorrido no se entera. Segundo handle del directorio con identidad verificada; si
+        // no se puede abrir o arrancar, la carpeta NO se envía (falla cerrado).
+        let watch = match sys::DirWatch::start(&p.path, p.identity) {
+            Ok(w) => w,
+            Err(sys::WatchError::Changed) => return changed(st),
+            Err(sys::WatchError::Os(c)) => {
+                st.other_errors += 1;
+                return Err((ItemStatus::Root(RootStatus::Failed(c)), Outcome::Failed(c)));
+            }
+        };
         match self.remeasure(it, cancel) {
+            Remeasure::Now(_) if watch.changed() => changed(st),
             Remeasure::Now(fresh) => {
                 // GM-B3: un directorio solo se envía con el MISMO contenido que se aprobó: huella (identidad, tamaños,
                 // enlaces y clase de cada entrada, independiente del orden) y recuentos idénticos, y sin MÁS protegidos,
@@ -1474,6 +1513,7 @@ impl Cleaner {
                 p.disk = fresh.bytes;
                 p.logical = fresh.logical;
                 p.snapshot = Some(snap_of(&fresh));
+                p.watch = Some(Arc::new(watch));
                 Ok(())
             }
             Remeasure::Cancelled => Err((
@@ -1564,6 +1604,9 @@ struct Pending {
     /// Lo que se informa si llega a la Papelera: bytes en disco (sin enlaces compartidos) y tamaño lógico de AHORA (GM-m6: un
     /// archivo que encogió desde la aprobación no se cuenta con el tamaño aprobado).
     disk: u64,
+    /// A3-M1: solo un DIRECTORIO. La vigilancia de cambios abierta ANTES del recorrido de medida y viva hasta el
+    /// `PreDeleteItem` de su operación (o hasta que se suelte el elemento): cualquier cambio dentro invalida la medida.
+    watch: Option<Arc<sys::DirWatch>>,
     logical: u64,
 }
 
