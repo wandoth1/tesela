@@ -72,7 +72,11 @@ impl Overlay {
         self.delta.get(&id).copied().unwrap_or_default()
     }
 
+    /// Suma `d` a `from` (si `include_self`) y a todos sus ancestros. En cada nodo lo restado se acota a lo que el nodo
+    /// tiene; lo que sigue subiendo es lo que REALMENTE se restó en él (la diferencia respecto de antes), no `d`: si no, un
+    /// ancestro que ya estaba acotado (por una limpieza parcial previa de su carpeta) restaría de más en los de arriba.
     fn add_up(&mut self, tree: &Tree, from: NodeId, d: Delta, include_self: bool) {
+        let mut d = d;
         let mut cur = from;
         if !include_self {
             match tree.node(cur).parent {
@@ -82,14 +86,17 @@ impl Overlay {
         }
         loop {
             let e = self.delta.entry(cur).or_default();
-            e.alloc = e.alloc.saturating_add(d.alloc);
-            e.logical = e.logical.saturating_add(d.logical);
-            e.files = e.files.saturating_add(d.files);
-            // Nunca se resta más de lo que había.
+            let prev = *e;
             let n = tree.node(cur);
-            e.alloc = e.alloc.min(n.alloc);
-            e.logical = e.logical.min(n.logical);
-            e.files = e.files.min(n.files_below as u64);
+            // Nunca se resta más de lo que había.
+            e.alloc = e.alloc.saturating_add(d.alloc).min(n.alloc);
+            e.logical = e.logical.saturating_add(d.logical).min(n.logical);
+            e.files = e.files.saturating_add(d.files).min(n.files_below as u64);
+            d = Delta {
+                alloc: e.alloc - prev.alloc,
+                logical: e.logical - prev.logical,
+                files: e.files - prev.files,
+            };
             match n.parent {
                 NO_PARENT => break,
                 p => cur = p,
@@ -430,6 +437,36 @@ mod tests {
             vec![a, b, w],
             "15 y 15: b antes que w"
         );
+    }
+
+    /// GM-M7: tras una limpieza parcial de una carpeta (`shrink`), eliminar un descendiente que el `shrink` ya había
+    /// contado solo en parte no puede restar dos veces a los ancestros: cada nivel pasa hacia arriba lo que de verdad restó.
+    #[test]
+    fn shrink_en_una_carpeta_y_eliminar_un_descendiente_resta_exactamente_el_total_real() {
+        let t = sample();
+        let (a, b, w) = (id(&t, 0, "a"), id(&t, 0, "b"), id(&t, 0, "w"));
+        let x = id(&t, a, "x");
+        let mut o = Overlay::new(&t);
+        // `a` pesa 150 (x = 100, y = 50): una limpieza parcial le quita 120.
+        o.shrink(&t, a, 120, 120, 1);
+        assert_eq!((o.alloc(&t, a), o.alloc(&t, 0)), (30, 80));
+        // `x` sigue "visible" con sus 100: al eliminarlo `a` solo puede perder los 30 que le quedaban.
+        o.remove(&t, x);
+        assert_eq!(o.alloc(&t, a), 0, "a queda vacía");
+        assert_eq!(
+            o.delta(a).alloc,
+            150,
+            "a: lo restado está acotado a lo que tiene"
+        );
+        // La raíz resta EXACTAMENTE 150 (120 + 30): quedan b (30) y w (20), no 0.
+        assert_eq!(o.delta(0).alloc, 150, "doble resta en la raíz");
+        assert_eq!(o.alloc(&t, 0), 50);
+        assert_eq!(o.alloc(&t, b) + o.alloc(&t, w), 50);
+        assert_eq!(o.removed_alloc(), 150);
+        // Lo mismo con el tamaño lógico y con los archivos: la raíz resta lo mismo que `a` (todo lo que `a` tenía).
+        assert_eq!(o.delta(0).logical, o.delta(a).logical);
+        assert_eq!(o.delta(0).files, o.delta(a).files);
+        assert_eq!(o.logical(&t, a), 0);
     }
 
     #[test]
