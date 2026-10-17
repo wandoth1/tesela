@@ -240,7 +240,7 @@ function ConvertTo-ScanTextCore {
     $n = $Bytes.Length
     # Apply the size limit FIRST for every input: a large file with a BOM (or no NULs) used to be decoded several times
     # before rejection, and a limit on only one decoding path could be bypassed with a BOM.
-    if ($n -gt 8MB) { $Reject.Value = 'archivo de mas de 8 MiB (no se puede revisar)'; return $null }
+    if ($n -gt 8MB) { $Reject.Value = 'file exceeds 8 MiB (cannot review)'; return $null }
     if ($n -eq 0) { return , @('') }
     # A BOM alone does NOT determine how the file is read: add its decoding to the original views (the whole file as UTF-8,
     # and binary strings if NULs exist). A UTF-16 BOM before UTF-8 text, or vice versa, hides nothing. (UTF-8 with a BOM
