@@ -14,7 +14,7 @@ A visual disk space analyzer for Windows, written in Rust: fast, light and clear
 - **A cleanup assistant with visible risk.** Each suggestion is marked 🟢 Safe, 🟠 Review or 🔺 Info only, and explains in one sentence why.
 - **Nothing is deleted blindly.** Everything goes through a review basket. What can be regenerated (temporary files, caches) is deleted; your own files go to the Recycle Bin. System folders are protected.
 - **Honest with the numbers.** What gets freed is measured (the real change in free space) and counted separately from what was deleted and what was sent to the Recycle Bin, and it shows which part of the disk it could not measure.
-- **Light.** A single binary, no Electron or WebView, no telemetry or accounts. It works without administrator rights and has an optional fast mode that reads the NTFS file table (MFT) directly.
+- **Light.** A single binary, no Electron or WebView, no telemetry or accounts. It works without administrator rights. A fast mode that reads the NTFS file table (MFT) directly is planned for v0.3.
 
 ## Installation
 
