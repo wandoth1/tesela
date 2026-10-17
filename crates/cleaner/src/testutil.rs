@@ -1,9 +1,9 @@
-//! Utilidades de las pruebas: un árbol temporal `%TEMP%\tesela-test-<uuid>` con guarda RAII.
+//! Test utilities: a temporary `%TEMP%\tesela-test-<uuid>` tree with an RAII guard.
 //!
-//! SEGURIDAD: las pruebas solo escriben y borran dentro de esa carpeta, creada por la propia prueba. La guarda comprueba,
-//! antes de borrar nada, que la ruta es hija directa de `%TEMP%` y que su nombre empieza por `tesela-test-`. Los
-//! junctions se quitan antes como enlaces (nunca se entra en ellos) y sus destinos están dentro del mismo árbol.
-//! Ninguna prueba toca el `%TEMP%` real, las cachés de los navegadores ni la Papelera real salvo con elementos PROPIOS
+//! SAFETY: tests write and delete only inside that test-created folder. Before cleanup, the guard verifies
+//! that the path is a direct child of `%TEMP%` and its name starts with `tesela-test-`. Junctions
+//! are removed as links first (they are never traversed), and their targets are inside the same tree.
+//! No test touches real `%TEMP%`, browser caches, or the real Recycle Bin except for OWN items
 //! (ver `recycle`).
 #![allow(dead_code, unsafe_code)]
 
@@ -27,7 +27,7 @@ impl Sandbox {
         }
     }
 
-    /// Como [`Sandbox::new`], con el uuid dado (un proceso hijo de una prueba lo recibe de su padre, que ya lo vigila con su
+    /// Like [`Sandbox::new`], but with the given UUID (a child test process receives it from its parent, which already monitors its
     /// `BinGuard`).
     pub fn with_uuid(uuid: &str) -> Sandbox {
         let root = std::env::temp_dir().join(format!("tesela-test-{uuid}"));
@@ -38,12 +38,12 @@ impl Sandbox {
         }
     }
 
-    /// Raíz tal como se creó (`temp_dir()`; en algunos runners con componentes 8.3).
+    /// Root as initially created (`temp_dir()`; some runners use 8.3 components).
     pub fn root(&self) -> &Path {
         &self.root
     }
 
-    /// El uuid de esta carpeta (el sufijo de `tesela-test-<uuid>`).
+    /// This folder's UUID (the suffix in `tesela-test-<uuid>`).
     pub fn uuid(&self) -> String {
         self.root
             .file_name()
@@ -53,7 +53,7 @@ impl Sandbox {
             .to_string()
     }
 
-    /// Raíz en forma LARGA canónica (sin 8.3 y sin `\\?\`).
+    /// Root in canonical LONG form (without 8.3 components or the `\\?\` prefix).
     pub fn long_root(&self) -> PathBuf {
         dunce::canonicalize(&self.root).expect("canonicaliza la raíz")
     }
@@ -72,7 +72,7 @@ impl Sandbox {
         p
     }
 
-    /// Crea un archivo de `size` bytes con contenido no nulo.
+    /// Creates a `size`-byte file with non-zero contents.
     pub fn write(&self, rel: &str, size: usize) -> PathBuf {
         let p = self.path(rel);
         fs::create_dir_all(p.parent().unwrap()).expect("mkdir padre");
@@ -88,14 +88,14 @@ impl Sandbox {
         p
     }
 
-    /// Crea un archivo y fija su fecha de modificación y de creación a `age_hours` horas atrás.
+    /// Creates a file and sets its modification and creation times to `age_hours` hours ago.
     pub fn write_aged(&self, rel: &str, size: usize, age_hours: u64) -> PathBuf {
         let p = self.write(rel, size);
         self.set_age(&p, age_hours);
         p
     }
 
-    /// Fija las cuatro fechas del objeto (creación, acceso, escritura y cambio) a `age_hours` horas atrás.
+    /// Sets all four object timestamps (creation, access, write, and change) to `age_hours` hours ago.
     pub fn set_age(&self, p: &Path, age_hours: u64) {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -112,7 +112,7 @@ impl Sandbox {
         fs::hard_link(self.path(from_rel), to).expect("hard_link");
     }
 
-    /// `mklink /J` (no necesita administrador). El destino debe estar dentro de este mismo árbol.
+    /// Uses `mklink /J` (does not require administrator privileges). The target must be inside this tree.
     pub fn junction(&mut self, link_rel: &str, target_rel: &str) {
         let (link, target) = (self.path(link_rel), self.path(target_rel));
         assert!(
@@ -133,19 +133,19 @@ impl Sandbox {
         self.junctions.push(link);
     }
 
-    /// Registra un junction creado por fuera (p. ej. dentro de un gancho de carrera) para quitarlo como enlace al soltar.
+    /// Registers a junction created elsewhere (e.g. in a race hook) so it can be removed as a link on drop.
     pub fn register_junction(&mut self, link_rel: &str) {
         self.junctions.push(self.path(link_rel));
     }
 
-    /// Quita un junction creado con [`Sandbox::junction`] (solo el enlace; el destino queda intacto).
+    /// Removes a junction created with [`Sandbox::junction`] (the link only; the target remains untouched).
     pub fn remove_junction(&mut self, link_rel: &str) {
         let link = self.path(link_rel);
         fs::remove_dir(&link).expect("quita el junction");
         self.junctions.retain(|j| j != &link);
     }
 
-    /// Cuenta las entradas (archivos y carpetas) bajo `rel` sin seguir enlaces.
+    /// Counts entries (files and folders) under `rel` without following links.
     pub fn count_entries(&self, rel: &str) -> usize {
         fn go(p: &Path) -> usize {
             let Ok(rd) = fs::read_dir(p) else { return 0 };
@@ -183,18 +183,18 @@ impl Drop for Sandbox {
             return;
         }
         for j in &self.junctions {
-            // `remove_dir` sobre un junction borra el enlace y deja el destino intacto.
+            // `remove_dir` on a junction deletes the link and leaves the target untouched.
             let _ = fs::remove_dir(j);
         }
         let _ = fs::remove_dir_all(&self.root);
     }
 }
 
-/// Serializa las pruebas que tocan la Papelera real (comparan el conjunto de ids antes y después).
+/// Serializes tests that touch the real Recycle Bin (they compare the ID set before and after).
 pub static BIN_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Bloquea [`BIN_LOCK`] aunque otra prueba haya entrado en pánico con él cogido. Con las pruebas de la Papelera real
-/// activadas, antes barre los restos de ejecuciones anteriores (SOLO elementos cuyo origen está bajo `tesela-test-*`).
+/// Acquires [`BIN_LOCK`] even if another test panicked while holding it. When real Recycle Bin tests are
+/// enabled, first clean up leftovers from previous runs (ONLY items whose source is under `tesela-test-*`).
 pub fn bin_lock() -> std::sync::MutexGuard<'static, ()> {
     let g = BIN_LOCK.lock().unwrap_or_else(|e| e.into_inner());
     if crate::recycle::bintest::real_recycle_requested() {
@@ -203,8 +203,8 @@ pub fn bin_lock() -> std::sync::MutexGuard<'static, ()> {
     g
 }
 
-/// Borra al soltarse un archivo o una carpeta propios de una prueba (p. ej. el `$R` apartado dentro de la Papelera). Una
-/// carpeta se borra entera, pero nunca se sigue un enlace.
+/// Deletes a test-owned file or folder on drop (e.g. a `$R` item set aside inside the Recycle Bin). A
+/// folder is deleted recursively, but links are never followed.
 pub struct RemoveOnDrop(pub PathBuf);
 
 impl Drop for RemoveOnDrop {
@@ -221,16 +221,16 @@ impl Drop for RemoveOnDrop {
     }
 }
 
-/// Crea un archivo DISPERSO de `len` bytes lógicos (no ocupa espacio en disco), para probar elementos "demasiado
-/// grandes" para la Papelera sin llenar el disco.
+/// Creates a SPARSE file with `len` logical bytes (it occupies no disk space), to test items that are "too
+/// large" for the Recycle Bin without filling the disk.
 pub fn sparse_file(path: &Path, len: u64) {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::System::IO::DeviceIoControl;
     use windows_sys::Win32::System::Ioctl::FSCTL_SET_SPARSE;
     let f = fs::File::create(path).expect("crea el archivo disperso");
     let mut returned = 0u32;
-    // SAFETY: el handle pertenece a `f`, que sigue vivo; FSCTL_SET_SPARSE sin búfer de entrada marca el archivo como
-    // disperso; `returned` es escribible y no hay estructura OVERLAPPED (llamada síncrona).
+    // SAFETY: the handle belongs to `f`, which remains alive; FSCTL_SET_SPARSE with no input buffer marks the file
+    // sparse; `returned` is writable, and there is no OVERLAPPED structure (synchronous call).
     let ok = unsafe {
         DeviceIoControl(
             f.as_raw_handle() as _,
@@ -250,13 +250,13 @@ pub fn sparse_file(path: &Path, len: u64) {
     f.set_len(len).expect("fija la longitud lógica");
 }
 
-/// Forma corta 8.3 de una ruta EXISTENTE (`GetShortPathNameW`); sin nombres 8.3 activos devuelve la ruta sin cambios.
+/// Returns the 8.3 short form of an EXISTING path (`GetShortPathNameW`); if 8.3 names are disabled, returns the path unchanged.
 pub fn short_path(path: &Path) -> PathBuf {
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
     use windows_sys::Win32::Storage::FileSystem::GetShortPathNameW;
     let w: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
     let mut buf = vec![0u16; 2048];
-    // SAFETY: `w` termina en NUL; `buf` es escribible con `buf.len()` unidades UTF-16.
+    // SAFETY: `w` is NUL-terminated; `buf` is writable for `buf.len()` UTF-16 code units.
     let n = unsafe { GetShortPathNameW(w.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) } as usize;
     if n == 0 || n >= buf.len() {
         return path.to_path_buf();
@@ -265,31 +265,31 @@ pub fn short_path(path: &Path) -> PathBuf {
 }
 
 unsafe extern "system" {
-    /// `kernel32`: restringe la búsqueda de DLL de todo el proceso (la que hace `tesela.exe` al arrancar).
+    /// `kernel32`: restricts DLL search for the entire process (as `tesela.exe` does at startup).
     fn SetDefaultDllDirectories(directory_flags: u32) -> i32;
 }
 
-/// `LOAD_LIBRARY_SEARCH_SYSTEM32`: solo se buscan DLL en `System32`.
+/// `LOAD_LIBRARY_SEARCH_SYSTEM32`: search for DLLs only in `System32`.
 const LOAD_LIBRARY_SEARCH_SYSTEM32: u32 = 0x0000_0800;
 
-/// `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)` en ESTE proceso (sin añadir ninguna característica de crate:
-/// se declara la función de `kernel32`). `true` si Windows lo aceptó.
+/// Calls `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)` in THIS process (without adding any crate feature:
+/// the `kernel32` function is declared directly). Returns `true` if Windows accepts it.
 pub fn restrict_dll_search_to_system32() -> bool {
-    // SAFETY: llamada de `kernel32` sin punteros; solo cambia la búsqueda de DLL del proceso.
+    // SAFETY: `kernel32` call with no pointers; it only changes DLL search for the process.
     unsafe { SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32) != 0 }
 }
 
-/// Convierte un archivo en un reparse point de un tipo genérico (etiqueta de un tercero con GUID, sin ningún filtro que la
-/// atienda), con `logical` bytes lógicos DISPERSOS (no ocupan disco). Sirve para probar lo que ocupan los reparse points
-/// de dentro de una carpeta (GM-B1) sin depender de OneDrive ni de privilegios. `false` si el volumen no lo admite.
+/// Converts a file into a generic reparse point (a third-party GUID tag with no filter to handle it), with
+/// `logical` SPARSE logical bytes (no disk space). Used to test how reparse points inside a folder affect its
+/// size (GM-B1) without relying on OneDrive or special privileges. Returns `false` if the volume does not support it.
 pub fn make_reparse_file(path: &Path, logical: u64) -> bool {
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::System::IO::DeviceIoControl;
     use windows_sys::Win32::System::Ioctl::FSCTL_SET_REPARSE_POINT;
     let f = fs::File::create(path).expect("crea el archivo");
-    // Disperso y con el tamaño lógico pedido ANTES de ponerle el reparse point (después ya no se abre con normalidad).
+    // Make it sparse and set the requested logical size BEFORE adding the reparse point (afterward, it cannot be opened normally).
     let mut returned = 0u32;
-    // SAFETY: handle de `f`, vivo; FSCTL_SET_SPARSE sin búfer; `returned` escribible; llamada síncrona.
+    // SAFETY: `f`'s handle is live; FSCTL_SET_SPARSE has no buffer; `returned` is writable; synchronous call.
     let sparse = unsafe {
         DeviceIoControl(
             f.as_raw_handle() as _,
@@ -311,8 +311,8 @@ pub fn make_reparse_file(path: &Path, logical: u64) -> bool {
     buf.extend_from_slice(&0u16.to_le_bytes());
     buf.extend_from_slice(&0u16.to_le_bytes());
     buf.extend_from_slice(&[0x5A; 16]);
-    // SAFETY: handle de `f`, vivo y con acceso de escritura; `buf` vive durante la llamada y su longitud es la pasada; no hay
-    // búfer de salida; `returned` escribible; llamada síncrona.
+    // SAFETY: `f`'s handle is live and writable; `buf` remains alive during the call and its length is passed; there is no
+    // output buffer; `returned` is writable; synchronous call.
     let ok = unsafe {
         DeviceIoControl(
             f.as_raw_handle() as _,
@@ -328,16 +328,16 @@ pub fn make_reparse_file(path: &Path, logical: u64) -> bool {
     ok != 0
 }
 
-/// Pone a un directorio VACÍO un reparse point de un tipo genérico (etiqueta de un tercero con GUID, que ningún filtro
-/// atiende) para probar cómo trata la cadena de ancestros un componente que es un reparse point que no es un junction ni
-/// un symlink. `false` si el volumen no lo admite.
+/// Adds a generic reparse point to an EMPTY directory (a third-party GUID tag that no filter handles), to test how the
+/// ancestor check handles a component that is a reparse point but not a junction or
+/// symlink. Returns `false` if the volume does not support it.
 pub fn make_reparse_dir(path: &Path) -> bool {
     use std::os::windows::fs::OpenOptionsExt;
     use std::os::windows::io::AsRawHandle;
     use windows_sys::Win32::System::IO::DeviceIoControl;
     use windows_sys::Win32::System::Ioctl::FSCTL_SET_REPARSE_POINT;
     fs::create_dir_all(path).expect("crea el directorio");
-    // `FILE_FLAG_BACKUP_SEMANTICS` (0x0200_0000) para abrir un directorio con escritura.
+    // `FILE_FLAG_BACKUP_SEMANTICS` (0x0200_0000) is required to open a directory for writing.
     let Ok(f) = fs::OpenOptions::new()
         .write(true)
         .custom_flags(0x0200_0000)
@@ -351,8 +351,8 @@ pub fn make_reparse_dir(path: &Path) -> bool {
     buf.extend_from_slice(&0u16.to_le_bytes());
     buf.extend_from_slice(&[0x5A; 16]);
     let mut returned = 0u32;
-    // SAFETY: handle de `f`, vivo y con acceso de escritura; `buf` vive durante la llamada y su longitud es la pasada; no
-    // hay búfer de salida; `returned` escribible; llamada síncrona.
+    // SAFETY: `f`'s handle is live and writable; `buf` remains alive during the call and its length is passed; there is no
+    // output buffer; `returned` is writable; synchronous call.
     let ok = unsafe {
         DeviceIoControl(
             f.as_raw_handle() as _,
