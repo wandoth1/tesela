@@ -325,67 +325,67 @@ Principle: **verify and act on the same handle**, never "check by path and delet
 
 ---
 
-## 4. Hoja de ruta
+## 4. Roadmap
 
-> **Vigente desde el 2026-10-16: [ROADMAP.md](ROADMAP.md)** (tesis de producto, segmento, reglas, catálogo, fase de validación de 3 meses y su métrica de decisión). La tabla de abajo queda como histórico del diseño original; lo posterior a la v0.1 lo decide ROADMAP.md.
+> **In force since 2026-10-16: [ROADMAP.md](ROADMAP.md)** (product thesis, segment, rules, catalog, 3-month validation phase and its decision metric). The table below stays as a record of the original design; whatever comes after v0.1 is decided by ROADMAP.md.
 
-Referencia de diseño: un SSD con un volumen de ~1 M de archivos. La memoria se mide siempre como **private working set** (§3.5).
+Design reference: an SSD with a volume of ~1 M files. Memory is always measured as **private working set** (§3.5).
 
-| Fase | Contenido | Hito medible |
+| Phase | Content | Measurable milestone |
 |---|---|---|
-| **0. Spike ✅** | Hecho: ver [fase-0-conclusiones.md](fase-0-conclusiones.md). Backend wgpu DX12 + `Mesh`; API `FileIdExtdDirectoryInfo`; POSIX descartado; Mica descartado; destino de las carpetas de desarrollo diferido a la v0.2 | Cerrado (ronda 4, §9) |
-| **1. MVP v0.1** | ✅ Inc. 1 (modelo + escáner + CLI `tesela-scan` + CI). ✅ Inc. 2 (layout + interfaz de solo lectura + `--demo`). ✅ Inc. 3 (borrado seguro, §3.7). ✅ Inc. 4 (MSI por usuario + release en borrador). Walker + cola prioritaria + TreeBuilder (con dedup de hard links), inicio, pantalla de escaneo con veredicto, treemap (`Mesh` cacheado) + lista + detalles, bloque del sistema, cesta por destino, borrado definitivo + Papelera, protección, Temp/cachés/Papelera/pagefile/hiberfil, resumen, historial de resúmenes, es/en, claro/oscuro. **Entregable: instalador MSI por usuario** + zip portable, generados en CI | 1 M de archivos en < 30 s en caliente; veredicto de rutas conocidas en < 5 s; private working set ≤ 75 MiB en reposo con el mapa dibujado y ~85 B por entrada en régimen (≈ 155 MiB con 1 M; aceptado por el usuario); p99 de CPU por frame < 8 ms con hover; **0 borrados fuera del conjunto permitido** en los tests; el MSI instala, actualiza y desinstala sin administrador |
-| **2. v0.2** | Carpetas de desarrollo (con la decisión de destino y "renombrar primero", §2.6), descargas e instaladores viejos, archivos grandes, colorear por antigüedad y riesgo, filtros, Deshacer + `Ctrl+Z`, historial visible, atajos, flechas en el treemap | Relayout de 20k rectángulos < 5 ms |
-| **3. v0.3** | MFT + "Reiniciar como administrador" (con la cesta persistida) + test diferencial | 1 M < 3 s; 10 M < 30 s; totales iguales al walker salvo metadatos NTFS y carpetas denegadas |
-| **4. v1.0** | Duplicados, WinSxS / puntos de restauración, helper elevado, USN incremental, Excluir + exclusiones persistentes, exportar CSV/HTML, menú contextual del Explorador (HKCU), winget, ARM64 publicado, fuzzing, auditoría con lector de pantalla | Reescaneo incremental < 2 s; exe ≲ 16 MB (wgpu DX12 ya ocupa ≈ 10,5 MB); paquetes firmados |
+| **0. Spike ✅** | Done: see [phase-0-findings.md](phase-0-findings.md). wgpu DX12 backend + `Mesh`; `FileIdExtdDirectoryInfo` API; POSIX ruled out; Mica ruled out; destination for development folders deferred to v0.2 | Closed (round 4, §9) |
+| **1. MVP v0.1** | ✅ Inc. 1 (model + scanner + `tesela-scan` CLI + CI). ✅ Inc. 2 (layout + read-only interface + `--demo`). ✅ Inc. 3 (safe deletion, §3.7). ✅ Inc. 4 (per-user MSI + draft release). Walker + priority queue + TreeBuilder (with hard link dedup), home, scan screen with verdict, treemap (cached `Mesh`) + list + details, system block, basket by destination, permanent deletion + Recycle Bin, protection, Temp/caches/Recycle Bin/pagefile/hiberfil, summary, summary history, es/en, light/dark. **Deliverable: per-user MSI installer** + portable zip, generated in CI | 1 M files in < 30 s warm; known-paths verdict in < 5 s; private working set ≤ 75 MiB idle with the map drawn and ~85 B per entry in steady state (≈ 155 MiB with 1 M; accepted by the user); p99 of CPU per frame < 8 ms with hover; **0 deletions outside the allowed set** in the tests; the MSI installs, updates and uninstalls without administrator |
+| **2. v0.2** | Development folders (with the destination decision and "rename first", §2.6), old downloads and installers, large files, color by age and risk, filters, Undo + `Ctrl+Z`, visible history, shortcuts, arrow keys in the treemap | Relayout of 20k rectangles < 5 ms |
+| **3. v0.3** | MFT + "Restart as administrator" (with the persisted basket) + differential test | 1 M < 3 s; 10 M < 30 s; totals equal to the walker except for NTFS metadata and denied folders |
+| **4. v1.0** | Duplicates, WinSxS / restore points, elevated helper, incremental USN, Exclude + persistent exclusions, CSV/HTML export, Explorer context menu (HKCU), winget, published ARM64, fuzzing, screen reader audit | Incremental rescan < 2 s; exe ≲ 16 MB (wgpu DX12 already takes ≈ 10.5 MB); signed packages |
 
 ---
 
-## 5. Riesgos
-| Riesgo | Mitigación |
+## 5. Risks
+| Risk | Mitigation |
 |---|---|
-| Borrar algo indebido (sobre todo en definitivo) | Definitivo solo con reglas; `cleaner` como defensa; revalidación justo antes de borrar; sin seguir reparse points; tests sobre carpetas temporales; simulación y log |
-| La Papelera no cabe, o la unidad es de red o extraíble | Límite real recalculado al ejecutar y casilla explícita |
-| OneDrive: borrar un archivo sincronizado lo quita de la nube | Aviso en la confirmación; los archivos solo en la nube no se pueden seleccionar |
-| Hard links sobrecontados | Dedup por FileId en el builder |
-| La UI no arranca en RDP o en VMs sin GPU | `wgpu` DX12 con WARP por defecto; `glow` como plan B. Pendiente de la prueba del usuario (§6) |
-| Archivos abiertos con `FILE_SHARE_DELETE`: el borrado parece salir bien pero no libera espacio | Detectar el proceso del navegador; "renombrar primero" en la v0.2; contar solo lo realmente liberado |
-| Casos raros del parser MFT; `ntfs-reader` joven | Trait, test diferencial, fuzzing, parser propio de reserva |
-| Cifras que luego no se cumplen (navegador abierto, archivos en uso) | "al menos", "unos", "hasta"; el resumen da la cifra real |
-| SmartScreen o antivirus | SignPath |
-| Accesibilidad del treemap | La lista equivalente con AccessKit |
-| Elevar con otra cuenta | Aviso, la cesta no se recupera; helper en v1.0 |
+| Deleting something improperly (especially permanently) | Permanent only with rules; `cleaner` as the defense; revalidation right before deleting; no following reparse points; tests on temporary folders; simulation and log |
+| The Recycle Bin does not fit, or the drive is a network or removable one | Real limit recalculated at execution time and an explicit checkbox |
+| OneDrive: deleting a synced file removes it from the cloud | Warning in the confirmation; cloud-only files cannot be selected |
+| Over-counted hard links | Dedup by FileId in the builder |
+| The UI does not start over RDP or in VMs without a GPU | `wgpu` DX12 with WARP by default; `glow` as plan B. Pending the user's test (§6) |
+| Files open with `FILE_SHARE_DELETE`: the deletion seems to go well but frees no space | Detect the browser process; "rename first" in v0.2; count only what is really freed |
+| Odd cases in the MFT parser; `ntfs-reader` is young | Trait, differential test, fuzzing, own fallback parser |
+| Figures that are later not met (browser open, files in use) | "at least", "about", "up to"; the summary gives the real figure |
+| SmartScreen or antivirus | SignPath |
+| Treemap accessibility | The equivalent list with AccessKit |
+| Elevating with another account | Warning, the basket is not recovered; helper in v1.0 |
 
 ---
 
-## 6. Verificaciones (fase 0)
-Hechas (detalle en [fase-0-conclusiones.md](fase-0-conclusiones.md)):
-- [x] `FILE_ID_EXTD_DIR_INFO` en Win11: funciona y es la API principal.
-- [x] Los metadatos NTFS (`$MFT`…) no aparecen al enumerar. `FSCTL_GET_NTFS_VOLUME_DATA` funciona sin administrador con un handle del directorio raíz.
-- [x] Memoria, exe y ms/frame de egui-`wgpu` frente a `glow`.
-- [x] 100k archivos a la Papelera: ~2× el umbral (una sola medición); decisión diferida a la v0.2.
-- [x] `restore_all` correcto; `list()` es lineal en el tamaño de toda la Papelera.
-- [x] `FileDispositionInfoEx` + POSIX funciona, pero no es más rápido: descartado.
-- [x] Reparse points (junction): el borrado elimina el enlace, no el destino.
-- [x] Mica (solo con glow), `SegUIVar.ttf` (`wght` de 300 a 700), licencia de Fluent (MIT), versiones de los crates.
-- [x] Nombre "Tesela": libre en crates.io y winget (2026-10-15).
+## 6. Checks (phase 0)
+Done (details in [phase-0-findings.md](phase-0-findings.md)):
+- [x] `FILE_ID_EXTD_DIR_INFO` on Win11: it works and is the main API.
+- [x] NTFS metadata files (`$MFT`…) do not show up when enumerating. `FSCTL_GET_NTFS_VOLUME_DATA` works without administrator with a handle to the root directory.
+- [x] Memory, exe size and ms/frame of egui-`wgpu` versus `glow`.
+- [x] 100k files to the Recycle Bin: ~2× the threshold (a single measurement); decision deferred to v0.2.
+- [x] `restore_all` correct; `list()` is linear in the size of the whole Recycle Bin.
+- [x] `FileDispositionInfoEx` + POSIX works, but is not faster: ruled out.
+- [x] Reparse points (junction): deletion removes the link, not the target.
+- [x] Mica (only with glow), `SegUIVar.ttf` (`wght` from 300 to 700), Fluent license (MIT), crate versions.
+- [x] Name "Tesela": free on crates.io and winget (2026-10-15).
 
-Pendientes (las tres primeras las hace el usuario):
-- [ ] **RDP y Hyper-V sin GPU** con la build wgpu DX12 (y glow como comparación). Instrucciones en fase-0-conclusiones.md (Pendiente).
-- [ ] **Windows 10 22H2:** `FILE_ID_EXTD_DIR_INFO` y `SegUIVar.ttf`.
-- [ ] **Symlinks de directorio** al borrar. No necesita administrador si se activa el Modo de desarrollador.
-- [ ] `FOF_WANTNUKEWARNING` junto con `FOF_NO_UI` y el límite real de la Papelera aplicado: **test obligatorio del incremento 3** (§3.7).
-- [x] Incremento 4 (MSI): CRT estático sin `VCRUNTIME140.dll` (verificado en los imports); ciclo instalar/actualizar/bloquear versión anterior/reparar/carpeta personalizada/desinstalar sin elevación, con la máquina idéntica al final; validación del paquete (ejecutables, avisos, sin rutas locales).
-- [ ] MSI pendiente de probar: dos usuarios, aplicación abierta durante la actualización (Restart Manager), rollback de una instalación fallida, firmas EXE/MSI.
-- [x] WiX 5.0.2 en GitHub Actions (sin `cargo-wix`). Pendientes: `winget-releaser` y runner ARM64 (v1.0).
-- [ ] **Configuración del repo (la hace el mantenedor):** reporte privado de vulnerabilidades, ruleset de etiquetas `v*`, protección de `main` (PR + code owners + checks), environment `release` con revisor, "Require SHA pinning", immutable releases y MFA. Lista detallada en `installer/README.md`.
-- [ ] Marcas registradas del nombre "Tesela" sin revisar.
+Pending (the first three are done by the user):
+- [ ] **RDP and Hyper-V without a GPU** with the wgpu DX12 build (and glow as a comparison). Instructions in phase-0-findings.md (Pending).
+- [ ] **Windows 10 22H2:** `FILE_ID_EXTD_DIR_INFO` and `SegUIVar.ttf`.
+- [ ] **Directory symlinks** when deleting. It does not need administrator if Developer Mode is enabled.
+- [ ] `FOF_WANTNUKEWARNING` together with `FOF_NO_UI` and the real Recycle Bin limit applied: **mandatory test of increment 3** (§3.7).
+- [x] Increment 4 (MSI): static CRT without `VCRUNTIME140.dll` (verified in the imports); install/update/block older version/repair/custom folder/uninstall cycle without elevation, with the machine identical at the end; package validation (executables, notices, no local paths).
+- [ ] MSI still to be tested: two users, application open during the update (Restart Manager), rollback of a failed installation, EXE/MSI signatures.
+- [x] WiX 5.0.2 on GitHub Actions (no `cargo-wix`). Pending: `winget-releaser` and ARM64 runner (v1.0).
+- [ ] **Repo configuration (done by the maintainer):** private vulnerability reporting, `v*` tag ruleset, `main` protection (PR + code owners + checks), `release` environment with a reviewer, "Require SHA pinning", immutable releases and MFA. Detailed list in `installer/README.md`.
+- [ ] Registered trademarks for the name "Tesela" not reviewed.
 
-## 7. Siguiente paso
-Con la **v0.1.4** publicada (cuarta ronda de correcciones y vigilancia de cambios en el envío a la Papelera), empezar la **fase de validación de 3 meses** de [ROADMAP.md](ROADMAP.md) §5: evidencia pública de seguridad, recorridos completos a partir de casos reales y un piloto sin ayuda del autor. El resto de la hoja de ruta depende de su métrica de decisión. Después de la primera versión estable, el repositorio pasa entero al inglés (la aplicación sigue en español e inglés).
+## 7. Next step
+With **v0.1.4** published (fourth round of fixes and change monitoring in the Recycle Bin sending), start the **3-month validation phase** of [ROADMAP.md](ROADMAP.md) §5: public security evidence, complete walkthroughs based on real cases and a pilot without the author's help. The rest of the roadmap depends on its decision metric. After the first stable version, the whole repository moves to English (the application stays in Spanish and English).
 
-## 8. Fuera del alcance (explícito)
-Limpiador de registro, "optimizar" o desfragmentar, desinstalar programas, análisis de red o nube en v1, cuentas, telemetría o anuncios, sunburst o 3D, triturado o recuperación, editor o gestor de archivos completo, reglas automáticas sin intervención del usuario.
+## 8. Out of scope (explicit)
+Registry cleaner, "optimize" or defragment, uninstalling programs, network or cloud analysis in v1, accounts, telemetry or ads, sunburst or 3D, shredding or recovery, a full file editor or manager, automatic rules without user intervention.
 
 ## 9. Registro de revisión del diseño
 **Ronda 1** (revisión del plan unificado; 19 puntos más 14 que añadieron los agentes):
