@@ -1,9 +1,9 @@
-//! Recomendaciones (PLAN.md §2.6): qué se puede limpiar, con riesgo y destino, calculado sobre el árbol escaneado (a
-//! través del overlay de limpieza) y las raíces de las categorías que da el `cleaner`. La pantalla de Recomendaciones y
-//! el titular "Hasta X en candidatos de bajo riesgo" salen de aquí.
+//! Recommendations (PLAN.md §2.6): what can be cleaned, with risk and destination, calculated on the scanned tree (a
+//! through the cleanup overlay) and the roots of the categories given by `cleaner`. The Recommendations screen and
+//! the headline "Up to X in low-risk candidates" come from here.
 //!
-//! Los tamaños son una ESTIMACIÓN del árbol ("hasta"): la cifra definitiva la mide el `cleaner` al confirmar (con la
-//! antigüedad real de cada archivo, las protecciones y los enlaces duros).
+//! The sizes are an ESTIMATE of the tree ("up to"): the final figure is measured by `cleaner` when confirming (with the
+//! actual age of each file, protections and hard links).
 
 use crate::describe::{self, InfoKind, Special};
 use crate::treepath::Locator;
@@ -11,61 +11,61 @@ use std::path::PathBuf;
 use tesela_cleaner::{Backend, Browser, CategoryId, Risk, rules};
 use tesela_model::{NodeId, Tree, View};
 
-/// Una raíz concreta de una categoría (por ejemplo, la caché de un perfil de Chrome) con su tamaño.
+/// A specific root of a category (for example, a Chrome profile cache) with its size.
 #[derive(Clone, Debug)]
 pub(crate) struct RecPart {
     pub node: NodeId,
     pub bytes: u64,
 }
 
-/// Una fila de la pantalla.
+/// A row of the screen.
 #[derive(Clone, Debug)]
 pub(crate) struct RecRow {
     pub id: CategoryId,
-    /// Lo que se estima liberar (con la antigüedad mínima de la regla aplicada con las fechas del árbol).
+    /// What is estimated to be released (with the minimum age of the rule applied with the tree dates).
     pub bytes: u64,
     pub parts: Vec<RecPart>,
-    /// El navegador está abierto: la fila no se preselecciona ("Cierra X para liberar hasta N").
+    /// Browser is open: Row is not preselected ("Close X to free up to N").
     pub blocked_by: Option<Browser>,
 }
 
 impl RecRow {
-    /// ¿Se puede marcar y preseleccionar ahora?
+    /// Can it be marked and shortlisted now?
     pub fn usable(&self) -> bool {
         self.blocked_by.is_none() && self.bytes > 0
     }
 }
 
-/// Un archivo de solo informar (`pagefile.sys`, `hiberfil.sys`, `swapfile.sys`).
+/// A report-only file (`pagefile.sys`, `hiberfil.sys`, `swapfile.sys`).
 #[derive(Clone, Debug)]
 pub(crate) struct InfoRow {
     pub kind: InfoKind,
     pub bytes: u64,
 }
 
-/// Por qué una categoría no está disponible.
+/// Why a category is not available.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Unavailable {
-    /// Hay un enlace (junction, symlink, punto de montaje) en la ruta de su carpeta.
+    /// There is a link (junction, symlink, mount point) in your folder path.
     Link,
-    /// La carpeta cambió mientras se comprobaba.
+    /// The folder changed while checking.
     Changed,
-    /// La carpeta temporal está redirigida fuera de los datos locales del usuario.
+    /// The temporary folder is redirected away from the user's local data.
     Outside,
 }
 
-/// Una categoría que existe en el equipo pero que `cleaner` no ofrece, con el motivo (H4).
+/// A category that exists on the computer but is not offered by `cleaner`, with reason (H4).
 #[derive(Clone, Debug)]
 pub(crate) struct UnavailableRow {
     pub id: CategoryId,
     pub why: Unavailable,
 }
 
-/// Todas las recomendaciones.
+/// All recommendations.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Recs {
     pub rows: Vec<RecRow>,
-    /// Categorías que el `cleaner` descartó con un motivo que el usuario debe conocer (se enseñan como "no disponible").
+    /// Categories that `cleaner` discarded with a reason that the user should know (they are displayed as "not available").
     pub unavailable: Vec<UnavailableRow>,
     pub info: Vec<InfoRow>,
     pub downloads: Option<(NodeId, u64)>,
@@ -77,7 +77,7 @@ impl Recs {
         self.rows.iter().find(|r| r.id == id)
     }
 
-    /// Lo seguro que se puede limpiar ahora (el titular y el botón "Limpiar lo seguro").
+    /// The safe thing that can be cleaned now (the headline and the "Clear the safe" button).
     pub fn safe_total(&self) -> u64 {
         self.rows
             .iter()
@@ -86,21 +86,21 @@ impl Recs {
             .sum()
     }
 
-    /// Lo que conviene mirar a mano (Revisar): Descargas, la Papelera y los informes de errores y volcados.
+    /// What to look for (Review): Downloads, the Recycle Bin, and error and dump reports.
     pub fn review_total(&self) -> u64 {
         self.downloads.map_or(0, |d| d.1)
             + self.recycle.map_or(0, |d| d.1)
             + self.diagnostics().map(|r| r.bytes).sum::<u64>()
     }
 
-    /// Las filas de informes de errores y volcados de bloqueo con algo que ofrecer (Revisar, con casilla, a la Papelera).
+    /// Rows of bug reports and crash dumps with something to offer (Review, with checkbox, Recycle Bin).
     pub fn diagnostics(&self) -> impl Iterator<Item = &RecRow> {
         self.rows
             .iter()
             .filter(|r| r.id.is_diagnostic() && r.usable())
     }
 
-    /// Las categorías seguras que se pueden preseleccionar.
+    /// The safe categories that can be preselected.
     pub fn preselected(&self) -> Vec<CategoryId> {
         self.rows
             .iter()
@@ -110,9 +110,9 @@ impl Recs {
     }
 }
 
-/// Suma lo que cumple la antigüedad en el subárbol de `id`: `(bytes en disco, tamaño lógico, archivos, todo cumple)`. Un
-/// archivo cumple si su `mtime` es anterior a `cutoff` (segundos Unix; 0 desconocido cuenta como antiguo). Con
-/// `cutoff == u32::MAX` cumple todo.
+/// Add the items in the subtree of `id` that meet the age limit: `(disk bytes, logical size, file count, all items qualify)`. A
+/// A file qualifies if its `mtime` is older than `cutoff` (Unix seconds; 0, meaning unknown, counts as old). With
+/// `cutoff == u32::MAX`, every file qualifies.
 pub(crate) fn eligible_by_age(view: &View, id: NodeId, cutoff: u32) -> (u64, u64, u64, bool) {
     let tree = view.tree();
     let n = tree.node(id);
@@ -146,7 +146,7 @@ pub(crate) fn eligible_by_age(view: &View, id: NodeId, cutoff: u32) -> (u64, u64
     (b, l, f, all)
 }
 
-/// Calcula las recomendaciones. `now_unix`: "ahora" (el reloj, o el fijo de la demostración).
+/// Calculate the recommendations. `now_unix`: "now" (the clock, or the show's landline).
 pub(crate) fn compute(
     tree: &Tree,
     view: &View,
@@ -183,9 +183,9 @@ pub(crate) fn compute(
             parts.push(RecPart { node, bytes });
         }
         if parts.is_empty() {
-            // Descartada por seguridad (un enlace en su ruta...): no desaparece en silencio. Solo se dice si la raíz descartada
-            // está DENTRO de lo que se analizó (no basta con que sea de la misma unidad: al analizar una carpeta, una raíz
-            // de otra parte de la unidad no se ve en este árbol).
+            // Discarded for security (a link in your path...): Does not disappear silently. It is only said if the discarded root
+            // is INSIDE what was scanned (it is not enough that it is from the same drive: when scanning a folder, a root
+            // from another part of the unit is not seen in this tree).
             let on_this_drive = |p: &std::path::Path| loc.covers(p);
             if let Some((_, why)) = backend
                 .unavailable_roots(id)
@@ -212,7 +212,7 @@ pub(crate) fn compute(
             blocked_by,
         });
     }
-    // Descargas y Papelera: solo se enseñan (Revisar).
+    // Downloads and the Recycle Bin are shown only for review.
     if let Some(d) = backend.downloads_dir()
         && let Some(n) = loc.locate(&d)
         && view.is_visible(n)
@@ -227,7 +227,7 @@ pub(crate) fn compute(
     {
         recs.recycle = Some((n, view.alloc(n)));
     }
-    // Archivos de solo informar en la raíz del volumen.
+    // Only report files at the root of the volume.
     for c in view.kids(tree.root()).iter() {
         if let Some(Special::InfoOnly(kind)) = describe::special(tree, c) {
             recs.info.push(InfoRow {
@@ -244,7 +244,7 @@ mod tests {
     use super::*;
     use crate::demo::{self, DEMO_NOW, Variant};
 
-    /// Árbol de una sola carpeta (`name` es la ruta que se "escaneó").
+    /// Single folder tree (`name` is the path that was "scanned").
     fn tree_of(name: &str) -> Tree {
         use tesela_model::{Batch, EntryData, FinishOptions, TreeBuilder, flags};
         let mut b = TreeBuilder::new();
@@ -262,8 +262,8 @@ mod tests {
         b.finish(&FinishOptions::new(DEMO_NOW))
     }
 
-    /// Informes de errores y volcados de bloqueo: «Revisar». Cuentan en lo que conviene mirar, nunca en lo seguro, nunca se
-    /// preseleccionan y la cesta los pone con lo que va a la Papelera.
+    /// Bug Reports and Crash Dumps: “Review.” They count on what is convenient to look at, never on what is certain, never
+    /// They preselect and the basket puts them with what goes to the Recycle Bin.
     #[test]
     fn informes_y_volcados_son_revisar_y_no_cuentan_como_seguros() {
         let row = |id, bytes| RecRow {
@@ -285,7 +285,7 @@ mod tests {
         assert_eq!(recs.preselected(), vec![CategoryId::UserTemp]);
         let ids: Vec<CategoryId> = recs.diagnostics().map(|r| r.id).collect();
         assert_eq!(ids, vec![CategoryId::WerReports]);
-        // Van a la Papelera (lo recuperable), no al grupo "se borra y se recrea".
+        // They go to the Recycle Bin (what is recoverable), not to the "delete and recreate" group.
         for id in CategoryId::ALL {
             assert_eq!(
                 crate::basket::category_is_recycled(id),
@@ -295,7 +295,7 @@ mod tests {
         }
     }
 
-    /// GM-m7: una raíz descartada solo se enseña si está DENTRO de lo analizado, no por ser de la misma unidad.
+    /// GM-m7: a rejected root is shown only if it is inside the scanned tree, not merely because it is on the same drive.
     #[test]
     fn una_raiz_descartada_solo_se_enseña_si_esta_dentro_de_lo_analizado() {
         use tesela_cleaner::roots::RootRejection;
@@ -310,10 +310,10 @@ mod tests {
             let view = View::new(t, None);
             compute(t, &view, &be, &[], DEMO_NOW).unavailable.len()
         };
-        // El respaldo de la demostración descarta una raíz suya dentro de la unidad: con la unidad entera, sí.
+        // The support of the proof rules out a root of yours within the unit: with the entire unit, yes.
         assert_eq!(unavailable(&tree_of("C:\\")), 1);
         assert_eq!(unavailable(&tree_of("C:\\Users")), 1);
-        // En otra carpeta de la MISMA unidad (letra C), no: no es de lo que se está viendo.
+        // In another folder on the SAME drive (letter C), no: it is not what you are seeing.
         assert_eq!(unavailable(&tree_of("C:\\Otra")), 0);
         assert_eq!(unavailable(&tree_of("C:\\Otra\\Sub")), 0);
     }
@@ -335,7 +335,7 @@ mod tests {
         assert!(all.3 && !old.3, "con antigüedad no todo cumple");
         assert_eq!(all.0, t.node(temp).alloc);
         assert!(old.0 > 0 && old.0 < all.0, "{old:?} {all:?}");
-        // Los archivos de 0 a 12 días: algo más del 90 % tiene más de un día.
+        // Files from 0 to 12 days: just over 90% are more than one day old.
         assert!(old.0 * 100 / all.0 > 70);
     }
 }

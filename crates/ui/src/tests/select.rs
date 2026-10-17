@@ -1,5 +1,5 @@
-//! Pruebas de la selección múltiple (marcar varios elementos y añadirlos juntos a la cesta) con el respaldo SIMULADO de la
-//! demostración: árbol sintético, nada toca el disco. Los nombres son los de la demostración (Vídeos, Descargas, Proyectos,
+//! Testing multiple selection (checking multiple items and adding them together to basket) with SIMULATED support of the
+//! demonstration: synthetic tree, nothing touches the disc. The names are those of the demo (Videos, Downloads, Projects,
 //! AppData...).
 
 use super::*;
@@ -13,7 +13,7 @@ fn explore_mut<'a>(h: &'a mut Harness<'static, App>) -> &'a mut crate::explore::
     h.state_mut().ui_mut().explore_mut().expect("exploración")
 }
 
-/// Un hijo de la carpeta actual, por nombre.
+/// A child of the current folder, by name.
 fn kid(h: &Harness<'static, App>, name: &str) -> NodeId {
     let ex = explore(h);
     ex.tree
@@ -38,14 +38,14 @@ fn mark_api(h: &mut Harness<'static, App>, names: &[&str]) {
     h.run_steps(3);
 }
 
-/// Pulsa una fila de la lista (por el principio de su etiqueta) con los modificadores dados.
+/// Click a row in the list (by the beginning of its label) with the given modifiers.
 fn click_row(h: &mut Harness<'static, App>, name: &str, mods: Modifiers) {
     h.get_by_label_contains(&format!("{name}, "))
         .click_modifiers(mods);
     h.run_steps(3);
 }
 
-/// Clic primario en una posición con los modificadores sostenidos durante el clic.
+/// Primary click on a position with modifiers held during the click.
 fn click_at_mods(h: &mut Harness<'static, App>, pos: Pos2, mods: Modifiers) {
     h.event(Event::PointerMoved(pos));
     h.run_steps(1);
@@ -64,7 +64,7 @@ fn click_at_mods(h: &mut Harness<'static, App>, pos: Pos2, mods: Modifiers) {
     h.run_steps(3);
 }
 
-/// Centro de una celda de nivel 0 (o de "Otros") de `layout`, en pantalla.
+/// Center of a level 0 (or "Other") cell of `layout`, on screen.
 fn rect_of_cell(h: &Harness<'static, App>, idx: usize) -> egui::Rect {
     let layout = explore(h).map.layout.clone().expect("layout");
     let map = h.get_by_label_contains("Mapa de").rect();
@@ -86,16 +86,16 @@ fn ctrl_clic_alterna_filas_y_un_clic_normal_no_toca_lo_marcado() {
         kid(&h, "Proyectos"),
     );
     assert!(explore(&h).multi.is_empty());
-    // Sin nada marcado la barra explica cómo marcar.
+    // Without anything marked the bar explains how to mark.
     h.get_by_label_contains("Ctrl+clic marca varios");
     click_row(&mut h, "Vídeos", Modifiers::COMMAND);
     click_row(&mut h, "Descargas", Modifiers::COMMAND);
     assert_eq!(marked(&h), sorted(vec![v, d]));
-    // Ctrl+clic también mueve el elemento activo (los detalles lo enseñan), como en el Explorador.
+    // Ctrl+click also moves the active element (the details show this), like in the Explorer.
     assert_eq!(explore(&h).selection, Some(Sel::Node(d)));
     h.get_by_label_contains("2 seleccionados · ");
-    // La fila marcada lo dice con su estado accesible (`toggled`) y no repite "seleccionado" en la etiqueta; el elemento
-    // activo (el último con Ctrl+clic) se sigue exponiendo como `selected` aunque las filas sean casillas.
+    // The marked row says so with its accessible status (`toggled`) and does not repeat "selected" in the label; the element
+    // active (the last one with Ctrl+click) is still displayed as `selected` even if the rows are boxes.
     let row = h.get_by_label_contains("Vídeos, ");
     assert_eq!(row.accesskit_node().toggled(), Some(Toggled::True));
     assert!(
@@ -111,7 +111,7 @@ fn ctrl_clic_alterna_filas_y_un_clic_normal_no_toca_lo_marcado() {
             .is_selected(),
         Some(true)
     );
-    // Ctrl+clic otra vez la desmarca (se deja pasar el tiempo de doble clic: no es "entrar").
+    // Ctrl+click again unchecks it (the double-click time passes: it is not "enter").
     h.run_steps(30);
     click_row(&mut h, "Vídeos", Modifiers::COMMAND);
     assert_eq!(marked(&h), vec![d]);
@@ -120,7 +120,7 @@ fn ctrl_clic_alterna_filas_y_un_clic_normal_no_toca_lo_marcado() {
         here,
         "los Ctrl+clic no entraron en ninguna carpeta"
     );
-    // Un clic normal solo cambia el elemento activo: lo marcado se queda como estaba.
+    // A normal click only changes the active element: the marked remains as it was.
     click_row(&mut h, "Proyectos", Modifiers::NONE);
     assert_eq!(explore(&h).selection, Some(Sel::Node(p)));
     assert_eq!(marked(&h), vec![d]);
@@ -131,14 +131,14 @@ fn mayus_clic_marca_un_rango_y_mayus_flechas_lo_extienden() {
     let mut h = harness(opts(list_start()));
     let kids: Vec<NodeId> = explore(&h).shown_children().iter().collect();
     let name = |h: &Harness<'static, App>, id| explore(h).tree.name_lossy(id).into_owned();
-    // Un clic normal fija el ancla; Mayús+clic marca desde ella hasta la fila pulsada, ambas incluidas.
+    // A normal click sets the anchor; Shift+click marks from it to the row pressed, both included.
     let n1 = name(&h, kids[1]);
     click_row(&mut h, &n1, Modifiers::NONE);
     assert!(explore(&h).multi.is_empty(), "el clic normal no marca");
     let n4 = name(&h, kids[4]);
     click_row(&mut h, &n4, Modifiers::SHIFT);
     assert_eq!(marked(&h), sorted(kids[1..=4].to_vec()));
-    // Mayús+flecha abajo desde la última fila amplía el rango (y mueve el elemento activo y el foco).
+    // Shift+down arrow from the last row expands the range (and moves the active element and focus).
     h.get_by_label_contains(&format!("{n4}, ")).focus();
     h.run_steps(3);
     h.key_press_modifiers(Modifiers::SHIFT, Key::ArrowDown);
@@ -148,7 +148,7 @@ fn mayus_clic_marca_un_rango_y_mayus_flechas_lo_extienden() {
     h.key_press_modifiers(Modifiers::SHIFT, Key::ArrowDown);
     h.run_steps(3);
     assert_eq!(marked(&h), sorted(kids[1..=6].to_vec()));
-    // Una flecha sin Mayús mueve sin marcar nada más.
+    // An arrow without Shift moves without marking anything else.
     h.key_press(Key::ArrowDown);
     h.run_steps(3);
     assert_eq!(marked(&h), sorted(kids[1..=6].to_vec()));
@@ -161,13 +161,13 @@ fn ctrl_a_marca_todo_ctrl_clic_quita_uno_e_invertir_deja_solo_ese_y_esc_vacia() 
     let all: Vec<NodeId> = explore(&h).shown_children().iter().collect();
     assert!(all.len() > 40, "{} hijos", all.len());
     let p = kid(&h, "Proyectos");
-    // Ctrl+A marca todos los hijos de la carpeta (también los que van dentro de "Otros").
+    // Ctrl+A marks all the children of the folder (also those that go under "Others").
     h.key_press_modifiers(Modifiers::COMMAND, Key::A);
     h.run_steps(3);
     assert_eq!(marked(&h), sorted(all.clone()));
     h.get_by_label_contains(&format!("{} seleccionados", all.len()));
     h.get_by_label_contains(&format!("Seleccionados para la cesta: {}", all.len()));
-    // "Todo menos uno": Ctrl+clic sobre una celda del mapa la quita.
+    // "Everything but one": Ctrl+click on a map cell removes it.
     let idx = explore(&h)
         .map
         .layout
@@ -183,18 +183,18 @@ fn ctrl_a_marca_todo_ctrl_clic_quita_uno_e_invertir_deja_solo_ese_y_esc_vacia() 
     );
     assert_eq!(marked(&h).len(), all.len() - 1);
     assert!(!explore(&h).multi.contains(p));
-    // Con la lista y el menú contextual, "Invertir selección" deja marcada solo la que faltaba.
+    // With the list and context menu, "Invert selection" leaves only the missing one checked.
     h.get_by_label("Lista").click();
     h.run_steps(3);
     h.get_by_label_contains("Proyectos, ").click_secondary();
     h.run_steps(3);
-    // La casilla de cabecera y la opción del menú tienen nombres distintos.
+    // The header box and the menu option have different names.
     h.get_by_label("Seleccionar todas las filas");
     h.get_by_label("Seleccionar todo aquí");
     h.get_by_label("Invertir selección").click();
     h.run_steps(4);
     assert_eq!(marked(&h), vec![p]);
-    // Esc vacía primero lo marcado y se queda con el elemento activo; el segundo Esc vacía el elemento activo.
+    // Esc first empties the marked and keeps the active element; the second Esc empties the active element.
     assert!(explore(&h).selection.is_some());
     h.key_press(Key::Escape);
     h.run_steps(3);
@@ -215,7 +215,7 @@ fn otros_se_marca_entero_con_ctrl_a_y_con_ctrl_clic_en_su_celda() {
         .iter()
         .position(|c| matches!(c.kind, CellKind::Others(_)))
         .unwrap();
-    // Ctrl+clic sobre la celda "Otros" marca todos sus elementos; otra vez los desmarca.
+    // Ctrl+click on the "Other" cell marks all its elements; uncheck them again.
     let c = rect_of_cell(&h, idx);
     click_at_mods(&mut h, c.center(), Modifiers::COMMAND);
     assert_eq!(marked(&h).len(), o.count as usize);
@@ -223,7 +223,7 @@ fn otros_se_marca_entero_con_ctrl_a_y_con_ctrl_clic_en_su_celda() {
     h.run_steps(30);
     click_at_mods(&mut h, c.center(), Modifiers::COMMAND);
     assert!(explore(&h).multi.is_empty());
-    // Con todo marcado, "Otros" también lo está; si se quita uno de sus elementos deja de estarlo.
+    // With everything checked, "Other" is also checked; If one of its elements is removed, it ceases to exist.
     h.key_press_modifiers(Modifiers::COMMAND, Key::A);
     h.run_steps(3);
     assert!(explore(&h).others_all_marked(o));
@@ -237,16 +237,16 @@ fn un_descendiente_se_marca_por_su_carpeta_y_no_se_suma_dos_veces() {
     let mut h = harness(opts(user_folder()));
     let p = kid(&h, "Proyectos");
     let web = explore(&h).tree.child_by_name(p, b"tienda-web").unwrap();
-    // Marcar algo de dentro marca la carpeta de esta vista: lo marcado son siempre hermanos, sin anidación posible.
+    // Marking something inside marks the folder of this view: what is marked are always siblings, with no nesting possible.
     explore_mut(&mut h).marks_toggle(Sel::Node(web));
     assert_eq!(marked(&h), vec![p]);
     explore_mut(&mut h).marks_toggle(Sel::Node(p));
     assert!(explore(&h).multi.is_empty());
-    // Lo que no cuelga de esta carpeta no se marca.
+    // What is not hanging from this folder is not marked.
     let users = explore(&h).tree.child_by_name(0, b"Users").unwrap();
     explore_mut(&mut h).marks_toggle(Sel::Node(users));
     assert!(explore(&h).multi.is_empty());
-    // El tamaño de la barra es la suma de cada hermano una sola vez.
+    // The size of the bar is the sum of each sibling only once.
     explore_mut(&mut h).marks_toggle(Sel::Node(web));
     explore_mut(&mut h).marks_toggle(Sel::Node(p));
     explore_mut(&mut h).marks_toggle(Sel::Node(web));
@@ -274,14 +274,14 @@ fn la_barra_cuenta_los_bytes_explica_lo_protegido_y_anade_solo_lo_que_se_puede()
     assert_eq!(s.protected, 1, "AppData es intocable");
     let alloc = |id| explore(&h).view().alloc(id);
     assert_eq!(s.bytes, alloc(p) + alloc(v), "sin AppData y sin duplicados");
-    // La barra lo dice: recuento, tamaño de lo que se añadiría y por qué no entra el resto.
+    // The bar says it: count, size of what would be added and why the rest does not enter.
     h.get_by_label_contains(&format!(
         "3 seleccionados · se añadirían {}",
         es().size(s.bytes)
     ));
     h.get_by_label_contains("1 no se puede añadir: 1 protegido");
     h.get_by_label_contains("1 carpeta conocida: se añade su contenido");
-    // Añadir: dos entradas en la cesta, por el mismo camino que el icono (Vídeos como "Contenido de").
+    // Add: two entries in the basket, in the same way as the icon (Videos as "Content of").
     h.get_by_label("Añadir 2 a la cesta").click();
     h.run_steps(4);
     {
@@ -298,7 +298,7 @@ fn la_barra_cuenta_los_bytes_explica_lo_protegido_y_anade_solo_lo_que_se_puede()
     }
     h.get_by_label_contains("2 elementos añadidos a la cesta · 1 no se podía añadir");
     h.get_by_label_contains("Cesta · 2 elementos");
-    // Volver a marcar lo que ya está en la cesta: se excluye, se explica y no hay nada que añadir.
+    // Remark what is already in the basket: it is excluded, it is explained and there is nothing to add.
     click_row(&mut h, "Proyectos", Modifiers::COMMAND);
     h.get_by_label_contains("1 no se puede añadir: 1 ya en la cesta");
     assert!(
@@ -317,7 +317,7 @@ fn navegar_vacia_lo_marcado_pero_el_modo_seleccionar_se_conserva() {
     let mut h = harness(opts(list_start()));
     let user = explore(&h).root.node;
     let p = kid(&h, "Proyectos");
-    // El modo "Seleccionar": un clic normal marca (y el interruptor es una casilla accesible).
+    // "Select" mode: a normal click check (and the switch is an accessible box).
     assert_eq!(
         h.get_by_label("Seleccionar").accesskit_node().toggled(),
         Some(Toggled::False)
@@ -331,15 +331,15 @@ fn navegar_vacia_lo_marcado_pero_el_modo_seleccionar_se_conserva() {
     );
     click_row(&mut h, "Proyectos", Modifiers::NONE);
     assert_eq!(marked(&h), vec![p]);
-    // Entrar en la carpeta vacía lo marcado.
+    // Enter the marked empty folder.
     h.key_press(Key::Enter);
     h.run_steps(3);
     assert_eq!(explore(&h).root.node, p);
     assert!(explore(&h).multi.is_empty(), "entrar vacía lo marcado");
-    // Y lo avisa: no se pierde una selección en silencio.
+    // And it warns you: you don't miss a selection in silence.
     h.get_by_label_contains("Se quitó la selección (1)");
     assert!(explore(&h).multi.mode, "el modo no se pierde");
-    // Subir con Retroceso también.
+    // Raise with Backspace too.
     h.key_press_modifiers(Modifiers::COMMAND, Key::A);
     h.run_steps(3);
     assert!(!explore(&h).multi.is_empty());
@@ -347,7 +347,7 @@ fn navegar_vacia_lo_marcado_pero_el_modo_seleccionar_se_conserva() {
     h.run_steps(3);
     assert_eq!(explore(&h).root.node, user);
     assert!(explore(&h).multi.is_empty(), "subir vacía lo marcado");
-    // Y saltar por las migas.
+    // And jump for the crumbs.
     h.key_press_modifiers(Modifiers::COMMAND, Key::A);
     h.run_steps(3);
     assert!(!explore(&h).multi.is_empty());
@@ -363,11 +363,11 @@ fn el_modo_seleccionar_da_casillas_y_la_de_la_cabecera_marca_todo_y_quita_todo()
     let p = kid(&h, "Proyectos");
     h.get_by_label("Seleccionar").click();
     h.run_steps(3);
-    // La casilla de la cabecera marca todo lo que se ve...
+    // The box at the header checks everything you see...
     h.get_by_label("Seleccionar todas las filas").click();
     h.run_steps(3);
     assert_eq!(marked(&h).len(), n);
-    // ...y en modo selección un clic normal en una fila la quita: "todo menos una", solo con el ratón.
+    // ...and in selection mode a normal click on a row removes it: "everything but one", just with the mouse.
     click_row(&mut h, "Proyectos", Modifiers::NONE);
     assert_eq!(marked(&h).len(), n - 1);
     assert!(!explore(&h).multi.contains(p));
@@ -383,7 +383,7 @@ fn el_modo_seleccionar_da_casillas_y_la_de_la_cabecera_marca_todo_y_quita_todo()
             .toggled(),
         Some(Toggled::False)
     );
-    // Con alguna sin marcar, la casilla de la cabecera marca todas; con todas, las quita.
+    // With any unchecked, the header box checks all; with all of them, he removes them.
     h.get_by_label("Seleccionar todas las filas").click();
     h.run_steps(3);
     assert_eq!(marked(&h).len(), n);
@@ -392,7 +392,7 @@ fn el_modo_seleccionar_da_casillas_y_la_de_la_cabecera_marca_todo_y_quita_todo()
     assert!(explore(&h).multi.is_empty());
 }
 
-/// ¿Hay un velo y una insignia de "seleccionado" sobre la celda `cell` (en pantalla)?
+/// Is there a veil and a "selected" badge above cell `cell` (on screen)?
 fn mark_shapes(h: &Harness<'static, App>, cell: egui::Rect, pal: &Palette) -> (bool, bool) {
     let r = cell.shrink(1.0);
     let tint = crate::multisel::mark_tint(pal);
@@ -427,7 +427,7 @@ fn en_el_mapa_ctrl_clic_marca_con_velo_e_insignia_en_los_dos_temas_y_espacio_alt
             kid(&h, "Proyectos"),
         );
         let layout = explore(&h).map.layout.clone().unwrap();
-        // Ctrl+clic en el mapa marca la celda y la hace la activa.
+        // Ctrl+click on the map marks the cell and makes it active.
         let vi = layout.cell_of_node(v).unwrap();
         let vc = rect_of_cell(&h, vi);
         assert_eq!(
@@ -447,7 +447,7 @@ fn en_el_mapa_ctrl_clic_marca_con_velo_e_insignia_en_los_dos_temas_y_espacio_alt
             (true, true),
             "dark={dark}: velo e insignia sobre la celda marcada"
         );
-        // Una celda insinuada (nivel 1) de Descargas marca a Descargas, que es la que lleva etiqueta.
+        // A hinted cell (level 1) of Downloads marks Downloads, which is the one with the label.
         let di = layout.cell_of_node(d).unwrap();
         let area = |c: &tesela_layout::Cell| c.rect.w * c.rect.h;
         let hint = (0..layout.cells().len())
@@ -457,11 +457,11 @@ fn en_el_mapa_ctrl_clic_marca_con_velo_e_insignia_en_los_dos_temas_y_espacio_alt
         let hc = rect_of_cell(&h, hint);
         click_at_mods(&mut h, hc.center(), Modifiers::COMMAND);
         assert_eq!(marked(&h), sorted(vec![v, d]), "dark={dark}");
-        // Mayús+clic en el mapa alterna igual que Ctrl+clic.
+        // Shift+click map toggles just like Ctrl+click.
         h.run_steps(30);
         click_at_mods(&mut h, hc.center(), Modifiers::SHIFT);
         assert_eq!(marked(&h), vec![v], "dark={dark}");
-        // Espacio marca o desmarca el elemento activo (la vía de teclado); un clic normal solo lo cambia.
+        // Space checks or unchecks the active element (the keyboard path); a normal click just changes it.
         let pp = cell_center(&h, "Proyectos");
         click_at(&mut h, pp);
         assert_eq!(explore(&h).selection, Some(Sel::Node(p)));
@@ -469,7 +469,7 @@ fn en_el_mapa_ctrl_clic_marca_con_velo_e_insignia_en_los_dos_temas_y_espacio_alt
         h.key_press(Key::Space);
         h.run_steps(3);
         assert_eq!(marked(&h), sorted(vec![v, p]), "dark={dark}");
-        // El lector de pantalla recibe el recuento y si el elemento activo está marcado.
+        // The screen reader receives the count and whether the active item is checked.
         h.get_by_label_contains("Seleccionados para la cesta: 2");
         h.get_by_label_contains("Este elemento está seleccionado para la cesta");
         h.key_press(Key::Space);
@@ -493,7 +493,7 @@ fn con_el_teclado_se_llega_a_los_botones_de_la_barra_y_se_usan() {
         "tras Añadir con el teclado el foco pasa al interruptor"
     );
     mark_api(&mut h, &["Descargas"]);
-    // Tab recorre la barra en orden de lectura: interruptor, Añadir, Desmarcar todo.
+    // Tab cycles through the bar in reading order: switch, Add, Uncheck all.
     tab_to(&mut h, "Seleccionar");
     h.key_press(Key::Tab);
     h.run_steps(2);
@@ -509,14 +509,14 @@ fn con_el_teclado_se_llega_a_los_botones_de_la_barra_y_se_usan() {
         "Seleccionar",
         "tras Desmarcar con el teclado el foco pasa al interruptor"
     );
-    // El interruptor también se alcanza con Tab y Espacio lo activa.
+    // The switch is also reached with Tab and Space activates it.
     tab_to(&mut h, "Seleccionar");
     h.key_press(Key::Space);
     h.run_steps(3);
     assert!(explore(&h).multi.mode);
 }
 
-/// Rectángulo (en pantalla) de la primera etiqueta que contiene `text` y está dentro de la banda de la barra de selección.
+/// Rectangle (on screen) of the first label that contains `text` and is inside the selection bar band.
 fn in_bar(h: &Harness<'static, App>, text: &str, band: (f32, f32)) -> (String, egui::Rect) {
     let n = h
         .query_all_by_label_contains(text)
@@ -538,13 +538,13 @@ fn la_barra_de_seleccion_cabe_sin_solaparse_a_960x600_y_1280x800_en_los_dos_idio
         let mut o = opts(user_folder());
         o.settings.language = lang;
         let mut h = harness_sized(o, size);
-        // La banda de la barra: justo encima de la barra de la cesta (56 px, con su etiqueta centrada).
+        // The bar band: just above the basket bar (56 px, with its label centered).
         let basket = h
             .get_by_label_contains(if es { "Cesta ·" } else { "Basket ·" })
             .rect();
         let bottom = basket.center().y - 28.0;
         let band = (bottom - 44.0, bottom);
-        // La barra vive en la columna central: entre la barra lateral (232) y los detalles (300).
+        // The bar lives in the center column: between the sidebar (232) and the details (300).
         let inside = |label: &str, r: egui::Rect| {
             assert!(
                 r.left() >= 232.0 - 0.5 && r.right() <= size.x - 300.0 + 0.5,
@@ -562,7 +562,7 @@ fn la_barra_de_seleccion_cabe_sin_solaparse_a_960x600_y_1280x800_en_los_dos_idio
                 }
             }
         };
-        // Sin nada marcado: el interruptor y la pista.
+        // Without anything marked: the switch and the track.
         let toggle = if es { "Seleccionar" } else { "Select" };
         let hint = if es {
             "Ctrl+clic marca varios"
@@ -575,7 +575,7 @@ fn la_barra_de_seleccion_cabe_sin_solaparse_a_960x600_y_1280x800_en_los_dos_idio
             "{t:?}"
         );
         disjoint(&[(toggle.to_string(), t), in_bar(&h, hint, band)]);
-        // Con tres marcados (uno protegido y una carpeta conocida): recuento, aviso y los dos botones.
+        // With three markings (one protected and one known folder): count, notice and the two buttons.
         mark_api(&mut h, &["Vídeos", "Proyectos", "AppData"]);
         h.run_steps(3);
         let labels: [&str; 3] = if es {
@@ -598,7 +598,7 @@ fn la_barra_de_seleccion_cabe_sin_solaparse_a_960x600_y_1280x800_en_los_dos_idio
         };
         items.push((clear.to_string(), h.get_by_label(clear).rect()));
         disjoint(&items);
-        // La lista con las casillas visibles deja sitio al nombre aunque la ventana sea la mínima.
+        // The list with the visible boxes leaves room for the name even if the window is minimal.
         explore_mut(&mut h).view = View::List;
         h.run_steps(4);
         let kids: Vec<NodeId> = explore(&h).shown_children().iter().collect();
@@ -653,7 +653,7 @@ fn la_busqueda_deja_solo_las_marcas_que_siguen_visibles_y_anadir_no_anade_lo_ocu
     h.run_steps(2);
     h.get_by_label("Buscar").type_text("desc");
     h.run_steps(4);
-    // La lista solo enseña Descargas: lo demás deja de estar marcado, y la barra lo cuenta así.
+    // The list only shows Downloads: the rest is no longer checked, and the bar counts it that way.
     assert_eq!(marked(&h), vec![d]);
     h.get_by_label_contains("1 seleccionado · ");
     h.get_by_label("Añadir 1 a la cesta").click();
@@ -671,7 +671,7 @@ fn el_clic_de_accesibilidad_alterna_intro_no_y_espacio_alterna_una_sola_vez() {
         kid(&h, "distro-linux-24.04.iso"),
         kid(&h, "instalador-sistema.iso"),
     );
-    // Con alguna marca las filas son casillas; el clic por defecto de un lector de pantalla alterna la fila.
+    // With some marking the rows are boxes; the default click of a screen reader toggles the row.
     click_row(&mut h, "instalador-sistema.iso", Modifiers::COMMAND);
     assert_eq!(marked(&h), vec![b]);
     h.get_by_label_contains("distro-linux-24.04.iso, ")
@@ -682,14 +682,14 @@ fn el_clic_de_accesibilidad_alterna_intro_no_y_espacio_alterna_una_sola_vez() {
         .click_accesskit();
     h.run_steps(3);
     assert_eq!(marked(&h), vec![b]);
-    // Intro con la fila enfocada no alterna (y en un archivo tampoco entra).
+    // Enter with the focused row does not alternate (and does not enter a file either).
     h.get_by_label_contains("distro-linux-24.04.iso, ").focus();
     h.run_steps(3);
     h.key_press(Key::Enter);
     h.run_steps(3);
     assert_eq!(marked(&h), vec![b], "Intro no alterna la marca");
     assert_eq!(explore(&h).root.node, here);
-    // Espacio alterna UNA vez aunque se mantenga pulsado (la autorrepetición no cuenta).
+    // Space toggles ONE time even if held down (auto-repeat does not count).
     for _ in 0..3 {
         h.key_down(Key::Space);
         h.run_steps(1);
@@ -710,7 +710,7 @@ fn un_clic_enfoca_la_fila_y_con_el_teclado_se_marca_y_mayus_flechas_amplian_y_en
         h.get_by_label_contains(&format!("{n1}, ")).is_focused(),
         "un clic de ratón enfoca la fila"
     );
-    // Sin pasar por Tab: Espacio marca, Mayús+flecha abajo amplía y Mayús+flecha arriba encoge.
+    // Without going through Tab: Space marks, Shift+down arrow expands and Shift+up arrow shrinks.
     h.key_press(Key::Space);
     h.run_steps(3);
     assert_eq!(marked(&h), vec![kids[1]]);
@@ -722,7 +722,7 @@ fn un_clic_enfoca_la_fila_y_con_el_teclado_se_marca_y_mayus_flechas_amplian_y_en
     h.key_press_modifiers(Modifiers::SHIFT, Key::ArrowUp);
     h.run_steps(3);
     assert_eq!(marked(&h), sorted(kids[1..=2].to_vec()), "el rango encoge");
-    // Una flecha sin Mayús mueve el elemento activo y deja lo marcado como está.
+    // An arrow without Shift moves the active element and leaves the marked as is.
     h.key_press(Key::ArrowDown);
     h.run_steps(3);
     assert_eq!(explore(&h).selection, Some(Sel::Node(kids[3])));
@@ -753,7 +753,7 @@ fn con_una_limpieza_en_curso_anadir_esta_desactivado_y_no_hace_nada() {
         "con la limpieza en curso no se toca nada"
     );
     assert_eq!(explore(&h).flow.basket.len(), before);
-    // El icono de la cesta del panel de detalles también queda desactivado, y el camino único a la cesta no añade.
+    // The basket icon in the details panel is also disabled, and the single path to basket does not add.
     explore_mut(&mut h).select(Some(Sel::Node(id)));
     h.run_steps(3);
     assert!(
@@ -771,7 +771,7 @@ fn con_una_busqueda_activa_no_se_marca_lo_que_no_es_acierto_pero_se_puede_desmar
     let (v, d) = (kid(&h, "Vídeos"), kid(&h, "Descargas"));
     explore_mut(&mut h).search = "desc".into();
     h.run_steps(3);
-    // Por API, con Ctrl+clic en el mapa (la celda sigue ahí, velada) y con Espacio sobre el elemento activo.
+    // By API, with Ctrl+click on the map (the cell is still there, hidden) and with Space on the active element.
     explore_mut(&mut h).marks_toggle(Sel::Node(v));
     assert!(explore(&h).multi.is_empty());
     let vi = explore(&h)
@@ -788,17 +788,17 @@ fn con_una_busqueda_activa_no_se_marca_lo_que_no_es_acierto_pero_se_puede_desmar
         Modifiers::COMMAND,
     );
     assert!(explore(&h).multi.is_empty(), "Ctrl+clic en un no acierto");
-    // Se deja pasar el tiempo de doble clic: dos clics seguidos en la misma celda serían "entrar".
+    // The double-click time is allowed to pass: two clicks in a row on the same cell would be "enter".
     h.run_steps(30);
     let p = cell_center(&h, "Vídeos");
     click_at(&mut h, p);
     h.key_press(Key::Space);
     h.run_steps(3);
     assert!(explore(&h).multi.is_empty(), "Espacio sobre un no acierto");
-    // El menú tampoco lo ofrece para un no acierto, y sí para un acierto.
+    // The menu does not offer it for a wrong choice, but it does offer it for a right choice.
     assert!(!explore_mut(&mut h).can_toggle_mark(v));
     assert!(explore_mut(&mut h).can_toggle_mark(d));
-    // Un acierto se marca y se desmarca.
+    // A success is marked and unmarked.
     explore_mut(&mut h).marks_toggle(Sel::Node(d));
     assert_eq!(marked(&h), vec![d]);
     explore_mut(&mut h).marks_toggle(Sel::Node(d));
@@ -807,13 +807,13 @@ fn con_una_busqueda_activa_no_se_marca_lo_que_no_es_acierto_pero_se_puede_desmar
 
 #[test]
 fn la_pista_cortada_lleva_tooltip_y_el_interruptor_enseña_su_texto_en_cuanto_cabe() {
-    // A 1280 x 800 cabe: el interruptor lleva su texto. A 960 x 600 es solo la casilla (el nombre accesible sigue).
+    // At 1280 x 800 it fits: the switch carries your text. At 960 x 600 it's just the box (accessible name follows).
     let h = harness(opts(user_folder()));
     assert!(painted(&h, "Seleccionar"));
     let mut h = harness_sized(opts(user_folder()), vec2(960.0, 600.0));
     assert!(!painted(&h, "Seleccionar"));
     h.get_by_label("Seleccionar");
-    // La pista (cortada a esa anchura) lleva su texto completo y las teclas nuevas en la pista flotante.
+    // The track (cut to that width) carries its full text and new keys on the floating track.
     h.get_by_label_contains("Ctrl+clic marca varios").hover();
     h.run_steps(14);
     assert!(
@@ -823,9 +823,9 @@ fn la_pista_cortada_lleva_tooltip_y_el_interruptor_enseña_su_texto_en_cuanto_ca
     );
 }
 
-/// Escala: 5 000 hijos. Marcar todo y añadir va por lotes, la cesta llena no recalcula su estimación en cada fotograma
-/// y la ventana "Ver" solo construye las filas que se ven. (Con el recorrido lineal de antes eran segundos y decenas
-/// de milisegundos por fotograma con 40 000.)
+/// Scale: 5,000 children. Mark all and add goes in batches, full basket does not recalculate its estimate on each frame
+/// and the "View" window only builds the rows that are seen. (With the linear path from before it was seconds and tens
+/// milliseconds per frame with 40,000.)
 #[test]
 fn con_miles_de_hijos_anadir_va_por_lotes_y_la_cesta_llena_no_recalcula_cada_fotograma() {
     let mut h = harness(opts(StartScreen::Map(MapStart::default())));
@@ -852,7 +852,7 @@ fn con_miles_de_hijos_anadir_va_por_lotes_y_la_cesta_llena_no_recalcula_cada_fot
     );
     assert_eq!(explore(&h).flow.basket.len(), 5000);
     assert!(explore(&h).multi.is_empty());
-    // Con la cesta llena y fotogramas seguidos, la estimación se calcula una vez (no una por fotograma).
+    // With the basket full and frames in a row, the estimate is calculated once (not once per frame).
     h.run_steps(2);
     let before = explore(&h).estimate_computes;
     h.run_steps(10);
@@ -861,17 +861,17 @@ fn con_miles_de_hijos_anadir_va_por_lotes_y_la_cesta_llena_no_recalcula_cada_fot
         before,
         "estimación recalculada"
     );
-    // Marcar todo otra vez: todo está ya en la cesta, y se explica sin volver a clasificar en cada fotograma.
+    // Mark everything again: everything is already in the basket, and is explained without re-sorting in each frame.
     h.key_press_modifiers(Modifiers::COMMAND, Key::A);
     h.run_steps(3);
     let s = explore_mut(&mut h).marks_summary();
     assert_eq!((s.in_basket, s.add.len()), (5000, 0));
-    // La ventana "Ver" no construye 5 000 filas.
+    // The "View" window does not build 5,000 rows.
     explore_mut(&mut h).basket_open = true;
     h.run_steps(3);
     let rows = h.query_all_by_label_contains("Quitar carpeta-").count();
     assert!((1..80).contains(&rows), "{rows} filas construidas");
-    // El índice del localizador se conserva mientras la ventana está abierta y se suelta al cerrarla.
+    // The locator index is retained while the window is open and released when the window is closed.
     assert!(explore(&h).locator_cache.is_some());
     explore_mut(&mut h).basket_open = false;
     h.run_steps(2);

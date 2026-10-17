@@ -1,9 +1,9 @@
-//! El flujo de limpieza de la interfaz: cesta -> aprobación -> confirmación -> ejecución -> resumen (PLAN.md §2.5).
+//! The interface cleanup flow: basket -> approval -> confirmation -> execution -> summary (PLAN.md §2.5).
 //!
-//! Es un componente independiente de la exploración: lo usan la pantalla de escaneo ("Limpiar lo seguro") y la ventana
-//! principal. Todo lo que toca el disco va por el [`Backend`] (el `cleaner` real, o el simulado de `--demo`), en hilos
-//! propios; la interfaz solo lee atómicos y canales. NADA se borra sin pasar por la confirmación, que enseña el total y el
-//! destino de cada cosa.
+//! It is a separate component of scanning: it is used by the scanning screen ("Wipe safe") and the
+//! major. Everything that touches the disk goes through [`Backend`] (the real `cleaner`, or the simulated `--demo`), in threads
+//! own; the interface only reads atomic and channels. NOTHING is deleted without going through confirmation, which shows the total and
+//! destiny of each thing.
 
 use crate::app::Env;
 use crate::args;
@@ -22,30 +22,30 @@ use tesela_cleaner::{
     Verdict,
 };
 
-/// Contexto del volumen que se está limpiando (para el historial y las barras antes/ahora del resumen).
+/// Context of the volume being cleaned (for history and summary before/now bars).
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct VolumeCtx {
-    /// Letra de la unidad (si se analizó una unidad entera).
+    /// Drive letter (if an entire drive was scanned).
     pub drive: Option<char>,
-    /// (capacidad, libre) del volumen al terminar el análisis, con ámbito de volumen.
+    /// (capacity, free) of the volume at the end of the analysis, with volume scope.
     pub volume: Option<(u64, u64)>,
 }
 
-/// Eventos del flujo que la pantalla dueña tiene que atender.
+/// Flow events that the owner screen has to attend to.
 #[derive(Debug)]
 pub(crate) enum FlowEvent {
-    /// Lo que desapareció de verdad: la exploración actualiza el árbol con esto (overlay), sin reescanear.
+    /// What really disappeared: the scan updates the tree with this (overlay), without rescanning.
     Removed(Vec<Removed>),
 }
 
 struct Confirm {
     plan: Arc<Plan>,
-    /// La casilla del grupo ámbar ("se eliminará definitivamente porque no cabe").
+    /// The amber group box ("will be permanently deleted because it doesn't fit").
     allow_unfit: bool,
     allow_mail_permanent: bool,
-    /// "Ver la lista completa".
+    /// "See the full list."
     show_all: bool,
-    /// Se vuelve a confirmar porque algo cambió.
+    /// It is confirmed again because something changed.
     reconfirm: bool,
     focused: bool,
 }
@@ -60,7 +60,7 @@ struct Running {
     last_entries: u64,
     last_phase: Phase,
     last_advance: Instant,
-    /// El usuario intentó cerrar la ventana mientras se ejecutaba: se le dice que espere o cancele.
+    /// The user tried to close the window while it was running: told to wait or cancel.
     close_blocked: bool,
 }
 
@@ -100,7 +100,7 @@ fn complete(
 struct Summary {
     report: Report,
     vol: VolumeCtx,
-    /// Navegadores abiertos con una caché sin limpiar y cuánto se liberaría al cerrarlos.
+    /// Open browsers with an uncleaned cache and how much would be freed by closing them.
     blocked: Vec<(Browser, u64)>,
 }
 
@@ -117,22 +117,22 @@ enum Stage {
     Summary(Box<Summary>),
 }
 
-/// Aviso breve (toast) pendiente de pintar.
+/// Brief notice (toast) pending painting.
 pub(crate) enum Note {
     NothingToClean,
-    /// No queda nada que ofrecer porque todo se modificó hace menos de la antigüedad mínima (7 días).
+    /// There is nothing left to offer because everything was modified less than the minimum age (7 days) ago.
     NothingYoung,
-    /// No se pudo crear el registro local: sin registro no se limpia (M4). No se ha tocado nada.
+    /// Failed to create local registry: no registry is not cleaned (M4). Nothing has been touched.
     NoLog,
-    /// Lo que cabe en la Papelera cambió desde la confirmación: hay que revisar y confirmar otra vez.
+    /// What fits in the Recycle Bin changed since confirmation: review and confirm again.
     Reconfirm,
-    /// La aplicación se ejecuta como administrador: la limpieza real no se hace (E1). No se ha tocado nada.
+    /// The application is run as administrator: the actual cleanup is not done (E1). Nothing has been touched.
     Elevated,
 }
 
 impl Drop for CleanFlow {
-    /// Si la pantalla se cierra mientras se aprueba la cesta o se ejecuta, se cancela (entre entradas: lo que ya empezó
-    /// termina bien y nada más se toca).
+    /// If the screen is closed while the basket is approved or executed, it is canceled (between entries: what has already started
+    /// ends well and nothing else is touched).
     fn drop(&mut self) {
         match &self.stage {
             Stage::Approving { cancel, .. } => cancel.store(true, Ordering::SeqCst),
@@ -142,18 +142,18 @@ impl Drop for CleanFlow {
     }
 }
 
-/// El flujo de limpieza.
+/// The cleaning flow.
 pub(crate) struct CleanFlow {
     pub basket: Basket,
     stage: Stage,
     events: Vec<FlowEvent>,
     note: Option<Note>,
-    /// Contexto del volumen limpiado (se recuerda de `start` a `finish`).
+    /// Context of the cleaned volume (remembers `start` to `finish`).
     vol: VolumeCtx,
-    /// Pedido de "Volver a comprobar" desde el resumen (la exploración recalcula las recomendaciones).
+    /// Request to "Recheck" from the summary (the scan recalculates the recommendations).
     pub recheck: bool,
-    /// Cachés de navegadores abiertos que NO se limpiaron y cuánto habría que liberar si se cerraran (lo pone la pantalla
-    /// dueña a partir de las recomendaciones; el resumen lo enseña como "Cierra X para liberar hasta N más").
+    /// Caches of open browsers that were NOT cleaned and how much would have to be freed if they were closed (the screen says it
+    /// owner based on recommendations; the summary shows it as "Close X to free up to N more").
     pub blocked_hint: Vec<(Browser, u64)>,
 }
 
@@ -177,8 +177,8 @@ fn unix_now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-/// El aviso de un plan vacío, si lo es: "nada que limpiar", o, si TODO lo rechazado es "demasiado reciente" (un plan sin
-/// elementos y solo con rechazos `Young`), el aviso que lo explica. Un plan vacío con otros rechazos se enseña (con su motivo).
+/// The notice of an empty plan, if it is: "nothing to clean", or, if EVERYTHING rejected is "too recent" (a plan without
+/// elements and only with rejections `Young`), the notice that explains it. An empty plan with other rejections is taught (with its reason).
 pub(crate) fn empty_plan_note(plan: &Plan) -> Option<Note> {
     if !plan.is_empty() {
         return None;
@@ -192,13 +192,13 @@ pub(crate) fn empty_plan_note(plan: &Plan) -> Option<Note> {
         .then_some(Note::NothingYoung)
 }
 
-/// Cuántos elementos se tocarían de verdad: los del plan sin los que "se quedan donde están" (`kept`), más la Papelera si se
-/// vacía. La confirmación cuenta con esto y desactiva el botón si es cero.
+/// How many items would actually be touched: the planned items other than those that "stay where they are" (`kept`), plus Recycle Bin contents if
+/// empty. The confirmation counts on this and disables the button if it is zero.
 pub(crate) fn actionable_count(items: usize, kept: usize, has_bin: bool) -> usize {
     items.saturating_sub(kept) + usize::from(has_bin)
 }
 
-/// ¿Cuánto ocupa lo que se libera "de verdad" (definitivo + vaciar la Papelera + lo que no cabe si se confirmó)?
+/// How much space is actually freed (permanent deletions + emptied Recycle Bin + items that do not fit, if confirmed)?
 pub(crate) fn free_bytes(plan: &Plan, allow_unfit: bool) -> u64 {
     plan.permanent_bytes()
         + plan.bin.as_ref().map_or(0, |b| b.bytes_hint)
@@ -206,7 +206,7 @@ pub(crate) fn free_bytes(plan: &Plan, allow_unfit: bool) -> u64 {
 }
 
 impl CleanFlow {
-    /// ¿Hay una ventana modal abierta (confirmación o ejecución)? Las teclas de la exploración no actúan.
+    /// Is there a modal window open (commit or execute)? The scan keys do not work.
     pub fn modal_open(&self) -> bool {
         matches!(
             self.stage,
@@ -214,41 +214,41 @@ impl CleanFlow {
         )
     }
 
-    /// ¿Se está mostrando el resumen (ocupa toda la ventana)?
+    /// Is the summary showing (takes up the entire window)?
     pub fn in_summary(&self) -> bool {
         matches!(self.stage, Stage::Summary(_))
     }
 
-    /// ¿Se está ejecutando la limpieza (borrando o enviando a la Papelera)? Cerrar la ventana entonces la dejaría a medias.
+    /// Is cleanup running (deleting items or sending them to the Recycle Bin)? Closing the window then would leave it halfway done.
     pub fn is_running(&self) -> bool {
         matches!(self.stage, Stage::Running(_))
     }
 
-    /// Anota que se intentó cerrar la ventana durante la ejecución (la ventana de progreso lo explica).
+    /// Note that an attempt was made to close the window during execution (the progress window explains this).
     pub fn block_close(&mut self) {
         if let Stage::Running(r) = &mut self.stage {
             r.close_blocked = true;
         }
     }
 
-    /// ¿Hay algo en marcha (aprobando, confirmando o ejecutando)?
+    /// Is there anything going on (approving, committing, or executing)?
     pub fn busy(&self) -> bool {
         !matches!(self.stage, Stage::Idle | Stage::Summary(_))
     }
 
-    /// Cierra el resumen (y cualquier otra cosa en curso que no esté ejecutando).
+    /// Closes the summary (and anything else in progress that is not running).
     pub fn close_summary(&mut self) {
         if matches!(self.stage, Stage::Summary(_)) {
             self.stage = Stage::Idle;
         }
     }
 
-    /// Eventos pendientes para la pantalla dueña.
+    /// Pending events for the owner screen.
     pub fn take_events(&mut self) -> Vec<FlowEvent> {
         std::mem::take(&mut self.events)
     }
 
-    /// Para capturas y pruebas con el respaldo SIMULADO: aprueba la cesta al instante y abre la confirmación.
+    /// For captures and tests with SIMULATED support: approve the basket instantly and open the confirmation.
     pub fn open_confirm_now(&mut self, backend: &Arc<dyn Backend>, vol: VolumeCtx) {
         let plan = backend.approve(
             &self.basket,
@@ -266,7 +266,7 @@ impl CleanFlow {
         }));
     }
 
-    /// Para capturas y pruebas con el respaldo SIMULADO: aprueba y ejecuta al instante y deja el resumen.
+    /// For captures and tests with SIMULATED backup: approve and execute instantly and leave the summary.
     pub fn run_now(&mut self, backend: &Arc<dyn Backend>, vol: VolumeCtx, dry: bool) {
         let plan = backend.approve(
             &self.basket,
@@ -292,14 +292,14 @@ impl CleanFlow {
                 );
                 self.finish(completion, dry);
             }
-            // El error no se traga: se enseña con el mismo aviso que en el flujo normal (H6.7).
+            // The error is not swallowed: it is displayed with the same warning as in the normal flow (H6.7).
             Err(ExecError::LogRequired) => self.note = Some(Note::NoLog),
             Err(ExecError::NeedsReconfirm(_)) => self.note = Some(Note::Reconfirm),
             Err(ExecError::Elevated) => self.note = Some(Note::Elevated),
         }
     }
 
-    /// Empieza la aprobación de la cesta (en un hilo); al terminar se abre la confirmación.
+    /// Cart approval begins (in a thread); When finished, the confirmation opens.
     pub fn start(
         &mut self,
         ctx: &egui::Context,
@@ -338,7 +338,7 @@ impl CleanFlow {
         };
     }
 
-    /// Avanza el flujo (recoge resultados de los hilos). Devuelve el aviso a enseñar, si lo hay.
+    /// Advances the flow (collects results from threads). Returns the notice to teach, if there is one.
     pub fn poll(&mut self, ctx: &egui::Context, backend: &Arc<dyn Backend>, dry: bool) {
         match &mut self.stage {
             Stage::Approving {
@@ -377,17 +377,17 @@ impl CleanFlow {
                     self.finish(completion, dry_run);
                 }
                 Ok(Err(ExecError::LogRequired)) => {
-                    // El ejecutor exige un registro utilizable: no se ha tocado nada.
+                    // The executor requires a usable log: nothing has been touched.
                     self.stage = Stage::Idle;
                     self.note = Some(Note::NoLog);
                 }
                 Ok(Err(ExecError::Elevated)) => {
-                    // Elevado: no se ha tocado nada (el `cleaner` lo rechaza antes de empezar).
+                    // High: nothing has been touched (the `cleaner` rejects it before starting).
                     self.stage = Stage::Idle;
                     self.note = Some(Note::Elevated);
                 }
                 Ok(Err(ExecError::NeedsReconfirm(_))) => {
-                    // Lo que cabe en la Papelera cambió desde la confirmación: se vuelve a aprobar y a confirmar.
+                    // What fits in the Recycle Bin has changed since confirmation: review and confirm again.
                     self.stage = Stage::Idle;
                     let vol = self.vol;
                     self.start(ctx, backend, vol, true);
@@ -458,10 +458,10 @@ impl CleanFlow {
     }
 
     // ---------------------------------------------------------------------------------------------------------------
-    // Ventanas modales: confirmación y ejecución
+    // Modal windows: confirmation and execution
     // ---------------------------------------------------------------------------------------------------------------
 
-    /// Pinta la confirmación o el progreso, si toca, y atiende sus botones.
+    /// Paint confirmation or progress, if you touch, and attend to its buttons.
     pub fn show_modals(
         &mut self,
         ctx: &egui::Context,
@@ -470,7 +470,7 @@ impl CleanFlow {
         used_before: Option<u64>,
     ) {
         let backend = env.backend.clone();
-        let mut go: Option<(bool, bool)> = None; // (dry, allow_unfit)
+        let mut go: Option<(bool, bool)> = None; // (dry_run, allow_unfit)
         let mut cancel_confirm = false;
         let mut cancel_run = false;
         let mut cancel_approval = false;
@@ -491,15 +491,15 @@ impl CleanFlow {
             let (key, secs) = match note {
                 Note::NothingToClean => ("confirm-empty", 4.0),
                 Note::NothingYoung => ("confirm-empty-young", 8.0),
-                // Más larga: explica por qué no pasó nada.
+                // Longer: explains why nothing happened.
                 Note::NoLog => ("confirm-no-log", 12.0),
                 Note::Reconfirm => ("confirm-reconfirm", 8.0),
-                // Larga: dice qué hacer.
+                // Long: tells what to do.
                 Note::Elevated => ("confirm-elevated", 12.0),
             };
             let msg = env.tr.t(key);
             toast(ctx, &msg);
-            // El aviso dura unos segundos.
+            // The warning lasts a few seconds.
             let until = ctx.data_mut(|d| {
                 *d.get_temp_mut_or_insert_with(egui::Id::new("tesela-note-until"), || {
                     ctx.input(|i| i.time) + secs
@@ -524,7 +524,7 @@ impl CleanFlow {
         {
             let plan = c.plan.clone();
             let allow_local_mail_permanent = c.allow_mail_permanent;
-            // E1: elevado no se limpia (también lo rechaza el `cleaner`; aquí se avisa antes de crear el registro).
+            // E1: elevated processes cannot clean (the `cleaner` also rejects them); this is reported before creating the log.
             if blocked_by_elevation(backend.is_elevated(), dry, backend.is_demo()) {
                 self.note = Some(Note::Elevated);
                 ctx.request_repaint();
@@ -554,14 +554,14 @@ impl CleanFlow {
     }
 }
 
-/// ¿Hay que abortar la limpieza por falta de registro (M4)? Sin registro no hay acción destructiva: solo la simulación
-/// (que no toca nada) y la demostración (que nunca toca el disco) pueden seguir sin él.
+/// Should cleanup stop because no log could be created (M4)? Without a log, real cleanup is blocked. Dry-run mode and demo mode
+/// can continue because neither performs real cleanup or writes to the log.
 fn abort_without_log(has_log: bool, dry: bool, is_demo: bool) -> bool {
     !has_log && !dry && !is_demo
 }
 
-/// ¿Hay que negarse a limpiar porque el proceso está elevado (E1)? Solo la limpieza REAL: la simulación y la demostración
-/// (que nunca toca el disco) siguen, y el análisis no pasa por aquí.
+/// Should elevated privileges block cleanup (E1)? Only real cleanup is blocked. Dry-run and demo modes can continue because
+/// they do not perform real cleanup, and scanning does not pass through this check.
 fn blocked_by_elevation(elevated: bool, dry: bool, is_demo: bool) -> bool {
     elevated && !dry && !is_demo
 }
@@ -577,7 +577,7 @@ fn toast(ctx: &egui::Context, msg: &str) {
         });
 }
 
-/// Nombre para mostrar de un elemento del plan.
+/// Display name of a plan item.
 fn item_name(env: &Env, it: &PlanItem) -> String {
     match it.category {
         Some(CategoryId::UserTemp) => env.tr.t("known-user-temp"),
@@ -587,7 +587,7 @@ fn item_name(env: &Env, it: &PlanItem) -> String {
         Some(CategoryId::FirefoxCache) => env.tr.t("known-firefox-cache"),
         Some(CategoryId::Downloads) => env.tr.t("known-downloads"),
         Some(CategoryId::RecycleBin) => env.tr.t("known-recycle-bin"),
-        // Cada elemento es una carpeta de informe o un volcado: se muestra con su propio nombre y la categoría va de etiqueta.
+        // Each item is a report folder or dump: it is displayed with its own name and the category is labeled.
         _ => it.path.file_name().map_or_else(
             || it.path.display().to_string(),
             |n| n.to_string_lossy().into_owned(),
@@ -595,7 +595,7 @@ fn item_name(env: &Env, it: &PlanItem) -> String {
     }
 }
 
-/// ¿Alguno no cabe porque la Papelera de su unidad no tiene tamaño máximo configurado?
+/// Does an item fail to fit because the drive has no configured Recycle Bin size limit?
 fn has_capacity_unknown(fits: impl Iterator<Item = Fit>) -> bool {
     fits.into_iter()
         .any(|f| f == Fit::Unfit(UnfitReason::CapacityUnknown))
@@ -613,7 +613,7 @@ fn unfit_reason_key(r: UnfitReason) -> &'static str {
     }
 }
 
-/// `hover`: la ruta completa, que sale al pasar el ratón por el nombre (distingue elementos con el mismo nombre).
+/// `hover`: the full path, displayed when you mouse over the name (distinguishes elements with the same name).
 fn row(
     ui: &mut Ui,
     pal: &Palette,
@@ -693,7 +693,7 @@ fn can_execute(plan: &Plan, allow_unfit: bool, allow_mail_permanent: bool) -> bo
     actionable && (plan.permanent_mail_files(allow_unfit) == 0 || allow_mail_permanent)
 }
 
-/// Etiqueta del botón principal según lo que haya.
+/// Main button label depending on what there is.
 fn go_label(env: &Env, plan: &Plan, allow_unfit: bool, dry: bool) -> String {
     let free = free_bytes(plan, allow_unfit);
     let bin = plan.recycle_bytes();
@@ -771,7 +771,7 @@ fn confirm_ui(
                 confirm_groups(ui, env, c, &plan);
             });
         });
-        // Pie: enlace, cancelar y el botón principal.
+        // Footer: link, cancel and the main button.
         egui::Frame::new()
             .fill(pal.bg)
             .corner_radius(CornerRadius { nw: 0, ne: 0, sw: 12, se: 12 })
@@ -793,7 +793,7 @@ fn confirm_ui(
                         let cancel_label = env.tr.t("cancel");
                         let rc = widgets::button(ui, env, ButtonStyle::Secondary, None, &cancel_label, true);
                         if !c.focused {
-                            // El foco empieza en "Cancelar": un Intro suelto nunca borra nada.
+                            // Focus starts on "Cancel": pressing Enter alone never deletes anything.
                             rc.request_focus();
                             c.focused = true;
                         }
@@ -811,7 +811,7 @@ fn confirm_ui(
 
 fn confirm_groups(ui: &mut Ui, env: &mut Env, c: &mut Confirm, plan: &Plan) {
     let pal = env.pal;
-    // 1. Se borra y se vuelve a crear sola.
+    // 1. It deletes and recreates itself.
     let perm: Vec<&PlanItem> = plan.permanent_items().collect();
     if !perm.is_empty() {
         let sum: u64 = perm.iter().map(|i| i.bytes()).sum();
@@ -847,7 +847,7 @@ fn confirm_groups(ui: &mut Ui, env: &mut Env, c: &mut Confirm, plan: &Plan) {
         note_line(ui, &pal, &env.tr.t("confirm-permanent-note"), false);
         ui.add_space(16.0);
     }
-    // 2. Vaciar la Papelera (alcance enumerado).
+    // 2. Empty the Recycle Bin (scope listed).
     if let Some(b) = &plan.bin {
         group_header(
             ui,
@@ -868,7 +868,7 @@ fn confirm_groups(ui: &mut Ui, env: &mut Env, c: &mut Confirm, plan: &Plan) {
         );
         ui.add_space(16.0);
     }
-    // 3. Va a la Papelera.
+    // 3. Goes to the Recycle Bin.
     let rec: Vec<&PlanItem> = plan.recycle_items().collect();
     if !rec.is_empty() {
         let sum: u64 = rec.iter().map(|i| i.bytes()).sum();
@@ -898,7 +898,7 @@ fn confirm_groups(ui: &mut Ui, env: &mut Env, c: &mut Confirm, plan: &Plan) {
             );
         }
         ui.add_space(4.0);
-        // "Son archivos tuyos" solo si hay archivos tuyos: los informes y los volcados tienen su propia nota.
+        // "They are your files" only if there are your files: reports and dumps have their own note.
         let is_diag = |i: &&PlanItem| i.category.is_some_and(CategoryId::is_diagnostic);
         if rec.iter().any(|i| !is_diag(i)) {
             note_line(ui, &pal, &env.tr.t("confirm-recycle-note"), false);
@@ -906,7 +906,7 @@ fn confirm_groups(ui: &mut Ui, env: &mut Env, c: &mut Confirm, plan: &Plan) {
         if rec.iter().any(is_diag) {
             note_line(ui, &pal, &env.tr.t("confirm-diag-note"), false);
         }
-        // m-1: una operación de la Papelera por carpeta; con muchas, tarda (se puede cancelar).
+        // m-1: one Recycle Bin operation per folder; with many, it takes time (can be cancelled).
         if let Some(n) = plan.many_diagnostic_items() {
             note_line(
                 ui,
@@ -920,7 +920,7 @@ fn confirm_groups(ui: &mut Ui, env: &mut Env, c: &mut Confirm, plan: &Plan) {
         }
         ui.add_space(16.0);
     }
-    // 4. Lo que no cabe en la Papelera: grupo ámbar con su casilla.
+    // 4. What does not fit in the Recycle Bin: the amber group with its checkbox.
     let unfit: Vec<&PlanItem> = plan.unfit_items().collect();
     if !unfit.is_empty() {
         egui::Frame::new()
@@ -961,7 +961,7 @@ fn confirm_groups(ui: &mut Ui, env: &mut Env, c: &mut Confirm, plan: &Plan) {
                         Some(&it.path.display().to_string()),
                     );
                 }
-                // Sin tamaño máximo configurado, cómo arreglarlo (H6.3).
+                // No maximum size set, how to fix it (H6.3).
                 if has_capacity_unknown(unfit.iter().map(|i| i.fit)) {
                     note_line(ui, &pal, &env.tr.t("confirm-unfit-capacity-hint"), false);
                 }
@@ -972,7 +972,7 @@ fn confirm_groups(ui: &mut Ui, env: &mut Env, c: &mut Confirm, plan: &Plan) {
             });
         ui.add_space(16.0);
     }
-    // 4b. Lo que no cabe y NUNCA se borra definitivamente (informes, volcados): se deja donde está, sin casilla.
+    // 4b. What does not fit and is NEVER permanently deleted (reports, dumps): it is left where it is, without a box.
     let kept: Vec<&PlanItem> = plan.kept_unfit_items().collect();
     if !kept.is_empty() {
         let sum: u64 = kept.iter().map(|i| i.bytes()).sum();
@@ -1081,7 +1081,7 @@ fn confirm_groups(ui: &mut Ui, env: &mut Env, c: &mut Confirm, plan: &Plan) {
         };
         note_line(ui, &pal, &text, false);
     }
-    // m-2: lo que se deja por reciente tiene su propio aviso (no es "cambió, no existe o está protegido").
+    // m-2: what is left as recent has its own notice (it is not "changed, does not exist or is protected").
     let young = plan.young_count() as u64;
     if young > 0 {
         note_line(
@@ -1153,7 +1153,7 @@ fn confirm_groups(ui: &mut Ui, env: &mut Env, c: &mut Confirm, plan: &Plan) {
 fn recycle_row(ui: &mut Ui, env: &mut Env, it: &PlanItem) {
     let pal = env.pal;
     let name = item_name(env, it);
-    // "Tu archivo", o la categoría de diagnóstico (informes de errores, volcados) a la que pertenece el elemento.
+    // "Your file", or the diagnostic category (bug reports, dumps) to which the item belongs.
     let chip = match it.category {
         None => Some(env.tr.t("confirm-your-file")),
         Some(id) if id.is_diagnostic() => Some(crate::basket::category_name(env, id)),
@@ -1175,9 +1175,9 @@ fn recycle_row(ui: &mut Ui, env: &mut Env, it: &PlanItem) {
     );
 }
 
-/// Para los archivos y carpetas del usuario ("Tu archivo"): "en <carpeta padre>" y la ruta completa (para el ratón). Las
-/// categorías con regla se llaman por su nombre conocido y no lo necesitan; los informes y los volcados (cada elemento es una
-/// carpeta o un archivo concreto) llevan también su carpeta y la ruta completa.
+/// For user files and folders ("Your file"): "in <parent folder>" and the full path (for the mouse). The
+/// Ruled categories are called by their known name and do not need it; reports and dumps (each item is a
+/// folder or a specific file) also carry its folder and the full path.
 fn folder_hint(env: &Env, it: &PlanItem) -> (Option<String>, Option<String>) {
     if it.category.is_some_and(|c| !c.is_diagnostic()) {
         return (None, None);
@@ -1284,11 +1284,11 @@ fn running_ui(ctx: &egui::Context, env: &mut Env, r: &mut Running, cancel: &mut 
     let _ = r.started;
 }
 
-// -------------------------------------------------------------------------------------------------------------------
-// Resumen
-// -------------------------------------------------------------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------------------------
+// Summary
+// ------------------------------------------------------------------------------------------------------------------
 
-/// Lo que el usuario eligió en el resumen.
+/// What the user chose in the summary.
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum SummaryClick {
     Back,
@@ -1298,7 +1298,7 @@ pub(crate) enum SummaryClick {
 }
 
 impl CleanFlow {
-    /// Pinta el resumen (ocupa todo el espacio disponible) y devuelve lo que se pulsó.
+    /// Paints the summary (takes up all the available space) and returns what was clicked.
     pub fn show_summary(&mut self, ui: &mut Ui, env: &mut Env) -> Option<SummaryClick> {
         let Stage::Summary(s) = &self.stage else {
             return None;
@@ -1322,8 +1322,8 @@ fn summary_lines(env: &Env, s: &Summary) -> Vec<(String, bool)> {
     let tr = env.tr;
     let mut v: Vec<(String, bool)> = Vec::new();
     let n = |k: &str, n: u64| tr.ta(k, args!["n" => n, "count" => tr.int(n)]);
-    // Las dos cosas pueden darse a la vez y se dicen las dos: la cancelación del usuario y el fallo del registro (que
-    // detiene la limpieza solo).
+    // The two things can happen at the same time and both are said: the cancellation of the user and the failure of the registration (which
+    // stops cleaning alone).
     if r.cancelled {
         v.push((tr.t("sum-cancelled"), true));
     }
@@ -1363,8 +1363,8 @@ fn summary_lines(env: &Env, s: &Summary) -> Vec<(String, bool)> {
     if r.unverified > 0 {
         v.push((n("sum-unverified", r.unverified), true));
     }
-    // `not_recycled` también cuenta los que no tuvieron sitio y los del corte de seguridad (que ya tienen su línea): aquí
-    // solo el resto, los que Windows no movió y se comprobó que siguen intactos en su sitio.
+    // `not_recycled` also counts those who did not have a place and those from the security cut (who already have their line): here
+    // only the rest, the ones that Windows did not move and were proven to remain intact in their place.
     let checked_in_place = r.not_recycled.saturating_sub(r.no_room + r.stopped_items);
     if checked_in_place > 0 {
         v.push((n("sum-not-recycled", checked_in_place), true));
@@ -1406,7 +1406,7 @@ fn summary_lines(env: &Env, s: &Summary) -> Vec<(String, bool)> {
         if b.with_links > 0 {
             v.push((n("sum-bin-with-links", b.with_links), true));
         }
-        // No estaban en la lista (su `$I` no se pudo leer): no explican nada de lo que sigue.
+        // They were not in the list (their `$I` could not be read): they do not explain anything that follows.
         if b.unlisted > 0 {
             v.push((n("sum-bin-unlisted", b.unlisted), true));
         }
@@ -1415,7 +1415,7 @@ fn summary_lines(env: &Env, s: &Summary) -> Vec<(String, bool)> {
             v.push((n("sum-bin-failed", b.still_there - explained), true));
         }
     }
-    // Si "liberado ahora" y "eliminado" divergen, se dice por qué en una línea.
+    // If "released now" and "deleted" diverge, say why on one line.
     if let Some(f) = r.freed_now {
         let planned = r.permanent_bytes + r.bin.map_or(0, |b| b.bytes_hint);
         let diff = (f.max(0) as u64).abs_diff(planned);
@@ -1459,8 +1459,8 @@ fn summary_ui(ui: &mut Ui, env: &mut Env, s: &Summary) -> Option<SummaryClick> {
                     ui.add_space(6.0);
                     let head = env.tr.t(if r.dry_run { "sum-dry" } else { "sum-freed" });
                     ui.label(RichText::new(&head).size(15.0).color(pal.text_muted));
-                    // "Liberado ahora" es el CAMBIO medido del espacio libre: otros programas que escriban a la vez también
-                    // lo mueven. Se dice, y los totales eliminado / a la Papelera se cuentan aparte.
+                    // "Released now" is the measured CHANGE of free space: other programs writing at the same time too
+                    // they move it. The summary explains this, and deleted and Recycle Bin totals are counted separately.
                     if !r.dry_run {
                         ui.label(
                             RichText::new(env.tr.t("sum-freed-hint"))
@@ -1479,7 +1479,7 @@ fn summary_ui(ui: &mut Ui, env: &mut Env, s: &Summary) -> Option<SummaryClick> {
                         egui::WidgetInfo::labeled(egui::WidgetType::Label, true, format!("{head}: {big_txt}"))
                     });
                     ui.add_space(14.0);
-                    // Los tres contadores.
+                    // The three accountants.
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 40.0;
                         let total_w = 3.0 * 170.0;
@@ -1496,7 +1496,7 @@ fn summary_ui(ui: &mut Ui, env: &mut Env, s: &Summary) -> Option<SummaryClick> {
                         }
                     });
                     ui.add_space(18.0);
-                    // Antes y ahora (con las cifras del volumen).
+                    // Then and now (with volume figures).
                     if let (Some((total, free_before)), false) = (s.vol.volume, r.dry_run) {
                         let freed = r.freed_now.unwrap_or(0);
                         let free_after = (free_before as i64 + freed).clamp(0, total as i64) as u64;
@@ -1526,7 +1526,7 @@ fn summary_ui(ui: &mut Ui, env: &mut Env, s: &Summary) -> Option<SummaryClick> {
                         });
                         ui.add_space(18.0);
                     }
-                    // Tarjeta de la Papelera: "Vaciar ahora" es el botón principal si lo que hay supera lo liberado.
+                    // Recycle Bin Card: "Empty now" is the main button if what is there exceeds what is released.
                     if r.recycled_bytes > 0 && !r.dry_run {
                         let bin_all = r.bin_total_after.unwrap_or(r.recycled_bytes);
                         let primary = r.recycled_bytes > r.freed_now.unwrap_or(0).max(0) as u64;
@@ -1546,7 +1546,7 @@ fn summary_ui(ui: &mut Ui, env: &mut Env, s: &Summary) -> Option<SummaryClick> {
                                                 .color(pal.text),
                                         );
                                         ui.label(RichText::new(env.tr.t("sum-bin-card-note")).size(13.0).color(pal.text_muted));
-                                        // "Vaciar ahora" vacía TODA la Papelera (la lista enumerada al confirmar), no solo lo recién enviado.
+                                        // "Empty Now" empties the ENTIRE Recycle Bin (the list shown at confirmation), not just the items just sent there.
                                         if bin_all > r.recycled_bytes {
                                             ui.label(
                                                 RichText::new(env.tr.ta("sum-bin-card-all", args!["total" => env.tr.size(bin_all)]))
@@ -1566,7 +1566,7 @@ fn summary_ui(ui: &mut Ui, env: &mut Env, s: &Summary) -> Option<SummaryClick> {
                             });
                         ui.add_space(14.0);
                     }
-                    // Líneas de aviso.
+                    // Warning lines.
                     ui.allocate_ui_with_layout(vec2(640.0, 0.0), Layout::top_down(Align::Min), |ui| {
                         for (text, warn) in summary_lines(env, s) {
                             ui.horizontal_top(|ui| {
@@ -1623,8 +1623,8 @@ mod actionable_tests {
     use std::path::PathBuf;
     use tesela_cleaner::{Plan, RejectReason, Rejected};
 
-    /// m-12: un plan vacío con solo rechazos "demasiado reciente" vuelve a dar el aviso de "nada que limpiar", con su texto; con
-    /// otros rechazos se enseña la confirmación para que se vea el motivo.
+    /// m-12: an empty plan with only rejections "too recent" again gives the warning of "nothing to clean", with its text; with
+    /// In other rejections, confirmation is shown so that the reason can be seen.
     #[test]
     fn un_plan_vacio_con_solo_recientes_da_el_aviso_de_que_no_hay_nada() {
         let rej = |reason| Rejected {
@@ -1639,17 +1639,17 @@ mod actionable_tests {
         assert!(empty_plan_note(&plan).is_none());
     }
 
-    /// Lo que "se queda donde está" no cuenta; sin nada que tocar (ni Papelera que vaciar) el botón se desactiva.
+    /// Items that "stay where they are" do not count; with nothing to do (no Recycle Bin to empty), the button is disabled.
     #[test]
     fn lo_que_se_queda_donde_esta_no_cuenta_como_elemento() {
         assert_eq!(actionable_count(5, 2, false), 3);
         assert_eq!(actionable_count(5, 0, false), 5);
-        // Solo elementos que se quedan: nada que hacer.
+        // Only elements that remain: nothing to do.
         assert_eq!(actionable_count(2, 2, false), 0);
-        // Vaciar la Papelera sí es algo que hacer.
+        // Emptying the Recycle Bin is something to do.
         assert_eq!(actionable_count(2, 2, true), 1);
         assert_eq!(actionable_count(0, 0, false), 0);
-        // Nunca por debajo de cero.
+        // Never below zero.
         assert_eq!(actionable_count(1, 3, false), 0);
     }
 }
@@ -1659,7 +1659,7 @@ mod log_gate_tests {
     use super::{abort_without_log, has_capacity_unknown};
     use tesela_cleaner::{Fit, UnfitReason};
 
-    /// H6.3: la pista de "fija un tamaño máximo" solo sale si algo no cabe por `CapacityUnknown`.
+    /// H6.3: The "set a maximum size" hint only comes out if something does not fit by `CapacityUnknown`.
     #[test]
     fn la_pista_de_la_capacidad_solo_sale_con_capacity_unknown() {
         assert!(has_capacity_unknown(
@@ -1679,7 +1679,7 @@ mod log_gate_tests {
         assert!(!has_capacity_unknown(std::iter::empty()));
     }
 
-    /// E1: elevado, solo la limpieza REAL se niega; la simulación y la demostración siguen.
+    /// E1: elevated, only REAL cleaning is denied; simulation and demonstration follow.
     #[test]
     fn elevado_solo_se_niega_la_limpieza_real() {
         use super::blocked_by_elevation;
@@ -1689,7 +1689,7 @@ mod log_gate_tests {
         assert!(!blocked_by_elevation(false, false, false), "sin elevar");
     }
 
-    /// M4: sin registro, una ejecución REAL se aborta; la simulación y la demostración siguen.
+    /// M4: without registration, a REAL execution is aborted; simulation and demonstration follow.
     #[test]
     fn sin_registro_solo_la_simulacion_y_la_demostracion_siguen() {
         assert!(abort_without_log(false, false, false));
@@ -1702,8 +1702,8 @@ mod log_gate_tests {
 
 #[cfg(test)]
 mod summary_tests {
-    //! m-5: las líneas del resumen que dependen de contadores del informe (el doble conteo de "no movidos", los sustituidos al
-    //! vaciar y lo que explican los demás contadores de la Papelera).
+    //! m-5: summary lines that depend on report counters (double counting of "not moved", those replaced at
+    //! emptied and what the other Recycle Bin counters explain).
     use super::{Summary, VolumeCtx, summary_lines};
     use crate::app::{Action, Env, Settings};
     use crate::args;
@@ -1753,8 +1753,8 @@ mod summary_tests {
         v.iter().any(|(x, _)| x == t)
     }
 
-    /// T1: ningún texto promete lo que no se puede cumplir: ni un mínimo garantizado ("al menos"), ni ausencia de riesgo, ni
-    /// "liberado ahora" a secas (es el cambio medido del espacio libre).
+    /// T1: no text promises what cannot be fulfilled: neither a guaranteed minimum ("at least"), nor absence of risk, nor
+    /// "released now" simply (it is the measured change in free space).
     #[test]
     fn ningun_texto_promete_un_minimo_ni_ausencia_de_riesgo() {
         let es = include_str!("../i18n/es.ftl");
@@ -1780,7 +1780,7 @@ mod summary_tests {
                 assert!(!text.contains(b), "{name}: no debe decir `{b}`");
             }
         }
-        // R-3: los botones de la confirmación tampoco prometen la cifra exacta: es una estimación ("hasta").
+        // A-3: The confirmation buttons do not promise the exact figure either: it is an estimate ("up to").
         for (key, es_txt, en_txt) in [
             (
                 "confirm-go-free",
@@ -1796,7 +1796,7 @@ mod summary_tests {
             assert!(es.contains(&format!("{key} = {es_txt}")), "{key}");
             assert!(en.contains(&format!("{key} = {en_txt}")), "{key}");
         }
-        // Y lo que sí dicen: un tope y que se comprueba al limpiar; el cambio medido con su aviso.
+        // And what they do say: a stop and that is checked when cleaning; the change measured with your notice.
         for key in ["scan-known-sum", "recs-title-safe"] {
             assert!(es.contains(&format!("{key} = Hasta {{ $size }}")), "{key}");
             assert!(en.contains(&format!("{key} = Up to {{ $size }}")), "{key}");
@@ -1806,8 +1806,8 @@ mod summary_tests {
         assert!(es.contains("sum-freed-hint =") && en.contains("sum-freed-hint ="));
     }
 
-    /// A2-m1: lo que no se pudo comprobar se dice como tal ("no se pudo comprobar") y nunca como una pérdida confirmada ("se
-    /// eliminó"): un elemento `Unverified` puede seguir entero en su sitio.
+    /// A2-m1: What could not be verified is said as such ("could not be verified") and never as a confirmed loss ("was
+    /// deleted"): A `Unverified` element can remain intact in its place.
     #[test]
     fn los_textos_de_lo_no_verificado_dicen_que_no_se_pudo_comprobar_y_no_que_se_elimino() {
         let block = |text: &'static str, key: &str| -> String {
@@ -1837,8 +1837,8 @@ mod summary_tests {
             assert!(en.to_lowercase().contains("could not be"), "{key}: {en}");
             assert!(!en.to_lowercase().contains("delete"), "{key}: {en}");
         }
-        // Y la línea del contador y la del corte dicen lo mismo, sin afirmar el borrado de un directorio cuyo contenido solo
-        // cambió (H2): "se eliminó ... o su contenido cambió o perdió una parte", y mandan al registro y a la Papelera.
+        // And the counter line and the cut line say the same thing, without stating the deletion of a directory whose content only
+        // changed (H2): "it was deleted... or its content changed or a part was lost"; those items are recorded in the log and sent to the Recycle Bin.
         for key in ["sum-unexpected", "sum-recycle-stopped"] {
             let es = block(include_str!("../i18n/es.ftl"), key);
             let en = block(include_str!("../i18n/en.ftl"), key);
@@ -1857,13 +1857,12 @@ mod summary_tests {
         let en = block(include_str!("../i18n/en.ftl"), "sum-unexpected");
         assert!(es.contains("registro") && es.contains("Papelera"), "{es}");
         assert!(en.contains("log") && en.contains("Recycle Bin"), "{en}");
-        // Y el texto no promete el borrado en seco: nunca una frase como "se eliminó definitivamente (entero".
+        // And the text does not promise dry erase: never a phrase like "it was permanently deleted (entirely)."
         assert!(!es.contains("definitivamente (entero"), "{es}");
     }
 
-    /// E3: la nota de `hiberfil.sys` dice lo que hay que saber antes de tocarlo: que hace falta un símbolo del sistema como
-    /// administrador, que desactivar la hibernación quita también la suspensión híbrida y el inicio rápido, la alternativa
-    /// menos drástica (`/type reduced`) y que Tesela no ejecuta nada (es/en en paridad).
+    /// E3: `hiberfil.sys`'s note says what you need to know before touching it: that this requires an elevated command prompt; disabling hibernation also removes hybrid sleep and fast startup. A
+    /// less drastic alternative is `/type reduced`, and Tesela does not run any command (the Spanish and English texts match).
     #[test]
     fn la_nota_de_hiberfil_dice_lo_necesario_antes_de_tocarlo() {
         let line = |text: &'static str| {
@@ -1898,7 +1897,7 @@ mod summary_tests {
     #[test]
     fn los_no_movidos_no_cuentan_dos_veces_los_que_no_tuvieron_sitio_ni_los_del_corte() {
         for lang in [Lang::Es, Lang::En] {
-            // 5 sin mover: 1 sin sitio, 1 del corte de seguridad y 3 de Windows (en uso, sin permiso...).
+            // 5 unmoved: 1 without room, 1 from the security cut and 3 from Windows (in use, without permission...).
             let (tr, v) = lines(
                 lang,
                 Report {
@@ -1911,7 +1910,7 @@ mod summary_tests {
             assert!(has(&v, &text(&tr, "sum-not-recycled", 3)), "{v:?}");
             assert!(!has(&v, &text(&tr, "sum-not-recycled", 5)), "{v:?}");
             assert!(has(&v, &text(&tr, "sum-no-room", 1)), "{v:?}");
-            // Solo sin sitio y del corte: no hay línea de "no movidos".
+            // Only without room and from the cut: there is no "not moved" line.
             let (tr, v) = lines(
                 lang,
                 Report {
@@ -1924,7 +1923,7 @@ mod summary_tests {
             for n in 1..=3 {
                 assert!(!has(&v, &text(&tr, "sum-not-recycled", n)), "{n}: {v:?}");
             }
-            // Los contadores nunca se salen de rango (resta saturada).
+            // Counters never go out of range (saturated subtraction).
             let (tr, v) = lines(
                 lang,
                 Report {
@@ -1952,19 +1951,19 @@ mod summary_tests {
                 }),
                 ..Report::default()
             };
-            // 6 siguen: 1 cambiado, 1 sin verificar y 2 sustituidos explican 4; quedan 2 "no se pudo vaciar".
+            // 6 follow: 1 changed, 1 unverified and 2 replaced explain 4; 2 "could not be emptied" left.
             let (tr, v) = lines(lang, bin(6, 1, 1, 2));
             assert!(has(&v, &text(&tr, "sum-bin-replaced", 2)), "{v:?}");
             assert!(has(&v, &text(&tr, "sum-bin-changed", 1)), "{v:?}");
             assert!(has(&v, &text(&tr, "sum-bin-unverifiable", 1)), "{v:?}");
             assert!(has(&v, &text(&tr, "sum-bin-failed", 2)), "{v:?}");
-            // Si lo explican todo, no hay línea de "no se pudo vaciar del todo".
+            // If they explain everything, there's no "couldn't completely empty it" line.
             let (tr, v) = lines(lang, bin(4, 1, 1, 2));
             assert!(has(&v, &text(&tr, "sum-bin-replaced", 2)), "{v:?}");
             for n in 1..=4 {
                 assert!(!has(&v, &text(&tr, "sum-bin-failed", n)), "{n}: {v:?}");
             }
-            // Sin sustituidos no hay línea de sustituidos.
+            // Without substitutes there is no line of substitutes.
             let (tr, v) = lines(lang, bin(0, 0, 0, 0));
             assert!(!has(&v, &text(&tr, "sum-bin-replaced", 1)), "{v:?}");
         }
@@ -1983,18 +1982,18 @@ mod summary_tests {
                 }),
                 ..Report::default()
             };
-            // 3 siguen y los 3 llevan enlaces: lo explican todo, sin "no se pudo vaciar".
+            // 3 follow and all 3 have links: they explain everything, without "could not empty".
             let (tr, v) = lines(lang, r(3, 3, 0));
             assert!(has(&v, &text(&tr, "sum-bin-with-links", 3)), "{v:?}");
             for n in 1..=3 {
                 assert!(!has(&v, &text(&tr, "sum-bin-failed", n)), "{n}: {v:?}");
             }
-            // Los ilegibles no estaban en la lista: tienen su línea y no explican lo que sigue.
+            // The illegible ones were not on the list: they have their line and do not explain what follows.
             let (tr, v) = lines(lang, r(2, 1, 4));
             assert!(has(&v, &text(&tr, "sum-bin-unlisted", 4)), "{v:?}");
             assert!(has(&v, &text(&tr, "sum-bin-with-links", 1)), "{v:?}");
             assert!(has(&v, &text(&tr, "sum-bin-failed", 1)), "{v:?}");
-            // Sin ninguno, ninguna de las dos líneas.
+            // Without any, neither of the two lines.
             let (tr, v) = lines(lang, r(0, 0, 0));
             assert!(!has(&v, &text(&tr, "sum-bin-with-links", 1)), "{v:?}");
             assert!(!has(&v, &text(&tr, "sum-bin-unlisted", 1)), "{v:?}");

@@ -1,7 +1,7 @@
-//! Consultas a Windows que necesita la interfaz. Aquí vive TODO el `unsafe` del crate, en funciones pequeñas con
-//! su `// SAFETY:` y un test que las ejecuta de verdad (Windows es el único destino del producto).
+//! Queries Windows that needs the interface. Here lives ALL the `unsafe` of the crate, in small functions with
+//! its `// SAFETY:` and a test that actually runs them (Windows is the only destination for the product).
 //!
-//! Todo es de SOLO LECTURA o abre una ventana del propio sistema (Propiedades); nada escribe ni borra archivos.
+//! Everything is READ ONLY or opens a window of the system itself (Properties); nothing writes or deletes files.
 #![allow(unsafe_code)]
 
 use std::ffi::c_void;
@@ -25,50 +25,50 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     SPI_GETCLIENTAREAANIMATION, SW_SHOW, SystemParametersInfoW,
 };
 
-// Valores de `GetDriveTypeW` (están en `Win32_System_WindowsProgramming`, que no se necesita para nada más).
+// `GetDriveTypeW` values ​​(they are in `Win32_System_WindowsProgramming`, which is not needed for anything else).
 const DRIVE_REMOVABLE: u32 = 2;
 const DRIVE_FIXED: u32 = 3;
 const DRIVE_REMOTE: u32 = 4;
 
-/// Tipo de unidad.
+/// Unit type.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DriveKind {
-    /// Disco fijo.
+    /// Fixed disk.
     Fixed,
-    /// Extraíble (USB, tarjeta): no tiene Papelera.
+    /// Removable drive (USB or card): no Recycle Bin.
     Removable,
-    /// Unidad de red: no tiene Papelera.
+    /// Network drive: has no Recycle Bin.
     Network,
 }
 
-/// Una unidad de disco para la pantalla de inicio.
+/// A drive for the home screen.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DriveInfo {
-    /// Letra de unidad (`C`).
+    /// Drive letter (`C`).
     pub letter: char,
-    /// Etiqueta del volumen (vacía si no tiene).
+    /// Volume label (empty if none).
     pub label: String,
     pub kind: DriveKind,
-    /// Capacidad del VOLUMEN en bytes (no la cuota del usuario).
+    /// VOLUME capacity in bytes (not user quota).
     pub total: u64,
-    /// Bytes libres en el VOLUMEN entero. `total - free` es lo usado: el anillo de uso y el "espacio no explicado"
-    /// usan solo estas dos (mismo ámbito).
+    /// Free bytes in the entire VOLUME. `total - free` is what is used: the use ring and the "unexplained space"
+    /// They use only these two (same scope).
     pub free: u64,
-    /// Bytes disponibles para el usuario (ámbito usuario): menor que `free` si hay una cuota de disco. Solo se
-    /// enseña como nota aparte en la tarjeta; nunca se resta de `total`.
+    /// Bytes available to user (user scope): less than `free` if there is a disk quota. I just know
+    /// shows as a separate note on the card; it is never subtracted from `total`.
     pub available: u64,
-    /// `total` y `free` son del VOLUMEN. Es `false` con una cuota cuando Windows no da la capacidad real: entonces son
-    /// las cifras del usuario (coherentes entre sí) y la tarjeta lo avisa.
+    /// `total` and `free` are from VOLUME. It is `false` with a quota when Windows does not give the real capacity: then they are
+    /// the user's figures (consistent with each other) and the card notifies it.
     pub volume_scope: bool,
 }
 
 impl DriveInfo {
-    /// Raíz de la unidad (`C:\`), construida en tiempo de ejecución.
+    /// Drive root (`C:\`), constructed at runtime.
     pub fn root(&self) -> PathBuf {
         PathBuf::from(format!("{}:\\", self.letter))
     }
 
-    /// Porcentaje usado, 0..=100.
+    /// Percentage used, 0..=100.
     pub fn used_percent(&self) -> u8 {
         if self.total == 0 {
             return 0;
@@ -89,37 +89,37 @@ fn wide_path(p: &Path) -> Vec<u16> {
         .collect()
 }
 
-/// Carpeta de fuentes del sistema (`SHGetKnownFolderPath(FOLDERID_Fonts)`), o `None` si Windows no la da.
+/// System fonts folder (`SHGetKnownFolderPath(FOLDERID_Fonts)`), or `None` if Windows doesn't provide it.
 pub fn fonts_dir() -> Option<PathBuf> {
     let mut p: *mut u16 = std::ptr::null_mut();
-    // SAFETY: `FOLDERID_Fonts` es una constante válida; el token nulo significa "el usuario actual" y `p` es
-    // escribible. Si devuelve éxito, `p` apunta a una cadena UTF-16 terminada en NUL reservada por COM.
+    // SAFETY: `FOLDERID_Fonts` is a valid constant; the null token means "the current user" and `p` is
+    // writable. If it returns success, `p` points to a NUL-terminated UTF-16 string reserved by COM.
     let hr = unsafe { SHGetKnownFolderPath(&FOLDERID_Fonts, 0, std::ptr::null_mut(), &mut p) };
     if hr != 0 || p.is_null() {
         if !p.is_null() {
-            // SAFETY: según la documentación hay que liberar el puntero también cuando la llamada falla.
+            // SAFETY: according to the documentation, the pointer must also be released when the call fails.
             unsafe { CoTaskMemFree(p as *const c_void) };
         }
         return None;
     }
     let mut len = 0usize;
-    // SAFETY: `p` apunta a una cadena terminada en NUL (la acaba de reservar la llamada correcta de arriba), así que
-    // no se lee más allá del terminador.
+    // SAFETY: `p` points to a NUL-terminated string (it was just reserved by the correct call above), so
+    // it is not read beyond the terminator.
     while unsafe { *p.add(len) } != 0 {
         len += 1;
     }
-    // SAFETY: los `len` primeros elementos son válidos y están inicializados.
+    // SAFETY: The first `len` elements are valid and initialized.
     let s = String::from_utf16_lossy(unsafe { std::slice::from_raw_parts(p, len) });
-    // SAFETY: `p` lo reservó COM y no se ha liberado antes; no se vuelve a usar después.
+    // SAFETY: `p` was reserved by COM and has not been released before; It is not used again afterwards.
     unsafe { CoTaskMemFree(p as *const c_void) };
     Some(PathBuf::from(s))
 }
 
-/// ¿Tiene el usuario activadas las animaciones del área de cliente (`SPI_GETCLIENTAREAANIMATION`)?
-/// Si Windows no responde, se asume que sí.
+/// Does the user have client area animations (`SPI_GETCLIENTAREAANIMATION`) enabled?
+/// If Windows is not responding, it is assumed that it is.
 pub fn client_area_animation_enabled() -> bool {
     let mut enabled: i32 = TRUE;
-    // SAFETY: para este `SPI_*` el cuarto argumento es un `BOOL*` escribible; `enabled` ocupa 4 bytes.
+    // SAFETY: for this `SPI_*` the fourth argument is a writable `BOOL*`; `enabled` occupies 4 bytes.
     let ok = unsafe {
         SystemParametersInfoW(
             SPI_GETCLIENTAREAANIMATION,
@@ -131,9 +131,9 @@ pub fn client_area_animation_enabled() -> bool {
     ok == FALSE || enabled != FALSE
 }
 
-/// Letras y tipos de las unidades presentes (solo consultas locales, sin tocar el medio: no se bloquea).
+/// Letters and types of drives present (only local queries, without touching the media: no crash).
 fn enumerate_drives() -> Vec<(char, DriveKind)> {
-    // SAFETY: no recibe punteros; devuelve una máscara de bits con una letra por bit.
+    // SAFETY: does not receive pointers; returns a bitmask with one letter per bit.
     let mask = unsafe { GetLogicalDrives() };
     let mut out = Vec::new();
     for i in 0..26u32 {
@@ -142,33 +142,33 @@ fn enumerate_drives() -> Vec<(char, DriveKind)> {
         }
         let letter = (b'A' + i as u8) as char;
         let root = wide(&format!("{letter}:\\"));
-        // SAFETY: `root` es una cadena UTF-16 terminada en NUL.
+        // SAFETY: `root` is a NUL-terminated UTF-16 string.
         let kind = match unsafe { GetDriveTypeW(root.as_ptr()) } {
             DRIVE_FIXED => DriveKind::Fixed,
             DRIVE_REMOVABLE => DriveKind::Removable,
             DRIVE_REMOTE => DriveKind::Network,
-            _ => continue, // CD-ROM, disco RAM, desconocidas
+            _ => continue, // CD-ROM, RAM disk, or unknown drive types
         };
         out.push((letter, kind));
     }
     out
 }
 
-/// Espacio y etiqueta de una unidad. PUEDE BLOQUEARSE (unidad de red caída, medio que no responde): se llama desde un
-/// hilo con plazo ([`drives`]). Con `SEM_FAILCRITICALERRORS` en ESTE hilo, un medio ausente falla sin abrir el diálogo
-/// "Inserte un disco".
+/// Space and label of a unit. MAY BE BLOCKED (network drive down, unresponsive media): Called from a
+/// thread with deadline ([`drives`]). With `SEM_FAILCRITICALERRORS` in THIS thread, a missing media fails without opening the dialog
+/// "Insert a disc."
 fn query_drive(letter: char, kind: DriveKind) -> Option<DriveInfo> {
     let mut old: u32 = 0;
-    // SAFETY: `old` es un `u32` escribible; el modo de error es por hilo y se restaura al terminar.
+    // SAFETY: `old` is a writable `u32`; error mode is per thread and is restored upon completion.
     let changed = unsafe { SetThreadErrorMode(SEM_FAILCRITICALERRORS, &mut old) } != FALSE;
     let root = wide(&format!("{letter}:\\"));
-    // Capacidad y libre del volumen, y disponible para el usuario, por separado (ver `tesela_scanner::VolumeSpace`).
+    // Capacity and free volume, and available to the user, separately (see `tesela_scanner::VolumeSpace`).
     let space = tesela_scanner::volume_space(Path::new(&format!("{letter}:\\")))
         .ok()
         .filter(|v| v.total > 0);
     let info = if let Some(space) = space {
         let mut name = [0u16; 261];
-        // SAFETY: `root` termina en NUL; `name` tiene la longitud indicada; el resto de salidas son opcionales (nulas).
+        // SAFETY: `root` ends in NUL; `name` has the indicated length; the rest of the outputs are optional (null).
         let got = unsafe {
             GetVolumeInformationW(
                 root.as_ptr(),
@@ -200,14 +200,14 @@ fn query_drive(letter: char, kind: DriveKind) -> Option<DriveInfo> {
         None
     };
     if changed {
-        // SAFETY: restaura el valor que devolvió la llamada anterior en este mismo hilo.
+        // SAFETY: Restore the value returned by the previous call in this same thread.
         unsafe { SetThreadErrorMode(old, std::ptr::null_mut()) };
     }
     info
 }
 
-/// Ejecuta cada trabajo en su propio hilo y espera como mucho `deadline` EN TOTAL: los que no terminan a tiempo dan
-/// `None` (su hilo sigue por su cuenta, sin retener a nadie). Así una unidad de red caída no congela la aplicación.
+/// Runs each job in its own thread and waits at most `deadline` TOTAL: those that don't finish on time give
+/// `None` (his thread continues on its own, without holding anyone back). So a crashed network drive does not freeze the application.
 pub fn collect_with_deadline<T: Send + 'static>(
     jobs: Vec<Box<dyn FnOnce() -> Option<T> + Send>>,
     deadline: std::time::Duration,
@@ -237,13 +237,13 @@ pub fn collect_with_deadline<T: Send + 'static>(
     out
 }
 
-/// Unidades de disco del equipo con su espacio. Cada unidad se consulta en su propio hilo con un plazo de 3 s: las que no
-/// responden (sin medio, red caída) se omiten sin retrasar a las demás. Llamar desde un hilo, no desde el de la interfaz.
+/// Computer disk drives with their space. Each unit is consulted in its own thread with a deadline of 3 s: those that do not
+/// respond (no medium, network down) are omitted without delaying the others. Call from a thread, not from the interface.
 pub fn drives() -> Vec<DriveInfo> {
     drives_with_deadline(std::time::Duration::from_secs(3))
 }
 
-/// Como [`drives`], con el plazo indicado.
+/// Like [`drives`], with the indicated term.
 pub fn drives_with_deadline(deadline: std::time::Duration) -> Vec<DriveInfo> {
     let jobs: Vec<Box<dyn FnOnce() -> Option<DriveInfo> + Send>> = enumerate_drives()
         .into_iter()
@@ -258,82 +258,82 @@ pub fn drives_with_deadline(deadline: std::time::Duration) -> Vec<DriveInfo> {
         .collect()
 }
 
-/// Abre la hoja de Propiedades del Explorador para `path`. Devuelve `false` si Windows no pudo (ruta inexistente...).
-/// Sin interfaz de error (`SEE_MASK_FLAG_NO_UI`): si falla, no sale ningún cuadro.
+/// Open the Explorer Properties sheet for `path`. Returns `false` if Windows failed (nonexistent path...).
+/// No error interface (`SEE_MASK_FLAG_NO_UI`): If it fails, no frame is output.
 pub fn show_properties(path: &Path) -> bool {
     show_properties_impl(path, false)
 }
 
-/// Abre las Propiedades en un hilo propio (la E/S del shell no debe bloquear la interfaz). El hilo inicializa COM y espera a
-/// que el shell termine (`SEE_MASK_NOASYNC`): si no, al acabar el hilo se cerraría la hoja. Devuelve el hilo (su resultado
-/// es si Windows pudo abrirla).
+/// Open Properties in its own thread (shell I/O should not block the interface). The thread initializes COM and waits for
+/// for the shell to terminate (`SEE_MASK_NOASYNC`): otherwise, when the thread terminates, the sheet would close. Returns the thread (its result
+/// is whether Windows was able to open it).
 pub fn show_properties_async(path: PathBuf) -> std::thread::JoinHandle<bool> {
     std::thread::spawn(move || {
-        // SAFETY: `CoInitializeEx` no recibe punteros (nulo = reservado) y se empareja con `CoUninitialize` solo si tuvo éxito.
+        // SAFETY: `CoInitializeEx` does not receive pointers (null = reserved) and is paired with `CoUninitialize` only if it succeeded.
         let hr = unsafe { CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32) };
         let ok = show_properties_impl(&path, true);
         if hr >= 0 {
-            // SAFETY: la llamada anterior inicializó COM en ESTE hilo.
+            // SAFETY: The previous call initialized COM on THIS thread.
             unsafe { CoUninitialize() };
         }
         ok
     })
 }
 
-/// Indicadores de `ShellExecuteExW` para abrir la Papelera: sin interfaz de error (`NO_UI`) y SÍNCRONO (`NOASYNC`): con
-/// COM inicializado en el hilo, la shell termina la petición antes de que el hilo acabe (sin él, un hilo que termina
-/// puede dejar la petición a medias).
+/// `ShellExecuteExW` flags to open the Recycle Bin: no error interface (`NO_UI`) and SYNCHRONOUS (`NOASYNC`): with
+/// COM initialized on the thread, the shell terminates the request before the thread terminates (without it, a terminating thread
+/// You can leave the request halfway).
 const RECYCLE_BIN_MASK: u32 = SEE_MASK_FLAG_NO_UI | SEE_MASK_NOASYNC;
 
-/// Indicadores para abrir una página web en el navegador (los mismos motivos que [`RECYCLE_BIN_MASK`], en una constante
-/// propia para que cada uso tenga su prueba).
+/// Flags to open a web page in the browser (same reasons as [`RECYCLE_BIN_MASK`], in a constant
+/// own so that each use has its test).
 const URL_OPEN_MASK: u32 = SEE_MASK_FLAG_NO_UI | SEE_MASK_NOASYNC;
 
-/// Verbo y destino de la petición a la shell (UTF-16 con NUL final). La llamada en sí abre una ventana del Explorador y
-/// no se puede ejecutar en las pruebas: esta parte, que decide QUÉ se pide, sí se prueba.
+/// Verb and destination of the request to the shell (UTF-16 with trailing NUL). The call itself opens an Explorer window and
+/// cannot be run in tests: this part, which decides WHAT is requested, is tested.
 fn recycle_bin_request() -> (Vec<u16>, Vec<u16>) {
     (wide("open"), wide("shell:RecycleBinFolder"))
 }
 
-/// Abre la Papelera de reciclaje en el Explorador (`shell:RecycleBinFolder`), en un hilo propio: la E/S de la shell no
-/// debe bloquear la interfaz. No hay nada que comprobar: si Windows no puede, no pasa nada.
+/// Open the Recycle Bin in Explorer (`shell:RecycleBinFolder`), in its own thread: shell I/O does not
+/// you should block the interface. There is nothing to check: if Windows can't, nothing happens.
 pub fn open_recycle_bin() {
     let (verb, file) = recycle_bin_request();
     shell_open_async(verb, file, RECYCLE_BIN_MASK);
 }
 
-/// Abre `url` en el navegador predeterminado (verbo `open` de la shell), en un hilo propio. SOLO abre la página de una
-/// versión de este repositorio tal como la construye `tesela_update::release_url` (el prefijo exacto más una etiqueta
-/// `vX.Y.Z` válida y nada más: `tesela_update::is_release_page`); cualquier otra cosa se descarta sin hacer nada.
+/// Opens `url` in the default browser (shell verb `open`), in its own thread. ONLY open the page of one
+/// version of this repository as built by `tesela_update::release_url` (the exact prefix plus a tag
+/// valid `vX.Y.Z` and nothing else: `tesela_update::is_release_page`); anything else is discarded without doing anything.
 pub fn open_url_async(url: &str) {
     if tesela_update::is_release_page(url) {
         shell_open_async(wide("open"), wide(url), URL_OPEN_MASK);
     }
 }
 
-/// Pide a la shell `verb` sobre `file` (UTF-16 con NUL final) desde un hilo propio, con COM inicializado y esos `mask`.
+/// Ask the shell for `verb` about `file` (UTF-16 with trailing NUL) from a thread of its own, with COM initialized and those `mask`.
 fn shell_open_async(verb: Vec<u16>, file: Vec<u16>, mask: u32) {
     std::thread::spawn(move || {
-        // `COINIT_DISABLE_OLE1DDE`: la combinación que recomienda la documentación de `ShellExecuteExW` (sin el soporte de DDE de OLE1).
-        // SAFETY: `CoInitializeEx` no recibe punteros (nulo = reservado) y se empareja con `CoUninitialize` solo si tuvo éxito.
+        // `COINIT_DISABLE_OLE1DDE`: The combination recommended by the `ShellExecuteExW` documentation (without OLE1 DDE support).
+        // SAFETY: `CoInitializeEx` does not receive pointers (null = reserved) and is paired with `CoUninitialize` only if it succeeded.
         let hr = unsafe {
             CoInitializeEx(
                 std::ptr::null(),
                 (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as u32,
             )
         };
-        // SAFETY: `SHELLEXECUTEINFOW` es una estructura de enteros y punteros para la que todo cero es un valor válido
-        // (punteros nulos); se rellenan a continuación los campos que usa esta llamada.
+        // SAFETY: `SHELLEXECUTEINFOW` is an integer and pointer structure for which all zero is a valid value
+        // (null pointers); The fields used by this call are filled in below.
         let mut info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
         info.cbSize = size_of::<SHELLEXECUTEINFOW>() as u32;
         info.fMask = mask;
         info.lpVerb = verb.as_ptr();
         info.lpFile = file.as_ptr();
         info.nShow = SW_SHOW;
-        // SAFETY: `info` está completa y sus cadenas (`verb`, `file`, terminadas en NUL) viven durante la llamada.
+        // SAFETY: `info` is complete and its strings (`verb`, `file`, NUL terminated) live during the call.
         unsafe { ShellExecuteExW(&mut info) };
         if hr >= 0 {
-            // SAFETY: la llamada anterior inicializó COM en ESTE hilo.
+            // SAFETY: The previous call initialized COM on THIS thread.
             unsafe { CoUninitialize() };
         }
     });
@@ -342,8 +342,8 @@ fn shell_open_async(verb: Vec<u16>, file: Vec<u16>, mask: u32) {
 fn show_properties_impl(path: &Path, wait: bool) -> bool {
     let file = wide_path(path);
     let verb = wide("properties");
-    // SAFETY: `SHELLEXECUTEINFOW` es una estructura de enteros y punteros para la que todo cero es un valor válido
-    // (punteros nulos); se rellenan a continuación los campos que usa esta llamada.
+    // SAFETY: `SHELLEXECUTEINFOW` is an integer and pointer structure for which all zero is a valid value
+    // (null pointers); The fields used by this call are filled in below.
     let mut info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
     info.cbSize = size_of::<SHELLEXECUTEINFOW>() as u32;
     info.fMask =
@@ -351,24 +351,24 @@ fn show_properties_impl(path: &Path, wait: bool) -> bool {
     info.lpVerb = verb.as_ptr();
     info.lpFile = file.as_ptr();
     info.nShow = SW_SHOW;
-    // SAFETY: `info` está inicializada con su tamaño real; `verb` y `file` terminan en NUL y viven hasta que la
-    // llamada vuelve (`SEE_MASK_INVOKEIDLIST` sin `NOASYNC` no los usa después).
+    // SAFETY: `info` is initialized to its actual size; `verb` and `file` end in NUL and live until the
+    // call returns (`SEE_MASK_INVOKEIDLIST` without `NOASYNC` does not use them afterwards).
     unsafe { ShellExecuteExW(&mut info) != FALSE }
 }
 
-/// Por qué no se pudo abrir el Explorador. TIPADO: la interfaz lo traduce (el código `HRESULT` va aparte).
+/// Why couldn't Explorer open? TYPING: the interface translates it (the `HRESULT` code is separate).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RevealError {
-    /// La ruta no sirve (vacía o con un NUL dentro).
+    /// The path is useless (empty or with a NUL inside).
     InvalidPath,
-    /// `SHParseDisplayName` no pudo crear el identificador de la ruta (`HRESULT`).
+    /// `SHParseDisplayName` could not create the route identifier (`HRESULT`).
     ParsePath(i32),
-    /// `SHOpenFolderAndSelectItems` falló (`HRESULT`).
+    /// `SHOpenFolderAndSelectItems` failed (`HRESULT`).
     Open(i32),
 }
 
 impl RevealError {
-    /// El `HRESULT` de Windows, si lo hay.
+    /// The Windows `HRESULT`, if there is one.
     pub fn hresult(&self) -> Option<i32> {
         match self {
             RevealError::InvalidPath => None,
@@ -395,21 +395,21 @@ impl std::fmt::Display for RevealError {
 
 impl std::error::Error for RevealError {}
 
-/// Identificador de una ruta del shell (PIDL) que se libera al soltarlo.
+/// Shell path identifier (PIDL), freed when dropped.
 struct Pidl(*mut ITEMIDLIST);
 
 impl Drop for Pidl {
     fn drop(&mut self) {
         if !self.0.is_null() {
-            // SAFETY: el puntero lo reservó `SHParseDisplayName` (con el asignador COM) y solo se libera aquí, una vez.
+            // SAFETY: The pointer was reserved by `SHParseDisplayName` (with the COM allocator) and is only freed here, once.
             unsafe { ILFree(self.0) };
         }
     }
 }
 
-/// Crea el PIDL de la ruta a partir de su UTF-16 EXACTO (`path.as_os_str().encode_wide()`, sin pasar por `str`): así
-/// los nombres con unidades de código sueltas (que `display()` o `to_string_lossy()` cambiarían por `U+FFFD`) llegan
-/// intactos al shell. Los prefijos `\\?\` se quitan si es seguro (`dunce`), porque el shell no los entiende bien.
+/// Creates the PIDL of the route from its EXACT UTF-16 (`path.as_os_str().encode_wide()`, bypassing `str`): like this
+/// names with single code units (which `display()` or `to_string_lossy()` would change to `U+FFFD`) arrive
+/// intact to the shell. `\\?\` prefixes are removed if safe (`dunce`), because they are not well understood by the shell.
 fn parse_pidl(path: &Path) -> Result<Pidl, RevealError> {
     let simple = dunce::simplified(path);
     let wide: Vec<u16> = simple.as_os_str().encode_wide().collect();
@@ -419,8 +419,8 @@ fn parse_pidl(path: &Path) -> Result<Pidl, RevealError> {
     let mut z = wide;
     z.push(0);
     let mut pidl: *mut ITEMIDLIST = std::ptr::null_mut();
-    // SAFETY: `z` termina en NUL y vive hasta que la llamada vuelve; el contexto de enlace es nulo (permitido), `pidl` es
-    // escribible, y los atributos de entrada y salida son 0 y nulo (no se piden).
+    // SAFETY: `z` terminates in NUL and lives until the call returns; binding context is null (allowed), `pidl` is
+    // writable, and the input and output attributes are 0 and null (not requested).
     let hr = unsafe {
         SHParseDisplayName(
             z.as_ptr(),
@@ -432,7 +432,7 @@ fn parse_pidl(path: &Path) -> Result<Pidl, RevealError> {
     };
     if hr < 0 || pidl.is_null() {
         if !pidl.is_null() {
-            // SAFETY: aunque falle, el puntero que haya dejado es del asignador COM y se libera una vez.
+            // SAFETY: Even if it fails, the pointer it left behind is the COM allocator and is freed once.
             unsafe { ILFree(pidl) };
         }
         return Err(RevealError::ParsePath(if hr < 0 { hr } else { -1 }));
@@ -440,21 +440,21 @@ fn parse_pidl(path: &Path) -> Result<Pidl, RevealError> {
     Ok(Pidl(pidl))
 }
 
-/// `SHOpenFolderAndSelectItems` con un PIDL completo: abre la carpeta que contiene el elemento y lo selecciona (con
-/// `cidl = 0`, el propio `pidl` es el elemento). Devuelve el `HRESULT`.
+/// `SHOpenFolderAndSelectItems` with a full PIDL: Open the folder containing the item and select it (with
+/// `cidl = 0`, `pidl` itself is the element). Returns the `HRESULT`.
 ///
 /// # Safety
-/// `pidl` debe ser nulo (la API lo rechaza con un error) o apuntar a un PIDL válido que viva durante la llamada. COM
-/// tiene que estar inicializado en este hilo.
+/// `pidl` must be null (the API rejects it with an error) or point to a valid PIDL that lives during the call.
+/// COM must be initialized on this thread.
 unsafe fn shell_open_and_select(pidl: *const ITEMIDLIST) -> i32 {
-    // SAFETY: lo garantiza quien llama; `apidl` es nulo con `cidl = 0` y los flags son 0.
+    // SAFETY: guaranteed by the caller; `apidl` is null with `cidl = 0` and the flags are 0.
     unsafe { SHOpenFolderAndSelectItems(pidl, 0, std::ptr::null(), 0) }
 }
 
-/// Hace el trabajo en el hilo actual, que ya tiene COM inicializado.
+/// It does the work on the current thread, which already has COM initialized.
 fn reveal_on_this_thread(path: &Path) -> Result<(), RevealError> {
     let pidl = parse_pidl(path)?;
-    // SAFETY: `pidl` es un PIDL válido que vive hasta el final de la función; COM está inicializado (lo hace quien llama).
+    // SAFETY: `pidl` is a valid PIDL that lives until the end of the function; COM is initialized (it is done by the caller).
     let hr = unsafe { shell_open_and_select(pidl.0) };
     if hr < 0 {
         return Err(RevealError::Open(hr));
@@ -462,51 +462,51 @@ fn reveal_on_this_thread(path: &Path) -> Result<(), RevealError> {
     Ok(())
 }
 
-/// Plazo tras el cual se avisa de que el shell no responde.
+/// Period after which you are warned that the shell is not responding.
 pub const REVEAL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(5);
 
-/// Tope de hilos de apertura vivos a la vez: con un shell colgado no se acumulan hilos.
+/// Stop live opening threads at the same time: with a hung shell no threads accumulate.
 pub const MAX_LIVE_REVEALS: usize = 2;
 
-/// Hilos de apertura vivos ahora mismo.
+/// Opening threads live right now.
 static LIVE_REVEALS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// Cómo acabó una petición de abrir el Explorador.
+/// How a request to open Explorer ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RevealOutcome {
-    /// El shell aceptó la petición.
+    /// The shell accepted the request.
     Done,
-    /// El shell la rechazó (error tipado, con su `HRESULT`).
+    /// The shell rejected it (type error, with its `HRESULT`).
     Failed(RevealError),
-    /// Pasó el plazo sin respuesta: el hilo sigue por su cuenta y ya no se espera.
+    /// The deadline passed without a response: the thread continues on its own and is no longer expected.
     NoResponse,
-    /// Ya hay demasiadas peticiones sin terminar (el shell no responde): esta ni se intentó.
+    /// There are already too many unfinished requests (shell not responding): this one was not even attempted.
     Busy,
 }
 
-/// Una petición en curso. NUNCA bloquea: la interfaz la consulta con [`RevealHandle::poll`] en cada frame.
+/// An in-progress request. It never blocks: the interface queries it with [`RevealHandle::poll`] each frame.
 pub struct RevealHandle {
     rx: crossbeam_channel::Receiver<Result<(), RevealError>>,
     started: std::time::Instant,
     deadline: std::time::Duration,
 }
 
-/// Resultado de lanzar la petición.
+/// Result of starting the request.
 pub enum RevealStart {
     Started(RevealHandle),
-    /// El tope de hilos vivos está alcanzado.
+    /// The limit of live wires has been reached.
     Busy,
 }
 
 impl RevealHandle {
-    /// `Some` cuando hay un desenlace: el resultado del shell, o `NoResponse` si pasó el plazo (tras lo cual el
-    /// llamador suelta el manejador). `None` si sigue esperándose.
+    /// `Some` when there is an outcome: the shell result, or `NoResponse` if the deadline has passed (after which the
+    /// caller releases the handle). `None` if still waiting.
     pub fn poll(&mut self) -> Option<RevealOutcome> {
         use crossbeam_channel::TryRecvError;
         match self.rx.try_recv() {
             Ok(Ok(())) => Some(RevealOutcome::Done),
             Ok(Err(e)) => Some(RevealOutcome::Failed(e)),
-            // El hilo terminó sin dejar resultado (un pánico): E_FAIL.
+            // The thread ended without results (a panic): E_FAIL.
             Err(TryRecvError::Disconnected) => Some(RevealOutcome::Failed(RevealError::Open(
                 0x8000_4005u32 as i32,
             ))),
@@ -517,7 +517,7 @@ impl RevealHandle {
     }
 }
 
-/// Descuenta un hilo de apertura vivo al terminar (también si entra en pánico).
+/// Discount a live opening thread upon completion (also if you panic).
 struct LiveGuard(&'static std::sync::atomic::AtomicUsize);
 
 impl Drop for LiveGuard {
@@ -526,7 +526,7 @@ impl Drop for LiveGuard {
     }
 }
 
-/// Lanza `work` en un hilo suelto con un tope de `max` hilos vivos en `live`.
+/// Runs `work` on a background thread, limiting the number of active threads tracked by `live` to `max`.
 fn spawn_reveal<F>(
     work: F,
     live: &'static std::sync::atomic::AtomicUsize,
@@ -550,7 +550,7 @@ where
             let _ = tx.send(work());
         });
     if spawned.is_err() {
-        // `guard` se soltó con el cierre descartado: el contador ya está al día.
+        // The closure was discarded, so `guard` was dropped and the counter is up to date.
         return RevealStart::Busy;
     }
     RevealStart::Started(RevealHandle {
@@ -560,24 +560,25 @@ where
     })
 }
 
-/// El trabajo de abrir el Explorador: este hilo inicializa COM (el shell lo necesita) y hace la llamada.
+/// The job of opening Explorer: This thread initializes COM (the shell needs it) and makes the call.
 fn reveal_work(path: &Path) -> Result<(), RevealError> {
-    // SAFETY: `CoInitializeEx` no recibe punteros (nulo = reservado) y se empareja con `CoUninitialize` solo si tuvo éxito
-    // (un `HRESULT` negativo significa que no se inicializó en este hilo).
+    // SAFETY: `CoInitializeEx` does not receive pointers (null = reserved) and matches `CoUninitialize` only if it succeeded
+    // (a negative `HRESULT` means it was not initialized in this thread.)
     let hr = unsafe { CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32) };
     let out = reveal_on_this_thread(path);
     if hr >= 0 {
-        // SAFETY: la llamada anterior inicializó COM en ESTE hilo.
+        // SAFETY: The previous call initialized COM on THIS thread.
         unsafe { CoUninitialize() };
     }
     out
 }
 
-/// Abre el Explorador con `path` seleccionado (o su carpeta, si es un directorio) con `SHOpenFolderAndSelectItems` y un
-/// PIDL creado desde la ruta UTF-16 EXACTA: funciona con nombres que no se pueden escribir como texto (unidades de código
-/// sueltas), que con `explorer.exe /select,"…"` se perdían. NO bloquea el hilo de la interfaz: va en un hilo suelto (con un
-/// tope de [`MAX_LIVE_REVEALS`] vivos a la vez) y el resultado se recoge con [`RevealHandle::poll`]; si el shell no
-/// responde en [`REVEAL_DEADLINE`], `poll` da `NoResponse` y la interfaz avisa.
+/// Opens Explorer with `path` selected (or its containing folder, if it is a directory) using
+/// `SHOpenFolderAndSelectItems` and a PIDL created from the exact UTF-16 path. This supports names containing UTF-16 code
+/// units that cannot be represented as valid text, which are lost by `explorer.exe /select,"…"`. It does not block the
+/// interface thread: the request runs on a background thread, with at most [`MAX_LIVE_REVEALS`] active at a time.
+/// [`RevealHandle::poll`] collects the result; if the shell does not respond before [`REVEAL_DEADLINE`], it returns
+/// `NoResponse` and the interface displays a warning.
 pub fn reveal_in_explorer_async(path: &Path) -> RevealStart {
     let path = path.to_path_buf();
     spawn_reveal(
@@ -588,14 +589,14 @@ pub fn reveal_in_explorer_async(path: &Path) -> RevealStart {
     )
 }
 
-/// La ventana principal como padre de los diálogos del sistema (selector de carpeta): así el diálogo es modal de ELLA
-/// (se queda encima y no se pierde detrás) en lugar de flotar sin dueño. Guarda solo el `HWND`; el selector lo usa dentro
-/// de la llamada.
+/// The main window as parent of system dialogs (folder selector): so the dialog is ELLA modal
+/// (it stays on top and does not get lost behind) instead of floating without an owner. Save only the `HWND`; the selector uses it inside
+/// of the call.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ParentWindow(std::num::NonZeroIsize);
 
 impl ParentWindow {
-    /// El padre que indica un manejador de ventana de `raw-window-handle` (`None` si no es de Win32).
+    /// The parent indicating a window handle of `raw-window-handle` (`None` if non-Win32).
     pub fn from_handle(w: &impl raw_window_handle::HasWindowHandle) -> Option<ParentWindow> {
         match w.window_handle().ok()?.as_raw() {
             raw_window_handle::RawWindowHandle::Win32(h) => Some(ParentWindow(h.hwnd)),
@@ -611,8 +612,8 @@ impl raw_window_handle::HasWindowHandle for ParentWindow {
         let raw = raw_window_handle::RawWindowHandle::Win32(
             raw_window_handle::Win32WindowHandle::new(self.0),
         );
-        // SAFETY: el `HWND` es el de la ventana principal, que vive todo el proceso; el selector de carpeta lo consulta
-        // durante la propia llamada y se bloquea (diálogo modal) hasta cerrarse, antes de que la ventana pueda destruirse.
+        // SAFETY: the `HWND` is the one in the main window, which lives the entire process; the folder selector queries it
+        // during the call itself and is blocked (modal dialog) until closed, before the window can be destroyed.
         Ok(unsafe { raw_window_handle::WindowHandle::borrow_raw(raw) })
     }
 }
@@ -634,15 +635,15 @@ mod tests {
 
     #[test]
     fn abrir_la_papelera_pide_sincrono_y_sin_interfaz_de_error() {
-        // GM-m7: la petición lleva SEE_MASK_NOASYNC (con CoInitializeEx/CoUninitialize en el hilo) y NO_UI.
+        // GM-m7: The request carries SEE_MASK_NOASYNC (with CoInitializeEx/CoUninitialize in the thread) and NO_UI.
         assert_eq!(RECYCLE_BIN_MASK & SEE_MASK_NOASYNC, SEE_MASK_NOASYNC);
         assert_eq!(RECYCLE_BIN_MASK & SEE_MASK_FLAG_NO_UI, SEE_MASK_FLAG_NO_UI);
         let src = include_str!("platform.rs");
-        // La Papelera se abre con el hilo común de la shell (`shell_open_async`), que es el que inicializa COM.
+        // The Recycle Bin is opened by the shared shell thread (`shell_open_async`), which initializes COM.
         let open = &src[src.find("pub fn open_recycle_bin").unwrap()..];
         let open = &open[..open.find("\n}\n").unwrap()];
         assert!(open.contains("shell_open_async") && open.contains("RECYCLE_BIN_MASK"));
-        // Abrir una página usa SU máscara (síncrona y sin interfaz de error) y solo tras el predicado de la página de versión.
+        // Opening a page uses ITS mask (synchronous and no error interface) and only after the version page predicate.
         assert_eq!(URL_OPEN_MASK & SEE_MASK_NOASYNC, SEE_MASK_NOASYNC);
         assert_eq!(URL_OPEN_MASK & SEE_MASK_FLAG_NO_UI, SEE_MASK_FLAG_NO_UI);
         let url = &src[src.find("pub fn open_url_async").unwrap()..];
@@ -657,7 +658,7 @@ mod tests {
 
     #[test]
     fn la_ventana_padre_entrega_su_hwnd_al_selector_de_carpeta() {
-        // SAFETY: no recibe argumentos; devuelve el HWND del escritorio (válido durante toda la sesión).
+        // SAFETY: takes no arguments; returns the HWND of the desktop (valid throughout the session).
         let hwnd = unsafe { GetDesktopWindow() } as isize;
         let nz = std::num::NonZeroIsize::new(hwnd).expect("el escritorio tiene HWND");
         let p = ParentWindow(nz);
@@ -669,7 +670,7 @@ mod tests {
             p.display_handle().unwrap().as_raw(),
             RawDisplayHandle::Windows(_)
         ));
-        // Ida y vuelta: lo que sale de `from_handle` es el mismo padre.
+        // Round trip: what comes out of `from_handle` is the same parent.
         assert_eq!(ParentWindow::from_handle(&p), Some(p));
     }
 
@@ -681,7 +682,7 @@ mod tests {
 
     #[test]
     fn las_animaciones_se_consultan_sin_fallar() {
-        // Cualquiera de los dos valores es válido; lo que se prueba es que la llamada se ejecuta.
+        // Either value is valid; what is tested is that the call is executed.
         let _ = client_area_animation_enabled();
     }
 
@@ -713,25 +714,25 @@ mod tests {
 
     #[test]
     fn propiedades_de_una_ruta_inexistente_falla_sin_abrir_nada() {
-        // Una ruta que no existe bajo %TEMP%: la llamada se ejecuta y Windows la rechaza sin mostrar ningún cuadro.
+        // A path that does not exist under %TEMP%: The call is executed and Windows rejects it without displaying a box.
         let p = std::env::temp_dir().join(format!("tesela-test-{}-no-existe", std::process::id()));
         assert!(!p.exists());
         assert!(!show_properties(&p));
     }
 
-    /// Inicializa COM en este hilo (como hace `reveal_work` en el suyo) y ejecuta `f`.
+    /// Initialize COM in this thread (as `reveal_work` does in yours) and run `f`.
     fn with_com<T>(f: impl FnOnce() -> T) -> T {
-        // SAFETY: `CoInitializeEx` no recibe punteros (nulo = reservado); se empareja con `CoUninitialize` si tuvo éxito.
+        // SAFETY: `CoInitializeEx` does not receive pointers (null = reserved); matches `CoUninitialize` if successful.
         let hr = unsafe { CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32) };
         let out = f();
         if hr >= 0 {
-            // SAFETY: la llamada anterior inicializó COM en ESTE hilo.
+            // SAFETY: The previous call initialized COM on THIS thread.
             unsafe { CoUninitialize() };
         }
         out
     }
 
-    /// Carpeta temporal propia (solo se borra lo creado aquí, bajo la carpeta temporal).
+    /// Own temporary folder (only what was created here, under the temporary folder, is deleted).
     struct Temp(PathBuf);
     impl Temp {
         fn new() -> Temp {
@@ -757,7 +758,7 @@ mod tests {
             }
             other => panic!("se esperaba ParsePath, salió {other:?}"),
         }
-        // Rutas inservibles: ni se llama al shell.
+        // Useless routes: the shell is not even called.
         assert_eq!(reveal_work(Path::new("")), Err(RevealError::InvalidPath));
         let with_nul = PathBuf::from(std::ffi::OsString::from_wide(&[
             b'a' as u16,
@@ -765,7 +766,7 @@ mod tests {
             b'b' as u16,
         ]));
         assert_eq!(reveal_work(&with_nul), Err(RevealError::InvalidPath));
-        // El texto del error es técnico y neutro (la interfaz lo traduce).
+        // The error text is technical and neutral (the interface translates it).
         let text = RevealError::ParsePath(-2147024894).to_string();
         assert!(text.contains("0x80070002"), "{text}");
         assert_eq!(RevealError::InvalidPath.hresult(), None);
@@ -775,7 +776,7 @@ mod tests {
     fn el_pidl_se_crea_desde_el_utf16_exacto_aunque_el_nombre_no_sea_texto() {
         use std::ffi::OsString;
         let t = Temp::new();
-        // Un nombre con una unidad de código suelta (válido en NTFS, no representable como texto UTF-8).
+        // A name with an unpaired UTF-16 code unit (valid in NTFS, not representable as UTF-8 text).
         let name = OsString::from_wide(&[b'x' as u16, 0xD800, b'y' as u16]);
         let weird = t.0.join(&name);
         std::fs::write(&weird, b"x").unwrap();
@@ -784,17 +785,17 @@ mod tests {
             "el nombre no es texto"
         );
         with_com(|| {
-            // La ruta EXACTA se resuelve...
+            // The EXACT path is resolved...
             assert!(
                 parse_pidl(&weird).is_ok(),
                 "la ruta exacta debería resolverse"
             );
-            // ...y la versión "con pérdidas" (lo que hacía `path.display()`) apunta a otro archivo que no existe.
+            // ...and the "lossy" version (what `path.display()` did) points to another file that doesn't exist.
             let lossy = PathBuf::from(weird.to_string_lossy().into_owned());
             assert!(matches!(parse_pidl(&lossy), Err(RevealError::ParsePath(_))));
-            // Una carpeta normal también.
+            // A normal folder too.
             assert!(parse_pidl(&t.0).is_ok());
-            // Con prefijo `\\?\` (rutas canónicas del escáner) también.
+            // Prefixed with `\\?\` (canonical scanner routes) as well.
             let verbatim = PathBuf::from(format!(r"\\?\{}", t.0.display()));
             assert!(parse_pidl(&verbatim).is_ok());
         });
@@ -803,8 +804,8 @@ mod tests {
     #[test]
     fn la_llamada_al_shell_rechaza_un_pidl_nulo_sin_abrir_ninguna_ventana() {
         let hr = with_com(|| {
-            // SAFETY: un PIDL nulo está permitido por el contrato de la función (la API lo rechaza con un error); COM está
-            // inicializado en este hilo.
+            // SAFETY: a null PIDL is allowed by the function contract (the API rejects it with an error); COM is
+            // initialized in this thread.
             unsafe { shell_open_and_select(std::ptr::null()) }
         });
         assert!(hr < 0, "HRESULT {hr:#X}");
@@ -829,7 +830,7 @@ mod tests {
             "esperó más del plazo: {:?}",
             t0.elapsed()
         );
-        // Con un plazo holgado se recoge todo.
+        // With a short deadline, every result is collected.
         let jobs: Vec<Box<dyn FnOnce() -> Option<u32> + Send>> =
             vec![Box::new(|| Some(7)), Box::new(|| Some(8))];
         assert_eq!(
@@ -850,7 +851,7 @@ mod tests {
             volume_scope: true,
         };
         assert_eq!(d.used_percent(), 75);
-        // La cuota no cambia el porcentaje usado del volumen.
+        // The quota does not change the percentage of volume used.
         let q = DriveInfo {
             available: 10,
             ..d.clone()
@@ -880,7 +881,7 @@ mod tests {
         let RevealStart::Started(mut h) = reveal_in_explorer_async(&t.0.join("no-existe")) else {
             panic!("no debería estar ocupado");
         };
-        // Lanzar es inmediato (la E/S del shell va en otro hilo).
+        // Launching is immediate (shell I/O goes in another thread).
         assert!(t0.elapsed() < std::time::Duration::from_millis(500));
         let out = wait_for(|| h.poll());
         assert!(
@@ -895,12 +896,12 @@ mod tests {
         let (release_tx, release_rx) = crossbeam_channel::unbounded::<()>();
         let mk = |rx: crossbeam_channel::Receiver<()>| {
             move || {
-                let _ = rx.recv(); // "el shell no responde" hasta que se suelte
+                let _ = rx.recv(); // Simulate an unresponsive shell until the sender is dropped.
                 Ok(())
             }
         };
         let short = std::time::Duration::from_millis(60);
-        // Dos hilos vivos (el tope de la prueba) y un tercero rechazado sin lanzar nada.
+        // Two live threads (the top of the test) and a third rejected without launching anything.
         let RevealStart::Started(mut a) =
             spawn_reveal(mk(release_rx.clone()), &TEST_LIVE, 2, short)
         else {
@@ -921,27 +922,27 @@ mod tests {
             2,
             "el rechazado no deja rastro"
         );
-        // Pasado el plazo sin respuesta, `poll` avisa (no antes).
+        // After the deadline without a response, `poll` notifies (not before).
         assert_eq!(a.poll(), None);
         assert_eq!(wait_for(|| a.poll()), RevealOutcome::NoResponse);
         assert_eq!(wait_for(|| b.poll()), RevealOutcome::NoResponse);
-        // Los hilos siguen vivos (colgados): el tope sigue aplicándose.
+        // Threads are still alive (hanging): the cap still applies.
         assert_eq!(TEST_LIVE.load(Ordering::SeqCst), 2);
         assert!(matches!(
             spawn_reveal(mk(release_rx.clone()), &TEST_LIVE, 2, short),
             RevealStart::Busy
         ));
-        // Al responder el shell, los hilos terminan y el contador vuelve a 0.
+        // When the shell responds, the threads terminate and the counter returns to 0.
         drop(release_tx);
         wait_for(|| (TEST_LIVE.load(Ordering::SeqCst) == 0).then_some(()));
-        // Con sitio libre se vuelve a poder lanzar; y un trabajo que acaba bien da `Done`.
+        // With free space you can launch again; and a job that ends well gives `Done`.
         let RevealStart::Started(mut ok) =
             spawn_reveal(|| Ok(()), &TEST_LIVE, 2, std::time::Duration::from_secs(5))
         else {
             panic!()
         };
         assert_eq!(wait_for(|| ok.poll()), RevealOutcome::Done);
-        // Un trabajo que falla da el error; un pánico en el hilo no deja el contador subido.
+        // A job that fails gives the error; a panic in the thread does not leave the counter up.
         let RevealStart::Started(mut bad) = spawn_reveal(
             || Err(RevealError::Open(-5)),
             &TEST_LIVE,

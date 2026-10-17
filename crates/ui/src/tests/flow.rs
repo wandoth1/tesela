@@ -1,5 +1,5 @@
-//! Pruebas del flujo de limpieza de la interfaz (cesta, Recomendaciones, confirmación, ejecución y resumen) con el
-//! respaldo SIMULADO del modo demostración: nada de esto toca el disco.
+//! Testing the interface cleanup flow (basket, Recommendations, confirmation, execution and summary) with the
+//! SIMULATED demo mode backup: None of this touches the disk.
 
 use super::*;
 use crate::app::CleanStart;
@@ -10,7 +10,7 @@ fn clean_opts(start: CleanStart) -> Options {
     opts(StartScreen::Clean(start))
 }
 
-/// Pasos hasta que desaparece una etiqueta.
+/// Steps until a tag disappears.
 fn wait_gone(h: &mut Harness<'static, App>, label: &str) -> bool {
     for _ in 0..200 {
         h.run_steps(2);
@@ -22,8 +22,8 @@ fn wait_gone(h: &mut Harness<'static, App>, label: &str) -> bool {
     false
 }
 
-/// Pasos hasta que aparece una etiqueta que CONTIENE `text`; después unos pasos más: una ventana modal tarda unos
-/// fotogramas en asentar su posición y un clic en mitad de ese movimiento falla el botón.
+/// Steps until a label CONTAINING `text` appears; then a few more steps: a modal window takes a few
+/// frames to settle its position and a click in the middle of that movement fails the button.
 fn wait_contains(h: &mut Harness<'static, App>, text: &str) -> bool {
     for _ in 0..200 {
         h.run_steps(2);
@@ -40,9 +40,9 @@ fn basket_count(h: &Harness<'static, App>) -> usize {
     explore(h).flow.basket.len()
 }
 
-/// R-1: con la ventana MÍNIMA real (960x600) la pantalla de Recomendaciones no pisa nada: el titular largo ("Hasta X en
-/// candidatos de bajo riesgo...") pasa a varias líneas junto al botón principal sin cubrirlo, ni al subtítulo, ni al texto
-/// (largo) de hiberfil.sys. En español y en inglés.
+/// A-1: with the actual MINIMUM window (960x600) the Recommendations screen does not step on anything: the long headline ("Up to
+/// low-risk candidates...") goes to several lines next to the main button without covering it, nor the subtitle, nor the text
+/// (long) from hiberfil.sys. In Spanish and in English.
 #[test]
 fn con_la_ventana_minima_recomendaciones_no_pisa_titular_boton_ni_textos() {
     for (lang, items) in [
@@ -91,12 +91,12 @@ fn recomendaciones_ensenan_el_titular_las_tarjetas_y_preseleccionan_lo_seguro() 
     h.run_steps(3);
     h.get_by_label_contains("candidatos de bajo riesgo");
     h.get_by_label_contains("más que conviene que mires tú");
-    // Las tres clases de riesgo con su frase.
+    // The three kinds of risk with their phrase.
     h.get_by_label("Seguro");
     h.get_by_label_contains("Ya marcado");
     h.get_by_label("Revisar");
     assert!(h.query_all_by_label("Solo informar").count() >= 1);
-    // Lo seguro viene marcado (la primera vez): temporales y las cachés de Edge y Firefox; Chrome está abierto.
+    // The safe thing is checked (the first time): temporary and the caches of Edge and Firefox; Chrome is open.
     for name in [
         "Incluir Temporales del usuario",
         "Incluir Temporales de Windows",
@@ -117,7 +117,7 @@ fn recomendaciones_ensenan_el_titular_las_tarjetas_y_preseleccionan_lo_seguro() 
             "una caché de un navegador abierto no se preselecciona"
         );
     }
-    // Descargas y la Papelera: Revisar, con su botón; los de solo informar, sin casilla ni botón.
+    // Downloads and the Recycle Bin: Review, with its button; those that only inform, without a box or button.
     assert!(
         h.query_all_by_label("Ver").count() >= 2,
         "el botón de Descargas y el de la cesta"
@@ -125,9 +125,9 @@ fn recomendaciones_ensenan_el_titular_las_tarjetas_y_preseleccionan_lo_seguro() 
     h.get_by_label("Vaciar");
     h.get_by_label_contains("pagefile.sys");
     h.get_by_label_contains("hiberfil.sys");
-    // La barra de la cesta refleja lo marcado.
+    // The basket bar reflects what is marked.
     h.get_by_label_contains("Cesta · 4 elementos");
-    // Desmarcar una tarjeta la saca de la cesta.
+    // Unchecking a card removes it from the basket.
     h.get_by_label("Incluir Temporales del usuario").click();
     h.run_steps(3);
     assert!(
@@ -150,16 +150,16 @@ fn limpiar_lo_seguro_abre_la_confirmacion_y_cancelar_o_escape_no_tocan_nada() {
     );
     h.get_by_label_contains("Se borra y se vuelve a crear sola");
     h.get_by_label_contains("comprobamos cada ruta otra vez justo antes de borrar");
-    // El primer foco está en Cancelar (un Intro suelto nunca borra).
+    // Focus starts on Cancel (pressing Enter alone never deletes).
     assert!(h.get_by_label("Cancelar").is_focused());
-    // El botón principal dice lo que va a pasar.
+    // The main button says what is going to happen.
     h.get_by_label_contains("Liberar ");
-    // Cancelar cierra sin tocar nada.
+    // Cancel closes without touching anything.
     h.get_by_label("Cancelar").click();
     assert!(wait_gone(&mut h, "Revisa antes de limpiar"));
     assert_eq!(explore(&h).version, before_version);
     assert!(explore(&h).overlay.is_none(), "cancelar no cambia el árbol");
-    // Escape también.
+    // Escape too.
     h.get_by_label_contains("Limpiar lo seguro").click();
     assert!(wait_contains(&mut h, "Revisa antes de limpiar"));
     h.key_press(Key::Escape);
@@ -186,12 +186,12 @@ fn confirmar_ejecuta_enseña_el_resumen_y_el_arbol_encoge_sin_reescanear() {
         wait_contains(&mut h, "Cambio medido del espacio libre"),
         "no llegó el resumen"
     );
-    // Los tres contadores y lo que se saltó.
+    // The three counters and what was skipped.
     h.get_by_label("Eliminado definitivamente");
     h.get_by_label("Movido a la Papelera");
     h.get_by_label_contains("archivos en uso");
     h.get_by_label_contains("Chrome sigue abierto");
-    // Sin "Deshacer" (es de la v0.2) y sin abrir la Papelera real en la demostración.
+    // No "Undo" (it's from v0.2) and without opening the actual Recycle Bin in the demo.
     assert!(
         h.query_by_label("Deshacer lo enviado a la Papelera")
             .is_none()
@@ -203,7 +203,7 @@ fn confirmar_ejecuta_enseña_el_resumen_y_el_arbol_encoge_sin_reescanear() {
     );
     h.get_by_label("Volver al mapa").click();
     h.run_steps(4);
-    // El árbol se actualizó SIN reescanear: la carpeta temporal y la raíz encogieron; los histogramas son "aproximados".
+    // The tree was updated WITHOUT rescanning: the temp folder and root shrank; histograms are "approximate."
     let ex = explore(&h);
     assert!(ex.overlay.is_some() && ex.cleaned);
     assert!(ex.view().alloc(temp_node) < alloc_before);
@@ -224,19 +224,19 @@ fn anadir_desde_el_menu_quitar_y_la_cesta_se_agrupa_por_destino() {
     h.run_steps(3);
     h.get_by_label_contains("Proyectos, ").click_secondary();
     h.run_steps(3);
-    // Entrada del menú (hay otra copia en el panel de detalles: el menú es la que está dentro del popup).
+    // Menu entry (there is another copy in the details panel: the menu is the one inside the popup).
     let items: Vec<_> = h.query_all_by_label("Añadir a la cesta").collect();
     assert!(items.len() >= 2);
     items.into_iter().next().unwrap().click();
     h.run_steps(3);
     assert_eq!(basket_count(&h), 1);
     h.get_by_label_contains("Cesta · 1 elemento");
-    // El detalle lo marca y ofrece quitarlo.
+    // He marks the detail and offers to remove it.
     h.get_by_label("En la cesta");
     h.get_by_label("Quitar de la cesta").click();
     h.run_steps(3);
     assert_eq!(basket_count(&h), 0);
-    // Lo mismo desde el botón de los detalles, y "Ver" abre la lista agrupada por destino con sus frases.
+    // The same from the details button, and "View" opens the list grouped by destination with its phrases.
     h.get_by_label_contains("Proyectos, ").click();
     h.run_steps(2);
     h.get_by_label("Añadir a la cesta").click();
@@ -261,7 +261,7 @@ fn lo_protegido_no_se_anade_ver_contenido_ocupa_su_lugar_y_las_carpetas_conocida
     let mut h = harness(opts(user_folder()));
     h.get_by_label("Lista").click();
     h.run_steps(3);
-    // AppData es intocable como destino: se ve con candado, "Añadir" explica por qué y "Ver contenido" ocupa su lugar.
+    // AppData is untouchable as a destination: it is locked, "Add" explains why, and "View content" takes its place.
     let row = h.get_by_label_contains("AppData, ");
     assert!(
         row.accesskit_node()
@@ -278,7 +278,7 @@ fn lo_protegido_no_se_anade_ver_contenido_ocupa_su_lugar_y_las_carpetas_conocida
     }
     h.key_press(Key::Escape);
     h.run_steps(2);
-    // Una carpeta conocida (Vídeos): solo "Contenido de …", nunca la carpeta en sí.
+    // A known folder (Videos): only "Contents of...", never the folder itself.
     h.get_by_label_contains("Vídeos, ").click_secondary();
     h.run_steps(3);
     h.get_by_label("Añadir el contenido de «Vídeos» a la cesta")
@@ -292,7 +292,7 @@ fn lo_protegido_no_se_anade_ver_contenido_ocupa_su_lugar_y_las_carpetas_conocida
             Some(tesela_cleaner::Source::ContentsOf(_))
         ));
     }
-    // Las rutas del sistema (Windows) están denegadas por completo.
+    // System (Windows) routes are denied completely.
     h.get_by_label("Ir a Users").click();
     h.run_steps(3);
 }
@@ -302,7 +302,7 @@ fn lo_que_no_cabe_en_la_papelera_sale_en_el_grupo_ambar_con_su_casilla() {
     let mut h = harness(opts(StartScreen::Map(MapStart::default())));
     h.get_by_label("Lista").click();
     h.run_steps(3);
-    // `Juegos` (58 GB) supera el límite de la Papelera de la unidad ficticia (el 5 % conservador de la unidad, con margen).
+    // `Juegos` (58 GB) exceeds the Dummy drive's Recycle Bin limit (the conservative 5% of the drive, with margin).
     h.get_by_label_contains("Juegos, ").click_secondary();
     h.run_steps(3);
     h.query_all_by_label("Añadir a la cesta")
@@ -316,7 +316,7 @@ fn lo_que_no_cabe_en_la_papelera_sale_en_el_grupo_ambar_con_su_casilla() {
     h.get_by_label_contains("supera el tamaño de la Papelera");
     let check = h.get_by_label("Entiendo que esto no se podrá recuperar");
     assert_eq!(check.accesskit_node().toggled(), Some(Toggled::False));
-    // Sin la casilla no hay nada que liberar: el botón principal no promete espacio.
+    // Without the box there is nothing to free: the main button does not promise space.
     assert!(h.query_by_label_contains("Liberar ").is_none());
     h.get_by_label("Entiendo que esto no se podrá recuperar")
         .click();
@@ -329,14 +329,14 @@ fn vaciar_ahora_del_resumen_vuelve_a_pedir_confirmacion_con_alcance_enumerado() 
     let mut h = harness(clean_opts(CleanStart::Summary));
     h.run_steps(3);
     h.get_by_label("Cambio medido del espacio libre");
-    // T1: y dice que otros programas pueden influir en esa cifra.
+    // T1: and it says that other programs can influence that figure.
     h.get_by_label_contains("otros programas que escriban o borren a la vez");
     h.get_by_label_contains("están en la Papelera de reciclaje");
     h.get_by_label_contains("Vaciar ahora").click();
     assert!(wait_contains(&mut h, "Revisa antes de limpiar"));
     h.get_by_label("Vaciar la Papelera");
     h.get_by_label_contains("Lo que entre después no se toca");
-    // Es irreversible: el foco está en Cancelar.
+    // It is irreversible: the focus is on Cancel.
     assert!(h.get_by_label("Cancelar").is_focused());
 }
 
@@ -364,8 +364,8 @@ fn la_simulacion_no_cambia_el_arbol_y_lo_dice() {
     assert!(!explore(&h).cleaned);
 }
 
-/// H4: una categoría descartada por un enlace en su ruta (p. ej. `User Data` de Edge movida a otra unidad con un junction)
-/// no desaparece en silencio: sale como "No disponible" con su motivo, en español y en inglés.
+/// H4: A category dropped by a link in its path (e.g. `User Data` from Edge moved to another unit with a junction)
+/// It does not disappear silently: it appears as "Not available" with its reason, in Spanish and English.
 #[test]
 fn una_categoria_descartada_por_un_enlace_sale_como_no_disponible_con_su_motivo() {
     for en in [false, true] {
@@ -392,7 +392,7 @@ fn una_categoria_descartada_por_un_enlace_sale_como_no_disponible_con_su_motivo(
         };
         h.get_by_label(title);
         h.get_by_label_contains(why);
-        // Chrome sigue disponible; Edge ya no aparece como casilla utilizable.
+        // Chrome is still available; Edge no longer appears as a usable tile.
         assert!(
             !explore(&h)
                 .flow
@@ -418,9 +418,9 @@ fn un_navegador_abierto_puede_volver_a_comprobarse() {
             .basket
             .contains_category(CategoryId::ChromeCache)
     );
-    // El usuario cierra Chrome y pulsa "Volver a comprobar": su caché pasa a ser utilizable (y se puede marcar).
+    // The user closes Chrome and presses "Check again": its cache becomes usable (and can be marked).
     be.set_browsers(Vec::new());
-    // Con el teclado (el enlace puede quedar bajo la barra de la cesta en una ventana baja).
+    // With the keyboard (the link can be under the basket bar in a lower window).
     h.get_by_label("Volver a comprobar").focus();
     h.run_steps(2);
     h.key_press(Key::Enter);
@@ -450,16 +450,16 @@ fn los_textos_de_la_limpieza_estan_en_ingles_con_el_idioma_en_ingles() {
     h.get_by_label("Deleted and recreated on its own");
     h.get_by_label("Goes to the Recycle Bin · you can recover it");
     assert!(h.query_all_by_label_contains("Your file").count() >= 1);
-    // Los archivos del usuario llevan su carpeta padre (distingue nombres repetidos).
+    // The user's files have their parent folder (distinguishes repeated names).
     assert!(h.query_all_by_label_contains("in Descargas").count() >= 1);
     h.get_by_label_contains("These are your own files; they are not recreated");
 }
 
-/// M2: mientras se ejecuta la limpieza, cerrar la ventana se bloquea (dejaría el trabajo a medias) y la ventana de
-/// progreso explica que espere o cancele; "Cancelar" sigue disponible. Fuera de la ejecución, cerrar no se toca.
+/// M2: While the cleanup is running, closing the window hangs (it would leave the job half done) and the cleanup window
+/// progress explains to wait or cancel; "Cancel" is still available. Outside of execution, close is not touched.
 #[test]
 fn cerrar_la_ventana_durante_la_ejecucion_se_bloquea_y_lo_explica() {
-    // El respaldo simulado con pausas, para que la ejecución dure lo bastante.
+    // Simulated backup with pauses, so that the execution lasts long enough.
     let be = std::sync::Arc::new(crate::demo_backend::DemoBackend::new(
         std::time::Duration::from_millis(1500),
     ));
@@ -467,23 +467,23 @@ fn cerrar_la_ventana_durante_la_ejecucion_se_bloquea_y_lo_explica() {
     o.backend = Some(crate::app::BackendRef(be));
     let mut h = harness(o);
     h.run_steps(3);
-    // Sin ejecutar nada: el cierre pasa.
+    // Without executing anything: the closure passes.
     assert!(!h.state_mut().ui_mut().guard_close(true));
     h.get_by_label_contains("Limpiar lo seguro").click();
     assert!(wait_contains(&mut h, "Revisa antes de limpiar"));
-    // Con la confirmación abierta (nada se ejecuta aún) también pasa.
+    // With open commit (nothing is executed yet) it also happens.
     assert!(!h.state_mut().ui_mut().guard_close(true));
     h.get_by_label_contains("Liberar ").click();
     assert!(wait_contains(&mut h, "Limpiando"));
     assert!(explore(&h).flow.is_running());
-    // Sin petición de cierre no se bloquea nada ni se avisa.
+    // Without a closure request, nothing is blocked or notified.
     assert!(!h.state_mut().ui_mut().guard_close(false));
     assert!(
         h.query_all_by_label_contains("Espera a que termine")
             .count()
             == 0
     );
-    // Con la petición: se bloquea y se explica.
+    // With the request: it is blocked and explained.
     assert!(h.state_mut().ui_mut().guard_close(true));
     h.run_steps(3);
     assert!(
@@ -491,11 +491,11 @@ fn cerrar_la_ventana_durante_la_ejecucion_se_bloquea_y_lo_explica() {
             .count()
             >= 1
     );
-    // Cancelar sigue disponible.
+    // Cancel is still available.
     assert!(!h.get_by_label("Cancelar").accesskit_node().is_disabled());
 }
 
-/// M-B: "Limpiar lo seguro" también se ejecuta desde la pantalla de escaneo: cerrar la ventana se bloquea igual.
+/// M-B: "Wipe Safe" also runs from the scan screen - closing the window still crashes.
 #[test]
 fn cerrar_la_ventana_durante_la_ejecucion_desde_el_escaneo_tambien_se_bloquea() {
     let be = std::sync::Arc::new(crate::demo_backend::DemoBackend::new(
@@ -505,7 +505,7 @@ fn cerrar_la_ventana_durante_la_ejecucion_desde_el_escaneo_tambien_se_bloquea() 
     o.backend = Some(crate::app::BackendRef(be));
     let mut h = harness(o);
     assert_eq!(h.state().ui().screen_name(), "scan");
-    // Sin ejecutar nada el cierre pasa.
+    // Without executing anything the closure passes.
     assert!(!h.state_mut().ui_mut().guard_close(true));
     assert!(
         wait_contains(&mut h, "Limpiar lo seguro"),
@@ -529,7 +529,7 @@ fn cerrar_la_ventana_durante_la_ejecucion_desde_el_escaneo_tambien_se_bloquea() 
     );
 }
 
-/// UX-2: el botón "Inicio" de la barra superior (a la izquierda de "Subir un nivel") vuelve a la pantalla de elegir disco.
+/// UX-2: The "Home" button in the top bar (to the left of "Up one level") returns to the choose disk screen.
 #[test]
 fn el_boton_inicio_vuelve_a_la_pantalla_de_inicio() {
     for en in [false, true] {
@@ -544,7 +544,7 @@ fn el_boton_inicio_vuelve_a_la_pantalla_de_inicio() {
             ("Inicio", "Subir un nivel")
         };
         assert_eq!(h.state().ui().screen_name(), "explore");
-        // A la izquierda de "Subir un nivel" y sin pisarlo.
+        // To the left of "Go up a level" and without stepping on it.
         let (rh, ru) = (h.get_by_label(home).rect(), h.get_by_label(up).rect());
         assert!(rh.right() <= ru.left(), "{rh:?} {ru:?}");
         assert!((rh.center().y - ru.center().y).abs() < 1.0);
@@ -559,7 +559,7 @@ fn el_boton_inicio_vuelve_a_la_pantalla_de_inicio() {
     }
 }
 
-/// UX-2: Alt+Inicio hace lo mismo; Inicio a secas sigue siendo la navegación de la lista (no sale de la exploración).
+/// UX-2: Alt+Home does the same; Home is still just browsing the list (it doesn't exit the scan).
 #[test]
 fn alt_inicio_vuelve_a_la_pantalla_de_inicio_e_inicio_a_secas_no() {
     let mut h = harness(opts(user_folder()));
@@ -571,7 +571,7 @@ fn alt_inicio_vuelve_a_la_pantalla_de_inicio_e_inicio_a_secas_no() {
     assert_eq!(h.state().ui().screen_name(), "home");
 }
 
-/// UX-2: con la ventana mínima (960 x 600) el botón nuevo no se solapa con nada de la barra superior.
+/// UX-2: With the minimum window (960 x 600) the new button does not overlap anything in the top bar.
 #[test]
 fn con_la_ventana_minima_el_boton_inicio_no_se_solapa_en_la_barra_superior() {
     for en in [false, true] {
@@ -612,7 +612,7 @@ fn con_la_ventana_minima_el_boton_inicio_no_se_solapa_en_la_barra_superior() {
     }
 }
 
-/// UX-2: con una limpieza en curso, "Inicio" está deshabilitado y Alt+Inicio no hace nada (como el cierre de la ventana).
+/// UX-2: With a cleanup in progress, "Home" is disabled and Alt+Home does nothing (such as closing the window).
 #[test]
 fn con_una_limpieza_en_curso_inicio_esta_deshabilitado() {
     let be = std::sync::Arc::new(crate::demo_backend::DemoBackend::new(
@@ -622,7 +622,7 @@ fn con_una_limpieza_en_curso_inicio_esta_deshabilitado() {
     o.backend = Some(crate::app::BackendRef(be));
     let mut h = harness(o);
     h.run_steps(3);
-    // Sin limpiar: habilitado.
+    // Uncleaned: Enabled.
     assert!(!h.get_by_label("Inicio").accesskit_node().is_disabled());
     h.get_by_label_contains("Limpiar lo seguro").click();
     assert!(wait_contains(&mut h, "Revisa antes de limpiar"));

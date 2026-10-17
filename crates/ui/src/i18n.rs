@@ -1,11 +1,11 @@
-//! Idiomas de la interfaz: español e inglés con `fluent-bundle` (PLAN.md §2.10). Ninguna cadena de la interfaz está
-//! escrita en el código: todo sale de `i18n/es.ftl` y `i18n/en.ftl` por su identificador.
+//! Interface languages: Spanish and English with `fluent-bundle` (PLAN.md §2.10). No interface string is
+//! written in the code: everything comes out of `i18n/es.ftl` and `i18n/en.ftl` by its identifier.
 //!
-//! * El idioma por defecto se detecta del sistema (`sys-locale`); cualquier configuración regional que no sea inglesa
-//!   y no empiece por `es` cae en inglés (el idioma de reserva), y las `es-*` en español.
-//! * `set_use_isolating(false)`: sin las marcas de aislamiento bidireccional (FSI/PDI), que egui dibuja como cajitas.
-//! * Los números (tamaños, porcentajes, miles) se formatean aquí según el idioma: coma decimal y punto de miles en
-//!   español; punto decimal y coma de miles en inglés.
+//! * The default language comes from the system (`sys-locale`). Any locale that is neither English nor starts with `es`
+//!   defaults to English; `es-*` selects Spanish.
+//! * `set_use_isolating(false)`: without the bidirectional isolation marks (FSI/PDI), which egui draws as little boxes.
+//! * Numbers (sizes, percentages, thousands) are formatted here depending on the language: decimal point and thousands point in
+//!   Spanish; a decimal point and comma thousands separator in English.
 
 use fluent_bundle::{FluentArgs, FluentBundle, FluentResource, FluentValue};
 use unic_langid::LanguageIdentifier;
@@ -13,7 +13,7 @@ use unic_langid::LanguageIdentifier;
 const ES: &str = include_str!("../i18n/es.ftl");
 const EN: &str = include_str!("../i18n/en.ftl");
 
-/// Idioma de la interfaz.
+/// Interface language.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum Lang {
     #[serde(rename = "es")]
@@ -23,10 +23,10 @@ pub enum Lang {
 }
 
 impl Lang {
-    /// Todos los idiomas.
+    /// All languages.
     pub const ALL: [Lang; 2] = [Lang::Es, Lang::En];
 
-    /// Código BCP 47.
+    /// BCP code 47.
     pub fn code(self) -> &'static str {
         match self {
             Lang::Es => "es",
@@ -34,7 +34,7 @@ impl Lang {
         }
     }
 
-    /// Idioma para una configuración regional del sistema (`es-ES`, `en-US`, `fr-FR`...).
+    /// Language for a system locale (`es-ES`, `en-US`, `fr-FR`...).
     pub fn from_locale(locale: &str) -> Lang {
         let l = locale.to_ascii_lowercase();
         if l == "es" || l.starts_with("es-") || l.starts_with("es_") {
@@ -44,13 +44,13 @@ impl Lang {
         }
     }
 
-    /// Idioma del sistema (inglés si no se puede saber).
+    /// System language (English if you can't know).
     pub fn system() -> Lang {
         sys_locale::get_locale().map_or(Lang::En, |l| Lang::from_locale(&l))
     }
 }
 
-/// Textos de un idioma y formato de cifras.
+/// Texts of one language and format of figures.
 pub struct Tr {
     lang: Lang,
     bundle: FluentBundle<FluentResource>,
@@ -63,7 +63,7 @@ impl std::fmt::Debug for Tr {
 }
 
 impl Tr {
-    /// Textos en `lang`.
+    /// Texts in `lang`.
     pub fn new(lang: Lang) -> Tr {
         let src = match lang {
             Lang::Es => ES,
@@ -80,17 +80,17 @@ impl Tr {
         Tr { lang, bundle }
     }
 
-    /// El idioma activo.
+    /// The active language.
     pub fn lang(&self) -> Lang {
         self.lang
     }
 
-    /// Texto sin argumentos. Si el identificador no existe devuelve el propio identificador (los tests lo impiden).
+    /// Text without arguments. If the identifier does not exist, it returns the identifier itself (the tests prevent this).
     pub fn t(&self, id: &str) -> String {
         self.format(id, None)
     }
 
-    /// Texto con argumentos de cadena y numéricos.
+    /// Text with string and numeric arguments.
     pub fn ta(&self, id: &str, args: &[(&str, Arg)]) -> String {
         let mut fa = FluentArgs::new();
         for (k, v) in args {
@@ -115,7 +115,7 @@ impl Tr {
         s.into_owned()
     }
 
-    /// ¿Existe el identificador?
+    /// Does the identifier exist?
     pub fn has(&self, id: &str) -> bool {
         self.bundle.has_message(id)
     }
@@ -134,7 +134,7 @@ impl Tr {
         }
     }
 
-    /// Entero con separador de miles (`1.214` en español, `1,214` en inglés).
+    /// Integer with thousands separator (`1.214` in Spanish, `1,214` in English).
     pub fn int(&self, n: u64) -> String {
         let digits = n.to_string();
         let mut out = String::with_capacity(digits.len() + digits.len() / 3);
@@ -147,12 +147,12 @@ impl Tr {
         out
     }
 
-    /// Decimal con `decimals` cifras y el separador del idioma.
+    /// Decimal with `decimals` figures and the language separator.
     pub fn dec(&self, v: f64, decimals: usize) -> String {
         format!("{v:.decimals$}").replace('.', &self.decimal().to_string())
     }
 
-    /// Tamaño en bytes con unidad base 1024 (`28,3 GB`). Por debajo de 1 KiB, bytes enteros.
+    /// Size in bytes with base unit 1024 (`28,3 GB`). Below 1 KiB, integer bytes.
     pub fn size(&self, bytes: u64) -> String {
         const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
         let mut v = bytes as f64;
@@ -164,7 +164,7 @@ impl Tr {
         if i == 0 {
             format!("{bytes} B")
         } else {
-            // Un decimal, salvo que al redondear salga 1024 (p. ej. 1023,96 KB): entonces ya es la unidad siguiente.
+            // A decimal, unless rounding results in 1024 (e.g. 1023.96 KB): then it is the next unit.
             let r = (v * 10.0).round() / 10.0;
             if r >= 1024.0 && i < UNITS.len() - 1 {
                 format!("{} {}", self.dec(r / 1024.0, 1), UNITS[i + 1])
@@ -174,18 +174,18 @@ impl Tr {
         }
     }
 
-    /// Tamaño con el prefijo "≥ " (un mínimo: el análisis no llegó a todo).
+    /// Size with the prefix "≥ " (a minimum: the analysis did not reach everything).
     pub fn size_min(&self, bytes: u64) -> String {
         format!("≥ {}", self.size(bytes))
     }
 
-    /// Porcentaje entero (`19 %` en español, `19%` en inglés).
+    /// Integer percentage (`19 %` in Spanish, `19%` in English).
     pub fn pct(&self, p: f64) -> String {
         let n = p.round().clamp(0.0, 100.0) as i64;
         self.ta("percent", &[("n", Arg::Num(n))])
     }
 
-    /// Porcentaje con la parte decimal solo si es menor del 10 % (`3,4 %`, `27 %`); para cuotas pequeñas.
+    /// Percentage with decimal part only if less than 10% (`3,4 %`, `27 %`); for small installments.
     pub fn pct_fine(&self, p: f64) -> String {
         if p > 0.0 && p < 10.0 {
             self.ta("percent-fine", &[("v", Arg::Str(self.dec(p, 1)))])
@@ -195,7 +195,7 @@ impl Tr {
     }
 }
 
-/// Argumento de un mensaje.
+/// Argument of a message.
 #[derive(Clone, Debug)]
 pub enum Arg {
     Str(String),
@@ -306,10 +306,10 @@ mod catalog_tests {
         ("widgets.rs", include_str!("widgets.rs")),
     ];
 
-    /// Las fuentes de la interfaz, más la parte NO de pruebas de este mismo archivo (usa `percent`).
+    /// The interface sources, plus the NON-testing part of this same file (use `percent`).
     fn all_sources() -> Vec<(&'static str, &'static str)> {
         let mut v = SOURCES.to_vec();
-        // `about.rs` sin sus pruebas (que citan texto de los avisos).
+        // `about.rs` without its evidence (which quotes text from the notices).
         v.push((
             "about.rs",
             include_str!("about.rs")
@@ -317,7 +317,7 @@ mod catalog_tests {
                 .next()
                 .unwrap(),
         ));
-        // `error.rs` sin sus pruebas (que citan los textos en los dos idiomas).
+        // `error.rs` without its proofs (which cite the texts in both languages).
         v.push((
             "error.rs",
             include_str!("error.rs")
@@ -335,7 +335,7 @@ mod catalog_tests {
         v
     }
 
-    /// Identificadores de mensaje de un `.ftl`: las líneas que empiezan por `id =` (sin sangría).
+    /// Message identifiers for a `.ftl`: lines starting with `id =` (without indentation).
     fn ids(src: &str) -> BTreeSet<String> {
         src.lines()
             .filter(|l| !l.starts_with([' ', '#', '}', '\t']) && l.contains('='))
@@ -343,7 +343,7 @@ mod catalog_tests {
             .collect()
     }
 
-    /// Literales de cadena de una fuente (sin escapes complicados: los textos de las claves no los llevan).
+    /// String literals from a source (no complicated escaping: key texts don't have them).
     fn literals(src: &str) -> Vec<String> {
         let mut out = vec![];
         let b = src.as_bytes();
@@ -375,7 +375,7 @@ mod catalog_tests {
         let only_en: Vec<_> = en.difference(&es).collect();
         assert!(only_es.is_empty(), "solo en es.ftl: {only_es:?}");
         assert!(only_en.is_empty(), "solo en en.ftl: {only_en:?}");
-        // Los dos se cargan sin errores (identificadores repetidos, sintaxis).
+        // Both load without errors (repeated identifiers, syntax).
         for lang in Lang::ALL {
             let tr = Tr::new(lang);
             for id in &es {
@@ -390,13 +390,13 @@ mod catalog_tests {
         }
     }
 
-    /// Ningún porcentaje se escribe a mano: el espacio antes de `%` cambia con el idioma (`19 %` en es, `19%` en en) y lo
-    /// decide Fluent (`Tr::pct` y `Tr::pct_fine`). Cualquier literal de cadena del código con un `%` falla.
+    /// No percentage is written by hand: the space before `%` changes with the language (`19 %` in es, `19%` in en) and
+    /// decides Fluent (`Tr::pct` and `Tr::pct_fine`). Any string literal in the code with a `%` fails.
     #[test]
     fn ningun_porcentaje_se_escribe_a_mano_en_el_codigo() {
         let mut bad = Vec::new();
         for (file, src) in all_sources() {
-            // Solo el código de producción (las pruebas de cada módulo pueden citar textos ya formateados).
+            // Only production code (tests for each module can quote already formatted texts).
             let prod = src.split("#[cfg(test)]").next().unwrap_or(src);
             let prod: String = prod
                 .lines()
@@ -426,7 +426,7 @@ mod catalog_tests {
             if file == "icons.rs" {
                 continue;
             }
-            // `.t("id")` y `.ta("id", ...)`.
+            // `.t("id")` and `.ta("id", ...)`.
             for needle in [".t(\"", ".ta(\""] {
                 let mut rest = src;
                 while let Some(p) = rest.find(needle) {
@@ -440,7 +440,7 @@ mod catalog_tests {
                     rest = after;
                 }
             }
-            // Identificadores indirectos (tablas de claves): cualquier literal que sea un identificador del catálogo.
+            // Indirect identifiers (key tables): Any literal that is a catalog identifier.
             for lit in literals(src) {
                 if known.contains(&lit) {
                     used.insert(lit);
@@ -453,7 +453,7 @@ mod catalog_tests {
 
     #[test]
     fn no_hay_cadenas_literales_de_interfaz_en_el_codigo() {
-        // Llamadas que reciben el texto que verá el usuario: su primer argumento no puede ser un literal con letras.
+        // Calls that receive the text the user will see: Their first argument cannot be a lettered literal.
         let calls = [
             "RichText::new(\"",
             "Label::new(\"",
@@ -472,7 +472,7 @@ mod catalog_tests {
             if file == "icons.rs" || file == "platform.rs" {
                 continue;
             }
-            // Fuera de los bloques de tests de cada archivo.
+            // Outside the test blocks of each file.
             let body = src.split("#[cfg(test)]").next().unwrap();
             for c in calls {
                 let mut rest = body;
@@ -485,7 +485,7 @@ mod catalog_tests {
                             "{file}: texto de interfaz escrito en el código: {c}{lit}\""
                         );
                     } else {
-                        // `selectable_label(selected, tr.t(...))`: el segundo argumento debe salir del catálogo.
+                        // `selectable_label(selected, tr.t(...))`: The second argument must come out of the catalog.
                         let line = &after[..after.find('\n').unwrap_or(after.len())];
                         assert!(!line.contains(", \""), "{file}: literal en {c}{line}");
                     }
@@ -512,7 +512,7 @@ mod catalog_tests {
             ),
             "19 % de usuario"
         );
-        // Sin marcas de aislamiento bidireccional (egui las dibujaría como cajitas).
+        // Without bidirectional isolation marks (I would draw them as little boxes).
         let s = es.ta("analyze-drive", crate::args!["name" => "Sistema (C:)"]);
         assert_eq!(s, "Analizar Sistema (C:)");
         assert!(!s.contains('\u{2068}') && !s.contains('\u{2069}'));

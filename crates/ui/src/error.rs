@@ -1,25 +1,25 @@
-//! Errores TIPADOS hasta la interfaz. Los crates de abajo (`tesela-scanner`, `platform`) devuelven enums, no frases: aquí
-//! se traducen con Fluent al idioma de la sesión (y se retraducen si el usuario cambia de idioma). El detalle técnico del
-//! sistema (el texto de un `io::Error`, un código `HRESULT`) va aparte, entre paréntesis, tal como lo da Windows.
+//! TYPED errors up to the interface. The crates below (`tesela-scanner`, `platform`) return enums, not phrases: here
+//! they are translated with Fluent into the language of the session (and retranslated if the user changes languages). The technical detail of
+//! system (the text of a `io::Error`, a `HRESULT` code) goes separately, in parentheses, as given by Windows.
 
 use crate::args;
 use crate::i18n::Tr;
 use crate::platform::{RevealError, RevealOutcome};
 use tesela_scanner::ScanError;
 
-/// Por qué no pudo empezar (o acabar) un análisis.
+/// Why you couldn't start (or finish) an analysis.
 #[derive(Debug)]
 pub enum StartError {
-    /// Error del escáner (la raíz no se abre, no es una carpeta, un hilo falló).
+    /// Scanner error (root does not open, not a folder, a thread failed).
     Scan(ScanError),
-    /// El hilo de arranque terminó sin dejar resultado (no debería ocurrir).
+    /// The bootstrap thread terminated without output (shouldn't happen).
     StartupLost,
-    /// Se cerró o canceló la pantalla antes de que arrancara: no se enseña como error.
+    /// Screen was closed or canceled before booting: not displayed as an error.
     Cancelled,
 }
 
 impl StartError {
-    /// El motivo, traducido y con el detalle técnico aparte cuando lo hay.
+    /// The reason, translated and with the technical detail aside when there is one.
     pub fn reason(&self, tr: &Tr) -> String {
         match self {
             StartError::Scan(ScanError::Root(e)) => match e.kind() {
@@ -35,13 +35,13 @@ impl StartError {
         }
     }
 
-    /// El aviso completo de la pantalla de inicio: "No se pudo empezar el análisis: …".
+    /// The full home screen warning: "Failed to start analysis:...".
     pub fn message(&self, tr: &Tr) -> String {
         tr.ta("error-scan-start", args!["error" => self.reason(tr)])
     }
 }
 
-/// El aviso de que no se pudo abrir el Explorador: "No se pudo abrir el Explorador: …" (el código de Windows, aparte).
+/// The warning that Explorer could not be opened: "Explorer could not be opened:..." (Windows code, separate).
 pub fn reveal_message(tr: &Tr, e: &RevealError) -> String {
     let reason = match e {
         RevealError::InvalidPath => tr.t("error-reveal-invalid"),
@@ -53,7 +53,7 @@ pub fn reveal_message(tr: &Tr, e: &RevealError) -> String {
     tr.ta("error-open-explorer", args!["error" => reason])
 }
 
-/// El aviso (toast) de cómo acabó una petición de abrir el Explorador; `None` si salió bien.
+/// The toast of how a request to open the Explorer ended; `None` if it went well.
 pub fn reveal_outcome_message(tr: &Tr, o: &RevealOutcome) -> Option<String> {
     match o {
         RevealOutcome::Done => None,
@@ -63,12 +63,12 @@ pub fn reveal_outcome_message(tr: &Tr, o: &RevealOutcome) -> Option<String> {
     }
 }
 
-/// `HRESULT` en hexadecimal (`0x80070002`), el detalle técnico que se enseña aparte.
+/// `HRESULT` in hexadecimal (`0x80070002`), the technical detail shown separately.
 fn hresult_text(h: i32) -> String {
     format!("{:#010X}", h as u32)
 }
 
-/// Un aviso que la pantalla de inicio enseña hasta que se lanza otro análisis. Se guarda TIPADO y se traduce al pintarlo.
+/// A warning that the home screen displays until another analysis is launched. It is saved TYPE and translated when painted.
 #[derive(Debug)]
 pub enum Notice {
     ScanStart(StartError),
@@ -178,7 +178,7 @@ mod tests {
                 "you do not have permission to open that path",
             ),
             (
-                // Otro código: el detalle técnico del sistema se enseña aparte, entre paréntesis.
+                // Other code: the technical detail of the system is shown separately, in parentheses.
                 StartError::Scan(ScanError::Root(io(32))),
                 "no se puede abrir la ruta (",
                 "the path cannot be opened (",
@@ -205,23 +205,23 @@ mod tests {
             assert!(m_es.contains(want_es), "{m_es}");
             assert!(m_en.contains(want_en), "{m_en}");
             assert_ne!(m_es, m_en);
-            // Ningún texto de los crates de abajo se cuela sin traducir: el mensaje del escáner (inglés neutro) no sale.
+            // No text from the crates below slips through untranslated: the scanner message (neutral English) does not appear.
             for m in [&m_es, &m_en] {
                 assert!(!m.contains("scanner thread panicked"), "{m}");
                 assert!(!m.contains("cannot open the scan root"), "{m}");
                 assert!(!m.contains("links are not followed"), "{m}");
             }
         }
-        // El detalle (el texto del sistema para ese código) es lo que va entre paréntesis.
+        // The detail (the system text for that code) is what goes in parentheses.
         let detail = io(32).to_string();
         assert!(
             StartError::Scan(ScanError::Root(io(32)))
                 .message(&es)
                 .contains(&format!("({detail})"))
         );
-        // El mensaje del escáner en sí no está en español (lo traduce la interfaz).
+        // The scanner message itself is not in Spanish (it is translated by the interface).
         assert!(!ScanError::Panicked.to_string().contains("pánico"));
-        // Los avisos guardan el error tipado y se retraducen al cambiar de idioma.
+        // The notices save the typed error and are retranslated when changing languages.
         let n = Notice::ScanStart(StartError::Scan(ScanError::Root(io(2))));
         assert!(n.text(&es).starts_with("No se pudo empezar el análisis"));
         assert!(n.text(&en).starts_with("The scan could not start"));

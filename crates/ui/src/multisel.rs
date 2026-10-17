@@ -1,17 +1,17 @@
-//! Selección múltiple: marcar varios elementos de la carpeta que se está viendo y añadirlos JUNTOS a la cesta.
+//! Multiple selection: mark several items in the current folder and add them to the basket together.
 //!
-//! * Lo marcado vive en [`Marks`] y es independiente de `Explore::selection` (el elemento "activo" de los detalles).
-//! * **Solo se marcan hijos de la carpeta actual** (o de la agrupación "Otros" abierta): si el clic o la tecla cae en un
-//!   descendiente (una celda insinuada del mapa), se marca su ascendiente de esta carpeta. Entre hermanos nunca hay
-//!   anidación, así que un tamaño no se puede sumar dos veces. Lo único que puede solaparse es la cesta, y de eso se
-//!   encarga `add_state` (`InBasket`): lo que ya está en ella se excluye y se explica.
-//! * **Nunca hay una marca invisible**: se vacía al cambiar de carpeta (entrar, subir, migas, abrir "Otros") y, al
-//!   cambiar la búsqueda, solo se conservan las marcas que siguen entre los aciertos (así "Añadir N" no añade nada que la
-//!   lista no enseñe). Reescanear o volver a Inicio sueltan la exploración entera, y una limpieza solo retira lo que
-//!   desapareció de verdad. Si navegar suelta marcas, un aviso breve dice cuántas.
-//! * Añadir comprueba cada elemento con `add_state` y lo da de alta por lotes (`Basket::add_batch`), que repite por
-//!   elemento las comprobaciones de `add_path` y `add_contents_of`: ninguna protección se salta. Para una sola ruta, el
-//!   menú y el panel de detalles usan `Explore::basket_add_one`.
+//! * Marks are stored in [`Marks`] and are independent of `Explore::selection` (the active item shown in Details).
+//! * Only children of the current folder or the open "Others" group can be marked. If a click or key lands on a deeper
+//!   descendant (a hinted map cell), its ancestor in the current folder is marked. Siblings are never nested, so their
+//!   sizes cannot be counted twice. Basket membership is the only possible overlap; `add_state` excludes and explains it
+//!   with `InBasket`.
+//! * Marks are never hidden: changing folders (entering one, going up, using breadcrumbs, or opening "Other") clears them.
+//!   Changing the search keeps only marks that still match, so "Add N" never adds items absent from the list. Rescanning
+//!   or returning Home clears all marks; cleanup removes only items that actually disappeared. A brief prompt reports any
+//!   marks dropped while browsing.
+//! * Each item is checked with `add_state` before batch insertion through `Basket::add_batch`, which also checks
+//!   `add_path` and `add_contents_of`. No protection is bypassed. For one item, the menu and Details panel use
+//!   `Explore::basket_add_one`.
 
 use crate::app::Env;
 use crate::args;
@@ -30,26 +30,26 @@ use tesela_cleaner::{AddOutcome, BatchKind};
 use tesela_layout::Others;
 use tesela_model::NodeId;
 
-/// Alto de la barra de selección (dos líneas de texto).
+/// Height of the selection bar (two lines of text).
 pub(crate) const BAR_H: f32 = 44.0;
-/// Ancho que ocupa la columna de casillas de la lista.
+/// Width occupied by the column of boxes in the list.
 pub(crate) const CHECK_W: f32 = 26.0;
 
-/// Lo marcado y el modo "Seleccionar".
+/// The marked and the "Select" mode.
 #[derive(Default)]
 pub(crate) struct Marks {
     set: HashSet<NodeId>,
-    /// Último elemento tocado (el extremo fijo de un rango con Mayús).
+    /// Last element touched (the fixed end of a range with Shift).
     pub(crate) anchor: Option<NodeId>,
-    /// Modo "Seleccionar": pulsar un elemento lo marca o desmarca, y la lista enseña sus casillas.
+    /// "Select" mode: clicking an item checks or unchecks it, and the list shows its boxes.
     pub(crate) mode: bool,
-    /// Cambia con cada modificación (clave de la caché del resumen).
+    /// Changes with each modification (summary cache key).
     rev: u64,
     cache: Option<(u64, Arc<Summary>)>,
-    /// Las marcas de antes de una ráfaga de Mayús+flechas: lo marcado es eso más el rango, así el rango también encoge.
+    /// The marks before a burst of Shift+arrows: what is marked is that plus the range, so the range also shrinks.
     run_base: Option<HashSet<NodeId>>,
-    /// Qué es cada marcado respecto a la cesta (`add_state`), válido mientras no cambien el árbol ni la cesta: marcar o
-    /// desmarcar uno solo clasifica ese, no los demás.
+    /// What is each mark regarding the basket (`add_state`), valid as long as the tree or the basket do not change: mark or
+    /// unchecking one only classifies that one, not the others.
     cls_key: (u64, u64),
     cls: HashMap<NodeId, AddState>,
 }
@@ -67,14 +67,14 @@ impl Marks {
         self.set.contains(&id)
     }
 
-    /// Los marcados, en orden de identificador.
+    /// Those marked, in order of identifier.
     pub(crate) fn sorted(&self) -> Vec<NodeId> {
         let mut v: Vec<NodeId> = self.set.iter().copied().collect();
         v.sort_unstable();
         v
     }
 
-    /// Vacía lo marcado (el modo "Seleccionar" se queda como está).
+    /// Empties the marked (the "Select" mode remains as is).
     pub(crate) fn clear(&mut self) {
         self.run_base = None;
         if !self.set.is_empty() {
@@ -84,7 +84,7 @@ impl Marks {
         self.anchor = None;
     }
 
-    /// Marca `id` si no lo estaba y lo desmarca si lo estaba. Pasa a ser el ancla de los rangos.
+    /// Check `id` if it was not and uncheck it if it was. It becomes the anchor of the ranks.
     pub(crate) fn toggle(&mut self, id: NodeId) {
         self.run_base = None;
         if !self.set.remove(&id) {
@@ -108,7 +108,7 @@ impl Marks {
         self.rev += 1;
     }
 
-    /// Marca lo que no estaba marcado entre `ids` y desmarca lo que sí.
+    /// Check what was not checked between `ids` and uncheck what was.
     pub(crate) fn invert(&mut self, ids: &[NodeId]) {
         self.run_base = None;
         for &id in ids {
@@ -119,7 +119,7 @@ impl Marks {
         self.rev += 1;
     }
 
-    /// Conserva solo lo que cumple `keep` (tras una limpieza: lo que ya no existe deja de estar marcado).
+    /// Keep only what complies with `keep` (after cleaning: what no longer exists is no longer marked).
     pub(crate) fn retain(&mut self, mut keep: impl FnMut(NodeId) -> bool) {
         self.run_base = None;
         let before = self.set.len();
@@ -129,13 +129,13 @@ impl Marks {
         }
     }
 
-    /// El elemento activo se movió sin Mayús: es el ancla nueva y acaba la ráfaga de Mayús+flechas.
+    /// The active element was moved without Shift: it is the new anchor and ends the Shift+arrow burst.
     pub(crate) fn plain_move(&mut self, id: NodeId) {
         self.anchor = Some(id);
         self.run_base = None;
     }
 
-    /// Mayús+flechas: lo marcado pasa a ser lo de antes de la ráfaga más `range` (el rango entre el ancla y el extremo).
+    /// Shift+arrows: what is marked becomes what was before the burst plus `range` (the range between the anchor and the end).
     pub(crate) fn set_run(&mut self, range: &[NodeId]) {
         let base = match self.run_base.take() {
             Some(b) => b,
@@ -147,8 +147,8 @@ impl Marks {
     }
 }
 
-/// ¿Debe alternar la marca de una fila un `clicked()` SIN puntero? Sí si es el clic por defecto de un lector de pantalla
-/// (no hay teclas) o la primera pulsación de Espacio; no con Intro (es "entrar") ni con la autorrepetición de Espacio.
+/// Should a `clicked()` WITHOUT a pointer toggle the marking of a row? Yes if it is the default click of a screen reader
+/// (no keys) or the first press of Space; not with Enter (that's "enter") or with Space auto-repeat.
 pub(crate) fn keyboard_click_toggles(i: &egui::InputState) -> bool {
     let (mut first, mut repeat, mut enter) = (false, false, false);
     for e in &i.events {
@@ -170,7 +170,7 @@ pub(crate) fn keyboard_click_toggles(i: &egui::InputState) -> bool {
     !enter && (first || !repeat)
 }
 
-/// ¿Se pulsó Espacio (la pulsación, no la autorrepetición de mantenerlo)?
+/// Was Space pressed (the press, not the auto-repeat hold)?
 pub(crate) fn space_pressed_once(i: &egui::InputState) -> bool {
     i.events.iter().any(|e| {
         matches!(
@@ -185,7 +185,7 @@ pub(crate) fn space_pressed_once(i: &egui::InputState) -> bool {
     })
 }
 
-/// Elementos de `order` entre `a` y `b`, ambos incluidos y en cualquier sentido. Vacío si alguno no está en `order`.
+/// Elements of `order` between `a` and `b`, both inclusive and in either direction. Empty if any are not in `order`.
 pub(crate) fn range_between(order: &[NodeId], a: NodeId, b: NodeId) -> &[NodeId] {
     let (Some(ia), Some(ib)) = (
         order.iter().position(|&x| x == a),
@@ -196,18 +196,18 @@ pub(crate) fn range_between(order: &[NodeId], a: NodeId, b: NodeId) -> &[NodeId]
     &order[ia.min(ib)..=ia.max(ib)]
 }
 
-/// Qué pasaría con lo marcado si se añadiese a la cesta.
+/// What would happen to the marked item if it were added to the basket.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Summary {
-    /// Cuántos elementos hay marcados.
+    /// How many items are marked.
     pub marked: usize,
-    /// Los que SÍ se pueden añadir (en orden de identificador).
+    /// Those that CAN can be added (in order of identifier).
     pub add: Vec<NodeId>,
-    /// De ellos, las carpetas conocidas de las que se añade el contenido y no la carpeta.
+    /// Of them, the known folders from which the content is added and not the folder.
     pub contents_of: HashSet<NodeId>,
-    /// Lo que ocupan los que se añaden (cada hermano una sola vez).
+    /// What those who are added occupy (each brother only once).
     pub bytes: u64,
-    /// Alguno de los que se añaden tiene una cifra incompleta (mínimo).
+    /// Some of those added have an incomplete figure (minimum).
     pub lower: bool,
     pub in_basket: usize,
     pub protected: usize,
@@ -216,25 +216,25 @@ pub(crate) struct Summary {
 }
 
 impl Summary {
-    /// Cuántos de los marcados NO se pueden añadir.
+    /// How many of those marked CANNOT be added.
     pub(crate) fn cannot(&self) -> usize {
         self.in_basket + self.protected + self.info + self.cloud
     }
 
-    /// Cuántos de los que se añaden son carpetas conocidas (se añade su contenido).
+    /// How many of those added are known folders (their contents are added).
     pub(crate) fn contents(&self) -> usize {
         self.contents_of.len()
     }
 }
 
-/// Las dos líneas de la barra: el recuento con el tamaño y, si hace falta, lo que no se puede añadir y por qué.
+/// The two lines of the bar: the count with the size and, if necessary, what cannot be added and why.
 pub(crate) fn summary_lines(tr: &Tr, s: &Summary) -> (String, Option<String>) {
     let n = s.marked as u64;
     let count = tr.int(n);
     let first = if s.add.is_empty() {
         tr.ta("sel-count-only", args!["n" => n, "count" => count])
     } else if s.cannot() > 0 {
-        // Con algo excluido, el tamaño es solo el de lo que se añadiría.
+        // With something excluded, the size is only that of what would be added.
         let size = if s.lower {
             tr.size_min(s.bytes)
         } else {
@@ -282,8 +282,8 @@ pub(crate) fn summary_lines(tr: &Tr, s: &Summary) -> (String, Option<String>) {
 }
 
 impl Explore {
-    /// Los elementos que la carpeta muestra ahora, en el orden de la lista: los aciertos si hay búsqueda y, si no, todos
-    /// los hijos (o los de la agrupación "Otros" abierta).
+    /// The items the folder now displays, in list order: hits if there is a search, and if not, all
+    /// the children (or those of the open "Others" group).
     pub(crate) fn visible_order(&mut self) -> Vec<NodeId> {
         match self.search_matches() {
             Some(h) => h.to_vec(),
@@ -291,7 +291,7 @@ impl Explore {
         }
     }
 
-    /// Los elementos que agrupa una celda "Otros".
+    /// The elements grouped by an "Other" cell.
     pub(crate) fn others_members(&self, o: Others) -> Vec<NodeId> {
         let kids = tesela_layout::Children::of_view(&self.view(), o.parent);
         let end = ((o.start + o.count) as usize).min(kids.len());
@@ -300,14 +300,14 @@ impl Explore {
             .collect()
     }
 
-    /// ¿Están marcados todos los elementos de esa agrupación "Otros"?
+    /// Are all items in that grouping marked "Other"?
     pub(crate) fn others_all_marked(&self, o: Others) -> bool {
         let m = self.others_members(o);
         !m.is_empty() && m.iter().all(|&id| self.multi.contains(id))
     }
 
-    /// El hijo de la carpeta actual que es `id` o lo contiene (una celda insinuada del mapa o una selección más profunda
-    /// se marcan por su ascendiente de esta carpeta). `None` si `id` no cuelga de lo que se está viendo.
+    /// The child of the current folder that is `id` or contains it (a hinted map cell or a deeper selection
+    /// are marked by their ancestry from this folder). `None` if `id` does not hang on what is being viewed.
     pub(crate) fn child_of_root(&self, id: NodeId) -> Option<NodeId> {
         let mut cur = id;
         loop {
@@ -323,8 +323,8 @@ impl Explore {
         Some(cur)
     }
 
-    /// ¿Se puede alternar la marca de `id`? Tiene que colgar de lo que se ve y, con una búsqueda activa, o ser un acierto o
-    /// estar ya marcado (desmarcar siempre se puede): así no se marca nunca lo que la lista no enseña.
+    /// Can the `id` flag be toggled? It has to hang on what is seen and, with an active search, it either be a success or
+    /// be already marked (it is always possible to uncheck): this way, what the list does not show is never marked.
     pub(crate) fn can_toggle_mark(&mut self, id: NodeId) -> bool {
         let Some(c) = self.child_of_root(id) else {
             return false;
@@ -332,7 +332,7 @@ impl Explore {
         self.multi.contains(c) || self.search_set().is_none_or(|hits| hits.contains(&c))
     }
 
-    /// Marca o desmarca un elemento (una agrupación "Otros" marca o desmarca todos sus elementos).
+    /// Checks or unchecks an item (an "Other" grouping checks or unchecks all of its items).
     pub(crate) fn marks_toggle(&mut self, sel: Sel) {
         match sel {
             Sel::Node(id) => {
@@ -344,7 +344,7 @@ impl Explore {
             }
             Sel::Group(o) => {
                 let mut members = self.others_members(o);
-                // Con búsqueda, solo los elementos del grupo que son aciertos (nunca se marca lo que no se ve).
+                // With search, only the elements of the group that are hits (what is not seen is never marked).
                 if let Some(hits) = self.search_matches() {
                     let hits: HashSet<NodeId> = hits.iter().copied().collect();
                     members.retain(|id| hits.contains(id));
@@ -361,7 +361,7 @@ impl Explore {
         }
     }
 
-    /// Marca el rango entre el ancla y `target` (en el orden `order` de la lista), sin quitar lo que ya estaba marcado.
+    /// Marks the range between the anchor and `target` (in `order` order of the list), without removing what was already marked.
     pub(crate) fn marks_range_in(&mut self, order: &[NodeId], target: NodeId) {
         let anchor = self
             .multi
@@ -373,7 +373,7 @@ impl Explore {
         self.multi.anchor = Some(anchor);
     }
 
-    /// Mayús+flechas: lo marcado es lo de antes de la ráfaga más el rango entre el ancla y `target` (también encoge).
+    /// Shift+arrows: what is marked is what was before the burst plus the range between the anchor and `target` (it also shrinks).
     pub(crate) fn marks_shift_extend(&mut self, order: &[NodeId], target: NodeId) {
         let anchor = self
             .multi
@@ -385,8 +385,8 @@ impl Explore {
         self.multi.anchor = Some(anchor);
     }
 
-    /// Al cambiar la búsqueda solo se conservan las marcas que siguen entre los aciertos: así lo que "Añadir N" añade es
-    /// siempre algo que se ve. (Si se borra la búsqueda no vuelve nada: las marcas ya quitadas se quedan quitadas.)
+    /// When changing the search, only the marks that follow among the hits are kept: so what "Add N" adds is
+    /// always something that is seen. (If the search is deleted, nothing comes back: the marks already removed remain removed.)
     pub(crate) fn sync_marks_with_search(&mut self) {
         let q = crate::describe::fold(self.search.trim());
         if q == self.marks_search {
@@ -402,20 +402,20 @@ impl Explore {
         }
     }
 
-    /// "Seleccionar todo aquí": todo lo que se ve (los aciertos si hay búsqueda).
+    /// "Select all here": everything that is seen (the hits if there is a search).
     pub(crate) fn marks_all_here(&mut self) {
         let ids = self.visible_order();
         self.multi.add(ids);
     }
 
-    /// "Invertir selección" sobre lo que se ve: lo marcado se desmarca y lo demás se marca.
+    /// "Invert selection" on what is seen: what is checked is unchecked and the rest is checked.
     pub(crate) fn marks_invert_here(&mut self) {
         let ids = self.visible_order();
         self.multi.invert(&ids);
     }
 
-    /// Qué pasaría con lo marcado al añadirlo, clasificado con las mismas reglas que el icono de la cesta (`add_state`).
-    /// Sin caché: lo usa Añadir (cuenta el estado de ahora mismo) y las pruebas.
+    /// What would happen to what was marked when added, classified with the same rules as the basket icon (`add_state`).
+    /// No cache: uses Add (counts current state) and tests.
     pub(crate) fn compute_summary(&self) -> Summary {
         self.summarize(&mut HashMap::new())
     }
@@ -447,9 +447,9 @@ impl Explore {
         s
     }
 
-    /// El resumen de lo marcado, recalculado solo si cambió la selección, el árbol o la cesta (versiones, sin formatear la
-    /// cesta). La clasificación de cada marcado se conserva mientras no cambien el árbol ni la cesta: marcar o
-    /// desmarcar uno no vuelve a clasificar los demás.
+    /// The summary of what was marked, recalculated only if you changed the selection, tree or basket (versions, without formatting the
+    /// basket). The classification of each marking is preserved as long as the tree or basket does not change: mark or
+    /// unchecking one does not reclassify the others.
     pub(crate) fn marks_summary(&mut self) -> Arc<Summary> {
         if self.multi.is_empty() {
             return Arc::default();
@@ -477,11 +477,11 @@ impl Explore {
         s
     }
 
-    /// Añade a la cesta lo marcado que se puede añadir, por lotes, y vacía la selección. Devuelve (los que entraron, los
-    /// marcados). Cada elemento pasa por `add_state` y por las comprobaciones de `Basket` (ruta de unidad local,
-    /// protección, ya cubierta), las mismas que el icono de la cesta.
+    /// Add the marked items that can be added to the basket, in batches, and empty the selection. Returns (those who entered, those
+    /// marked). Each element goes through `add_state` and `Basket` checks (local drive path,
+    /// protection, already covered), the same as the basket icon.
     pub(crate) fn marks_add_core(&mut self) -> (usize, usize) {
-        // Se recalcula en el momento (no con la caché): lo que cuenta es el estado de ahora.
+        // It is recalculated at the moment (not with the cache): what counts is the state now.
         let s = self.compute_summary();
         let items: Vec<(std::path::PathBuf, BatchKind)> = s
             .add
@@ -505,8 +505,8 @@ impl Explore {
         (added, s.marked)
     }
 
-    /// "Añadir N a la cesta" de la barra: como [`Explore::marks_add_core`], con el aviso. No hace nada mientras hay una
-    /// limpieza en curso. Devuelve cuántos entraron.
+    /// "Add N to Cart" bar: like [`Explore::marks_add_core`], with prompt. Does nothing while there is a
+    /// cleaning in progress. Returns how many entered.
     pub(crate) fn marks_add_to_basket(&mut self, tr: &Tr, now: f64) -> usize {
         if self.flow.busy() {
             return 0;
@@ -528,9 +528,9 @@ impl Explore {
         added
     }
 
-    /// La barra de selección (bajo el mapa o la lista): el interruptor "Seleccionar" y, con algo marcado, el recuento, lo
-    /// que no se puede añadir y los botones. Ocupa siempre el mismo alto: así el mapa no se recoloca al marcar el primero.
-    /// Los controles se crean en orden de lectura (interruptor, Añadir, Desmarcar) para que Tab los recorra así.
+    /// The selection bar (below the map or list): the "Select" switch and, with something checked, the count, which
+    /// which cannot be added and buttons. It always occupies the same height: this way the map is not repositioned when marking the first one.
+    /// Controls are created in reading order (Switch, Add, Uncheck) so Tab cycles through them like this.
     pub(crate) fn selection_bar(&mut self, ui: &mut Ui, env: &mut Env) {
         let pal = env.pal;
         let tr = env.tr;
@@ -541,9 +541,9 @@ impl Explore {
         let mut do_clear = false;
         let mut refocus = false;
         let full = ui.available_rect_before_wrap();
-        // La barra ocupa la columna central: según su ancho se acorta el texto de los controles (el nombre accesible no
-        // cambia). Los botones pierden el texto por debajo de 600 px; el interruptor lo enseña en cuanto cabe junto al
-        // espacio que ocupan los botones (unos 350 px con texto, 90 sin él) y unos 210 px de texto del resumen.
+        // The bar occupies the central column: the text of the controls is shortened depending on its width (the accessible name is not
+        // changes). Buttons lose text below 600px; the switch shows it as much as it fits next to the
+        // space occupied by the buttons (about 350 px with text, 90 without it) and about 210 px of summary text.
         let button_text = full.width() >= 600.0;
         let toggle_text = full.width() - if button_text { 352.0 } else { 92.0 } >= 338.0;
         let clear = tr.t("sel-clear");
@@ -554,7 +554,7 @@ impl Explore {
             let n = summary.add.len() as u64;
             tr.ta("sel-add", args!["n" => n, "count" => tr.int(n)])
         };
-        // Ancho de la zona de botones (se mide igual que `widgets::button`) para repartir el hueco antes de dibujar.
+        // Width of the button area (measured the same as `widgets::button`) to distribute the space before drawing.
         let right_w = if !has {
             0.0
         } else if button_text {
@@ -582,7 +582,7 @@ impl Explore {
                     ui.spacing_mut().item_spacing.y = 1.0;
                     if has {
                         let (first, second) = summary_lines(tr, &summary);
-                        // `vertical` coloca el bloque arriba del todo: se centra a ojo (una o dos líneas) en la barra.
+                        // `vertical` places the block at the top: it is centered by eye (one or two lines) on the bar.
                         ui.add_space(if second.is_some() { 5.0 } else { 13.0 });
                         let full_text = match &second {
                             Some(s) => format!("{first} · {s}"),
@@ -623,7 +623,7 @@ impl Explore {
                             .truncate(),
                         );
                         l.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &text));
-                        // La pista se corta en ventanas estrechas: completa, a la vista del ratón.
+                        // The track is cut into narrow windows: complete, in view of the mouse.
                         l.on_hover_text(format!("{text} · {}", tr.t("sel-keys-tip")));
                     }
                 });
@@ -650,7 +650,7 @@ impl Explore {
                         widgets::icon_button(ui, env, Icon::Cart, &add_label, can)
                     };
                     if !can {
-                        // Sin nada que añadir, o con una limpieza en curso: la pista dice cuál de las dos.
+                        // With nothing to add, or with a cleaning in progress: the clue tells which of the two.
                         let why = if busy {
                             "sel-add-busy-tip"
                         } else {
@@ -682,13 +682,13 @@ impl Explore {
             let now = ui.input(|i| i.time);
             self.marks_add_to_basket(tr, now);
         }
-        // Con teclado, los botones desaparecen al pulsarlos: el foco pasa al interruptor en vez de perderse.
+        // With a keyboard, the buttons disappear when you press them: the focus goes to the switch instead of being lost.
         if refocus {
             ui.memory_mut(|m| m.request_focus(egui::Id::new(TOGGLE_ID)));
         }
     }
 
-    /// El interruptor "Seleccionar" (modo selección): una casilla con su texto, alcanzable con Tab y accesible como casilla.
+    /// The "Select" switch (selection mode): a box with your text, reachable with Tab and accessible as a box.
     fn mode_toggle(&mut self, ui: &mut Ui, env: &mut Env, with_text: bool) {
         let pal = env.pal;
         let label = env.tr.t("sel-toggle");
@@ -698,7 +698,7 @@ impl Explore {
             theme::font_semibold(14.0),
             Color32::PLACEHOLDER,
         );
-        // Sin texto, un cuadrado de 34 px con solo la casilla (el nombre accesible y la pista siguen diciendo "Seleccionar").
+        // No text, a 34px square with just the checkbox (the accessible name and hint still say "Select").
         let w = if with_text {
             12.0 + 16.0 + 8.0 + galley.size().x + 14.0
         } else {
@@ -760,10 +760,10 @@ impl Explore {
     }
 }
 
-/// Identificador del interruptor "Seleccionar" (para devolverle el foco tras Añadir o Desmarcar con el teclado).
+/// Identifier for the "Select" switch (to return focus after Adding or Unchecking with the keyboard).
 const TOGGLE_ID: &str = "tesela-sel-toggle";
 
-/// Ancho de un botón de texto de `widgets::button` (con icono de 18 px y su hueco, o sin él).
+/// Width of a `widgets::button` text button (with 18 px icon and its gap, or without it).
 fn text_button_w(ui: &Ui, text: &str, icon: bool) -> f32 {
     let g = ui.painter().layout_no_wrap(
         text.to_string(),
@@ -773,7 +773,7 @@ fn text_button_w(ui: &Ui, text: &str, icon: bool) -> f32 {
     (24.0 + if icon { 26.0 } else { 0.0 } + g.size().x).max(40.0)
 }
 
-/// Casilla de 16 px: marcada con el relleno de acento y una marca blanca; sin marcar, solo el borde.
+/// 16 px box: marked with accent fill and a white check mark; unmarked, just the edge.
 pub(crate) fn paint_checkbox(painter: &egui::Painter, env: &mut Env, rect: Rect, on: bool) {
     let pal = env.pal;
     if on {
@@ -790,7 +790,7 @@ pub(crate) fn paint_checkbox(painter: &egui::Painter, env: &mut Env, rect: Rect,
     }
 }
 
-/// Insignia redonda con la marca (esquina de una celda del mapa seleccionada).
+/// Round badge with mark (corner of a selected map cell).
 pub(crate) fn paint_check_badge(painter: &egui::Painter, env: &mut Env, center: egui::Pos2) {
     let pal = env.pal;
     painter.circle_filled(center, 10.0, pal.accent);
@@ -802,8 +802,8 @@ pub(crate) fn paint_check_badge(painter: &egui::Painter, env: &mut Env, center: 
     );
 }
 
-/// Velo de acento de una celda del mapa seleccionada: se distingue del contorno de la selección activa (3 px por fuera),
-/// del foco y de la insignia del carrito.
+/// Accent veil of a selected map cell: distinguished from the outline of the active selection (3 px outside),
+/// of the focus and the cart logo.
 pub(crate) fn mark_tint(pal: &theme::Palette) -> Color32 {
     pal.accent.gamma_multiply(0.30)
 }
@@ -867,7 +867,7 @@ mod tests {
                 "2 no se pueden añadir: 1 protegido, 1 ya en la cesta · 1 carpeta conocida: se añade su contenido"
             )
         );
-        // Nada que añadir: sin tamaño.
+        // Nothing to add: no size.
         let none = Summary {
             marked: 1,
             protected: 1,
@@ -883,7 +883,7 @@ mod tests {
             b.unwrap()
                 .starts_with("2 cannot be added: 1 protected, 1 already in the basket")
         );
-        // Sin nada excluido no hay segunda línea.
+        // Without anything excluded there is no second line.
         let ok = Summary {
             marked: 2,
             add: vec![1, 2],
@@ -910,16 +910,16 @@ mod tests {
     #[test]
     fn un_clic_sin_puntero_alterna_salvo_con_intro_o_la_autorrepeticion_de_espacio() {
         use egui::Key::{Enter, Space};
-        // Sin teclas: el clic por defecto de un lector de pantalla.
+        // Keyless: The default click of a screen reader.
         assert!(keyboard_click_toggles(&key_events(&[])));
-        // La primera pulsación de Espacio sí; la autorrepetición sola, no.
+        // The first press of Space yes; self-repetition alone, no.
         assert!(keyboard_click_toggles(&key_events(&[(Space, false)])));
         assert!(keyboard_click_toggles(&key_events(&[
             (Space, false),
             (Space, true)
         ])));
         assert!(!keyboard_click_toggles(&key_events(&[(Space, true)])));
-        // Intro nunca alterna.
+        // Intro never alternates.
         assert!(!keyboard_click_toggles(&key_events(&[(Enter, false)])));
         assert!(space_pressed_once(&key_events(&[(Space, false)])));
         assert!(!space_pressed_once(&key_events(&[(Space, true)])));
@@ -930,7 +930,7 @@ mod tests {
     fn una_rafaga_de_mayus_flechas_amplia_y_encoge_sobre_lo_marcado_antes() {
         let order: Vec<NodeId> = (1..=8).collect();
         let mut m = Marks::default();
-        m.toggle(7); // ya estaba marcado antes de la ráfaga
+        m.toggle(7); // It was already selected before the burst.
         m.anchor = Some(2);
         let run = |m: &mut Marks, to: NodeId| {
             let r = range_between(&order, 2, to).to_vec();
@@ -946,7 +946,7 @@ mod tests {
             vec![2, 3, 4, 7],
             "encoge y conserva lo de antes"
         );
-        // Cualquier otra acción acaba la ráfaga: la siguiente parte de lo que hay.
+        // Any other action ends the burst: the next part of what there is.
         m.toggle(8);
         run(&mut m, 3);
         assert_eq!(m.sorted(), vec![2, 3, 4, 7, 8]);

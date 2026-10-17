@@ -1,11 +1,11 @@
-//! Cómo se describe un nodo en la interfaz: nombre, clase especial (bloque del sistema, `pagefile`/`hiberfil`), frases
-//! de tipos y de antigüedad. Puro: no dibuja nada.
+//! How a node is described in the interface: name, special class (system block, `pagefile`/`hiberfil`), phrases
+//! of types and age. Pure: does not draw anything.
 
 use crate::args;
 use crate::i18n::Tr;
 use tesela_model::{FileType, Hist, NodeId, Tree, flags};
 
-/// Archivo del sistema que solo se informa (🔺 "Solo informar": sin casilla, nunca se borra desde la app).
+/// System file that is reported only (🔺 "Report only": no checkbox, never deleted from the app).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum InfoKind {
     Pagefile,
@@ -13,16 +13,16 @@ pub enum InfoKind {
     Swapfile,
 }
 
-/// Nodos con tratamiento propio en el mapa (grises con significado, PLAN.md §2.9).
+/// Nodes with their own treatment on the map (gray with meaning, PLAN.md §2.9).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Special {
-    /// El nodo sintético "Windows y otros datos del sistema" (ⓘ).
+    /// The synthetic node "Windows and other system data" (ⓘ).
     SystemBlock,
-    /// `pagefile.sys`, `hiberfil.sys` o `swapfile.sys` en la raíz de un volumen (triángulo "solo informar").
+    /// `pagefile.sys`, `hiberfil.sys`, or `swapfile.sys` at the root of a volume ("report only" triangle).
     InfoOnly(InfoKind),
 }
 
-/// ¿El nombre es la raíz de una unidad (`C:` o `C:\`)?
+/// Is the name the root of a drive (`C:` or `C:\`)?
 pub fn is_drive_root_name(name: &str) -> bool {
     let b = name.as_bytes();
     matches!(b.len(), 2 | 3)
@@ -31,8 +31,8 @@ pub fn is_drive_root_name(name: &str) -> bool {
         && (b.len() == 2 || b[2] == b'\\' || b[2] == b'/')
 }
 
-/// Clase especial de `id` en `tree`. `pagefile` y compañía solo cuentan si cuelgan de la raíz de una unidad
-/// (el árbol es de un volumen completo): un archivo con ese nombre en cualquier otra carpeta es uno más.
+/// `id` special class in `tree`. `pagefile` and company only count if they hang from the root of a drive
+/// (the tree is an entire volume): a file with that name in any other folder is one more.
 pub fn special(tree: &Tree, id: NodeId) -> Option<Special> {
     let n = tree.node(id);
     if n.flags & flags::SYSTEM_INFO != 0 {
@@ -50,7 +50,7 @@ pub fn special(tree: &Tree, id: NodeId) -> Option<Special> {
     }
 }
 
-/// Texto para comparar en las búsquedas: minúsculas y sin acentos ni diéresis (`Vídeos` coincide con `vid`).
+/// Text to compare in searches: lowercase and without accents or umlauts (`Vídeos` matches `vid`).
 pub fn fold(s: &str) -> String {
     s.chars()
         .flat_map(char::to_lowercase)
@@ -67,7 +67,7 @@ pub fn fold(s: &str) -> String {
         .collect()
 }
 
-/// "hace menos de 1 min", "hace 5 min", "hace 3 h", "hace 2 días": el tiempo transcurrido en lenguaje natural.
+/// "less than 1 min ago", "5 min ago", "3 hours ago", "2 days ago": the elapsed time in natural language.
 pub fn ago_phrase(tr: &Tr, secs: u64) -> String {
     if secs < 60 {
         tr.t("ago-now")
@@ -81,24 +81,24 @@ pub fn ago_phrase(tr: &Tr, secs: u64) -> String {
     }
 }
 
-/// ¿Es un directorio al que se puede entrar, según lo que se ve tras limpiar (un directorio vaciado ya no tiene hijos)?
+/// Is it an enterable directory, based on what is seen after cleaning (a cleared directory no longer has children)?
 pub fn can_enter_view(view: &tesela_model::View, id: NodeId) -> bool {
     let n = view.tree().node(id);
     n.is_dir() && n.flags & flags::SYSTEM_INFO == 0 && !view.kids(id).is_empty()
 }
 
-/// ¿Es un directorio al que se puede entrar? (con hijos, no es un punto de montaje ni el bloque del sistema).
+/// Is it a directory that can be entered? (with children, it is not a mount point nor the system block).
 pub fn can_enter(tree: &Tree, id: NodeId) -> bool {
     let n = tree.node(id);
     n.is_dir() && n.child_count > 0 && n.flags & flags::SYSTEM_INFO == 0
 }
 
-/// ¿Su tamaño es un mínimo ("≥")? Pasa en carpetas con el listado incompleto o con algo incompleto por debajo.
+/// Is its size a minimum ("≥")? It happens in folders with the incomplete list or with something incomplete underneath.
 pub fn is_lower_bound(tree: &Tree, id: NodeId) -> bool {
     tree.node(id).flags & (flags::INCOMPLETE | flags::INCOMPLETE_BELOW) != 0
 }
 
-/// Nombre para mostrar de `id`: el bloque del sistema, traducido; la raíz, su ruta; el resto, su nombre.
+/// Display name of `id`: the system block, translated; the root, its route; the rest, your name.
 pub fn display_name(tree: &Tree, id: NodeId, tr: &Tr) -> String {
     match special(tree, id) {
         Some(Special::SystemBlock) => tr.t("system-block"),
@@ -106,8 +106,8 @@ pub fn display_name(tree: &Tree, id: NodeId, tr: &Tr) -> String {
     }
 }
 
-/// Nombre corto para el breadcrumb: la raíz de una unidad es `C:`; la raíz de una carpeta escaneada, su último componente
-/// (la ruta completa está en los detalles); el resto, su nombre.
+/// Short name for breadcrumb: the root of a drive is `C:`; the root of a scanned folder, its last component
+/// (full route is in the details); the rest, your name.
 pub fn crumb_name(tree: &Tree, id: NodeId, tr: &Tr) -> String {
     let name = display_name(tree, id, tr);
     if id != 0 {
@@ -125,7 +125,7 @@ pub fn crumb_name(tree: &Tree, id: NodeId, tr: &Tr) -> String {
         .to_string()
 }
 
-/// Nombre del tipo de archivo, traducido.
+/// File type name, translated.
 pub fn type_name(tr: &Tr, t: FileType) -> String {
     tr.t(match t {
         FileType::Video => "type-video",
@@ -138,7 +138,7 @@ pub fn type_name(tr: &Tr, t: FileType) -> String {
     })
 }
 
-/// Los `n` tipos con más bytes (porcentaje redondeado, mayor primero, sin los que valen 0).
+/// `n` types with more bytes (rounded percentage, largest first, without those worth 0).
 pub fn top_types(h: &Hist, n: usize) -> Vec<(FileType, u8)> {
     let mut v: Vec<(FileType, u8)> = FileType::ALL
         .iter()
@@ -150,7 +150,7 @@ pub fn top_types(h: &Hist, n: usize) -> Vec<(FileType, u8)> {
     v
 }
 
-/// Frase de composición: "55 % comprimidos · 30 % programas · 15 % otros" (vacía si no hay bytes).
+/// Composition phrase: "55% compressed · 30% programs · 15% other" (empty if there are no bytes).
 pub fn type_phrase(tr: &Tr, h: &Hist) -> String {
     top_types(h, 3)
         .iter()
@@ -164,7 +164,7 @@ pub fn type_phrase(tr: &Tr, h: &Hist) -> String {
         .join(" · ")
 }
 
-/// Frase de antigüedad (siempre "modificado", nunca "usado", PLAN.md §2.9). `None` si no hay datos de fecha.
+/// Seniority phrase (always "modified", never "used", PLAN.md §2.9). `None` if there is no date data.
 pub fn age_phrase(tr: &Tr, h: &Hist) -> Option<String> {
     let total: u32 = h.age_pct.iter().map(|&p| p as u32).sum();
     if total == 0 {
@@ -246,7 +246,7 @@ mod tests {
         assert!(!can_enter(&t, sys));
         assert!(can_enter(&t, find("Users")));
         assert!(!can_enter(&t, find("pagefile.sys")));
-        // Un archivo con ese nombre en otra carpeta no es especial.
+        // A file with that name in another folder is not special.
         assert_eq!(special(&t, 0), None);
     }
 
@@ -276,7 +276,7 @@ mod tests {
         let top = top_types(t.hist(videos), 3);
         assert_eq!(top[0].0, FileType::Video);
         assert!(top.windows(2).all(|w| w[0].1 >= w[1].1));
-        // Una carpeta de archivos antiguos dice "no se modifica desde hace más de ...".
+        // An old files folder says "not modified for more than...".
         let docs = t.child_by_name(me, b"Documentos").unwrap();
         let ap = age_phrase(&es, t.hist(docs)).expect("fechas");
         assert!(ap.contains("modifica") || ap.contains("modific"), "{ap}");
