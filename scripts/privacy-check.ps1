@@ -538,10 +538,10 @@ function Test-ImgRegistered {
     return $false
 }
 
-# --- Formatos OPACOS o comprimidos: se rechazan por la FIRMA, con cualquier extension ------------------------------
-# Su contenido no se puede revisar (un SID dentro de un ZIP o de un gzip pasaria) y un repositorio de codigo no los
-# necesita: las imagenes registradas de docs/img/ ya tienen su excepcion propia. Lista blanca: ninguna hoy. Si algun
-# dia hiciera falta, tendria que ser ESTRECHA: ruta exacta y SHA-256 de los bytes (como las capturas de docs/img/).
+# --- Opaque or compressed formats: reject by SIGNATURE, regardless of extension -------------------------------------
+# Their contents cannot be inspected (an SID inside a ZIP or gzip would pass), and a code repository does not need them:
+# registered docs/img/ images already have their own exception. There is no allowlist today. If one is ever needed, it
+# must be NARROW: exact path and SHA-256 of the bytes (like docs/img/ screenshots).
 $opaqueAllow = @()
 $opaqueFormats = @(
     @{ Name = 'ZIP (y docx, xlsx, pptx, jar, apk, nupkg, whl...)'; Sig = @(0x50, 0x4B, 0x03, 0x04) },
@@ -591,10 +591,10 @@ function Get-OpaqueFormat {
     return $null
 }
 
-# --- Revision de UN archivo (nombre y contenido); sirve para staging, -All y el modo de rango -------------------------
+# --- Check ONE file (name and contents); used for staging, -All, and range mode ---------------------------------------
 function Test-FileBytes {
     param([string]$F, [byte[]]$Bytes, [string]$Where)
-    # Todas las reglas en todas partes; solo los dos archivos de $spikePathAllow, con el contenido revisado, saltan las de rutas.
+    # Apply every rule everywhere; only the two reviewed files in $spikePathAllow skip path rules.
     $ruleSet = $rules
     if ($spikePathAllow.ContainsKey($F) -and (Get-Sha256Hex $Bytes) -ceq $spikePathAllow[$F]) { $ruleSet = $pathFree }
 
@@ -602,17 +602,17 @@ function Test-FileBytes {
         $problems.Add("${Where}${F}: forbidden file (spike results are regenerated separately)")
         return
     }
-    # El nombre del archivo tambien se revisa.
+    # File names are checked too.
     foreach ($hit in (Test-Rules $F $ruleSet)) { $problems.Add("${Where}${F}: file NAME: $($hit[0])") }
 
-    # Imagenes: por extension Y por firma (un .png renombrado a .dat, .bin o .txt tambien es una captura).
+    # Images are detected by extension AND signature (a .png renamed to .dat, .bin, or .txt is still a screenshot).
     $magic = Get-ImageMagic $Bytes
     $isDemoImg = $false
     if ($F -match $imageExt -or $magic) {
         if ($F -cmatch $demoImgPattern) {
             $isDemoImg = $true
         } else {
-            $kind = if ($magic) { $magic } else { 'por la extension' }
+            $kind = if ($magic) { $magic } else { 'by extension' }
             $problems.Add("${Where}${F}: versioned image ($kind); screenshots are not allowed except docs/img/<name>.png generated with --demo")
             return
         }
@@ -626,7 +626,7 @@ function Test-FileBytes {
         }
         return
     }
-    # Formatos opacos o comprimidos: no se pueden revisar, se rechazan (sin lista blanca hoy).
+    # Opaque or compressed formats cannot be inspected, so reject them (there is no allowlist today).
     $opaque = Get-OpaqueFormat $Bytes
     if ($opaque -and ($opaqueAllow -notcontains $F)) {
         $problems.Add("${Where}${F}: opaque or compressed format ($opaque): its contents cannot be scanned; commit uncompressed text instead")
@@ -721,7 +721,7 @@ foreach ($name in $names) {
         if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { continue }
         $bytes = [System.IO.File]::ReadAllBytes($full)
     } else {
-        # Contenido del INDICE, leido como bytes (sin recodificar).
+        # Read the INDEX contents as bytes (without re-encoding).
         $bytes = Invoke-GitBytes "cat-file blob `":$f`"" $repoRoot
     }
     Test-FileBytes $f $bytes ''

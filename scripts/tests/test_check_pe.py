@@ -140,7 +140,7 @@ class CheckPe(unittest.TestCase):
             bad = t.write("bad.exe", make_pe(imports=["KERNEL32.dll"], delay=["a.dll"], delay_old=True))
             problems = check_pe.check(bad, "x64")
             self.assertEqual(len(problems), 1)
-            self.assertIn("fuera de la imagen", problems[0])
+            self.assertIn("outside the image", problems[0])
 
     def test_acepta_un_ejecutable_sin_runtime_de_c_y_rechaza_cada_dll_prohibida(self):
         with Temp() as t:
@@ -193,7 +193,7 @@ class CheckPe(unittest.TestCase):
                     bad = t.write("bad.exe", make_pe(**kw))
                     problems = check_pe.check(bad, "x64")
                     self.assertEqual(len(problems), 1, (dll, kw))
-                    self.assertIn("modulo de red", problems[0], dll)
+                    self.assertIn("network module", problems[0], dll)
                     self.assertIn(dll, problems[0])
             # Nombres parecidos que NO son modulos de red prohibidos.
             fine = t.write("fine.exe", make_pe(imports=["KERNEL32.dll", "ws2_32.dll.bak", "myws2_32.dll", "api-ms-win-core-file-l1-1-0.dll"]))

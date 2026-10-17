@@ -144,7 +144,7 @@ class ExtractIcoTests(unittest.TestCase):
         pe += b"\0" * 0x1000  # y bytes tras la seccion, para que un desplazamiento sin comprobar caiga DENTRO del archivo
         dd = 0x40 + 4 + 20 + 112
         struct.pack_into("<I", pe, dd + 8 * 2, SECTION_RVA + rsize + 0x10)  # el directorio de recursos, en la cola virtual
-        with self.assertRaisesRegex(extract_ico.PeError, "datos de la seccion"):
+        with self.assertRaisesRegex(extract_ico.PeError, "section's file data"):
             extract_ico.extract(bytes(pe))
 
     def test_no_es_un_pe(self):

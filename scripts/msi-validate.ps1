@@ -1,46 +1,44 @@
 <#
 .SYNOPSIS
-  Lectura (SOLO LECTURA) y validacion de las tablas del MSI de Tesela con la API de Windows Installer.
+  Read-only validation of Tesela MSI tables using the Windows Installer API.
 
 .DESCRIPTION
-  Funciones para dot-source (`. scripts/msi-validate.ps1`) desde scripts/build-msi.ps1 y desde
-  scripts/tests/msi-validate.tests.ps1 (que las prueba con MSI manipulados, en %TEMP% y sin instalarlos). No usa CIM ni WMI:
-  solo el objeto COM WindowsInstaller.Installer, como Orca.
+  Functions to dot-source (`. scripts/msi-validate.ps1`) from scripts/build-msi.ps1 and
+  scripts/tests/msi-validate.tests.ps1 (which tests them against modified MSI files in %TEMP% without installing them).
+  Does not use CIM or WMI; it uses only the WindowsInstaller.Installer COM object, like Orca.
 
-  Test-MsiPackage devuelve la lista de problemas (vacia si el MSI es el esperado):
-    * las tablas del MSI (`_Tables`) son EXACTAMENTE una lista cerrada ($MsiAllowedTables): las de la instalacion y las
-      de la interfaz (Dialog, Control, ControlEvent...), y NINGUNA otra (Binary, Environment, ServiceInstall, Class, Extension,
-      ProgId, Verb, TypeLib, MIME, IniFile, Error, ...: son un fallo, tengan filas o no);
-    * version, UpgradeCode fijo, nombre y editor, propiedades de Aplicaciones instaladas, y la lista cerrada de propiedades;
-    * AMBITO DUAL (Scope="perUserOrMachine"): ALLUSERS=2 y MSIINSTALLPERUSER=1 (por usuario salvo que se pida otra cosa) y el bit
-      "no hace falta elevar" del Summary Information LIMPIO: con el bit el motor trata el paquete como compatible con UAC, ignora
-      MSIINSTALLPERUSER y "para todos" no pide administrador (error 1925);
-    * exactamente los 5 archivos esperados;
-    * registro SOLO en HKMU (raiz -1) \Software\Tesela, con los 8 valores esperados; RemoveFile con UNA sola fila (la carpeta
-      de instalacion, solo si queda vacia), sin nombre de archivo;
-    * las seis busquedas de registro de instalaciones previas (HKCU y HKLM: InstallFolder y DesktopShortcut, tipo 18, y la
-      comprobacion de que tesela.exe existe en la carpeta recordada, tipo 16 con su fila de Signature): una clave sin producto no cuenta;
-    * el arbol de carpetas EXACTO ($MsiExpectedDirectories) y los componentes (carpeta, GUID fijo, atributos, condicion);
-    * dos accesos directos (menu Inicio y escritorio, sin argumentos y con WkDir = INSTALLFOLDER) y un icono;
-    * PROPIEDADES SEGURAS (ver installer/Tesela.wxs): SecureCustomProperties es EXACTAMENTE DESKTOPSHORTCUT,
-      INSTALLFOLDER, WIX_DOWNGRADE_DETECTED y WIX_UPGRADE_DETECTED (ALLUSERS ya pasa siempre al servidor y MSIINSTALLPERUSER solo se
-      lee con ALLUSERS=2); INSTALLFOLDER y DESKTOPSHORTCUT sin valor
-      por defecto (la casilla del escritorio parte DESMARCADA);
-    * SIN CODIGO: la tabla CustomAction es EXACTAMENTE la lista esperada (todas de tipo 51, fijar una propiedad; el tipo 35,
-      fijar una carpeta, tambien se admitiria pero no se usa) mas una accion `TeselaEs_<Texto>` por cada texto de la interfaz;
-      nada de DLL, ejecutables ni Binary. Las filas de InstallUISequence e InstallExecuteSequence de esas acciones (accion,
-      condicion y numero) son las esperadas;
-    * MajorUpgrade y bloqueo de versiones anteriores, con valores exactos (ver $MsiExpectedUpgradeRows);
-    * CINCO LaunchCondition exactas: el bloqueo de versiones posteriores, las del ambito (cambio de ambito en las dos direcciones,
-      con la instalacion por usuario propia ganando) y las de la carpeta (protegida en una instalacion por usuario, y formato de ruta), con mensaje;
-    * LA INTERFAZ: las ventanas esperadas, solo tipos de control sin imagen, solo eventos de control NATIVOS (NewDialog,
-      SpawnDialog, EndDialog, SetTargetPath, Reinstall...) y las propiedades que pueden cambiar las ventanas, cada NewDialog /
-      SpawnDialog apunta a una ventana que existe, las filas de la ventana de ambito y de carpeta fijadas una a una, y cada
-      texto `[Tx...]` que se muestra existe en ingles Y en espanol (propiedad + accion de tipo 51 + fila de secuencia);
-    * los identificadores y las propiedades se comparan DISTINGUIENDO mayusculas (Windows Installer lo hace asi: una
-      ActionProperty `wix_downgrade_detected` no es la propiedad que la LaunchCondition lee).
+  Test-MsiPackage returns a list of problems (empty when the MSI matches expectations). It checks:
+    * The MSI tables (`_Tables`) are EXACTLY the closed list in $MsiAllowedTables: installation and UI tables
+      (Dialog, Control, ControlEvent...), and NO others (Binary, Environment, ServiceInstall, Class, Extension, ProgId,
+      Verb, TypeLib, MIME, IniFile, Error, etc. are failures whether or not they contain rows).
+    * Version, fixed UpgradeCode, name and publisher, Installed Applications properties, and the closed property list.
+    * DUAL SCOPE (Scope="perUserOrMachine"): ALLUSERS=2 and MSIINSTALLPERUSER=1 (per-user unless requested otherwise),
+      with the "no elevation required" bit in Summary Information CLEAR. If set, Windows Installer treats the package as
+      UAC-compatible, ignores MSIINSTALLPERUSER, and does not require admin for a per-machine install (error 1925).
+    * Exactly the five expected files.
+    * Registry entries ONLY under HKMU (root -1) \Software\Tesela, with the eight expected values; one RemoveFile row
+      for the install directory only when empty, without a file name.
+    * The six registry searches for previous installs (HKCU and HKLM: InstallFolder and DesktopShortcut, type 18, plus
+      the type 16 Signature check that tesela.exe exists in the remembered directory): an orphaned key does not count.
+    * The EXACT directory tree ($MsiExpectedDirectories) and components (directory, fixed GUID, attributes, condition).
+    * Two shortcuts (Start menu and desktop, no arguments, WkDir = INSTALLFOLDER) and one icon.
+    * SECURE PROPERTIES (see installer/Tesela.wxs): SecureCustomProperties is EXACTLY DESKTOPSHORTCUT, INSTALLFOLDER,
+      WIX_DOWNGRADE_DETECTED, and WIX_UPGRADE_DETECTED (ALLUSERS always reaches the server, and MSIINSTALLPERUSER is read
+      only with ALLUSERS=2); INSTALLFOLDER and DESKTOPSHORTCUT have no default value (the desktop checkbox starts unchecked).
+    * NO CODE: CustomAction is EXACTLY the expected list (all type 51, setting a property; type 35, setting a directory,
+      is also allowed but unused), plus one `TeselaEs_<Text>` action for each UI string. No DLLs, executables, or Binary
+      rows. InstallUISequence and InstallExecuteSequence entries for these actions (action, condition, and sequence) match.
+    * MajorUpgrade and blocking of newer versions, with exact values (see $MsiExpectedUpgradeRows).
+    * Exactly FIVE LaunchConditions: blocking newer versions, scope checks (both directions, with the current user's
+      per-user install taking precedence), and directory checks (protected for per-user installs, valid path format), each with a message.
+    * UI: expected dialogs, control types without images, native control events only (NewDialog, SpawnDialog, EndDialog,
+      SetTargetPath, Reinstall...), properties that can change dialogs, valid NewDialog/SpawnDialog targets, exact rows
+      for the scope and directory dialogs, and every displayed `[Tx...]` string present in both English and Spanish
+      (property + type 51 action + sequence row).
+    * Identifiers and properties are compared CASE-SENSITIVELY (Windows Installer is case-sensitive: an ActionProperty
+      `wix_downgrade_detected` is not the property read by the LaunchCondition).
 
-  El script es solo ASCII a proposito (Windows PowerShell 5.1 lee los .ps1 sin BOM como ANSI).
+  This script is ASCII-only by design (Windows PowerShell 5.1 reads .ps1 files without a BOM as ANSI).
 #>
 
 # UpgradeCode de installer/Tesela.wxs: NO CAMBIAR NUNCA (ver installer/README.md). Aqui se repite para que un cambio
