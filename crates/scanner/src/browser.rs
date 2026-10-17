@@ -41,7 +41,7 @@ use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf, Prefix};
 use windows_sys::Win32::UI::Shell::{FOLDERID_LocalAppData, FOLDERID_RoamingAppData};
 
-/// Navegador cuyas carpetas se conocen.
+/// Browser whose folders are known.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum BrowserFamily {
     Chrome,

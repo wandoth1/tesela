@@ -545,7 +545,7 @@ pub struct VolumeSizes {
     pub volume_scope: bool,
 }
 
-/// `FILE_FS_FULL_SIZE_INFORMATION` (clase 7, `ntifs.h`).
+/// `FILE_FS_FULL_SIZE_INFORMATION` (class 7, `ntifs.h`).
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 struct FsFullSize {
@@ -556,7 +556,7 @@ struct FsFullSize {
     bytes_per_sector: u32,
 }
 
-/// `FILE_FS_FULL_SIZE_INFORMATION_EX` (clase 14, `ntifs.h`; Windows 10 1809+).
+/// `FILE_FS_FULL_SIZE_INFORMATION_EX` (class 14, `ntifs.h`; Windows 10 1809+).
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 struct FsFullSizeEx {
