@@ -872,7 +872,7 @@ impl Cleaner {
                         st.logical = p.logical;
                         results.insert(it.id, (ItemStatus::WouldRecycle, st));
                     }
-                    Prepared::Ready(p) => slots.push(Some((it, p))),
+                    Prepared::Ready(p) => slots.push(Some((it, *p))),
                     Prepared::Rejected(status, o) => {
                         emit(it, None, 0, o);
                         results.insert(it.id, (status, st));
@@ -1360,7 +1360,7 @@ impl Cleaner {
                 Some(m.alloc.max(m.logical)),
             )
         };
-        Prepared::Ready(Pending {
+        Prepared::Ready(Box::new(Pending {
             path: final_path,
             identity: m.identity,
             links: m.links,
@@ -1379,7 +1379,7 @@ impl Cleaner {
                 m.logical
             },
             snapshot: None,
-        })
+        }))
     }
 
     /// R6 + A2-m1: ¿sigue el directorio igual que justo antes del envío? Tres estados:
@@ -1868,7 +1868,7 @@ fn classify_hr(hr: i32) -> RecycleFail {
 }
 
 enum Prepared {
-    Ready(Pending),
+    Ready(Box<Pending>),
     Rejected(ItemStatus, Outcome),
 }
 
