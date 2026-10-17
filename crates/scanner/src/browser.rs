@@ -1,40 +1,39 @@
-//! Carpetas de datos de los navegadores: qué es caché regenerable y qué NO lo es.
+//! Browser data folders: what is a regenerable cache and what is NOT.
 //!
-//! # Para qué sirve esta clasificación
-//! [`classify_browser_path`] sirve para ETIQUETAR (la interfaz nombra una ruta, el escáner decide qué recorrer primero).
-//! NO autoriza ningún borrado: la autorización saldrá de las raíces que devuelve [`browser_cache_dirs`] verificadas por
-//! HANDLE en el momento de borrar (PLAN.md §3.7), nunca de una comparación de cadenas de ruta.
+//! # Purpose of this classification
+//! [`classify_browser_path`] is used for LABELING (the UI names a path and the scanner decides what to traverse first).
+//! It does NOT authorize deletion: authorization comes from roots returned by [`browser_cache_dirs`], verified by HANDLE
+//! at deletion time (PLAN.md §3.7), never from comparing path strings.
 //!
-//! # Fuentes de los nombres (la lista tiene que ser EXACTA y CONSERVADORA)
-//! * Chromium, `chrome/common/chrome_constants.h`: el perfil por defecto es `Default` (`kInitialProfile`), los demás son
+//! # Sources for names (the list must be EXACT and CONSERVATIVE)
+//! * Chromium, `chrome/common/chrome_constants.h`: the default profile is `Default` (`kInitialProfile`); other profiles are
 //!   `Profile <N>` (`kMultiProfileDirPrefix = "Profile "`) y `Cache` es `kCacheDirname`.
-//! * Chromium, `gpu/ipc/common/gpu_disk_cache_type.cc`, función `GetGpuDiskCacheSubdir`: `GPUCache` (`kGlShaders`),
-//!   `DawnWebGPUCache` (`kDawnWebGPU`) y `DawnGraphiteCache` (`kDawnGraphite`). Cuelgan del directorio del perfil igual
-//!   que `GPUCache`.
+//! * Chromium, `gpu/ipc/common/gpu_disk_cache_type.cc`, function `GetGpuDiskCacheSubdir`: `GPUCache` (`kGlShaders`),
+//!   `DawnWebGPUCache` (`kDawnWebGPU`) and `DawnGraphiteCache` (`kDawnGraphite`). They are under the profile directory,
+//!   like `GPUCache`.
 //! * `GraphiteDawnCache` (a nivel de `User Data`, como `ShaderCache`): `chrome/browser/chrome_content_browser_client.cc`
 //!   (`user_data_dir.Append("GraphiteDawnCache")`) y `gpu/ipc/common/gpu_disk_cache_factory.cc` (del tipo DawnGraphite,
 //!   regenerable).
-//! * `Code Cache` (por perfil): `content/browser/storage_partition_impl.cc`. `ShaderCache` y `GrShaderCache` (a nivel de
-//!   `User Data`): `chrome/browser/chrome_content_browser_client.cc`. Todos confirmados en fuente; no ampliar la lista sin
-//!   comprobar igual.
-//! * `Service Worker\CacheStorage` NO es caché: en `content/public/browser/browsing_data_remover.h`,
-//!   `DATA_TYPE_CACHE_STORAGE` es uno de los tipos de `DATA_TYPE_DOM_STORAGE` (datos de sitios, junto a IndexedDB,
-//!   Local Storage y service workers) y puede contener el modo sin conexión de una PWA. `Service Worker` entero también
-//!   guarda `Database` y `ScriptCache`: nada de eso se limpia como caché. Tampoco `GPUPersistentCache`, `Media Cache`
-//!   ni los `*_crx_cache`.
-//! * Firefox, `netwerk/cache2/CacheFileIOManager.cpp`: la caché HTTP es `cache2` bajo el directorio LOCAL del perfil
-//!   (`NS_APP_USER_PROFILE_LOCAL_50_DIR`: `%LOCALAPPDATA%\Mozilla\Firefox\Profiles\<perfil>`). `startupCache` está en ese
-//!   mismo directorio (confirmado en `StartupCache.cpp` y `xpcom/build/nsXULAppAPI.h`). El perfil de `%APPDATA%` guarda `places.sqlite`, `key4.db`,
-//!   `logins.json`, `cookies.sqlite`... y NUNCA es caché.
+//! * `Code Cache` (per profile): `content/browser/storage_partition_impl.cc`. `ShaderCache` and `GrShaderCache` (under
+//!   `User Data`): `chrome/browser/chrome_content_browser_client.cc`. All are source-confirmed; do not expand this list
+//!   without the same verification.
+//! * `Service Worker\CacheStorage` is NOT cache: in `content/public/browser/browsing_data_remover.h`,
+//!   `DATA_TYPE_CACHE_STORAGE` is one of the `DATA_TYPE_DOM_STORAGE` types (site data, alongside IndexedDB, Local Storage,
+//!   and service workers) and may contain offline PWA data. The whole `Service Worker` directory also stores `Database`
+//!   and `ScriptCache`; none of these are cleaned as cache. Neither are `GPUPersistentCache`, `Media Cache`, or `*_crx_cache`.
+//! * Firefox, `netwerk/cache2/CacheFileIOManager.cpp`: HTTP cache is `cache2` under the profile's LOCAL directory
+//!   (`NS_APP_USER_PROFILE_LOCAL_50_DIR`: `%LOCALAPPDATA%\Mozilla\Firefox\Profiles\<profile>`). `startupCache` is in the
+//!   same directory (confirmed in `StartupCache.cpp` and `xpcom/build/nsXULAppAPI.h`). The `%APPDATA%` profile stores
+//!   `places.sqlite`, `key4.db`, `logins.json`, `cookies.sqlite`, and other user data; it is NEVER cache.
 //!
-//! Lo que NO es caché: todo lo demás dentro de `User Data` (`Local State`, `Bookmarks`, `History`, `Cookies`,
-//! `Login Data`, `Web Data`, `Local Storage`, `IndexedDB`, `Extensions`, `Preferences`, `Sessions`...) y de los perfiles
-//! de Firefox. `Guest Profile`, `System Profile` y `Profile 01` tampoco cuentan como perfiles.
+//! What is NOT cache: everything else under `User Data` (`Local State`, `Bookmarks`, `History`, `Cookies`, `Login Data`,
+//! `Web Data`, `Local Storage`, `IndexedDB`, `Extensions`, `Preferences`, `Sessions`, etc.) and Firefox profiles.
+//! `Guest Profile`, `System Profile`, and `Profile 01` are not considered profiles either.
 //!
-//! # Rutas en las que no se confía
+//! # Untrusted paths
 //! El resultado es de CUATRO estados ([`BrowserPath`]): ante una ruta relativa, con `..`, con prefijo raro (`\\.\`,
 //! `\\?\GLOBALROOT`, UNC), con alias 8.3 (`GOOGLE~1`), con puntos o espacios finales, con `:` (flujos de datos) o con
-//! mayúsculas que solo coinciden fuera de ASCII, la respuesta es `Unknown` ("no tocar"), nunca "no es un navegador".
+//! case differences that match only outside ASCII, the answer is `Unknown` ("do not touch"), never "not a browser".
 
 use crate::classify;
 use crate::known::{KnownKind, known_folder};
@@ -51,7 +50,7 @@ pub enum BrowserFamily {
 }
 
 impl BrowserFamily {
-    /// La clase de caché de este navegador.
+    /// Cache category for this browser.
     pub fn cache_kind(self) -> KnownKind {
         match self {
             BrowserFamily::Chrome => KnownKind::ChromeCache,
@@ -61,7 +60,7 @@ impl BrowserFamily {
     }
 }
 
-/// Carpetas base de las que cuelgan los datos de los navegadores (`%LOCALAPPDATA%` y `%APPDATA%`).
+/// Base folders containing browser data (`%LOCALAPPDATA%` and `%APPDATA%`).
 #[derive(Clone, Debug, Default)]
 pub struct BrowserRoots {
     pub local_appdata: Option<PathBuf>,
@@ -69,8 +68,8 @@ pub struct BrowserRoots {
 }
 
 impl BrowserRoots {
-    /// Las que da Windows (`SHGetKnownFolderPath`: `FOLDERID_LocalAppData` y `FOLDERID_RoamingAppData`), no las variables
-    /// de entorno, que un proceso puede alterar.
+    /// Values provided by Windows (`SHGetKnownFolderPath`: `FOLDERID_LocalAppData` and `FOLDERID_RoamingAppData`), not
+    /// environment variables, which a process can change.
     pub fn from_system() -> BrowserRoots {
         BrowserRoots {
             local_appdata: known_folder(&FOLDERID_LocalAppData),
@@ -78,7 +77,7 @@ impl BrowserRoots {
         }
     }
 
-    /// `User Data` de un navegador basado en Chromium. Los perfiles (`Default`, `Profile N`) cuelgan de aquí.
+    /// `User Data` directory for a Chromium-based browser. Profiles (`Default`, `Profile N`) are below it.
     fn user_data(&self, f: BrowserFamily) -> Option<PathBuf> {
         let local = self.local_appdata.as_ref()?;
         match f {
@@ -88,7 +87,7 @@ impl BrowserRoots {
         }
     }
 
-    /// `Profiles` de Firefox en `%APPDATA%`: el perfil con los datos del usuario (NUNCA es caché).
+    /// Firefox `Profiles` directory in `%APPDATA%`: profiles with user data (NEVER cache).
     fn firefox_roaming_profiles(&self) -> Option<PathBuf> {
         Some(
             self.roaming_appdata
@@ -97,7 +96,7 @@ impl BrowserRoots {
         )
     }
 
-    /// `Profiles` de Firefox en `%LOCALAPPDATA%`: de aquí cuelgan `cache2` y `startupCache` de cada perfil.
+    /// Firefox `Profiles` directory in `%LOCALAPPDATA%`: each profile's `cache2` and `startupCache` are below it.
     fn firefox_local_profiles(&self) -> Option<PathBuf> {
         Some(
             self.local_appdata
@@ -107,7 +106,7 @@ impl BrowserRoots {
     }
 }
 
-/// Subdirectorios de caché dentro de un perfil de Chromium, con la mayúscula con la que se crean (ver las fuentes arriba).
+/// Cache subdirectories within a Chromium profile, preserving their creation case (see sources above).
 const CHROMIUM_PROFILE_CACHE: [&str; 5] = [
     "Cache",
     "Code Cache",
@@ -115,13 +114,13 @@ const CHROMIUM_PROFILE_CACHE: [&str; 5] = [
     "DawnWebGPUCache",
     "DawnGraphiteCache",
 ];
-/// Cachés a nivel de `User Data` (no por perfil).
+/// Caches under `User Data` (not per profile).
 const CHROMIUM_ROOT_CACHE: [&str; 3] = ["ShaderCache", "GrShaderCache", "GraphiteDawnCache"];
-/// Cachés dentro de un perfil LOCAL de Firefox.
+/// Caches within a Firefox LOCAL profile.
 const FIREFOX_PROFILE_CACHE: [&str; 2] = ["cache2", "startupCache"];
 
-/// ¿Es `name` el directorio de un perfil de Chromium? Solo `Default` y `Profile <N>` con N en dígitos ASCII, sin ceros a
-/// la izquierda ni vacío (`Profile 01` no lo es), y sin distinguir mayúsculas SOLO de ASCII.
+/// Is `name` a Chromium profile directory? Only `Default` and `Profile <N>` where N uses ASCII digits with no leading
+/// zero or empty value (`Profile 01` does not qualify), using ASCII-only case-insensitive matching.
 fn is_chromium_profile_name(name: &str) -> bool {
     if name.eq_ignore_ascii_case("default") {
         return true;
@@ -136,9 +135,9 @@ fn is_chromium_profile_name(name: &str) -> bool {
         && !digits.starts_with('0')
 }
 
-/// ¿Existe `p` como directorio de verdad? Con el MISMO criterio que el escáner (`classify::dir_action == Walk`): ni un
-/// reparse point (un enlace podría llevar a datos del usuario; sin la etiqueta a mano, cualquier reparse point cuenta
-/// como enlace, también los de la nube) ni una carpeta con atributos de recuperación de la nube aunque no lo sea.
+/// Does `p` exist as a real directory? Uses the SAME criteria as the scanner (`classify::dir_action == Walk`): not a
+/// reparse point (a link could lead to user data; without a tag, every reparse point counts as a link, including cloud
+/// files), and not a directory with cloud recall attributes even if it is not a reparse point.
 fn is_real_dir(p: &Path) -> bool {
     std::fs::symlink_metadata(p).is_ok_and(|m| {
         use std::os::windows::fs::MetadataExt;
@@ -146,10 +145,10 @@ fn is_real_dir(p: &Path) -> bool {
     })
 }
 
-/// `p` (que cuelga de `base`) con CADA componente por debajo de `base` comprobado como directorio real: un ancestro
-/// intermedio (`Google`, `Chrome`...) que sea un enlace desviaría todo lo que se liste debajo a otro sitio. `base` en sí
-/// es la carpeta de datos que da Windows (`%LOCALAPPDATA%`) y no se comprueba. `None` si `p` no cuelga de `base` o algún
-/// componente no es un directorio real.
+/// `p` (under `base`) with EVERY component below `base` verified as a real directory: an intermediate ancestor (`Google`,
+/// `Chrome`, etc.) that is a link would redirect everything listed below it elsewhere. `base` itself is the data folder
+/// provided by Windows (`%LOCALAPPDATA%`) and is not checked. Returns `None` if `p` is not below `base` or a component is
+/// not a real directory.
 pub(crate) fn real_dir_under(base: &Path, p: &Path) -> Option<PathBuf> {
     let rel = p.strip_prefix(base).ok()?;
     let mut cur = base.to_path_buf();
@@ -165,7 +164,7 @@ pub(crate) fn real_dir_under(base: &Path, p: &Path) -> Option<PathBuf> {
     Some(cur)
 }
 
-/// Nombres de los subdirectorios reales de `dir` (vacío si no se puede listar), ordenados.
+/// Names of actual subdirectories of `dir`, sorted (empty if it cannot be listed).
 fn child_dirs(dir: &Path) -> Vec<(String, PathBuf)> {
     let Ok(rd) = std::fs::read_dir(dir) else {
         return Vec::new();
@@ -182,7 +181,7 @@ fn child_dirs(dir: &Path) -> Vec<(String, PathBuf)> {
     v
 }
 
-/// Directorios de CACHÉ concretos (y SOLO esos) de los navegadores, que existen ahora mismo:
+/// Specific browser CACHE directories (and ONLY those) that currently exist:
 ///
 /// * Chrome y Edge: de cada perfil de `User Data` (`Default`, `Profile N`), `Cache`, `Code Cache`, `GPUCache`,
 ///   `DawnWebGPUCache` y `DawnGraphiteCache`; y `ShaderCache`, `GrShaderCache` y `GraphiteDawnCache` a nivel de `User Data`.
@@ -190,26 +189,26 @@ fn child_dirs(dir: &Path) -> Vec<(String, PathBuf)> {
 /// * Firefox: `cache2` y `startupCache` de cada perfil de `%LOCALAPPDATA%\Mozilla\Firefox\Profiles`. Nunca
 ///   `%APPDATA%\Mozilla\Firefox\Profiles`.
 ///
-/// Solo LISTA carpetas. Los reparse points no cuentan (cada carpeta de cada nivel listado tiene que ser un directorio normal con
-/// el criterio del escáner). Ninguna ruta devuelta contiene historial, marcadores, cookies ni credenciales. Estas son las
-/// CANDIDATAS a raíz de la autorización de borrado: el `cleaner` las verifica DESPUÉS por handle, componente a componente desde
-/// `%LOCALAPPDATA%`, y descarta (con un motivo que la interfaz enseña) las que pasan por un enlace; por eso esta función NO
-/// comprueba los ancestros de `User Data` (`Google`, `Chrome`...): si lo hiciera, una `User Data` convertida en enlace
-/// desaparecería sin dejar rastro en vez de salir como "no disponible". Para recorrer (la cola prioritaria del escáner) se usa
-/// [`browser_cache_dirs_verified`], que sí los comprueba.
+/// Only LISTS folders. Reparse points are excluded (every folder at every listed level must be a normal directory under
+/// the scanner's criteria). No returned path contains history, bookmarks, cookies, or credentials. These are CANDIDATES
+/// for deletion authorization roots: the `cleaner` verifies them LATER by handle, component by component from
+/// `%LOCALAPPDATA%`, and rejects paths that pass through a link (with a reason shown in the UI). This function therefore
+/// does NOT check the ancestors of `User Data` (`Google`, `Chrome`, etc.): if it did, a `User Data` directory replaced by a
+/// link would disappear silently instead of appearing as "unavailable". For scanner priority traversal, use
+/// [`browser_cache_dirs_verified`], which does check them.
 pub fn browser_cache_dirs(roots: &BrowserRoots) -> Vec<(KnownKind, PathBuf)> {
     cache_dirs(roots, false)
 }
 
-/// Igual que [`browser_cache_dirs`], pero SOLO las cachés cuyos ancestros (`Google`, `Chrome`, `User Data`..., `Mozilla`,
-/// `Firefox`, `Profiles`) son todos directorios reales por debajo de `%LOCALAPPDATA%`: un enlace en un ancestro intermedio
-/// desviaría todo lo de debajo a otro sitio, y esto es lo que el escáner recorre sin pedir nada más.
+/// Like [`browser_cache_dirs`], but only includes caches whose ancestors (`Google`, `Chrome`, `User Data`, `Mozilla`,
+/// `Firefox`, `Profiles`) are all real directories below `%LOCALAPPDATA%`: a link in an intermediate ancestor would redirect
+/// everything below it elsewhere. These are the paths the scanner traverses directly.
 pub fn browser_cache_dirs_verified(roots: &BrowserRoots) -> Vec<(KnownKind, PathBuf)> {
     cache_dirs(roots, true)
 }
 
 fn cache_dirs(roots: &BrowserRoots, verify_ancestors: bool) -> Vec<(KnownKind, PathBuf)> {
-    // Con `verify_ancestors`, la carpeta con sus ancestros comprobados; sin él, la propia carpeta.
+    // With `verify_ancestors`, include folders whose ancestors were checked; otherwise include the folders themselves.
     let checked = |local: &Path, p: PathBuf| {
         if verify_ancestors {
             real_dir_under(local, &p)
@@ -263,22 +262,22 @@ fn cache_dirs(roots: &BrowserRoots, verify_ancestors: bool) -> Vec<(KnownKind, P
     out
 }
 
-/// Qué es una ruta respecto a los datos de los navegadores.
+/// How a path relates to browser data.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BrowserPath {
-    /// Un directorio de caché de la lista de [`browser_cache_dirs`], o algo dentro de él.
+    /// A cache directory from [`browser_cache_dirs`], or a path below it.
     Cache(KnownKind),
     /// Cualquier otra cosa de los datos de un navegador (el perfil con historial, cookies, credenciales, `Service Worker`,
-    /// `CacheStorage`...), la propia carpeta `User Data` o `Profiles` incluida: NO es caché.
+    /// `CacheStorage`, etc.), including the `User Data` or `Profiles` directory itself: NOT cache.
     Profile(BrowserFamily),
-    /// Una ruta absoluta y bien formada que NO está dentro de los datos de ningún navegador (un ancestro como
+    /// A well-formed absolute path that is NOT under any browser data (an ancestor such as
     /// `AppData\Local` tampoco lo es).
     NotBrowser,
-    /// No se puede afirmar nada (ruta relativa, con `..`, prefijo raro, alias 8.3, mayúsculas ambiguas...): NO TOCAR.
+    /// Cannot determine anything (relative path, `..`, unusual prefix, 8.3 alias, ambiguous case, etc.): DO NOT TOUCH.
     Unknown,
 }
 
-/// ¿Parece el nombre de un alias 8.3 (`PROGRA~1`, `GOOGLE~1.EXE`)? Un alias puede esconder cualquier nombre largo.
+/// Does this look like an 8.3 alias (`PROGRA~1`, `GOOGLE~1.EXE`)? An alias can hide any long name.
 fn looks_like_short_name(s: &str) -> bool {
     let Some(tilde) = s.find('~') else {
         return false;
@@ -297,7 +296,7 @@ fn looks_like_short_name(s: &str) -> bool {
     }
 }
 
-/// ¿Es un componente en el que no se puede confiar? (puntos o espacios finales, que Windows quita; `:` o caracteres
+/// Is this an untrusted path component? (Trailing dots or spaces, which Windows removes; `:` or characters
 /// prohibidos, que abren flujos de datos o son comodines; controles; alias 8.3).
 fn untrusted_component(s: &str) -> bool {
     s.is_empty()
@@ -308,9 +307,9 @@ fn untrusted_component(s: &str) -> bool {
         || looks_like_short_name(s)
 }
 
-/// Letra de unidad en minúscula y componentes de una ruta ABSOLUTA con letra de unidad (`C:\...`) y bien formada, o `None`
+/// Lowercase drive letter and components of a well-formed absolute drive-letter path (`C:\...`), or `None` if the path has
 /// si no se puede razonar sobre ella: relativa a la unidad (`C:Users`), a la unidad actual (`\Users`), con `..`, con otro
-/// prefijo (UNC, `\\.\`, `\\?\GLOBALROOT`) o con componentes en los que no se confía.
+/// an untrusted prefix (UNC, `\\.\`, `\\?\GLOBALROOT`) or untrusted components.
 fn normalize(p: &Path) -> Option<(char, Vec<String>)> {
     let p = dunce::simplified(p);
     let mut it = p.components();
@@ -352,7 +351,7 @@ fn is_device_name(n: &OsStr) -> bool {
         && stem.as_bytes()[3].is_ascii_digit())
 }
 
-/// Comparación de dos nombres: iguales (sin distinguir mayúsculas SOLO de ASCII), distintos, o AMBIGUOS (coinciden con el
+/// Comparison of two names: equal (ASCII-only case-insensitive), different, or AMBIGUOUS (matches after
 /// plegado de Unicode pero no con el de ASCII: el signo Kelvin no puede valer `k`, y NTFS decide con su propia tabla).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Cmp {
@@ -371,12 +370,12 @@ fn cmp_name(a: &str, b: &str) -> Cmp {
     }
 }
 
-/// Relación entre una raíz y una ruta.
+/// Relationship between a root and a path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Rel {
-    /// La ruta es la raíz o cuelga de ella; el resto empieza en el componente `n`.
+    /// The path equals or is below the root; the remainder starts at component `n`.
     Inside(usize),
-    /// La ruta es un ancestro estricto de la raíz.
+    /// The path is a strict ancestor of the root.
     Ancestor,
     Disjoint,
     Ambiguous,
@@ -401,7 +400,7 @@ fn relate(root: &[String], comps: &[String]) -> Rel {
     }
 }
 
-/// ¿Coincide `rest` (desde su inicio) con `pattern` (componentes)? Con ambigüedad, `Ambiguous`.
+/// Does `rest` match `pattern` from the start (by component)? Returns `Ambiguous` if the match is ambiguous.
 fn starts_with_names(rest: &[String], pattern: &[&str]) -> Cmp {
     if rest.len() < pattern.len() {
         return Cmp::Different;
@@ -451,16 +450,16 @@ fn classify_chromium(fam: BrowserFamily, rest: &[String]) -> BrowserPath {
 }
 
 /// Clasifica `path` (sin tocar el disco): ver [`BrowserPath`]. Es CONSERVADORA: solo dice `Cache` si la ruta es EXACTAMENTE
-/// un directorio de caché de [`browser_cache_dirs`] o cuelga de uno, componente a componente; ante cualquier duda es
-/// `Profile` (no es caché) o `Unknown` (no tocar).
+/// a cache directory from [`browser_cache_dirs`] or is below one, component by component. When in doubt, return `Profile`
+/// (not cache) or `Unknown` (do not touch).
 ///
-/// **Es para ETIQUETAR.** La autorización de un borrado NO sale de aquí sino de las raíces de [`browser_cache_dirs`]
+/// **For LABELING only.** Deletion authorization does NOT come from here; it comes from roots in [`browser_cache_dirs`]
 /// verificadas por handle justo antes de borrar (PLAN.md §3.7).
 pub fn classify_browser_path(roots: &BrowserRoots, path: &Path) -> BrowserPath {
     let Some((drive, comps)) = normalize(path) else {
         return BrowserPath::Unknown;
     };
-    // Cada raíz: (ruta, cómo se clasifica lo que cuelga de ella).
+    // Each root: (path, classification of its descendants).
     enum Kind {
         Chromium(BrowserFamily),
         FirefoxLocal,
@@ -480,7 +479,7 @@ pub fn classify_browser_path(roots: &BrowserRoots, path: &Path) -> BrowserPath {
     }
     let mut ambiguous = false;
     for (root, kind) in candidates {
-        // Una raíz en la que no se puede confiar (alias 8.3, prefijo raro...) impide afirmar nada.
+        // An untrusted root (8.3 alias, unusual prefix, etc.) prevents any definite classification.
         let Some((rdrive, rcomps)) = normalize(&root) else {
             return BrowserPath::Unknown;
         };

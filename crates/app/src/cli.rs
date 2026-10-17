@@ -1,43 +1,43 @@
-//! Línea de comandos de `tesela`.
+//! Command-line interface for `tesela`.
 
 use std::path::PathBuf;
 use tesela_ui::{LangPref, ThemePref};
 
 pub const USAGE: &str = "\
-tesela: analizador visual de espacio en disco para Windows, con limpieza segura
+tesela: visual disk space analyzer for Windows with safe cleanup
 
-Uso:
-  tesela                       abre la pantalla de inicio
-  tesela --demo                modo demostracion: arbol SINTETICO y unidades ficticias; no lee tu disco y la limpieza
-                               es SIMULADA (nunca toca el disco)
-  tesela --scan <ruta>         analiza esa carpeta o unidad nada mas arrancar
-  tesela --dry-run             modo simulacion: la limpieza hace todo salvo borrar o mover y registra las identidades
-                               que habria tocado (log local en %LOCALAPPDATA%\\Tesela); se combina con --scan
+Usage:
+  tesela                       open the home screen
+  tesela --demo                demo mode: SYNTHETIC tree and fictional drives; does not read your disk and cleanup is
+                               SIMULATED (never touches the disk)
+  tesela --scan <path>         scan that folder or drive on startup
+  tesela --dry-run             simulation mode: cleanup does everything except deleting or moving items, and logs the
+                               identities it would have touched (local log in %LOCALAPPDATA%\\Tesela); combine with --scan
 
-Opciones de --demo:
-  --stopped                    el arbol de la demostracion es el de un analisis detenido (carpetas incompletas)
-  --stress                     (desarrollo) un mapa de ~20 000 celdas para medir el peor caso
+Options for --demo:
+  --stopped                    use a demo tree from a stopped scan (incomplete folders)
+  --stress                     (development) a map with ~20,000 cells for worst-case measurements
   --screen home|scan|map|list|recs|confirm|summary
-                               pantalla inicial (por defecto home); recs, confirm y summary son del flujo de limpieza
-  --open <carpeta/carpeta>     entra por esas carpetas (con map o list)
-  --select <nombre>            deja seleccionado ese elemento de la carpeta (con map o list)
-  --mark <nombre>              marca un elemento visible de la carpeta para la barra de selección; se puede repetir
-  --progress <0..1>            fraccion fija del escaneo simulado (con --screen scan)
+                               initial screen (default: home); recs, confirm, and summary are cleanup flow screens
+  --open <folder/folder>       navigate into those folders (with map or list)
+  --select <name>              select that item in the folder (with map or list)
+  --mark <name>                mark a visible item in the folder for the selection bar; may be repeated
+  --progress <0..1>            fixed fraction of the simulated scan (with --screen scan)
 
-Opciones generales:
-  --theme system|light|dark    tema para esta sesion (no se guarda)
-  --lang system|es|en          idioma para esta sesion (no se guarda)
-  --size <ANCHOxALTO>          tamano de ventana en puntos (no se guarda)
-  --help                       esta ayuda
-  --version                    version
+General options:
+  --theme system|light|dark    theme for this session (not saved)
+  --lang system|es|en          language for this session (not saved)
+  --size <WIDTHxHEIGHT>        window size in points (not saved)
+  --help                       show this help
+  --version                    show version
 
-Herramientas de desarrollo (no guardan nada):
-  --bench-hover <segundos>     mueve un puntero sintetico sobre el mapa e imprime el coste de CPU por frame
-                               (con --demo abre el mapa; sin --demo exige --scan)
-  --idle-memory <segundos>     espera con la ventana en reposo e imprime el private working set del proceso
-  --screenshot <ruta.png>      guarda una captura de la ventana y sale (solo con --demo y la feature `capture`);
-                               NO pisa un archivo que ya exista
-  --overwrite                  con --screenshot: reemplaza el archivo si ya existe
+Developer tools (do not save anything):
+  --bench-hover <seconds>      moves a synthetic pointer over the map and prints CPU cost per frame
+                               (opens the map with --demo; requires --scan without --demo)
+  --idle-memory <seconds>      waits with the window idle and prints the process private working set
+  --screenshot <path.png>      saves a window screenshot and exits (only with --demo and the `capture` feature);
+                               NEVER overwrites an existing file
+  --overwrite                  with --screenshot: replace the file if it already exists
 ";
 
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -47,11 +47,11 @@ pub enum Screen {
     Scan,
     Map,
     List,
-    /// Recomendaciones.
+    /// Recommendations.
     Recs,
-    /// La confirmacion de la limpieza con una cesta de ejemplo.
+    /// The cleanup confirmation screen with a sample basket.
     Confirm,
-    /// El resumen tras limpiar esa cesta.
+    /// The summary after cleaning that basket.
     Summary,
 }
 
@@ -66,7 +66,7 @@ pub struct Cli {
     pub select: Option<String>,
     pub marks: Vec<String>,
     pub scan: Option<PathBuf>,
-    /// Modo simulacion: la limpieza no toca nada.
+    /// Simulation mode: cleanup does not touch anything.
     pub dry_run: bool,
     pub theme: Option<ThemePref>,
     pub lang: Option<LangPref>,
@@ -74,31 +74,31 @@ pub struct Cli {
     pub bench_hover: Option<f32>,
     pub idle_memory: Option<f32>,
     pub screenshot: Option<PathBuf>,
-    /// Con `--screenshot`: reemplazar el archivo si ya existe (por defecto no se pisa nada).
+    /// With `--screenshot`: replace the file if it already exists (by default, nothing is overwritten).
     pub overwrite: bool,
     pub help: bool,
     pub version: bool,
 }
 
 impl Cli {
-    /// ¿Es una herramienta de medición o de captura (`--bench-hover`, `--screenshot`, `--idle-memory`)?
+    /// Is this a measurement or capture tool (`--bench-hover`, `--screenshot`, `--idle-memory`)?
     pub fn tool_mode(&self) -> bool {
         self.bench_hover.is_some() || self.screenshot.is_some() || self.idle_memory.is_some()
     }
 
-    /// ¿Sesión aislada? La demostración y TODAS las herramientas de medición, con o sin `--demo`: no leen ni guardan la
-    /// configuración, no leen el historial de limpiezas y no inicializan las raíces reales de la limpieza.
+    /// Is this an isolated session? The demo and ALL measurement tools, with or without `--demo`, do not read or save
+    /// configuration, read cleanup history, or initialize real cleanup roots.
     pub fn isolated(&self) -> bool {
         self.demo || self.tool_mode()
     }
 }
 
-/// Interpreta los argumentos (sin el nombre del programa).
+/// Parses arguments (excluding the program name).
 pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
     let mut cli = Cli::default();
     let mut it = args.into_iter();
     fn need(it: &mut dyn Iterator<Item = String>, flag: &str) -> Result<String, String> {
-        it.next().ok_or_else(|| format!("{flag} necesita un valor"))
+        it.next().ok_or_else(|| format!("{flag} requires a value"))
     }
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -119,7 +119,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
                     "summary" => Screen::Summary,
                     v => {
                         return Err(format!(
-                            "--screen: valor desconocido `{v}` (home, scan, map, list, recs, confirm o summary)"
+                            "--screen: unknown value `{v}` (expected home, scan, map, list, recs, confirm, or summary)"
                         ));
                     }
                 }
@@ -128,9 +128,9 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
                 let v = need(&mut it, "--progress")?;
                 let p: f32 = v
                     .parse()
-                    .map_err(|_| format!("--progress: `{v}` no es un numero"))?;
+                    .map_err(|_| format!("--progress: `{v}` is not a number"))?;
                 if !(0.0..=1.0).contains(&p) {
-                    return Err("--progress debe estar entre 0 y 1".into());
+                    return Err("--progress must be between 0 and 1".into());
                 }
                 cli.progress = Some(p);
             }
@@ -149,7 +149,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
                     "system" => ThemePref::System,
                     "light" => ThemePref::Light,
                     "dark" => ThemePref::Dark,
-                    v => return Err(format!("--theme: valor desconocido `{v}`")),
+                    v => return Err(format!("--theme: unknown value `{v}`")),
                 })
             }
             "--lang" => {
@@ -157,7 +157,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
                     "system" => LangPref::System,
                     "es" => LangPref::Es,
                     "en" => LangPref::En,
-                    v => return Err(format!("--lang: valor desconocido `{v}`")),
+                    v => return Err(format!("--lang: unknown value `{v}`")),
                 })
             }
             "--size" => {
@@ -165,9 +165,9 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
                 let (w, h) = v
                     .split_once(['x', 'X'])
                     .and_then(|(w, h)| Some((w.parse::<f32>().ok()?, h.parse::<f32>().ok()?)))
-                    .ok_or_else(|| format!("--size: `{v}` no tiene la forma ANCHOxALTO"))?;
+                    .ok_or_else(|| format!("--size: `{v}` must have the form WIDTHxHEIGHT"))?;
                 if !(200.0..=8192.0).contains(&w) || !(200.0..=8192.0).contains(&h) {
-                    return Err("--size: el ancho y el alto deben estar entre 200 y 8192".into());
+                    return Err("--size: width and height must be between 200 and 8192".into());
                 }
                 cli.size = Some((w, h));
             }
@@ -175,9 +175,9 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
                 let v = need(&mut it, "--bench-hover")?;
                 let s: f32 = v
                     .parse()
-                    .map_err(|_| format!("--bench-hover: `{v}` no es un numero"))?;
+                    .map_err(|_| format!("--bench-hover: `{v}` is not a number"))?;
                 if !(1.0..=600.0).contains(&s) {
-                    return Err("--bench-hover: entre 1 y 600 segundos".into());
+                    return Err("--bench-hover: value must be between 1 and 600 seconds".into());
                 }
                 cli.bench_hover = Some(s);
             }
@@ -185,15 +185,15 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
                 let v = need(&mut it, "--idle-memory")?;
                 let s: f32 = v
                     .parse()
-                    .map_err(|_| format!("--idle-memory: `{v}` no es un numero"))?;
+                    .map_err(|_| format!("--idle-memory: `{v}` is not a number"))?;
                 if !(1.0..=600.0).contains(&s) {
-                    return Err("--idle-memory: entre 1 y 600 segundos".into());
+                    return Err("--idle-memory: value must be between 1 and 600 seconds".into());
                 }
                 cli.idle_memory = Some(s);
             }
             "--screenshot" => cli.screenshot = Some(PathBuf::from(need(&mut it, "--screenshot")?)),
             "--overwrite" => cli.overwrite = true,
-            other => return Err(format!("argumento desconocido: `{other}`")),
+            other => return Err(format!("unknown argument: `{other}`")),
         }
     }
     if (cli.stopped
@@ -206,29 +206,30 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
         && !cli.demo
     {
         return Err(
-            "--stopped, --stress, --screen, --progress, --open, --select y --mark solo tienen sentido con --demo"
+            "--stopped, --stress, --screen, --progress, --open, --select, and --mark are only valid with --demo"
                 .into(),
         );
     }
     if cli.screenshot.is_some() && !cli.demo {
-        return Err("--screenshot solo se admite con --demo: una captura de un disco real mostraría datos del equipo".into());
+        return Err("--screenshot is only available with --demo: a screenshot of a real disk could expose your data".into());
     }
     if !cli.marks.is_empty() && !matches!(cli.screen, Screen::Map | Screen::List) {
-        return Err("--mark necesita --screen map o --screen list".into());
+        return Err("--mark requires --screen map or --screen list".into());
     }
     if cli.overwrite && cli.screenshot.is_none() {
-        return Err("--overwrite solo tiene sentido con --screenshot".into());
+        return Err("--overwrite is only valid with --screenshot".into());
     }
     if cli.scan.is_some() && cli.demo {
-        return Err("--scan y --demo no se combinan".into());
+        return Err("--scan and --demo cannot be combined".into());
     }
-    // La medición mueve el puntero sobre el MAPA: sin él (inicio sin --scan, o escaneo simulado) no habría nada que medir.
+    // Measurement moves the pointer over the MAP: without one (startup without --scan or a simulated scan), there is
+    // nothing to measure.
     if cli.bench_hover.is_some() && cli.scan.is_none() && !cli.demo {
-        return Err("--bench-hover necesita --demo o --scan: mide el mapa, que la pantalla de inicio no tiene".into());
+        return Err("--bench-hover requires --demo or --scan: it measures the map, which is not available on the home screen".into());
     }
     if cli.bench_hover.is_some() && !matches!(cli.screen, Screen::Home | Screen::Map | Screen::List)
     {
-        return Err("--bench-hover mide el mapa o la lista: usa --screen map o --screen list (o nada: con --demo abre el mapa)".into());
+        return Err("--bench-hover measures the map or list: use --screen map or --screen list (or omit it: --demo opens the map)".into());
     }
     Ok(cli)
 }
@@ -273,19 +274,23 @@ mod tests {
     #[test]
     fn errores_claros() {
         assert!(p("--screen map").unwrap_err().contains("--demo"));
-        assert!(p("--demo --scan x").unwrap_err().contains("no se combinan"));
+        assert!(
+            p("--demo --scan x")
+                .unwrap_err()
+                .contains("cannot be combined")
+        );
         assert!(p("--theme naranja").is_err());
         assert!(p("--size 10x10").is_err());
         assert!(p("--size 1280").is_err());
         assert!(p("--progress 2 --demo").is_err());
-        assert!(p("--scan").unwrap_err().contains("necesita un valor"));
-        assert!(p("--cosa").unwrap_err().contains("desconocido"));
+        assert!(p("--scan").unwrap_err().contains("requires a value"));
+        assert!(p("--cosa").unwrap_err().contains("unknown argument"));
         assert!(p("--bench-hover 0").is_err());
         // Medir el mapa exige llegar a él: sin --demo ni --scan, o con el escaneo simulado, no hay mapa.
         assert!(
             p("--bench-hover 5")
                 .unwrap_err()
-                .contains("--demo o --scan")
+                .contains("--demo or --scan")
         );
         assert!(p("--demo --screen scan --bench-hover 5").is_err());
         // GM-m8: tampoco las pantallas de la limpieza (recs, confirm, summary): no hay mapa que medir.
@@ -293,7 +298,7 @@ mod tests {
             assert!(
                 p(&format!("--demo --screen {s} --bench-hover 5"))
                     .unwrap_err()
-                    .contains("mide el mapa"),
+                    .contains("measures the map"),
                 "{s}"
             );
         }
@@ -350,7 +355,7 @@ mod tests {
         assert!(
             p("--screen otra --demo")
                 .unwrap_err()
-                .contains("recs, confirm o summary")
+                .contains("recs, confirm, or summary")
         );
         assert!(p("--dry-run").unwrap().dry_run);
         assert!(!p("--demo").unwrap().dry_run);

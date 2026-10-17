@@ -1,53 +1,51 @@
-//! Registro local de lo borrado (PLAN.md §3.7.9) y historial de resúmenes (§2.11).
+//! Local log of deletions (PLAN.md §3.7.9) and summary history (§2.11).
 //!
-//! * `%LOCALAPPDATA%\Tesela\limpieza-<fecha>.jsonl`: una línea JSON por entrada procesada (ruta, identidad, tamaño,
-//!   resultado). SOLO en la máquina del usuario: contiene rutas reales y nunca se sube ni se versiona. Se conservan los
-//!   últimos [`KEEP_LOGS`] y cada uno tiene un tope de líneas ([`MAX_LINES`]) y de bytes ([`MAX_BYTES`]). "Borrar el
-//!   historial" de Ajustes los borra también ([`history_clear`]).
+//! * `%LOCALAPPDATA%\Tesela\limpieza-<date>.jsonl`: one JSON line per processed item (path, identity, size, result). It
+//!   stays ONLY on the user's machine: it contains real paths and is never uploaded or versioned. The latest [`KEEP_LOGS`]
+//!   are retained, each with a line limit ([`MAX_LINES`]) and byte limit ([`MAX_BYTES`]). "Clear history" in Settings also
+//!   deletes these files ([`history_clear`]).
 //!
-//! # Nombres y retención (A-M2)
-//! `limpieza-<AAAAMMDD>-<HHMMSS>-<secuencia de 3 cifras>[-simulacion].jsonl`. La poda ordena por fecha, hora y secuencia leídas
-//! como números (no por el texto del nombre: un sufijo `-1` ordena ANTES que el nombre base y la poda podía borrar el registro
-//! recién creado), nunca borra el registro que acaba de crear y, tras crearlo, comprueba que existe.
+//! # Names and retention (A-M2)
+//! `limpieza-<YYYYMMDD>-<HHMMSS>-<three-digit sequence>[-simulacion].jsonl`. Pruning sorts by date, time, and sequence as
+//! numbers (not by filename: a `-1` suffix sorts BEFORE the base name and could cause pruning to delete the newly created log).
+//! It never deletes the log it just created and verifies that the file exists after creation.
 //!
-//! # El registro abierto no se puede borrar desde fuera (A2-M2)
-//! El archivo se abre SIN `FILE_SHARE_DELETE` (`FILE_SHARE_READ | FILE_SHARE_WRITE`): mientras un escritor lo tiene abierto,
-//! nadie puede borrarlo ni renombrarlo (error de compartición), ni siquiera la poda de OTRO escritor. Antes, con la
-//! compartición por defecto de Rust (que incluye el borrado), una ejecución con una fecha anterior podía podar el registro
-//! de otra que seguía activa: la ruta desaparecía y el escritor seguía aceptando escrituras con `ok()` verdadero, es decir,
-//! una limpieza "registrada" en un archivo que ya no existía. La poda tolera ese fallo y se salta el archivo (un registro en
-//! uso se conserva aunque eso pase transitoriamente del límite); [`LogWriter::discard`] CIERRA el handle antes de borrar. Se
-//! puede leer desde otro handle (`FILE_SHARE_READ`).
+//! # An open log cannot be deleted externally (A2-M2)
+//! The file is opened WITHOUT `FILE_SHARE_DELETE` (`FILE_SHARE_READ | FILE_SHARE_WRITE`): while a writer has it open, no
+//! process can delete or rename it (sharing violation), including another writer pruning old logs. Previously, Rust's
+//! default sharing allowed deletion; a run with an earlier timestamp could prune a log belonging to an active run. Its path
+//! disappeared while the writer continued accepting writes with `ok()` still true, leaving a "logged" cleanup in a missing
+//! file. Pruning tolerates this failure and skips the file (an in-use log is retained even if this temporarily exceeds the
+//! limit); [`LogWriter::discard`] CLOSES the handle before deleting. Another handle can still read the file (`FILE_SHARE_READ`).
 //!
-//! # Retención (m2)
-//! Hay dos clases de registro, con retención PROPIA e independiente: los reales ([`KEEP_LOGS`]) y los de simulación
-//! (`-simulacion`, [`KEEP_SIM_LOGS`]). Al crear su registro, cada ejecución poda SOLO su clase: una limpieza real, los
-//! reales; una simulación (`--dry-run`), las simulaciones. Una simulación nunca toca un registro real: antes, 31
-//! simulaciones seguidas desplazaban los registros reales (los que sirven para reconstruir lo borrado) por orden de fecha.
+//! # Retention (m2)
+//! Real logs ([`KEEP_LOGS`]) and simulation logs (`-simulacion`, [`KEEP_SIM_LOGS`]) are separate classes with independent
+//! retention. Each run prunes ONLY its own class: real cleanup prunes real logs; simulation (`--dry-run`) prunes simulation
+//! logs. A simulation never touches a real log. Previously, 31 consecutive simulations could displace real logs (used to
+//! reconstruct deletions) based on timestamp order.
 //!
-//! Un registro que no llegó a usarse (la ejecución se rechazó antes de tocar nada: p. ej. `NeedsReconfirm`) se BORRA
-//! ([`LogWriter::discard`]): contiene solo la línea de arranque y ocuparía una plaza de la retención de los registros
-//! con contenido. Es lo más simple y seguro: no hay que decidir cuándo "empezar" a registrar ni excluir nada de la poda.
+//! A log that was never used (execution was rejected before touching anything, for example `NeedsReconfirm`) is DELETED
+//! ([`LogWriter::discard`]): it contains only the startup line and would take a retention slot away from a log with content.
+//! This is the simplest safe approach: there is no need to decide when logging "starts" or exclude files from pruning.
 //!
-//! # Garantías del registro (M4)
-//! * **Sin registro no hay acción destructiva.** Quien ejecuta exige un registro (salvo en simulación) y lo comprueba.
-//! * **Un error de escritura no se traga.** El primer error de escritura o de volcado MARCA el registro como fallido
-//!   ([`LogWriter::ok`]) y activa la bandera de cancelación del ejecutor: la limpieza se detiene en el siguiente punto
-//!   seguro (entre entradas, entre operaciones, entre trozos de la Papelera) y no se toca nada más.
-//! * **Intención antes, resultado después.** Antes de cada operación se escribe y se VUELCA una línea de intención
-//!   ([`LogWriter::write_intent`]: el recorrido definitivo, las raíces; cada lote entregado a la shell, sus elementos); después,
-//!   el resultado de CADA entrada, volcado al sistema en cuanto se escribe y con su error comprobado (A-M3): no hay lote de
-//!   resultados pendientes en memoria. Tras un cierre forzoso el alcance se reconstruye con la intención de la operación (las
-//!   raíces, con su identidad en el plan) y los resultados que constan; lo único que puede faltar es el resultado de lo que
-//!   estaba EN VUELO en ese instante (una entrada por hilo de trabajo, como mucho; en las operaciones de la shell, el lote
-//!   entero, cuya lista consta en su intención). No hay intención por entrada: duplicaría las escrituras para saber QUÉ
-//!   entrada estaba en vuelo, no el alcance, que ya consta.
-//! * **Volcado y `sync_all`.** `flush` (los bytes llegan a la caché del sistema, que sobrevive a que el proceso muera o la
-//!   ventana se cierre a la fuerza: la amenaza que se modela) tras cada intención y cada resultado; `sync_all` (a disco) solo
-//!   al crear el registro y al terminar, para no frenar cada elemento con un `fsync` (milisegundos por llamada, miles de
-//!   llamadas) cuando el riesgo de un corte de corriente a mitad no justifica ese coste.
-//! * `%LOCALAPPDATA%\Tesela\history.jsonl`: SOLO resúmenes (fecha, unidad, usado, liberado ahora, enviado a la
-//!   Papelera). Nunca el árbol ni rutas. Se puede borrar desde Ajustes.
+//! # Log guarantees (M4)
+//! * **No log, no destructive action.** The executor requires a log (except in simulation) and verifies it is usable.
+//! * **Write errors are never swallowed.** The first write or flush error marks the log as failed ([`LogWriter::ok`]) and
+//!   sets the executor's cancellation flag. Cleanup stops at the next safe point (between entries, operations, or Recycle
+//!   Bin batches) and does not touch anything else.
+//! * **Intent first, result after.** Before every operation, a log intent is written and FLUSHED ([`LogWriter::write_intent`]:
+//!   the permanent traversal and its roots; each batch sent to the shell and its items). Then each entry's result is written
+//!   and flushed immediately, with errors checked (A-M3): no batch of results remains buffered in memory. After a forced
+//!   shutdown, scope can be reconstructed from the operation intent (roots, with identity in the plan) and recorded results.
+//!   Only the result for work IN FLIGHT at that moment may be missing (at most one entry per worker thread; for shell
+//!   operations, the entire batch, whose list is in its intent). There is no per-entry intent: it would duplicate writes to
+//!   identify the in-flight entry, not its scope, which is already recorded.
+//! * **Flush and `sync_all`.** `flush` (bytes reach the system cache, which survives process termination or forced window
+//!   close, the modeled threat) follows each intent and result. `sync_all` (to disk) runs only when creating the log and at
+//!   the end, avoiding an `fsync` for every item (milliseconds per call, thousands of calls) when a mid-run power failure
+//!   does not justify the cost.
+//! * `%LOCALAPPDATA%\Tesela\history.jsonl`: summaries ONLY (date, drive, used, freed now, sent to the Recycle Bin). Never
+//!   the tree or paths. It can be cleared from Settings.
 
 use crate::engine::{Event, EventSink, Outcome};
 use serde::{Deserialize, Serialize};
@@ -59,20 +57,20 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// `FILE_SHARE_READ | FILE_SHARE_WRITE`: se puede leer (y abrir otro escritor), pero NO borrar ni renombrar mientras el registro
-/// esté abierto (A2-M2).
+/// `FILE_SHARE_READ | FILE_SHARE_WRITE`: the file can be read (and another writer opened), but NOT deleted or renamed while
+/// the log is open (A2-M2).
 const SHARE_READ_WRITE: u32 = 0x1 | 0x2;
 
-/// Registros REALES que se conservan.
+/// Number of REAL logs to retain.
 pub const KEEP_LOGS: usize = 30;
-/// Registros de SIMULACIÓN (`--dry-run`) que se conservan. Se podan aparte de los reales (m2).
+/// Number of SIMULATION (`--dry-run`) logs to retain. Pruned separately from real logs (m2).
 pub const KEEP_SIM_LOGS: usize = 10;
-/// Tope de líneas de un registro (un `%TEMP%` enorme tiene cientos de miles de archivos).
+/// Maximum log lines (a huge `%TEMP%` can contain hundreds of thousands of files).
 pub const MAX_LINES: u64 = 250_000;
-/// Tope de bytes de un registro (rutas largas: 250 000 líneas podrían pasar de cien MiB).
+/// Maximum log bytes (with long paths, 250,000 lines could exceed one hundred MiB).
 pub const MAX_BYTES: u64 = 64 * 1024 * 1024;
 
-/// Fecha y hora UTC a partir de segundos Unix (algoritmo de días civiles de H. Hinnant).
+/// UTC date and time from Unix seconds (H. Hinnant's civil date algorithm).
 pub fn utc_parts(secs: u64) -> (i64, u32, u32, u32, u32, u32) {
     let days = (secs / 86_400) as i64;
     let rem = (secs % 86_400) as u32;
@@ -110,11 +108,11 @@ thread_local! {
     static TEST_AFTER_PRUNE: AfterPrune = const { std::cell::RefCell::new(None) };
 }
 
-/// El archivo del registro. En las pruebas puede fallar a propósito después de `left` bytes.
+/// Log file. Tests can make it fail deliberately after `left` bytes.
 enum LogFile {
     Real(File),
-    /// El registro se descartó (A2-M2): el handle ya se cerró para poder borrar el archivo. Escribir da un error (el registro
-    /// ya no existe); volcar no hace nada.
+    /// The log was discarded (A2-M2): its handle was closed so the file could be deleted. Writes return an error (the log
+    /// no longer exists); flush does nothing.
     Closed,
     #[cfg(test)]
     FailAfter {
@@ -127,7 +125,7 @@ impl Write for LogFile {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
         match self {
             LogFile::Real(f) => f.write(buf),
-            LogFile::Closed => Err(std::io::Error::other("el registro se descartó")),
+            LogFile::Closed => Err(std::io::Error::other("log was discarded")),
             #[cfg(test)]
             LogFile::FailAfter { file, left } => {
                 if *left == 0 {
@@ -154,32 +152,31 @@ impl LogFile {
     fn sync_all(&self) -> std::io::Result<()> {
         match self {
             LogFile::Real(f) => f.sync_all(),
-            LogFile::Closed => Err(std::io::Error::other("el registro se descartó")),
+            LogFile::Closed => Err(std::io::Error::other("log was discarded")),
             #[cfg(test)]
             LogFile::FailAfter { file, .. } => file.sync_all(),
         }
     }
 }
 
-/// El escritor del registro de una ejecución.
+/// Writer for one run's log.
 pub struct LogWriter {
     path: PathBuf,
     out: Mutex<BufWriter<LogFile>>,
     lines: AtomicU64,
     bytes: AtomicU64,
     truncated: AtomicBool,
-    /// Tope de bytes (las pruebas lo bajan).
+    /// Byte limit (lowered by tests).
     max_bytes: AtomicU64,
-    /// Tope de líneas (solo las pruebas lo bajan).
+    /// Line limit (lowered only by tests).
     max_lines: AtomicU64,
-    /// El primer error de escritura o de volcado marca el registro como fallido para siempre.
+    /// The first write or flush error permanently marks the log as failed.
     failed: AtomicBool,
     first_error: Mutex<Option<String>>,
-    /// Bandera de cancelación del ejecutor: un error de escritura la activa (la limpieza se detiene en el siguiente punto
-    /// seguro).
+    /// Executor cancellation flag: a write error sets it (cleanup stops at the next safe point).
     cancel_on_error: Mutex<Option<Arc<AtomicBool>>>,
-    /// ¿Se escribió ya algo de una OPERACIÓN (una intención, una entrada, un `bin-item`, un resultado)? Mientras no, el
-    /// registro solo tiene la línea de arranque y las notas `rejected`, y se puede descartar (R2).
+    /// Has anything for an OPERATION been written yet (an intent, entry, `bin-item`, or result)? Until then, the log only
+    /// contains its startup line and `rejected` notes, so it can be discarded (R2).
     operation_written: AtomicBool,
 }
 
@@ -218,8 +215,8 @@ fn outcome_name(o: Outcome) -> String {
 }
 
 impl LogWriter {
-    /// Crea el registro de una ejecución en `dir` (se crea si no existe) y poda los antiguos. Si no se puede crear o no se
-    /// puede escribir y volcar la línea de arranque (con `sync_all`), es un error: sin registro no se limpia.
+    /// Creates a run log in `dir` (creating the directory if needed) and prunes old logs. Failure to create the file, write
+    /// its startup line, or flush it with `sync_all` is an error: cleanup cannot proceed without a log.
     pub fn create(dir: &Path, dry_run: bool) -> std::io::Result<LogWriter> {
         Self::create_with(dir, dry_run, LogFile::Real)
     }
@@ -255,15 +252,15 @@ impl LogWriter {
         fs::create_dir_all(dir)?;
         let (y, mo, d, h, mi, sec) = utc_parts(now);
         let stamp = format!("{y:04}{mo:02}{d:02}-{h:02}{mi:02}{sec:02}");
-        // El nombre ORDENA bien como texto y como número (A-M2): `limpieza-<fecha>-<hora>-<secuencia de 3 cifras>[-simulacion]`.
-        // La secuencia es la mayor que ya haya en ese segundo más uno (no el primer hueco: si se podó el 001, el nuevo no puede
-        // volver a ser 001 y quedar por debajo de uno anterior). Antes la colisión añadía `-1` al nombre, que ordena ANTES
-        // que el nombre base (`-` < `.`): la poda podía borrar el registro recién creado.
+        // The name sorts correctly as both text and numbers (A-M2): `limpieza-<date>-<time>-<three-digit sequence>[-simulacion]`.
+        // The sequence is one greater than the largest already used in that second (not the first gap: if 001 was pruned,
+        // the new name must not reuse 001 and sort before an older one). A previous collision suffix `-1` sorted BEFORE the
+        // base name (`-` < `.`), so pruning could delete the newly created log.
         let mut n = next_sequence(dir, &stamp);
         let sim = if dry_run { "-simulacion" } else { "" };
         let (path, f) = loop {
             let path = dir.join(format!("limpieza-{stamp}-{n:03}{sim}.jsonl"));
-            // Sin `FILE_SHARE_DELETE` (A2-M2): nadie puede borrar ni renombrar el registro mientras esté abierto.
+            // Without `FILE_SHARE_DELETE` (A2-M2), no one can delete or rename the log while it is open.
             match OpenOptions::new()
                 .create_new(true)
                 .write(true)
@@ -292,26 +289,24 @@ impl LogWriter {
             "{{\"t\":\"start\",\"dry_run\":{dry_run},\"unix\":{}}}",
             unix_now()
         ))?;
-        // La línea de arranque ya está en disco (con `sync_all`): aunque la aplicación muera enseguida, consta que hubo
-        // una limpieza.
+        // The startup line is on disk (`sync_all`): even if the application exits immediately, the run is recorded.
         w.sync()?;
-        // Cada ejecución poda SOLO su clase: una simulación nunca toca un registro real (m2). El registro que acaba de crearse
-        // se EXCLUYE de la poda (A-M2): nunca puede borrarse a sí mismo, ni por una fecha posterior (reloj adelantado) ni por
-        // un nombre que ordene mal.
+        // Each run prunes ONLY its own class: a simulation never touches a real log (m2). The newly created log is EXCLUDED
+        // from pruning (A-M2), so it can never delete itself because of a future timestamp (clock skew) or a misordered name.
         prune(
             dir,
             dry_run,
             if dry_run { KEEP_SIM_LOGS } else { KEEP_LOGS },
             Some(&w.path),
         );
-        // SOLO PRUEBAS: la ventana entre la poda y la comprobación (un gancho puede borrar el registro justo aquí).
+        // TESTS ONLY: the interval between pruning and verification (a hook can delete the log here).
         #[cfg(test)]
         TEST_AFTER_PRUNE.with(|h| {
             if let Some(f) = &*h.borrow() {
                 f(&w.path);
             }
         });
-        // Y se comprueba: un registro que no existe no es un registro, y sin registro no se limpia.
+        // Verify it: a missing log is not a log, and cleanup cannot proceed without one.
         ensure_exists(&w.path)?;
         Ok(w)
     }
@@ -320,7 +315,7 @@ impl LogWriter {
         &self.path
     }
 
-    /// Marca el registro como fallido (la primera vez guarda el error) y activa la cancelación del ejecutor.
+    /// Marks the log as failed (saving the first error) and triggers executor cancellation.
     fn poison(&self, e: &std::io::Error) {
         self.failed.store(true, Ordering::SeqCst);
         self.first_error
@@ -354,9 +349,9 @@ impl LogWriter {
         self.checked(r)
     }
 
-    /// Escribe una línea de RESULTADO y la vuelca al sistema en la misma sección crítica, comprobando el error de las dos cosas
-    /// (A-M3): al volver, la línea es legible desde otro handle y, si no se pudo, el registro consta como fallido y la
-    /// limpieza se cancela en el siguiente punto seguro.
+    /// Writes a RESULT line and flushes it to the system within the same critical section, checking both operations for errors
+    /// (A-M3): when this returns, another handle can read the line; if either operation failed, the log is marked failed and
+    /// cleanup is cancelled at the next safe point.
     fn raw_flushed(&self, line: &str) -> std::io::Result<()> {
         let r = {
             let mut g = self.out.lock().unwrap_or_else(|e| e.into_inner());
@@ -367,23 +362,23 @@ impl LogWriter {
         self.checked(r)
     }
 
-    /// Borra el archivo del registro: para una ejecución que se rechazó antes de tocar nada (ver el módulo). SOLO si no se
-    /// escribió nada de una operación (intención, entrada, `bin-item`, resultado): con algo escrito NO se borra y devuelve
-    /// un error (R2). Primero CIERRA el handle (A2-M2: el archivo se abrió sin `FILE_SHARE_DELETE`, así que no se puede borrar
-    /// mientras siga abierto) y después lo borra; tras descartar, escribir en este registro da un error.
+    /// Deletes the log file for a run rejected before touching anything (see the module documentation). This is allowed ONLY
+    /// if no operation data (intent, entry, `bin-item`, or result) was written; otherwise it returns an error and preserves
+    /// the file (R2). First CLOSES the handle (A2-M2: the file was opened without `FILE_SHARE_DELETE`, so it cannot be
+    /// deleted while open), then deletes it. Writes to a discarded log return an error.
     pub(crate) fn discard(&self) -> std::io::Result<()> {
         if self.operation_written.load(Ordering::SeqCst) {
             return Err(std::io::Error::other(
-                "el registro ya contiene operaciones: no se descarta",
+                "log already contains operations and cannot be discarded",
             ));
         }
         {
             let mut g = self.out.lock().unwrap_or_else(|e| e.into_inner());
-            // Se suelta el escritor anterior (vuelca lo pendiente y cierra el handle) y se deja uno cerrado.
+            // Drop the previous writer (flush pending data and close its handle), then replace it with a closed writer.
             drop(std::mem::replace(&mut *g, BufWriter::new(LogFile::Closed)));
         }
-        // H6a: un escritor descartado ya no es un registro válido: `ok()` lo dice desde ya (sin esperar a una escritura que
-        // falle). No se activa la cancelación del ejecutor: descartar es justo lo que hace al rechazar una ejecución.
+        // H6a: a discarded writer is no longer a valid log: `ok()` reports this immediately (without waiting for a failing
+        // write). Executor cancellation is not triggered; discarding is the intended result of rejecting a run.
         self.failed.store(true, Ordering::SeqCst);
         match fs::remove_file(&self.path) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
@@ -391,24 +386,24 @@ impl LogWriter {
         }
     }
 
-    /// ¿Llegó el registro a su tope (líneas o bytes) y dejó de anotar? La limpieza sigue, pero lo posterior no consta.
+    /// Has the log reached its line or byte limit and stopped recording? Cleanup continues, but later events are not logged.
     pub fn truncated(&self) -> bool {
         self.truncated.load(Ordering::Relaxed)
     }
 
-    /// SOLO PARA PRUEBAS: baja el tope de bytes.
+    /// TESTS ONLY: lowers the byte limit.
     #[cfg(test)]
     pub(crate) fn set_max_bytes_for_test(&self, n: u64) {
         self.max_bytes.store(n, Ordering::Relaxed);
     }
 
-    /// ¿Va bien el registro? `false` en cuanto falló una escritura o un volcado (ya no se puede confiar en que conste lo
-    /// que se haga).
+    /// Is the log healthy? Returns `false` as soon as a write or flush fails (later actions can no longer be trusted to be
+    /// recorded).
     pub fn ok(&self) -> bool {
         !self.failed.load(Ordering::SeqCst)
     }
 
-    /// El primer error de escritura o de volcado, si lo hubo.
+    /// The first write or flush error, if any.
     pub fn error(&self) -> Option<String> {
         self.first_error
             .lock()
@@ -416,7 +411,7 @@ impl LogWriter {
             .clone()
     }
 
-    /// Hace que un error de escritura active `flag` (la cancelación del ejecutor). Si ya había fallado, la activa ya.
+    /// Makes a write error set `flag` (executor cancellation). If the log had already failed, sets the flag immediately.
     pub fn cancel_on_error(&self, flag: Arc<AtomicBool>) {
         if !self.ok() {
             flag.store(true, Ordering::SeqCst);
@@ -427,7 +422,7 @@ impl LogWriter {
             .unwrap_or_else(|e| e.into_inner()) = Some(flag);
     }
 
-    /// Vuelca lo escrito al sistema (y `sync_all` a disco). Un error marca el registro como fallido.
+    /// Flushes written data to the system (and `sync_all` to disk). An error marks the log as failed.
     pub fn sync(&self) -> std::io::Result<()> {
         let r = {
             let mut g = self.out.lock().unwrap_or_else(|e| e.into_inner());
@@ -436,8 +431,8 @@ impl LogWriter {
         self.checked(r)
     }
 
-    /// Escribe una LÍNEA DE INTENCIÓN y la vuelca antes de que se haga la operación: `kind` con la lista de rutas que se van
-    /// a tocar. Si no se puede escribir o volcar, es un error y la operación NO debe hacerse.
+    /// Writes and flushes an INTENT line before the operation: `kind` and the list of paths to be touched. If writing or
+    /// flushing fails, returns an error and the operation MUST NOT proceed.
     pub fn write_intent(&self, kind: &str, paths: &[PathBuf]) -> std::io::Result<()> {
         let list: Vec<String> = paths
             .iter()
@@ -449,7 +444,7 @@ impl LogWriter {
         self.flush_checked()
     }
 
-    /// Un elemento de la Papelera purgado (o saltado), individualmente: ruta de origen, `id`, tamaño y resultado.
+    /// One Recycle Bin item purged or skipped: source path, `id`, size, and result.
     pub fn write_bin_item(&self, original: &Path, id: &OsStr, size: u64, out: &str) {
         self.operation_written.store(true, Ordering::SeqCst);
         let v = serde_json::json!({
@@ -462,18 +457,18 @@ impl LogWriter {
         let _ = self.raw_flushed(&v.to_string());
     }
 
-    /// Como [`LogWriter::flush`], pero devuelve el error.
+    /// Like [`LogWriter::flush`], but returns any error.
     pub fn flush_checked(&self) -> std::io::Result<()> {
         let r = self.out.lock().unwrap_or_else(|e| e.into_inner()).flush();
         self.checked(r)
     }
 
-    /// Cuenta una línea y dice si el registro ya pasó su tope (líneas o bytes): en ese caso deja UNA marca de truncado y ya
-    /// no se escribe más. Lo comparten las entradas y las notas `rejected`, para que ninguna se salte el tope (R4).
+    /// Counts a line and checks whether the log has exceeded its line or byte limit. If so, writes ONE truncation marker
+    /// and records nothing else. Entries and `rejected` notes share this check so neither can exceed the limit (R4).
     ///
-    /// GM-S1: se cuenta y se compara DENTRO del cerrojo del escritor (antes, el contador y la comparación iban fuera: varios
-    /// hilos podían leer el mismo valor y pasarse del tope) y con `>=`: con `n > MAX` se escribía una línea de más (la
-    /// número `MAX + 1`). El cerrojo se suelta antes de que quien llama escriba su línea; el número ya está reservado.
+    /// GM-S1: count and compare INSIDE the writer lock (previously, both ran outside it, so several threads could read the
+    /// same value and exceed the limit), using `>=`: with `n > MAX`, one extra line (`MAX + 1`) was written. The lock is
+    /// released before the caller writes its line; its slot has already been reserved.
     fn over_cap(&self) -> Option<u64> {
         let mut g = self.out.lock().unwrap_or_else(|e| e.into_inner());
         let n = self.lines.fetch_add(1, Ordering::Relaxed);
@@ -481,7 +476,7 @@ impl LogWriter {
             || self.bytes.load(Ordering::Relaxed) > self.max_bytes.load(Ordering::Relaxed)
         {
             if !self.truncated.swap(true, Ordering::Relaxed) {
-                // La marca se escribe con el cerrojo que ya tenemos (`raw` lo volvería a pedir).
+                // Write the marker with the lock already held (`raw` would try to acquire it again).
                 let line = "{\"t\":\"truncated\"}";
                 let r = writeln!(g, "{line}").and_then(|()| g.flush());
                 self.bytes
@@ -493,14 +488,14 @@ impl LogWriter {
         Some(n)
     }
 
-    /// SOLO PARA PRUEBAS: baja el tope de líneas.
+    /// TESTS ONLY: lowers the line limit.
     #[cfg(test)]
     pub(crate) fn set_max_lines_for_test(&self, n: u64) {
         self.max_lines.store(n, Ordering::Relaxed);
     }
 
-    /// Una nota de algo que NO llegó al plan (`rejected`), con el mismo tope y el mismo truncado que las entradas. No cuenta
-    /// como operación escrita (R2).
+    /// A note about something that did NOT make it into the plan (`rejected`), subject to the same limits and truncation
+    /// behavior as entries. It does not count as a written operation (R2).
     pub fn write_rejected(&self, path: &Path, reason: &str) {
         if self.over_cap().is_none() {
             return;
@@ -527,26 +522,26 @@ impl LogWriter {
             links: ev.links,
             out: outcome_name(ev.outcome),
         };
-        // A-M3: el resultado de CADA entrada se vuelca al sistema al escribirlo (antes se acumulaban hasta 256 en el búfer).
+        // A-M3: each entry result is flushed to the system as it is written (previously, up to 256 were buffered).
         if let Ok(s) = serde_json::to_string(&line) {
             let _ = self.raw_flushed(&s);
         }
     }
 
-    /// Una línea de texto libre del propio registro (resumen, avisos).
+    /// A free-text line written by the log itself (summary or warnings).
     pub fn write_note(&self, kind: &str, text: &str) {
         self.operation_written.store(true, Ordering::SeqCst);
         let v = serde_json::json!({ "t": kind, "text": text });
         let _ = self.raw_flushed(&v.to_string());
     }
 
-    /// El receptor de eventos para el recorrido.
+    /// Event sink for the traversal.
     pub fn sink(self: &Arc<Self>) -> Arc<EventSink> {
         let me = self.clone();
         Arc::new(move |ev| me.write_event(&ev))
     }
 
-    /// Vuelca lo escrito al sistema. Un error marca el registro como fallido (ver [`LogWriter::ok`]).
+    /// Flushes written data to the system. An error marks the log as failed (see [`LogWriter::ok`]).
     pub fn flush(&self) {
         let _ = self.flush_checked();
     }
@@ -558,14 +553,14 @@ impl Drop for LogWriter {
     }
 }
 
-/// ¿Es un registro de simulación? (`limpieza-<fecha>-simulacion[-n].jsonl`).
+/// Is this a simulation log? (`limpieza-<date>-simulacion[-n].jsonl`).
 fn is_sim_log(name: &str) -> bool {
     name.contains("-simulacion")
 }
 
-/// Clave de orden de un registro por su NOMBRE: (fecha, hora, secuencia) leídas como NÚMEROS. Entiende
-/// `limpieza-<AAAAMMDD>-<HHMMSS>[-<secuencia>][-simulacion].jsonl` (la secuencia de los registros antiguos era `-1`, `-2`...
-/// y la de los nuevos, `-001`). Lo que no se entiende ordena como el más antiguo (y entre sí, por nombre).
+/// Sort key for a log by NAME: (date, time, sequence), parsed as NUMBERS. Understands
+/// `limpieza-<YYYYMMDD>-<HHMMSS>[-<sequence>][-simulacion].jsonl` (older logs used `-1`, `-2`, etc.; new ones use `-001`).
+/// Unrecognized names sort as oldest (and among themselves by name).
 fn log_key(name: &str) -> (u64, u64, u64, String) {
     let parsed = (|| {
         let rest = name.strip_prefix("limpieza-")?;
@@ -578,8 +573,8 @@ fn log_key(name: &str) -> (u64, u64, u64, String) {
         {
             return None;
         }
-        // Lo que sigue a la hora son trozos separados por `-`: la secuencia (solo cifras) y `simulacion`, en cualquier orden
-        // (los nombres de la v0.1.1 son `...-simulacion-1`, los nuevos `...-001-simulacion`).
+        // What follows the time is split into `-`-separated parts: a numeric sequence and `simulacion`, in either order
+        // (v0.1.1 names use `...-simulacion-1`; new names use `...-001-simulacion`).
         let seq = rest
             .split('-')
             .find(|t| !t.is_empty() && t.bytes().all(|b| b.is_ascii_digit()))
@@ -591,7 +586,7 @@ fn log_key(name: &str) -> (u64, u64, u64, String) {
     (d, t, q, name.to_lowercase())
 }
 
-/// La secuencia siguiente para el segundo `stamp` (`AAAAMMDD-HHMMSS`): la mayor que haya en `dir` más uno (1 si no hay).
+/// Next sequence for the `stamp` second (`YYYYMMDD-HHMMSS`): one greater than the largest in `dir` (1 if none exist).
 fn next_sequence(dir: &Path, stamp: &str) -> u64 {
     let Ok(rd) = fs::read_dir(dir) else { return 1 };
     let prefix = format!("limpieza-{stamp}");
@@ -604,9 +599,9 @@ fn next_sequence(dir: &Path, stamp: &str) -> u64 {
         .map_or(1, |m| m + 1)
 }
 
-/// Deja los `keep` registros más recientes de UNA clase (`sim`: simulaciones; si no, reales) de `dir`, ordenados por la fecha,
-/// la hora y la secuencia de su nombre ([`log_key`]). La otra clase no se toca y `active` (el registro que se acaba de crear,
-/// que cuenta como uno de los `keep`) NUNCA se borra.
+/// Retains the `keep` newest logs of ONE class in `dir` (`sim`: simulation logs; otherwise real logs), sorted by the date,
+/// time, and sequence in the name ([`log_key`]). The other class is untouched, and `active` (the newly created log, counted
+/// as one of the `keep`) is NEVER deleted.
 fn prune(dir: &Path, sim: bool, keep: usize, active: Option<&Path>) {
     let Ok(rd) = fs::read_dir(dir) else { return };
     let mut logs: Vec<PathBuf> = rd
@@ -622,7 +617,7 @@ fn prune(dir: &Path, sim: bool, keep: usize, active: Option<&Path>) {
         })
         .collect();
     logs.sort_by_key(|p| log_key(&p.file_name().unwrap_or_default().to_string_lossy()));
-    // El activo ocupa una plaza: de los demás se conservan `keep - 1` (o `keep`, si no hay activo).
+    // The active log occupies one slot: retain `keep - 1` others (or `keep` if there is no active log).
     let allowed = if active.is_some() {
         keep.saturating_sub(1)
     } else {
@@ -630,42 +625,40 @@ fn prune(dir: &Path, sim: bool, keep: usize, active: Option<&Path>) {
     };
     if logs.len() > allowed {
         for old in &logs[..logs.len() - allowed] {
-            // A2-M2: un registro que OTRO escritor tiene abierto no se puede borrar (se abre sin `FILE_SHARE_DELETE`): el
-            // error de compartición o de acceso se tolera y se salta ese archivo, que se podará cuando ya no esté en uso.
-            // Cualquier otro error tampoco detiene la poda.
+            // A2-M2: a log held open by ANOTHER writer cannot be deleted (it is opened without `FILE_SHARE_DELETE`): sharing
+            // or access errors are tolerated and the file is skipped until it is no longer in use. Other errors do not stop
+            // pruning either.
             let _ = fs::remove_file(old);
         }
     }
 }
 
-/// El registro recién creado tiene que seguir existiendo: un registro que no existe no es un registro. Desde A2-M2 el archivo
-/// abierto no se puede borrar desde fuera, pero se conserva la comprobación (defensa en profundidad).
+/// A newly created log must still exist: a missing log is not a log. Since A2-M2, an open file cannot be deleted externally,
+/// but this check remains as defense in depth.
 fn ensure_exists(path: &Path) -> std::io::Result<()> {
     if path.is_file() {
         Ok(())
     } else {
-        Err(std::io::Error::other(
-            "el registro recién creado ya no existe",
-        ))
+        Err(std::io::Error::other("newly created log no longer exists"))
     }
 }
 
-/// Un resumen del historial (sin rutas).
+/// A history summary (without paths).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HistoryEntry {
-    /// Cuándo (segundos Unix).
+    /// When (Unix seconds).
     pub unix: u64,
-    /// Letra de la unidad (0 si era una carpeta).
+    /// Drive letter (0 if this was a folder).
     pub drive: u8,
-    /// Bytes usados en el volumen al limpiar.
+    /// Bytes used on the volume during cleanup.
     pub used: u64,
-    /// "Liberado ahora" (medido).
+    /// "Freed now" (measured).
     pub freed_now: u64,
-    /// Enviado a la Papelera.
+    /// Sent to the Recycle Bin.
     pub to_bin: u64,
 }
 
-/// Añade un resumen a `history.jsonl`.
+/// Appends a summary to `history.jsonl`.
 pub fn history_append(dir: &Path, e: &HistoryEntry) -> std::io::Result<()> {
     fs::create_dir_all(dir)?;
     let mut f = OpenOptions::new()
@@ -676,7 +669,7 @@ pub fn history_append(dir: &Path, e: &HistoryEntry) -> std::io::Result<()> {
     writeln!(f, "{line}")
 }
 
-/// Lee el historial (ignora las líneas que no se entienden).
+/// Reads history (ignoring lines it cannot parse).
 pub fn history_load(dir: &Path) -> Vec<HistoryEntry> {
     let Ok(f) = File::open(dir.join("history.jsonl")) else {
         return Vec::new();
@@ -688,8 +681,8 @@ pub fn history_load(dir: &Path) -> Vec<HistoryEntry> {
         .collect()
 }
 
-/// Borra el historial y TAMBIÉN los registros de limpieza (`limpieza-*.jsonl`, que llevan rutas) de la carpeta de datos
-/// (Ajustes: "Borrar el historial"). Solo toca esos nombres, y los registros no se siguen si son enlaces.
+/// Deletes history and cleanup logs (`limpieza-*.jsonl`, which contain paths) from the data directory (Settings: "Clear
+/// history"). Only these names are touched, and logs are not followed if they are links.
 pub fn history_clear(dir: &Path) -> std::io::Result<()> {
     let mut first_err: Option<std::io::Error> = None;
     let mut remove = |p: &Path| match fs::remove_file(p) {
@@ -706,7 +699,7 @@ pub fn history_clear(dir: &Path) -> std::io::Result<()> {
             let is_log = p.extension().is_some_and(|x| x == "jsonl")
                 && p.file_name()
                     .is_some_and(|n| n.to_string_lossy().starts_with("limpieza-"));
-            // `file_type` de la entrada no sigue enlaces: un enlace con ese nombre no se toca.
+            // The entry's `file_type` does not follow links: a link with that name is left untouched.
             if is_log && e.file_type().is_ok_and(|t| t.is_file()) {
                 remove(&p);
             }

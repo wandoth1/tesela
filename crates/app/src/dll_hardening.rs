@@ -1,37 +1,35 @@
-//! Endurecimiento de la carga de DLL del proceso (se llama lo PRIMERO de `main`, antes de eframe y wgpu).
+//! Hardens DLL loading for the process (called FIRST in `main`, before eframe and wgpu).
 //!
 //! `wgpu` carga `d3d12.dll`, `dxgi.dll`, `dcomp.dll` y `d3dcompiler_47.dll` POR NOMBRE con `LoadLibraryExW(nombre, NULL, 0)`
-//! (`libloading`): el orden de búsqueda predeterminado de Windows mira la carpeta del `.exe` antes que `System32`, y ninguna
-//! de ellas está en `KnownDLLs`. Una DLL con ese nombre dejada junto al `.exe` (una carpeta de instalación o de un zip
-//! escribible por otros) se cargaría en vez de la del sistema. `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)`
-//! limita la búsqueda de TODAS las cargas posteriores sin ruta ni indicadores (las de wgpu, winit, accesskit...) a
-//! `System32`. No toca las cargas con ruta absoluta (los controladores de la GPU que carga DXGI por la suya) ni las que ya
-//! hizo el cargador del sistema antes de `main` (las importaciones del propio `.exe`).
+//! (`libloading`): the default Windows search order checks the `.exe` directory before `System32`, and none of these DLLs
+//! are `KnownDLLs`. A DLL with one of those names placed beside the `.exe` (in an install folder or zip writable by others)
+//! would be loaded instead of the system DLL. `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)` limits searches for
+//! ALL later loads without a path or flags (including wgpu, winit, and accesskit) to `System32`. It does not affect loads
+//! with absolute paths (such as GPU drivers loaded by DXGI) or loads already performed by the system loader before `main`
+//! (the `.exe`'s own imports).
 //!
 //! Complemento: `Dx12Compiler::Fxc` fijado en `main.rs` evita que wgpu sondee `dxcompiler.dll`, que no existe en un
-//! Windows normal y por tanto no tendría ninguna DLL legítima que le ganase en la búsqueda.
+//! standard Windows installation, so there would be no legitimate DLL to win the search.
 #![allow(unsafe_code)]
 
 use windows_sys::Win32::System::LibraryLoader::{
     LOAD_LIBRARY_SEARCH_SYSTEM32, SetDefaultDllDirectories, SetDllDirectoryW,
 };
 
-/// Cadena vacía terminada en NUL (UTF-16) para `SetDllDirectoryW`.
+/// Empty NUL-terminated UTF-16 string for `SetDllDirectoryW`.
 const EMPTY: [u16; 1] = [0];
 
-/// Limita la búsqueda de DLL del proceso a `System32`. Devuelve `false` si Windows rechaza alguna de las dos llamadas (el
-/// proceso sigue con el orden predeterminado en esa parte: no es un error fatal, pero se pierde el endurecimiento).
+/// Restricts the process DLL search to `System32`. Returns `false` if Windows rejects either call (the process keeps the
+/// default behavior for that part: this is not fatal, but the hardening is lost).
 ///
-/// 1. `SetDllDirectoryW("")` quita el directorio de trabajo actual del orden de búsqueda clásico (el de las cargas que no
-///    usan los indicadores `LOAD_LIBRARY_SEARCH_*`), por si alguna carga no respetase el valor predeterminado del paso 2.
-/// 2. `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)` fija el valor predeterminado de todas las cargas
-///    posteriores sin ruta ni indicadores.
+/// 1. `SetDllDirectoryW("")` removes the current working directory from the classic search order (used by loads that do not
+///    use `LOAD_LIBRARY_SEARCH_*` flags), in case any load does not honor the default set in step 2.
+/// 2. `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)` sets the default for all later loads without a path or flags.
 pub fn restrict_dll_search() -> bool {
-    // SAFETY: `EMPTY` es una cadena UTF-16 terminada en NUL que vive durante toda la llamada. Llamarla más de una vez es
-    // inofensivo.
+    // SAFETY: `EMPTY` is a NUL-terminated UTF-16 string that remains alive for the call. Calling this more than once is safe.
     let no_cwd = unsafe { SetDllDirectoryW(EMPTY.as_ptr()) != 0 };
-    // SAFETY: `SetDefaultDllDirectories` solo recibe una máscara de indicadores constante; no hay punteros ni estado
-    // compartido. Llamarla más de una vez es inofensivo.
+    // SAFETY: `SetDefaultDllDirectories` receives only a constant flag mask; there are no pointers or shared state. Calling
+    // this more than once is safe.
     let system32 = unsafe { SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32) != 0 };
     no_cwd && system32
 }

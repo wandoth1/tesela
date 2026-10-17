@@ -1,6 +1,6 @@
-//! Detección de navegadores abiertos. Es SOLO UX ("Cierra Chrome para liberar hasta N"): la garantía es la apertura
-//! exclusiva de cada archivo (PLAN.md §3.7.7); si el navegador arranca a mitad de la limpieza, sus archivos fallan la
-//! apertura exclusiva y se saltan.
+//! Detects open browsers. This is for UX only ("Close Chrome to free up to N"): the guarantee is the exclusive open of
+//! each file (PLAN.md §3.7.7). If a browser starts while cleaning is in progress, its files fail the exclusive open and
+//! are skipped.
 #![allow(unsafe_code)]
 
 use crate::rules::CategoryId;
@@ -9,7 +9,7 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
     CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
 };
 
-/// Navegadores cuyas cachés se limpian.
+/// Browsers whose caches can be cleaned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum Browser {
     Chrome,
@@ -38,7 +38,7 @@ impl Browser {
         }
     }
 
-    /// La categoría de su caché.
+    /// The category for its cache.
     pub fn cache_category(self) -> CategoryId {
         match self {
             Browser::Chrome => CategoryId::ChromeCache,
@@ -52,7 +52,7 @@ impl Browser {
     }
 }
 
-/// Qué navegadores aparecen en una lista de nombres de proceso (sin distinguir mayúsculas). Puro.
+/// Which browsers appear in a list of process names (case-insensitive). Pure function.
 pub fn match_browsers<S: AsRef<str>>(names: &[S]) -> Vec<Browser> {
     Browser::ALL
         .into_iter()
@@ -77,7 +77,7 @@ pub fn outlook_open() -> bool {
     match_outlook(&process_names())
 }
 
-/// Nombres de los procesos en ejecución (instantánea de ToolHelp).
+/// Names of running processes (a ToolHelp snapshot).
 fn process_names() -> Vec<String> {
     // SAFETY: `CreateToolhelp32Snapshot` no tiene precondiciones.
     let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
@@ -85,10 +85,10 @@ fn process_names() -> Vec<String> {
         return Vec::new();
     }
     let mut names = Vec::new();
-    // SAFETY: PROCESSENTRY32W es un POD (enteros y un array de u16): todo-ceros es válido.
+    // SAFETY: PROCESSENTRY32W is a POD (integers and a u16 array); all-zero is a valid value.
     let mut e: PROCESSENTRY32W = unsafe { std::mem::zeroed() };
     e.dwSize = size_of::<PROCESSENTRY32W>() as u32;
-    // SAFETY: `snap` es un handle de instantánea válido; `e` es escribible y trae su `dwSize`.
+    // SAFETY: `snap` is a valid snapshot handle; `e` is writable and has its `dwSize` set.
     let mut ok = unsafe { Process32FirstW(snap, &mut e) };
     while ok != 0 {
         let len = e
@@ -100,7 +100,7 @@ fn process_names() -> Vec<String> {
         // SAFETY: igual que arriba.
         ok = unsafe { Process32NextW(snap, &mut e) };
     }
-    // SAFETY: `snap` es el handle válido de arriba y se cierra una sola vez.
+    // SAFETY: `snap` is the valid handle from above and is closed exactly once.
     unsafe { CloseHandle(snap) };
     names
 }

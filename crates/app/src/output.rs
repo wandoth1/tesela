@@ -1,30 +1,30 @@
-//! Archivos de salida de las herramientas de desarrollo (`--screenshot`): nunca se pisa un archivo que ya existe,
-//! salvo con `--overwrite` explícito.
+//! Output files for developer tools (`--screenshot`): existing files are never overwritten unless `--overwrite` is explicit.
 
 use std::fs::{File, OpenOptions};
 use std::io;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Una captura pedida con `--screenshot` no se pudo guardar: el proceso sale con un código distinto de 0.
+/// A requested `--screenshot` could not be saved; the process exits with a nonzero code.
 static CAPTURE_FAILED: AtomicBool = AtomicBool::new(false);
 
-/// Anota que la captura falló (se consulta con [`failed`] al terminar).
+/// Records that the screenshot failed (checked with [`failed`] on exit).
 #[cfg_attr(not(feature = "capture"), allow(dead_code))]
 pub fn mark_failed() {
     CAPTURE_FAILED.store(true, Ordering::SeqCst);
 }
 
-/// ¿Falló la captura?
+/// Did the screenshot fail?
 pub fn failed() -> bool {
     CAPTURE_FAILED.load(Ordering::SeqCst)
 }
 
-/// Comprobación ANTES de abrir la ventana: no pisa un archivo existente (salvo `overwrite`), el destino no es una carpeta
-/// y la carpeta donde iría existe. Así una captura que no se va a poder guardar falla al instante y no tras pintar.
+/// Preflight before opening the window: do not overwrite an existing file (unless `overwrite` is set), the destination
+/// must not be a directory, and its parent directory must exist. An unsavable screenshot therefore fails immediately,
+/// before the window is rendered.
 pub fn preflight(path: &Path, overwrite: bool) -> Result<(), String> {
     if path.is_dir() {
-        return Err(format!("{} es una carpeta, no un archivo", path.display()));
+        return Err(format!("{} is a directory, not a file", path.display()));
     }
     if !overwrite && path.exists() {
         return Err(describe_error(
@@ -38,15 +38,15 @@ pub fn preflight(path: &Path, overwrite: bool) -> Result<(), String> {
     };
     if !parent.is_dir() {
         return Err(format!(
-            "no se puede crear {}: la carpeta de destino no existe",
+            "cannot create {}: destination directory does not exist",
             path.display()
         ));
     }
     Ok(())
 }
 
-/// Abre `path` para escribir SIN pisar nada (`create_new`: falla con `AlreadyExists` si existe, de forma atómica), o
-/// reemplazándolo si `overwrite`.
+/// Opens `path` for writing WITHOUT overwriting anything (`create_new`: atomically fails with `AlreadyExists` if it exists),
+/// or replaces it when `overwrite` is set.
 #[cfg_attr(not(feature = "capture"), allow(dead_code))]
 pub fn open_output(path: &Path, overwrite: bool) -> io::Result<File> {
     let mut o = OpenOptions::new();
@@ -59,15 +59,15 @@ pub fn open_output(path: &Path, overwrite: bool) -> io::Result<File> {
     o.open(path)
 }
 
-/// Mensaje legible para un error de [`open_output`].
+/// Human-readable message for an [`open_output`] error.
 pub fn describe_error(path: &Path, e: &io::Error) -> String {
     if e.kind() == io::ErrorKind::AlreadyExists {
         format!(
-            "{} ya existe: no se pisa. Usa otro nombre o --overwrite para reemplazarlo",
+            "{} already exists and was not overwritten. Choose another name or use --overwrite to replace it",
             path.display()
         )
     } else {
-        format!("no se pudo crear {}: {e}", path.display())
+        format!("could not create {}: {e}", path.display())
     }
 }
 
@@ -96,10 +96,10 @@ mod tests {
         let t = Temp::new();
         // Carpeta de destino inexistente.
         let e = preflight(&t.0.join("no-existe").join("x.png"), false).unwrap_err();
-        assert!(e.contains("no existe"), "{e}");
+        assert!(e.contains("does not exist"), "{e}");
         assert!(preflight(&t.0.join("no-existe").join("x.png"), true).is_err());
         // Destino que es una carpeta.
-        assert!(preflight(&t.0, true).unwrap_err().contains("carpeta"));
+        assert!(preflight(&t.0, true).unwrap_err().contains("directory"));
         // Archivo nuevo: bien. Existente: solo con overwrite.
         let p = t.0.join("c.png");
         assert!(preflight(&p, false).is_ok());
@@ -122,6 +122,6 @@ mod tests {
         open_output(&p, true).unwrap().write_all(b"dos").unwrap();
         assert_eq!(std::fs::read(&p).unwrap(), b"dos");
         let e = open_output(&t.0.join("no-existe").join("x.png"), false).unwrap_err();
-        assert!(describe_error(&p, &e).starts_with("no se pudo crear"));
+        assert!(describe_error(&p, &e).starts_with("could not create"));
     }
 }

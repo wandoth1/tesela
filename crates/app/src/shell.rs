@@ -1,12 +1,12 @@
-//! La ventana de `tesela.exe`: envuelve `TeselaUi` en `eframe`, guarda los ajustes y el tamaño de la ventana, y trae las
-//! dos herramientas de desarrollo (`--bench-hover` y, con la feature `capture`, `--screenshot`).
+//! The `tesela.exe` window: wraps `TeselaUi` in `eframe`, saves settings and window size, and provides two developer tools
+//! (`--bench-hover` and, with the `capture` feature, `--screenshot`).
 
 use crate::config::Config;
 use std::path::PathBuf;
 use std::time::Instant;
 use tesela_ui::TeselaUi;
 
-/// Mide el coste de CPU por frame moviendo un puntero sintético sobre el mapa.
+/// Measures CPU cost per frame by moving a synthetic pointer over the map.
 pub struct Bench {
     pub secs: f32,
     warm_start: Option<Instant>,
@@ -26,7 +26,7 @@ impl Bench {
         }
     }
 
-    /// Posición del puntero en el instante `t` (segundos): una curva de Lissajous que recorre la ventana.
+    /// Pointer position at time `t` (seconds): a Lissajous curve that traverses the window.
     pub fn pointer_at(t: f32, w: f32, h: f32) -> (f32, f32) {
         let (cx, cy) = (w / 2.0, h / 2.0);
         (
@@ -43,7 +43,7 @@ impl Bench {
         sorted[idx.min(sorted.len() - 1)]
     }
 
-    /// Resumen de las muestras: (n, p50, p95, p99, máximo) en milisegundos.
+    /// Sample summary: (n, p50, p95, p99, maximum) in milliseconds.
     pub fn summary(samples: &[f64]) -> (usize, f64, f64, f64, f64) {
         let mut s = samples.to_vec();
         s.sort_by(|a, b| a.total_cmp(b));
@@ -57,7 +57,7 @@ impl Bench {
     }
 }
 
-/// `--idle-memory`: deja la ventana en reposo unos segundos y lee el private working set del proceso.
+/// `--idle-memory`: leaves the window idle for a few seconds and reads the process private working set.
 pub struct IdleMemory {
     secs: f32,
     start: Option<Instant>,
@@ -76,7 +76,7 @@ pub struct Shell {
     pub persist: bool,
     pub persist_size: bool,
     pub last_size: Option<(f32, f32)>,
-    /// Los ajustes de esta sesión (los guardados más los argumentos de la línea de comandos).
+    /// Settings for this session (saved values plus command-line arguments).
     pub session_settings: tesela_ui::Settings,
     pub last_title: String,
     pub bench: Option<Bench>,
@@ -111,7 +111,7 @@ impl Shell {
         if let Some(p) = &self.config_path
             && let Err(e) = self.config.save(p)
         {
-            crate::console::print(&format!("tesela: no se pudo guardar la configuración: {e}"));
+            crate::console::print(&format!("tesela: could not save configuration: {e}"));
         }
     }
 
@@ -120,7 +120,7 @@ impl Shell {
             let (n, p50, p95, p99, max) = Bench::summary(&b.samples_ms);
             let stats = self.ui.map_stats();
             crate::console::print(&format!(
-                "bench-hover: {n} frames en {:.0} s; CPU por frame: p50 {p50:.2} ms, p95 {p95:.2} ms, p99 {p99:.2} ms, max {max:.2} ms; celdas {}, vértices {}",
+                "bench-hover: {n} frames in {:.0} s; CPU per frame: p50 {p50:.2} ms, p95 {p95:.2} ms, p99 {p99:.2} ms, max {max:.2} ms; cells {}, vertices {}",
                 b.secs,
                 stats.map_or(0, |s| s.cells),
                 stats.map_or(0, |s| s.vertices),
@@ -132,7 +132,7 @@ impl Shell {
 
 impl eframe::App for Shell {
     fn raw_input_hook(&mut self, ctx: &eframe::egui::Context, raw: &mut eframe::egui::RawInput) {
-        // Puntero sintético durante la medición, una vez que el mapa está en pantalla.
+        // Move the synthetic pointer during measurement, once the map is on screen.
         if let Some(b) = &mut self.bench
             && b.start.is_some()
         {
@@ -146,7 +146,7 @@ impl eframe::App for Shell {
 
     fn ui(&mut self, ui: &mut eframe::egui::Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        // En las capturas se normaliza la escala a 1 punto = 1 píxel, para que salgan iguales en cualquier pantalla.
+        // Normalize screenshot scale to 1 point = 1 pixel so captures look the same on every display.
         if let Some((w, h)) = self.normalize_scale {
             self.norm_frames += 1;
             if self.norm_frames == 1 {
@@ -154,7 +154,7 @@ impl eframe::App for Shell {
                 ctx.set_zoom_factor(1.0 / native);
                 ctx.request_repaint();
             } else if self.norm_frames == 4 {
-                // Con 1 punto = 1 píxel, el tamaño en puntos es el tamaño en píxeles.
+                // At 1 point = 1 pixel, the size in points is the size in pixels.
                 ctx.send_viewport_cmd(eframe::egui::ViewportCommand::InnerSize(
                     eframe::egui::vec2(w, h),
                 ));
@@ -166,7 +166,7 @@ impl eframe::App for Shell {
         self.ui.set_parent_window(frame);
         self.ui.show(ui);
 
-        // Título según la pantalla.
+        // Set the title based on the current screen.
         let title = self.ui.window_title();
         if title != self.last_title {
             ctx.send_viewport_cmd(eframe::egui::ViewportCommand::Title(title.clone()));
@@ -179,13 +179,13 @@ impl eframe::App for Shell {
             self.last_size = Some(s);
         }
         if let Some(now) = self.ui.take_settings_change() {
-            // Solo se guarda lo que el usuario cambió en la interfaz: `--theme` y `--lang` son de esta sesión.
+            // Save only changes the user made in the UI: `--theme` and `--lang` apply to this session only.
             self.config.apply_changes(self.session_settings, now);
             self.session_settings = now;
             self.save_config();
         }
 
-        // Medición de CPU por frame con el puntero sintético.
+        // Measure CPU cost per frame with the synthetic pointer.
         let mut done = false;
         let showing = self.ui.screen_name() == "explore";
         if let Some(b) = &mut self.bench {
@@ -211,8 +211,8 @@ impl eframe::App for Shell {
             self.finish_bench(&ctx);
         }
 
-        // Memoria en reposo: cuenta desde que ya no se está escaneando; la ventana no pinta nada más (solo despierta cada
-        // medio segundo para mirar el reloj).
+        // Measure idle memory starting after scanning ends. The window does not render further; it only wakes every half
+        // second to check the timer.
         if let Some(m) = &mut self.idle_mem
             && self.ui.screen_name() != "scan"
         {
@@ -220,7 +220,7 @@ impl eframe::App for Shell {
             if t0.elapsed().as_secs_f32() >= m.secs {
                 let pws = crate::memory::private_working_set().unwrap_or(0);
                 crate::console::print(&format!(
-                    "idle-memory: private working set {:.1} MiB tras {:.0} s en reposo",
+                    "idle-memory: private working set {:.1} MiB after {:.0} s idle",
                     pws as f64 / 1048576.0,
                     m.secs
                 ));
@@ -242,8 +242,8 @@ impl eframe::App for Shell {
 
 #[cfg(feature = "capture")]
 impl Shell {
-    /// `--screenshot`: tras unos frames estables pide la captura de la VENTANA (no de la pantalla), la guarda como PNG
-    /// sin metadatos y cierra.
+    /// `--screenshot`: after a few stable frames, captures the WINDOW (not the screen), saves it as a PNG without metadata,
+    /// and closes.
     fn capture(&mut self, ctx: &eframe::egui::Context) {
         let Some(path) = self.screenshot.clone() else {
             return;
@@ -272,7 +272,7 @@ impl Shell {
             for p in &img.pixels {
                 rgba.extend_from_slice(&p.to_array());
             }
-            // Nunca se pisa un archivo existente salvo con `--overwrite` (se comprobó también al arrancar).
+            // Never overwrite an existing file unless `--overwrite` is set (also checked at startup).
             let file = match crate::output::open_output(&path, self.screenshot_overwrite) {
                 Ok(f) => f,
                 Err(e) => {
@@ -289,7 +289,7 @@ impl Shell {
             let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w as u32, h as u32);
             enc.set_color(png::ColorType::Rgba);
             enc.set_depth(png::BitDepth::Eight);
-            // Sin fragmentos de texto: ni software, ni autor, ni fecha.
+            // No text chunks: no software, author, or date.
             match enc
                 .write_header()
                 .and_then(|mut wr| wr.write_image_data(&rgba))

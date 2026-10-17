@@ -1,12 +1,12 @@
-//! Persistencia mínima (PLAN.md §2.11): `%APPDATA%\Tesela\config.toml` con el tema, el idioma y el tamaño de la
-//! ventana. Nunca se guarda nada del árbol ni de los escaneos. Una configuración ilegible se ignora (se usan los
-//! valores por defecto) en vez de impedir el arranque.
+//! Minimal persistence (PLAN.md §2.11): `%APPDATA%\Tesela\config.toml` stores the theme, language, and window size.
+//! The tree and scan data are never saved. An unreadable configuration is ignored (defaults are used) rather than
+//! preventing startup.
 
 use std::path::{Path, PathBuf};
 use tesela_ui::{LangPref, Settings, ThemePref, UpdatePrefs};
 use tesela_update::Version;
 
-/// Tamaño de ventana por defecto (en puntos lógicos) y mínimo.
+/// Default and minimum window sizes, in logical points.
 pub const DEFAULT_SIZE: (f32, f32) = (1280.0, 800.0);
 pub const MIN_SIZE: (f32, f32) = (960.0, 600.0);
 
@@ -20,23 +20,23 @@ pub struct Config {
     pub window_width: Option<f32>,
     #[serde(default)]
     pub window_height: Option<f32>,
-    /// "Buscar actualizaciones al abrir Tesela". Sin la clave (o en `false`) Tesela no se conecta a nada.
+    /// "Check for updates when Tesela starts." If this key is absent or `false`, Tesela connects to nothing.
     #[serde(default, deserialize_with = "lenient")]
     pub check_updates: Option<bool>,
-    /// Segundos Unix del último intento de comprobación (como mucho una petición cada 24 horas).
+    /// Unix timestamp of the last check attempt (at most one request every 24 hours).
     #[serde(default, deserialize_with = "lenient")]
     pub update_last_check: Option<u64>,
-    /// Última versión publicada que se supo (solo su etiqueta, `vX.Y.Z`). Una etiqueta ilegible se ignora.
+    /// Most recently seen published version (tag only, `vX.Y.Z`). An unreadable tag is ignored.
     #[serde(default, deserialize_with = "tesela_update::deserialize_lenient")]
     pub update_latest_seen: Option<Version>,
-    /// Versión cuyo aviso se descartó.
+    /// Version whose notification was dismissed.
     #[serde(default, deserialize_with = "tesela_update::deserialize_lenient")]
     pub update_dismissed: Option<Version>,
 }
 
-/// Para una clave NUEVA (la comprobación de actualizaciones): un valor del tipo equivocado (por ejemplo `check_updates = "si"`
-/// o una fecha negativa, de editar el archivo a mano) se lee como si no estuviera, en vez de invalidar TODA la configuración
-/// (tema, idioma y tamaño de la ventana incluidos).
+/// For a NEW key (update checking), a value of the wrong type (for example `check_updates = "yes"` or a negative timestamp
+/// from manual editing) is treated as absent instead of invalidating the ENTIRE configuration, including theme, language,
+/// and window size.
 fn lenient<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -55,7 +55,7 @@ where
 }
 
 impl Config {
-    /// Ajustes de la interfaz que contiene.
+    /// UI settings stored in this configuration.
     pub fn settings(&self) -> Settings {
         Settings {
             theme: self.theme.unwrap_or(ThemePref::System),
@@ -69,8 +69,8 @@ impl Config {
         }
     }
 
-    /// Registra SOLO los ajustes que cambiaron entre `before` y `after`: lo que el usuario no tocó (por ejemplo un
-    /// idioma impuesto con `--lang` para una sesión) no se escribe en el archivo.
+    /// Records ONLY settings that changed between `before` and `after`: settings the user did not touch (for example a
+    /// language set with `--lang` for one session) are not written to the file.
     pub fn apply_changes(&mut self, before: Settings, after: Settings) {
         if after.theme != before.theme {
             self.theme = Some(after.theme);
@@ -93,7 +93,7 @@ impl Config {
         }
     }
 
-    /// Tamaño de ventana guardado, acotado a valores razonables.
+    /// Saved window size, clamped to reasonable values.
     pub fn window_size(&self) -> (f32, f32) {
         match (self.window_width, self.window_height) {
             (Some(w), Some(h)) if w.is_finite() && h.is_finite() => {
@@ -103,18 +103,18 @@ impl Config {
         }
     }
 
-    /// Lee la configuración de `path`; si no existe o no se entiende, la de por defecto.
+    /// Loads configuration from `path`; uses defaults if the file is missing or invalid.
     pub fn load(path: &Path) -> Config {
         match std::fs::read_to_string(path) {
             Ok(text) => toml::from_str(&text).unwrap_or_else(|e| {
-                eprintln!("tesela: config.toml ilegible, se usan los valores por defecto: {e}");
+                eprintln!("tesela: config.toml is unreadable; using default values: {e}");
                 Config::default()
             }),
             Err(_) => Config::default(),
         }
     }
 
-    /// Guarda la configuración (crea la carpeta; escribe en un temporal y lo renombra para no dejar un archivo a medias).
+    /// Saves configuration (creates the directory, writes to a temporary file, then renames it to avoid a partial file).
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
@@ -126,27 +126,27 @@ impl Config {
     }
 }
 
-/// Ruta de `config.toml`: `%APPDATA%\Tesela\config.toml`.
+/// Path to `config.toml`: `%APPDATA%\Tesela\config.toml`.
 pub fn config_path() -> Option<PathBuf> {
     let appdata = std::env::var_os("APPDATA").filter(|v| !v.is_empty())?;
     Some(PathBuf::from(appdata).join("Tesela").join("config.toml"))
 }
 
-/// Configuración de ESTA sesión y dónde se guarda.
+/// Configuration for THIS session and where it is saved.
 pub struct Session {
     pub config: Config,
-    /// `None` = no se guarda en ningún sitio.
+    /// `None` means it is not saved anywhere.
     pub path: Option<PathBuf>,
 }
 
 impl Session {
-    /// Sesión AISLADA (la demostración y las herramientas de medición): valores por defecto en memoria; no lee ni escribe nada
-    /// bajo `%APPDATA%`. La sesión normal lee `config.toml` y lo guarda al cambiar un ajuste y al salir.
+    /// An ISOLATED session (the demo and measurement tools): in-memory defaults; reads and writes nothing under `%APPDATA%`.
+    /// A normal session reads `config.toml` and saves it when a setting changes and on exit.
     pub fn new(isolated: bool) -> Session {
         Session::with_path(isolated, config_path())
     }
 
-    /// Igual que [`Session::new`] con la ruta de `config.toml` inyectada (las pruebas no tocan el entorno del proceso).
+    /// Like [`Session::new`] with an injected `config.toml` path (tests do not touch the process environment).
     pub fn with_path(isolated: bool, path: Option<PathBuf>) -> Session {
         if isolated {
             return Session {
@@ -158,7 +158,7 @@ impl Session {
         Session { config, path }
     }
 
-    /// ¿Se guarda algo? Solo la sesión normal.
+    /// Is anything saved? Only in a normal session.
     pub fn persists(&self) -> bool {
         self.path.is_some()
     }

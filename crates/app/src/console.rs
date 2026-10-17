@@ -1,6 +1,6 @@
-//! Salida de texto de un ejecutable de interfaz gráfica. En release `tesela.exe` usa el subsistema `windows` (sin
-//! ventana de consola al abrirlo desde el menú Inicio), así que `--help`, los errores de línea de comandos y las
-//! cifras de `--bench-hover` solo llegarían a un terminal si se engancha al de quien lo lanzó.
+//! Text output from a GUI executable. In release, `tesela.exe` uses the Windows subsystem (so it has no console window
+//! when opened from the Start menu); `--help`, command-line errors, and `--bench-hover` results reach a terminal only if
+//! the process attaches to the one that launched it.
 #![allow(unsafe_code)]
 
 use std::io::Write;
@@ -9,22 +9,22 @@ use windows_sys::Win32::System::Console::{
     ATTACH_PARENT_PROCESS, AttachConsole, GetStdHandle, STD_ERROR_HANDLE,
 };
 
-/// ¿Tiene el proceso una salida de error válida (heredada de quien lo lanzó: terminal, tubería o archivo)?
+/// Does the process have a valid standard error handle (inherited from its launcher: terminal, pipe, or file)?
 pub fn has_std_error() -> bool {
-    // SAFETY: `GetStdHandle` solo lee el identificador estándar de este proceso; no recibe punteros.
+    // SAFETY: `GetStdHandle` only reads this process's standard handle; it takes no pointers.
     let h = unsafe { GetStdHandle(STD_ERROR_HANDLE) };
     !h.is_null() && h != INVALID_HANDLE_VALUE
 }
 
-/// Se engancha a la consola del proceso padre. Devuelve `false` si no hay (lanzado desde el Explorador) o si el
-/// proceso ya tiene una consola.
+/// Attaches to the parent process's console. Returns `false` if there is none (launched from Explorer) or if this process
+/// already has a console.
 pub fn attach_parent() -> bool {
-    // SAFETY: `AttachConsole` no recibe punteros; con `ATTACH_PARENT_PROCESS` solo intenta usar la consola del padre.
+    // SAFETY: `AttachConsole` takes no pointers; with `ATTACH_PARENT_PROCESS`, it only attempts to use the parent's console.
     unsafe { AttachConsole(ATTACH_PARENT_PROCESS) != 0 }
 }
 
-/// Escribe `text` (con salto de línea) donde el usuario pueda verlo: en la salida de error si existe; si no, en la
-/// consola del padre (`CONOUT$`) tras engancharse a ella.
+/// Writes `text` followed by a newline where the user can see it: to standard error if available, or to the parent's
+/// console (`CONOUT$`) after attaching to it.
 pub fn print(text: &str) {
     if has_std_error() {
         let _ = writeln!(std::io::stderr(), "{text}");
