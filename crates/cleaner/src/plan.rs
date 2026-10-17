@@ -153,7 +153,6 @@ impl PlanItem {
     /// * Error reports and crash dumps (diagnostic categories) are never permanently deleted, either
     ///   by category or by path (`diagnostic_path`: an item under one of these roots that was manually added).
     /// * An `Entry` unit with a minimum age: permanent traversal does not recheck each child's age
-
     ///   or require the folder fingerprint (that could split a report, deleting old items while leaving recent ones), so
     ///   it fails closed. Only diagnostic categories create these today; this prevents another rule from using them without
     ///   reviewing this comparison.

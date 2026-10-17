@@ -318,7 +318,6 @@ fn io_err(code: u32) -> std::io::Error {
 }
 
 /// Start a scan. Preparation (opening and listing the root, resolving priority paths) is synchronous, so
-
 /// root errors are returned here; the rest runs on worker threads and is accessed through [`ScanHandle`].
 ///
 /// The user-provided path is opened WITHOUT following its final reparse point and classified with `classify::root_plan`
