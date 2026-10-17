@@ -11,7 +11,11 @@ Falla (codigo 1) si algun ejecutable:
   * importa (tabla de imports normal o de carga retardada) alguna de estas DLL del runtime de C: `VCRUNTIME*.dll`,
     `MSVCP*.dll`, `api-ms-win-crt-*.dll` (y `UCRTBASE.dll`, que es lo que arrastran). En Windows 10/11 el UCRT es del
     sistema, pero el release se enlaza estatico (.cargo/config.toml) para no depender del runtime de VC++ redistribuible
-    (`VCRUNTIME*`, `MSVCP*`), que el instalador por usuario y sin administrador no puede instalar.
+    (`VCRUNTIME*`, `MSVCP*`), que el instalador por usuario y sin administrador no puede instalar,
+  * no lleva `DependentLoadFlags` = 0x800 (`LOAD_LIBRARY_SEARCH_SYSTEM32`, el de `/DEPENDENTLOADFLAG:0x800`) en el
+    directorio de configuracion de carga: sin el, las importaciones estaticas se buscan primero en la carpeta del .exe,
+  * no lleva una entrada de depuracion `IMAGE_DEBUG_TYPE_REPRO` (la que escribe `/Brepro`): sin ella el enlace no es
+    reproducible (lleva una marca de tiempo).
 
 Solo lee los archivos. Solo usa la biblioteca estandar.
 """
@@ -22,6 +26,9 @@ import struct
 import sys
 
 MACHINES = {"x86": 0x014C, "x64": 0x8664, "arm64": 0xAA64}
+# `DependentLoadFlags` que escribe `/DEPENDENTLOADFLAG:0x800` (LOAD_LIBRARY_SEARCH_SYSTEM32).
+WANT_LOAD_FLAGS = 0x800
+IMAGE_DEBUG_TYPE_REPRO = 16
 # Patrones (sin distinguir mayusculas) de DLL del runtime de C que no se admiten como import.
 FORBIDDEN = ["vcruntime*.dll", "msvcp*.dll", "api-ms-win-crt-*.dll", "ucrtbase.dll", "msvcr*.dll", "concrt*.dll"]
 
@@ -44,6 +51,13 @@ def _u32(b, o):
 
 def parse(data):
     """Devuelve (machine, [DLL importadas], [DLL de carga retardada]) de los bytes de un PE."""
+    info = parse_info(data)
+    return info["machine"], info["imports"], info["delay"]
+
+
+def parse_info(data):
+    """Todo lo que lee este script de un PE: machine, imports, delay, `load_flags` (`DependentLoadFlags`, o None si el
+    directorio de configuracion de carga no lo trae) y `repro` (hay una entrada de depuracion REPRO)."""
     if len(data) < 0x40 or data[:2] != b"MZ":
         raise PeError("no es un PE (falta la firma MZ)")
     pe = _u32(data, 0x3C)
@@ -74,9 +88,14 @@ def parse(data):
         sections.append((va, max(vsize, rsize), raw, rsize))
 
     def rva_to_off(rva):
-        for va, size, raw, _rsize in sections:
+        for va, size, raw, rsize in sections:
             if va <= rva < va + size:
-                return raw + (rva - va)
+                delta = rva - va
+                # Entre `rsize` y `vsize` (relleno de ceros en memoria) no hay bytes en el archivo: no se lee de la
+                # siguiente seccion por casualidad.
+                if delta >= rsize:
+                    raise PeError("RVA fuera de los datos de la seccion en el archivo")
+                return raw + delta
         raise PeError("RVA fuera de las secciones")
 
     def cstr(rva):
@@ -122,7 +141,24 @@ def parse(data):
             o += 32
         else:
             raise PeError("demasiados imports de carga retardada")
-    return machine, imports, delay
+    # Directorio de configuracion de carga (indice 10): `DependentLoadFlags` esta en 0x4E (PE32+) o 0x36 (PE32) y solo vale si
+    # el campo `Size` del directorio lo cubre.
+    load_flags = None
+    rva, size = directory(10)  # IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG
+    if rva and size:
+        o = rva_to_off(rva)
+        field = 0x4E if magic == 0x20B else 0x36
+        if _u32(data, o) >= field + 2 and size >= field + 2:
+            load_flags = _u16(data, o + field)
+    # Directorio de depuracion (indice 6): entradas de 28 bytes; el tipo esta en +12.
+    repro = False
+    rva, size = directory(6)  # IMAGE_DIRECTORY_ENTRY_DEBUG
+    if rva and size:
+        o = rva_to_off(rva)
+        for k in range(min(size // 28, 64)):
+            if _u32(data, o + 28 * k + 12) == IMAGE_DEBUG_TYPE_REPRO:
+                repro = True
+    return {"machine": machine, "imports": imports, "delay": delay, "load_flags": load_flags, "repro": repro}
 
 
 def forbidden(names):
@@ -140,9 +176,10 @@ def check(path, machine_name):
     try:
         with open(path, "rb") as f:
             data = f.read()
-        machine, imports, delay = parse(data)
+        info = parse_info(data)
     except (OSError, PeError, struct.error) as e:
         return [f"{path}: {e}"]
+    machine, imports, delay = info["machine"], info["imports"], info["delay"]
     problems = []
     want = MACHINES[machine_name]
     if machine != want:
@@ -150,6 +187,14 @@ def check(path, machine_name):
     bad = forbidden(imports + delay)
     if bad:
         problems.append(f"{path}: importa el runtime de C: {', '.join(sorted(set(bad), key=str.lower))}")
+    flags = info["load_flags"]
+    if flags != WANT_LOAD_FLAGS:
+        got = "ausente" if flags is None else f"0x{flags:04X}"
+        problems.append(
+            f"{path}: DependentLoadFlags {got}, se esperaba 0x{WANT_LOAD_FLAGS:04X} (/DEPENDENTLOADFLAG:0x800)"
+        )
+    if not info["repro"]:
+        problems.append(f"{path}: sin entrada de depuracion REPRO (falta /Brepro: el enlace no es reproducible)")
     return problems
 
 
@@ -173,7 +218,10 @@ def main(argv):
         for p in problems:
             print(p, file=sys.stderr)
         return 1
-    print(f"check-pe: OK ({len(args.exes)} ejecutables, {args.machine}, sin imports del runtime de C)")
+    print(
+        f"check-pe: OK ({len(args.exes)} ejecutables, {args.machine}, sin imports del runtime de C, "
+        "DependentLoadFlags 0x800 y enlace reproducible)"
+    )
     return 0
 
 

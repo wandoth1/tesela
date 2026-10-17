@@ -20,8 +20,11 @@ SECTION_RVA = 0x1000
 FILE_ALIGN = 0x200
 
 
-def make_pe(machine=0x8664, imports=(), delay=(), pe32=False, delay_old=False):
-    """Un PE mínimo: una sección con la tabla de imports (y la de carga retardada) y los nombres de las DLL."""
+def make_pe(machine=0x8664, imports=(), delay=(), pe32=False, delay_old=False, load_flags=0x800, repro=True, vsize_extra=0):
+    """Un PE mínimo: una sección con la tabla de imports (y la de carga retardada) y los nombres de las DLL.
+
+    `load_flags`: `DependentLoadFlags` del directorio de configuración de carga (None = sin directorio). `repro`: lleva una
+    entrada de depuración REPRO. `vsize_extra`: bytes de relleno virtual (sin datos en el archivo) tras los de la sección."""
     # Datos de la sección: [descriptores de import][terminador][descriptores de delay][terminador][nombres]
     n_imp = len(imports)
     n_del = len(delay)
@@ -47,6 +50,21 @@ def make_pe(machine=0x8664, imports=(), delay=(), pe32=False, delay_old=False):
         sec += struct.pack("<IIIIIIII", attrs, name, 0, 0, 0, 0, 0, 0)
     sec += b"\0" * 32
     sec += names
+    # Directorio de configuración de carga (con `Size` que cubre `DependentLoadFlags`) y directorio de depuración.
+    sec = bytearray(bytes(sec).ljust((len(sec) + 7) // 8 * 8, b"\0"))
+    lc_off = len(sec)
+    lc_field = 0x36 if pe32 else 0x4E
+    if load_flags is not None:
+        lc = bytearray(lc_field + 2 + 6)
+        struct.pack_into("<I", lc, 0, len(lc))
+        struct.pack_into("<H", lc, lc_field, load_flags)
+        sec += lc
+    dbg_off = len(sec)
+    if repro is not None:
+        # Una entrada de tipo CODEVIEW (2) y, si `repro`, otra de tipo REPRO (16).
+        for kind in [2] + ([16] if repro else []):
+            sec += struct.pack("<IIHHIIII", 0, 0, 0, 0, kind, 0, 0, 0)
+    dbg_size = len(sec) - dbg_off
     sec = bytes(sec).ljust(FILE_ALIGN, b"\0")
 
     opt_magic = 0x10B if pe32 else 0x20B
@@ -63,13 +81,19 @@ def make_pe(machine=0x8664, imports=(), delay=(), pe32=False, delay_old=False):
         struct.pack_into("<II", opt, dd_off + 8 * 1, SECTION_RVA + imp_off, 20 * (n_imp + 1))
     if n_del:
         struct.pack_into("<II", opt, dd_off + 8 * 13, SECTION_RVA + del_off, 32 * (n_del + 1))
+    if load_flags is not None:
+        struct.pack_into("<II", opt, dd_off + 8 * 10, SECTION_RVA + lc_off, dbg_off - lc_off)
+    if dbg_size:
+        struct.pack_into("<II", opt, dd_off + 8 * 6, SECTION_RVA + dbg_off, dbg_size)
     e_lfanew = 0x40
     dos = bytearray(e_lfanew)
     dos[:2] = b"MZ"
     struct.pack_into("<I", dos, 0x3C, e_lfanew)
     coff = struct.pack("<HHIIIHH", machine, 1, 0, 0, 0, opt_size, 0x22)
     raw_off = 0x400
-    section = struct.pack("<8sIIIIIIHHI", b".rdata", len(sec), SECTION_RVA, len(sec), raw_off, 0, 0, 0, 0, 0x40000040)
+    section = struct.pack(
+        "<8sIIIIIIHHI", b".rdata", len(sec) + vsize_extra, SECTION_RVA, len(sec), raw_off, 0, 0, 0, 0, 0x40000040
+    )
     header = bytes(dos) + b"PE\0\0" + coff + bytes(opt) + section
     header = header.ljust(raw_off, b"\0")
     return header + sec
@@ -142,6 +166,42 @@ class CheckPe(unittest.TestCase):
             # Nombres parecidos que NO son del runtime de C.
             fine = t.write("fine.exe", make_pe(imports=["vcruntime.txt.dll.bak", "myvcruntime140.dll", "api-ms-win-core-file-l1-1-0.dll"]))
             self.assertEqual(check_pe.check(fine, "x64"), [])
+
+    def test_exige_dependentloadflags_system32_y_enlace_reproducible(self):
+        with Temp() as t:
+            ok = t.write("ok.exe", make_pe(imports=["KERNEL32.dll"]))
+            self.assertEqual(check_pe.check(ok, "x64"), [])
+            info = check_pe.parse_info(make_pe(imports=["KERNEL32.dll"]))
+            self.assertEqual((info["load_flags"], info["repro"]), (0x800, True))
+            # PE32 (el campo está en otro desplazamiento).
+            pe32 = t.write("pe32.exe", make_pe(machine=0x014C, imports=["KERNEL32.dll"], pe32=True))
+            self.assertEqual(check_pe.check(pe32, "x86"), [])
+            # Sin el directorio de configuración de carga, o con otros flags (0x1000 = DEFAULT_DIRS, 0 = ninguno).
+            for flags in (None, 0, 0x1000, 0x400):
+                bad = t.write("bad.exe", make_pe(imports=["KERNEL32.dll"], load_flags=flags))
+                problems = check_pe.check(bad, "x64")
+                self.assertEqual(len(problems), 1, flags)
+                self.assertIn("DependentLoadFlags", problems[0])
+            # Sin la entrada REPRO (con o sin directorio de depuración).
+            for repro in (False, None):
+                bad = t.write("bad.exe", make_pe(imports=["KERNEL32.dll"], repro=repro))
+                problems = check_pe.check(bad, "x64")
+                self.assertEqual(len(problems), 1, repro)
+                self.assertIn("REPRO", problems[0])
+            # Los dos problemas a la vez, y el runtime de C: tres mensajes.
+            worse = t.write("worse.exe", make_pe(imports=["VCRUNTIME140.dll"], load_flags=None, repro=False))
+            self.assertEqual(len(check_pe.check(worse, "x64")), 3)
+
+    def test_un_rva_en_el_relleno_virtual_de_la_seccion_no_se_lee_del_archivo(self):
+        # La sección ocupa más en memoria que en el archivo: un RVA en esa cola no tiene bytes en el archivo y no puede
+        # leerse de lo que venga después (antes devolvía un desplazamiento fuera de la sección).
+        data = bytearray(make_pe(imports=["KERNEL32.dll"], vsize_extra=0x1000))
+        # El descriptor de imports apunta a un nombre en la cola virtual: SECTION_RVA + 0x400 (la sección tiene 0x200 en el archivo).
+        struct.pack_into("<I", data, 0x400 + 12, SECTION_RVA + 0x400)
+        with self.assertRaises(check_pe.PeError):
+            check_pe.parse(bytes(data))
+        with Temp() as t:
+            self.assertEqual(len(check_pe.check(t.write("cola.exe", bytes(data)), "x64")), 1)
 
     def test_la_arquitectura_tiene_que_ser_la_esperada(self):
         with Temp() as t:
