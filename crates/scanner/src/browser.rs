@@ -36,6 +36,7 @@
 //! `\\?\GLOBALROOT`, UNC), con alias 8.3 (`GOOGLE~1`), con puntos o espacios finales, con `:` (flujos de datos) o con
 //! mayúsculas que solo coinciden fuera de ASCII, la respuesta es `Unknown` ("no tocar"), nunca "no es un navegador".
 
+use crate::classify;
 use crate::known::{KnownKind, known_folder};
 use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf, Prefix};
@@ -135,12 +136,33 @@ fn is_chromium_profile_name(name: &str) -> bool {
         && !digits.starts_with('0')
 }
 
-/// ¿Existe `p` como directorio de verdad (no un reparse point: un enlace podría llevar a datos del usuario)?
+/// ¿Existe `p` como directorio de verdad? Con el MISMO criterio que el escáner (`classify::dir_action == Walk`): ni un
+/// reparse point (un enlace podría llevar a datos del usuario; sin la etiqueta a mano, cualquier reparse point cuenta
+/// como enlace, también los de la nube) ni una carpeta con atributos de recuperación de la nube aunque no lo sea.
 fn is_real_dir(p: &Path) -> bool {
     std::fs::symlink_metadata(p).is_ok_and(|m| {
         use std::os::windows::fs::MetadataExt;
-        m.is_dir() && m.file_attributes() & 0x400 == 0
+        m.is_dir() && classify::dir_action(m.file_attributes(), 0) == classify::DirAction::Walk
     })
+}
+
+/// `p` (que cuelga de `base`) con CADA componente por debajo de `base` comprobado como directorio real: un ancestro
+/// intermedio (`Google`, `Chrome`...) que sea un enlace desviaría todo lo que se liste debajo a otro sitio. `base` en sí
+/// es la carpeta de datos que da Windows (`%LOCALAPPDATA%`) y no se comprueba. `None` si `p` no cuelga de `base` o algún
+/// componente no es un directorio real.
+fn real_dir_under(base: &Path, p: &Path) -> Option<PathBuf> {
+    let rel = p.strip_prefix(base).ok()?;
+    let mut cur = base.to_path_buf();
+    for c in rel.components() {
+        let Component::Normal(name) = c else {
+            return None;
+        };
+        cur.push(name);
+        if !is_real_dir(&cur) {
+            return None;
+        }
+    }
+    Some(cur)
 }
 
 /// Nombres de los subdirectorios reales de `dir` (vacío si no se puede listar), ordenados.
@@ -173,7 +195,13 @@ fn child_dirs(dir: &Path) -> Vec<(String, PathBuf)> {
 pub fn browser_cache_dirs(roots: &BrowserRoots) -> Vec<(KnownKind, PathBuf)> {
     let mut out = Vec::new();
     for fam in [BrowserFamily::Chrome, BrowserFamily::Edge] {
-        let Some(user_data) = roots.user_data(fam) else {
+        // `User Data` y todos sus ancestros por debajo de `%LOCALAPPDATA%` tienen que ser directorios reales.
+        let Some(user_data) = roots
+            .local_appdata
+            .as_deref()
+            .zip(roots.user_data(fam))
+            .and_then(|(local, ud)| real_dir_under(local, &ud))
+        else {
             continue;
         };
         for name in CHROMIUM_ROOT_CACHE {
@@ -194,7 +222,12 @@ pub fn browser_cache_dirs(roots: &BrowserRoots) -> Vec<(KnownKind, PathBuf)> {
             }
         }
     }
-    if let Some(profiles) = roots.firefox_local_profiles() {
+    if let Some(profiles) = roots
+        .local_appdata
+        .as_deref()
+        .zip(roots.firefox_local_profiles())
+        .and_then(|(local, pr)| real_dir_under(local, &pr))
+    {
         for (_, profile) in child_dirs(&profiles) {
             for sub in FIREFOX_PROFILE_CACHE {
                 let p = profile.join(sub);
@@ -1033,6 +1066,73 @@ mod tests {
             fs::remove_dir(&junction).unwrap();
             assert!(datos.join("importante.txt").exists());
         }
+    }
+
+    /// GM-m4: un enlace en un ancestro INTERMEDIO (`Google`, `Mozilla`...) desvía lo que se lista debajo: no se ofrece nada.
+    #[test]
+    fn un_enlace_en_un_ancestro_intermedio_descarta_las_cachés_de_debajo() {
+        let t = Temp::new();
+        // Destino real con la estructura completa de Chrome y de Firefox (`Cache`, `cache2`) FUERA de `Local`.
+        t.dir("Fuera/Chrome/User Data/Default/Cache");
+        t.dir("Fuera/Chrome/User Data/ShaderCache");
+        t.dir("Fuera/Firefox/Profiles/abc.default/cache2");
+        t.dir("Local");
+        let local = t.0.join("Local");
+        let roots = t.roots();
+        let mut links = Vec::new();
+        for (link, target) in [("Google", "Fuera"), ("Mozilla", "Fuera")] {
+            let (l, d) = (local.join(link), t.0.join(target));
+            let made = std::process::Command::new("cmd")
+                .args(["/C", "mklink", "/J"])
+                .arg(&l)
+                .arg(&d)
+                .output();
+            assert!(made.is_ok_and(|o| o.status.success()), "mklink /J falló");
+            links.push(l);
+        }
+        // `Local/Google` -> `Fuera` y `Local/Mozilla` -> `Fuera`: las rutas de caché existirían a través de los enlaces.
+        assert!(local.join("Google/Chrome/User Data/Default/Cache").exists());
+        assert!(
+            local
+                .join("Mozilla/Firefox/Profiles/abc.default/cache2")
+                .exists()
+        );
+        let dirs = browser_cache_dirs(&roots);
+        assert!(
+            dirs.is_empty(),
+            "se ofrecieron cachés a través de un enlace: {dirs:?}"
+        );
+        // El mismo árbol SIN enlaces sí se ofrece (la prueba no es vacía): se quitan como enlaces y se crean carpetas reales.
+        for l in &links {
+            fs::remove_dir(l).unwrap();
+        }
+        t.dir("Local/Google/Chrome/User Data/Default/Cache");
+        t.dir("Local/Mozilla/Firefox/Profiles/abc.default/cache2");
+        let dirs = browser_cache_dirs(&roots);
+        assert_eq!(dirs.len(), 2, "{dirs:?}");
+    }
+
+    #[test]
+    fn real_dir_under_valida_cada_componente_por_debajo_de_la_base() {
+        let t = Temp::new();
+        let base = t.dir("Local");
+        t.dir("Local/a/b");
+        t.file("Local/a/f.txt");
+        assert_eq!(
+            real_dir_under(&base, &base.join("a").join("b")),
+            Some(base.join("a").join("b"))
+        );
+        // La propia base no se comprueba.
+        assert_eq!(real_dir_under(&base, &base), Some(base.clone()));
+        // No cuelga de la base, no existe o es un archivo.
+        assert_eq!(real_dir_under(&base, &t.0.join("otra")), None);
+        assert_eq!(real_dir_under(&base, &base.join("no-existe")), None);
+        assert_eq!(real_dir_under(&base, &base.join("a").join("f.txt")), None);
+        // Un `..` no cuela.
+        assert_eq!(
+            real_dir_under(&base, &base.join("a").join("..").join("a")),
+            None
+        );
     }
 
     #[test]
