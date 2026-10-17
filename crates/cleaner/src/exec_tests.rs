@@ -6742,3 +6742,66 @@ fn fixed_diagnostic_paths_do_not_depend_on_current_existence() {
     assert!(c.roots.is_diagnostic_path(&root.join("later.dmp")));
     assert!(!c.roots.is_diagnostic_path(&sb.long("Docs/Own")));
 }
+
+#[test]
+fn approval_keeps_diagnostic_veto_when_root_disappears_after_measurement() {
+    let sb = Sandbox::new();
+    sb.write("Local/CrashDumps/incident.dmp", 128);
+    let fake = FakeShell::new(&sb, Some(1), 0, "never");
+    let mut c = diag_cleaner(&sb, fake);
+    let original = sb.path("Local/CrashDumps");
+    let displaced = sb.path("Local/CrashDumps-away");
+    c.after_measure_for_test = Some(Arc::new({
+        let original = original.clone();
+        let displaced = displaced.clone();
+        move || fs::rename(&original, &displaced).unwrap()
+    }));
+    let mut basket = Basket::new();
+    basket.add_path(sb.long("Local/CrashDumps/incident.dmp"), c.protection());
+    let plan = approve(&c, &basket);
+    fs::rename(&displaced, &original).unwrap();
+    assert_eq!(plan.items.len(), 1, "{:?}", plan.rejected);
+    assert_eq!(plan.items[0].category, None);
+    assert!(plan.items[0].diagnostic_path);
+    assert!(plan.items[0].never_permanent());
+    assert!(plan.items[0].is_unfit());
+    let rep = exec(&c, &plan, true, true, None).unwrap();
+    assert_eq!(status_of(&rep, "incident.dmp"), ItemStatus::SkippedUnfit);
+    assert!(sb.path("Local/CrashDumps/incident.dmp").exists());
+}
+
+#[test]
+fn individual_pst_entry_requires_explicit_permanent_consent() {
+    let sb = Sandbox::new();
+    sb.write("Docs/mail.pst", 64);
+    let fake = FakeShell::new(&sb, Some(1), 0, "never");
+    let c = cleaner_for(&sb).with_shell(fake);
+    let mut basket = Basket::new();
+    basket.add_path(sb.long("Docs/mail.pst"), c.protection());
+    let plan = approve(&c, &basket);
+    assert_eq!(plan.items.len(), 1);
+    assert!(plan.items[0].is_unfit());
+    let run = |allow_local_mail_permanent| {
+        c.execute(
+            &plan,
+            &ExecOptions {
+                dry_run: true,
+                allow_unfit_permanent: true,
+                allow_local_mail_permanent,
+                log: None,
+            },
+            &Progress::new(),
+        )
+        .unwrap()
+    };
+    let without = run(false);
+    assert_eq!(
+        without.items[0].status,
+        ItemStatus::Root(crate::engine::RootStatus::MailConsentRequired)
+    );
+    assert_eq!(without.items[0].stats.protected, 1);
+    let with = run(true);
+    assert_eq!(with.items[0].status, ItemStatus::Done);
+    assert_eq!(with.items[0].stats.files, 1);
+    assert!(sb.path("Docs/mail.pst").exists());
+}

@@ -335,6 +335,9 @@ pub struct Cleaner {
     pub(crate) shell: Arc<dyn crate::exec::RecycleShell>,
     /// Whether the process is elevated (production checks the token; tests inject the state).
     pub(crate) elevation: Arc<dyn crate::exec::Elevation>,
+    /// A deterministic test seam for changes between measurement and plan classification.
+    #[cfg(test)]
+    pub(crate) after_measure_for_test: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
 /// Filter for the "empty Recycle Bin" scope.
@@ -411,6 +414,8 @@ impl Cleaner {
             data_dir,
             shell: Arc::new(crate::exec::RealShell),
             elevation: default_elevation(),
+            #[cfg(test)]
+            after_measure_for_test: None,
         }
     }
 
@@ -560,6 +565,10 @@ impl Cleaner {
             })
             .collect();
         engine::run(&units, self.threads);
+        #[cfg(test)]
+        if let Some(hook) = &self.after_measure_for_test {
+            hook();
+        }
         for (c, u) in cands.into_iter().zip(units) {
             let est = u.stats.snapshot();
             let id = plan.items.len();
