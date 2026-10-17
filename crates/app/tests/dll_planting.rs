@@ -95,6 +95,11 @@ fn con_dll_falsas_junto_al_exe_la_ventana_abre_y_pinta() {
     let control_exe = control.0.join("tesela-control.exe");
     std::fs::copy(env!("CARGO_BIN_EXE_tesela"), &control_exe).unwrap();
     if !paints(&control_exe) {
+        // En CI no se omite: sin esto, un runner sin escritorio gráfico dejaría la prueba en verde sin comprobar nada.
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "en CI el control (sin archivos falsos) tiene que abrir y pintar la ventana: la prueba no puede omitirse"
+        );
         eprintln!("sin ventana que pinte en este entorno (el control tampoco): se omite");
         return;
     }

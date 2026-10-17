@@ -98,6 +98,11 @@ mod tests {
     fn la_busqueda_de_dll_se_limita_a_system32() {
         // Lanza un proceso hijo (copia del ejecutable de pruebas): solo con TESELA_PROCESS_TESTS=1 (el CI la define).
         if !std::env::var("TESELA_PROCESS_TESTS").is_ok_and(|v| v == "1") {
+            // En CI el salto no puede pasar en silencio (una variable perdida del workflow): falla.
+            assert!(
+                std::env::var_os("CI").is_none(),
+                "CI sin TESELA_PROCESS_TESTS=1: las pruebas con procesos hijo no pueden saltarse en CI (revisa el workflow)"
+            );
             eprintln!(
                 "pruebas con procesos hijo desactivadas: defina TESELA_PROCESS_TESTS=1 para ejecutar esta prueba"
             );
