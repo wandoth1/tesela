@@ -4180,6 +4180,101 @@ fn medicion_a3_m1_coste_de_la_vigilancia_por_directorio() {
     );
 }
 
+/// GM-B2: un ANCESTRO que es un junction se rechaza al aprobar (`ReparseAncestor`). Antes `GetFinalPathNameByHandleW` resolvía
+/// en silencio el junction y el plan sustituía la ruta pedida por la resuelta: lo aprobado y enviado a la Papelera era OTRA
+/// carpeta que la que el usuario marcó (`Real\...` en vez de `Enlace\...`).
+#[test]
+fn un_ancestro_que_es_un_junction_se_rechaza_al_aprobar() {
+    let mut sb = Sandbox::new();
+    let c = cleaner_for(&sb);
+    sb.write("Docs/real/dir/f.bin", 1_000);
+    sb.write("Docs/real/suelto.bin", 1_000);
+    sb.junction("Docs/enlace", "Docs/real");
+    for rel in [
+        "Docs/enlace/dir",
+        "Docs/enlace/suelto.bin",
+        "Docs/enlace/dir/f.bin",
+    ] {
+        let mut b = Basket::new();
+        b.add_path(sb.long(rel), c.protection());
+        let plan = approve(&c, &b);
+        assert!(plan.items.is_empty(), "{rel}: {:?}", plan.items);
+        assert_eq!(plan.rejected.len(), 1, "{rel}: {:?}", plan.rejected);
+        assert_eq!(
+            plan.rejected[0].reason,
+            RejectReason::ReparseAncestor,
+            "{rel}"
+        );
+    }
+    // Control: la misma carpeta por su ruta real sí se aprueba, y con la ruta que se pidió.
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/real/dir"), c.protection());
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 1, "{:?}", plan.rejected);
+    assert_eq!(plan.items[0].path, sb.long("Docs/real/dir"));
+}
+
+/// GM-B2: las rutas que se pasan en forma 8.3 (el CI de GitHub tiene `%TEMP%` así) NO son enlaces: se aprueban. La comprobación
+/// recorre la cadena real, no compara textos.
+#[test]
+fn una_ruta_en_forma_8_3_no_se_rechaza_como_ancestro_enlazado() {
+    let sb = Sandbox::new();
+    let c = cleaner_for(&sb);
+    sb.write(
+        "Docs/Carpeta con nombre largo/archivo con nombre largo.bin",
+        1_000,
+    );
+    let long = sb.long("Docs/Carpeta con nombre largo/archivo con nombre largo.bin");
+    let short = crate::testutil::short_path(&long);
+    let mut b = Basket::new();
+    b.add_path(short.clone(), c.protection());
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 1, "{short:?}: {:?}", plan.rejected);
+    // El plan guarda la forma larga canónica.
+    assert_eq!(plan.items[0].path, long);
+}
+
+/// GM-B2: un hijo que se cambia ENTRE el listado y la apertura (`Contenido de X`) se rechaza: se abre RELATIVO al handle de la
+/// carpeta y se compara con el `FileId` del listado. Antes se volvía a abrir por ruta y se capturaba la identidad del que
+/// hubiera ahora.
+#[test]
+fn un_hijo_cambiado_entre_el_listado_y_la_apertura_no_se_aprueba() {
+    let sb = Sandbox::new();
+    let c = cleaner_for(&sb);
+    sb.write("Docs/a.txt", 1_000);
+    sb.write("Docs/b.txt", 1_000);
+    // Control: sin carrera, los dos hijos se aprueban.
+    let mut b = Basket::new();
+    b.add_contents_of(sb.long("Docs"), c.protection());
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 2, "{:?}", plan.rejected);
+    // Con carrera: justo antes de abrir `b.txt` se cambia por otro archivo (otro `FileId`).
+    let swapped = Arc::new(AtomicBool::new(false));
+    let target = sb.path("Docs/b.txt");
+    let _hook = {
+        let swapped = swapped.clone();
+        crate::engine::test_hooks::install(sb.long("Docs"), move |p| {
+            if p.ends_with("b.txt") && !swapped.swap(true, Ordering::SeqCst) {
+                fs::remove_file(&target).unwrap();
+                fs::write(&target, vec![9u8; 1_000]).unwrap();
+            }
+        })
+    };
+    let plan = approve(&c, &b);
+    assert!(swapped.load(Ordering::SeqCst), "el gancho corrió");
+    let names: Vec<String> = plan
+        .items
+        .iter()
+        .map(|i| i.path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(names, vec!["a.txt"], "{:?}", plan.rejected);
+    assert!(
+        plan.rejected.iter().any(|r| r.path.ends_with("b.txt")),
+        "{:?}",
+        plan.rejected
+    );
+}
+
 /// A3-M2 (repetición de Astra): capacidad 100 000, la Papelera vacía al empezar la medida y con 99 000 ocupados al acabar el
 /// recorrido; una carpeta de 4 000 bytes se enviaba con la lectura vieja (vacía). Ahora la ocupación se lee también DESPUÉS
 /// del recorrido y manda la MAYOR de las dos: `NoRoom`, sin llegar a la shell.

@@ -622,6 +622,38 @@ impl Cleaner {
         Some((m, canon, key))
     }
 
+    /// GM-B2: la cadena de ANCESTROS de `path` (tal como se escribió, componente a componente desde la raíz del volumen, con
+    /// aperturas relativas y sin ningún reparse point) y el propio elemento abierto RELATIVO a ese padre verificado, con la
+    /// misma identidad que el handle ya abierto por ruta. `GetFinalPathNameByHandleW` resuelve EN SILENCIO los junctions de los
+    /// ancestros y sustituía la ruta pedida por la resuelta: el plan acababa actuando sobre otra carpeta que la que el usuario
+    /// marcó. Compararlo con `PathKey` no vale (en el CI `%TEMP%` es 8.3 y las dos formas de una misma ruta difieren), así
+    /// que se recorre la cadena real: los nombres 8.3 los resuelve el sistema de archivos al abrir.
+    fn check_ancestors(path: &Path, m: &sys::Meta) -> Result<(), RejectReason> {
+        let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+            // Una raíz de unidad no tiene ancestros (y la protección ya la deniega).
+            return Ok(());
+        };
+        let ph = match sys::open_reparse_free_dir(parent) {
+            Ok(ph) => ph,
+            Err(sys::ChainError::Reparse { .. } | sys::ChainError::BadPath) => {
+                return Err(RejectReason::ReparseAncestor);
+            }
+            Err(sys::ChainError::Os(c)) => return Err(reason_of(c)),
+        };
+        let wide: Vec<u16> = std::os::windows::ffi::OsStrExt::encode_wide(name).collect();
+        let expect = if m.is_dir {
+            sys::Expect::Dir
+        } else {
+            sys::Expect::File
+        };
+        match sys::open_child_for_query(&ph, &wide, expect).and_then(|ch| sys::meta(&ch)) {
+            Ok(cm) if cm.identity == m.identity => Ok(()),
+            // Otro objeto: lo que se abrió por ruta no es lo que hay bajo el padre verificado (un ancestro cambió entre medias).
+            Ok(_) => Err(RejectReason::ReparseAncestor),
+            Err(c) => Err(reason_of(c)),
+        }
+    }
+
     fn candidates_of_contents(&self, folder: &Path, out: &mut Vec<Candidate>, plan: &mut Plan) {
         let h = match sys::open_dir_for_listing(folder) {
             Ok(h) => h,
@@ -636,6 +668,14 @@ impl Cleaner {
         let Some((m, canon, key)) = self.verify(&h, folder, plan) else {
             return;
         };
+        // GM-B2: los ancestros de la carpeta tal como se pidió no pueden ser enlaces (la ruta resuelta la sustituiría).
+        if let Err(reason) = Self::check_ancestors(folder, &m) {
+            plan.rejected.push(Rejected {
+                path: canon,
+                reason,
+            });
+            return;
+        }
         let verdict = self.protection.target_verdict(&key);
         if !m.is_dir || m.is_reparse() || verdict != Verdict::ContentsOnly {
             plan.rejected.push(Rejected {
@@ -667,8 +707,51 @@ impl Cleaner {
                 });
                 continue;
             }
-            self.candidate_entry(&child, out, plan);
+            self.candidate_child(&h, m.identity.volume_serial, &child, &e, out, plan);
         }
+    }
+
+    /// GM-B2: un hijo de una carpeta ya abierta (`dir`), abierto RELATIVO a ese handle y con el `FileId` y el volumen del
+    /// listado. Antes se volvía a abrir por ruta tras listar: entre las dos cosas se podía cambiar el hijo (o un ancestro) y
+    /// la aprobación capturaba la identidad del objeto equivocado.
+    fn candidate_child(
+        &self,
+        dir: &sys::Handle,
+        volume_serial: u64,
+        child: &Path,
+        e: &sys::DirEntry,
+        out: &mut Vec<Candidate>,
+        plan: &mut Plan,
+    ) {
+        #[cfg(test)]
+        crate::engine::test_hooks::before_open(child);
+        let expect = if e.is_dir() {
+            sys::Expect::Dir
+        } else {
+            sys::Expect::File
+        };
+        let h = match sys::open_child_for_query(dir, &e.name, expect) {
+            Ok(h) => h,
+            Err(c) => {
+                plan.rejected.push(Rejected {
+                    path: child.to_path_buf(),
+                    reason: reason_of(c),
+                });
+                return;
+            }
+        };
+        let same = sys::meta(&h).is_ok_and(|m| {
+            m.identity.file_id == e.file_id && m.identity.volume_serial == volume_serial
+        });
+        if !same {
+            // Cambió entre el listado y la apertura: no se aprueba lo que no es lo listado.
+            plan.rejected.push(Rejected {
+                path: child.to_path_buf(),
+                reason: RejectReason::Other(0),
+            });
+            return;
+        }
+        self.candidate_from(&h, child, false, out, plan);
     }
 
     /// Un archivo o una carpeta del usuario ("Tu archivo"): captura su identidad y, si la carpeta contiene algo
@@ -684,9 +767,29 @@ impl Cleaner {
                 return;
             }
         };
-        let Some((m, canon, key)) = self.verify(&h, path, plan) else {
+        self.candidate_from(&h, path, true, out, plan);
+    }
+
+    /// El resto de [`Cleaner::candidate_entry`] sobre un handle ya abierto. `check_chain`: comprobar los ancestros de `path`
+    /// (GM-B2); un hijo abierto relativo a un directorio ya verificado no lo necesita.
+    fn candidate_from(
+        &self,
+        h: &sys::Handle,
+        path: &Path,
+        check_chain: bool,
+        out: &mut Vec<Candidate>,
+        plan: &mut Plan,
+    ) {
+        let Some((m, canon, key)) = self.verify(h, path, plan) else {
             return;
         };
+        if check_chain && let Err(reason) = Self::check_ancestors(path, &m) {
+            plan.rejected.push(Rejected {
+                path: canon,
+                reason,
+            });
+            return;
+        }
         let cloud_file = !m.is_dir && m.is_reparse() && sys::is_cloud_tag(m.reparse_tag);
         if m.is_reparse() && !cloud_file {
             plan.rejected.push(Rejected {
@@ -739,7 +842,8 @@ impl Cleaner {
         });
     }
 
-    /// Una carpeta que contiene algo protegido: sus hijos permitidos pasan a ser elementos y lo protegido se omite.
+    /// Una carpeta que contiene algo protegido: sus hijos permitidos pasan a ser elementos y lo protegido se omite. Los hijos
+    /// se abren RELATIVOS a `dir` y con la identidad del listado (GM-B2).
     fn expand_dir(
         &self,
         dir: &sys::Handle,
@@ -806,7 +910,7 @@ impl Cleaner {
                             reason: RejectReason::Reparse,
                         });
                     } else {
-                        self.candidate_entry(&child, out, plan);
+                        self.candidate_child(dir, volume_serial, &child, &e, out, plan);
                     }
                 }
             }
