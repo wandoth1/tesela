@@ -51,8 +51,10 @@ if ($isAdmin) { throw 'esta prueba tiene que correr como usuario ESTANDAR, y est
 
 $UpgradeCode = '{7E8F4B67-A7D4-415B-9F8F-2E0B88AA88BB}'
 $ExpectedFiles = @('tesela.exe', 'tesela-scan.exe', 'LICENSE-MIT', 'LICENSE-APACHE', 'THIRD-PARTY-NOTICES.md')
-$userDefault = Join-Path $env:LOCALAPPDATA 'Programs\Tesela'
-$machineDefault = Join-Path $env:ProgramFiles 'Tesela'
+# Con Start-Process -Credential las variables de entorno de usuario pueden no estar: se pregunta a Windows por las carpetas.
+$localAppData = [Environment]::GetFolderPath('LocalApplicationData')
+$userDefault = Join-Path $localAppData 'Programs\Tesela'
+$machineDefault = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'Tesela'
 $startMenu = Join-Path ([Environment]::GetFolderPath('Programs')) 'Tesela.lnk'
 
 function Out-Result([string]$Kind, [string]$Text, [string]$Detail = '') {
@@ -93,7 +95,8 @@ function Invoke-Msi([string[]]$MsiArgs, [string]$Name, [int]$TimeoutSeconds = 60
     return [pscustomobject]@{ Code = $p.ExitCode; TimedOut = $false; Log = $log }
 }
 
-Out-Result 'INFO' "fase $Phase como usuario estandar (administrador: $isAdmin)"
+Out-Result 'INFO' "fase $Phase como usuario estandar ($([Environment]::UserName); administrador: $isAdmin; LocalAppData $localAppData)"
+try {
 switch ($Phase) {
     'machine-attempt' {
         # Nada de interfaz: con credenciales que nadie puede teclear, "para todos" tiene que fallar, no instalar.
@@ -142,6 +145,9 @@ switch ($Phase) {
         Check 'sin acceso directo en su menu Inicio' (-not (Test-Path -LiteralPath $startMenu))
         Check 'ningun producto Tesela para este usuario' (@(Get-Products).Count -eq 0)
     }
+}
+} catch {
+    Out-Result 'FAIL' "la fase $Phase fallo con una excepcion" ($_.Exception.Message + ' @' + $_.InvocationInfo.ScriptLineNumber)
 }
 Out-Result 'INFO' "fase $Phase terminada"
 exit 0

@@ -265,7 +265,9 @@ function Invoke-StdPhase([string]$Phase, [string]$MsiPath) {
     $pwshExe = (Get-Process -Id $PID).Path
     Write-Host "  (como $stdName) pwsh -File msi-install-standard.tests.ps1 -Phase $Phase"
     try {
-        $p = Start-Process -FilePath $pwshExe -ArgumentList ($stdArgs -join ' ') -Credential $script:stdUser.Cred -LoadUserProfile -WorkingDirectory $stdShared -PassThru
+        $outFile = Join-Path $stdShared "std-$Phase.out.txt"
+        $errFile = Join-Path $stdShared "std-$Phase.err.txt"
+        $p = Start-Process -FilePath $pwshExe -ArgumentList ($stdArgs -join ' ') -Credential $script:stdUser.Cred -LoadUserProfile -WorkingDirectory $stdShared -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile
     } catch {
         Check "se puede lanzar un proceso como el usuario estandar (fase $Phase)" $false "Start-Process -Credential fallo: $($_.Exception.Message)"
         return
@@ -275,6 +277,9 @@ function Invoke-StdPhase([string]$Phase, [string]$MsiPath) {
         Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
         Check "la fase $Phase del usuario estandar termino a tiempo" $false 'tiempo agotado (15 min)'
         return
+    }
+    foreach ($f in $outFile, $errFile) {
+        if ((Test-Path -LiteralPath $f) -and (Get-Item -LiteralPath $f).Length -gt 0) { Write-Host "  [estandar] contenido de $(Split-Path -Leaf $f):"; Get-Content -LiteralPath $f -TotalCount 40 | ForEach-Object { Write-Host "    | $_" } }
     }
     if (-not (Test-Path -LiteralPath $result)) {
         Check "la fase $Phase del usuario estandar produjo resultados" $false 'no hay archivo de resultados: el proceso no llego a escribirlos (perfil, permisos o error al arrancar)'
