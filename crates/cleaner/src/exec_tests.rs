@@ -2465,7 +2465,7 @@ fn ataque_de_ancestro(
     destino: &'static str,
 ) -> (Report, Vec<Option<i32>>) {
     let c = cleaner_for(sb);
-    // `victima` is `Docs/a/b/c/aprobado.txt`; its parent is `Docs/a/b/c`, grandparent `Docs/a/b`, and great-grandparent `Docs/a`.
+    // `victima` is the fixture path `Docs/a/b/c/aprobado.txt`; its parent is `Docs/a/b/c`, grandparent `Docs/a/b`, and great-grandparent `Docs/a`.
     sb.write(victima, 4_000);
     let ajeno = format!("{destino}/b/c/aprobado.txt");
     sb.write(&ajeno, 4_000);
@@ -2497,7 +2497,7 @@ fn ataque_de_ancestro(
                     fs::rename(&to, from).unwrap();
                 }
             }
-            // Full attack: replace the ancestor with a junction to `destino`.
+            // Full attack: replace the ancestor with a junction to `destino` (the destination path).
             if fs::rename(&a, &a_orig).is_ok() {
                 let out = std::process::Command::new("cmd")
                     .args(["/C", "mklink", "/J"])
