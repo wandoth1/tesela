@@ -707,6 +707,23 @@ impl Guard {
                 meta_path,
                 meta,
             } => {
+                // GM-m5: al purgar una CARPETA de la Papelera la shell pregunta por sus hijos (`...\$R<token>\hijo`). Un hijo
+                // solo vale si, abierto por su ruta sin seguir enlaces, no es un reparse point (un junction dentro del `$R`
+                // llevaría el borrado fuera), está en el MISMO volumen que el `$R` aprobado y su ruta final cuelga de ese `$R`
+                // (un ancestro enlazado la sacaría de él). Antes bastaba con que el texto de la ruta empezase por el `$R`.
+                if PathKey::new(Path::new(path)) != PathKey::new(data_path) {
+                    let h = sys::open_for_query(Path::new(path)).map_err(VetoKind::OpenFailed)?;
+                    let m = sys::meta(&h).map_err(VetoKind::OpenFailed)?;
+                    if m.is_reparse() || m.identity.volume_serial != data.volume_serial {
+                        return Err(VetoKind::IdentityMismatch);
+                    }
+                    let under = sys::final_path(&h)
+                        .map_err(VetoKind::OpenFailed)
+                        .map(|f| PathKey::new(&f).is_same_or_under(&PathKey::new(data_path)))?;
+                    if !under {
+                        return Err(VetoKind::NotApproved);
+                    }
+                }
                 // El `$R` aprobado (no el hijo por el que se pregunta, si es el caso) y su `$I`.
                 same(data_path, data)?;
                 same(meta_path, meta)
@@ -1135,6 +1152,9 @@ fn purge_items_flags(
     let mut changed: Vec<&BinItem> = Vec::new();
     let mut unverifiable: Vec<&BinItem> = Vec::new();
     let mut found: Vec<(IShellItem, &BinItem)> = Vec::with_capacity(items.len());
+    // GM-m5: los `id` ya casados con la lista. Si la enumeración de la shell repitiera un elemento, se entregaría dos veces a la
+    // operación y el recuento de los que faltan por casar (`found + changed + unverifiable == by_id.len()`) se adelantaría.
+    let mut matched: std::collections::HashSet<OsString> = std::collections::HashSet::new();
     // SAFETY: COM está inicializado en este hilo; todas las interfaces y cadenas son propias de esta función y se
     // liberan con el RAII de `windows` o con `take_pwstr`.
     unsafe {
@@ -1151,6 +1171,7 @@ fn purge_items_flags(
             let Some(item) = arr[0].take() else { break };
             if let Some(id) = display(&item, SIGDN_DESKTOPABSOLUTEPARSING)
                 && let Some(approved) = by_id.get(&id).copied()
+                && first_match(&mut matched, &id)
             {
                 // M3: el elemento se identifica por `id` (un nombre), pero antes de tocarlo se comprueba que el `$R` y el
                 // `$I` son los mismos objetos que al enumerar.
@@ -1290,6 +1311,11 @@ fn purge_items_flags(
         }
     }
     Ok(out)
+}
+
+/// `true` la PRIMERA vez que se ve un `id` (GM-m5): los repetidos de la enumeración de la shell no se vuelven a casar.
+fn first_match(seen: &mut std::collections::HashSet<OsString>, id: &OsString) -> bool {
+    seen.insert(id.clone())
 }
 
 /// Elementos por trozo al purgar (y por vuelta de la cancelación).
@@ -2774,6 +2800,68 @@ mod tests {
             envio.check(&child.into_os_string()),
             Err(VetoKind::NotApproved)
         );
+    }
+
+    /// GM-m5: un hijo de un `$R` carpeta solo pasa si, abierto por su ruta, no es un reparse point, está en el mismo volumen y
+    /// su ruta final cuelga del `$R` aprobado. Un junction DENTRO del `$R` (o un ancestro enlazado que saque la ruta de él)
+    /// llevaría el borrado de la shell fuera de lo aprobado: se veta. Sin sistema de archivos de otro volumen disponible, el
+    /// criterio del volumen se cubre con el de la ruta final.
+    #[test]
+    fn un_hijo_de_un_r_carpeta_con_un_enlace_se_veta() {
+        let mut sb = Sandbox::new();
+        sb.write("fuera/secreto.txt", 10);
+        let dir_item = {
+            let it = synthetic_bin_item(&sb, "DDDD07", b"x");
+            std::fs::remove_file(PathBuf::from(&it.id)).unwrap();
+            std::fs::create_dir_all(PathBuf::from(&it.id).join("sub")).unwrap();
+            std::fs::write(PathBuf::from(&it.id).join("sub/hijo.txt"), b"h").unwrap();
+            BinItem {
+                data_id: identity_at(Path::new(&it.id)),
+                ..it
+            }
+        };
+        let r = PathBuf::from(&dir_item.id);
+        // Control: un hijo normal, y el propio directorio `sub`, pasan.
+        let core = purge_core(&[&dir_item]);
+        assert!(core.pre_delete(r.join("sub/hijo.txt").into_os_string()));
+        assert!(core.pre_delete(r.join("sub").into_os_string()));
+        // Un junction DENTRO del `$R` que apunta fuera: el propio enlace no vale.
+        let rel = "bin/S-synthetic/$RDDDD07.txt/enlace";
+        sb.junction(rel, "fuera");
+        let core = purge_core(&[&dir_item]);
+        assert!(!core.pre_delete(r.join("enlace").into_os_string()));
+        assert_eq!(
+            core.state.vetoes.lock().unwrap()[0].kind,
+            VetoKind::IdentityMismatch
+        );
+        // Un hijo que se alcanza A TRAVÉS del junction: su ruta final queda fuera del `$R`.
+        let core = purge_core(&[&dir_item]);
+        assert!(!core.pre_delete(r.join("enlace/secreto.txt").into_os_string()));
+        assert_eq!(
+            core.state.vetoes.lock().unwrap()[0].kind,
+            VetoKind::NotApproved
+        );
+        // Un hijo que no existe: no se puede abrir, se veta.
+        let core = purge_core(&[&dir_item]);
+        assert!(!core.pre_delete(r.join("sub/no-esta.txt").into_os_string()));
+        assert!(matches!(
+            core.state.vetoes.lock().unwrap()[0].kind,
+            VetoKind::OpenFailed(_)
+        ));
+        sb.remove_junction(rel);
+    }
+
+    /// GM-m5: la enumeración de la shell puede repetir un elemento; solo se casa la primera vez.
+    #[test]
+    fn un_elemento_repetido_en_la_enumeracion_solo_se_casa_una_vez() {
+        let mut seen = std::collections::HashSet::new();
+        let a = OsString::from("a");
+        let b = OsString::from("b");
+        assert!(first_match(&mut seen, &a));
+        assert!(!first_match(&mut seen, &a));
+        assert!(first_match(&mut seen, &b));
+        assert!(!first_match(&mut seen, &b));
+        assert!(!first_match(&mut seen, &a));
     }
 
     /// A-M4 (sin COM): la guarda de un `$R` solo se abre si es el objeto capturado y no está ya pendiente de borrar; y demuestra
