@@ -1,11 +1,11 @@
-//! VERSIONINFO de `tesela-scan.exe` (producto, versión y editor; sin icono, es una herramienta de consola), con
-//! `winresource` (necesita `rc.exe` del Windows SDK, que acompaña a la toolchain MSVC).
+//! VERSIONINFO for `tesela-scan.exe` (product, version, and publisher; no icon because it is a console tool), using
+//! `winresource` (requires `rc.exe` from the Windows SDK, which comes with the MSVC toolchain).
 
 fn main() {
-    // Las importaciones ESTATICAS del .exe (dxgi.dll, dwmapi.dll, uxtheme.dll...) las resuelve el cargador de Windows ANTES de
-    // `main`, con el orden predeterminado: la carpeta del .exe va primero y una DLL con ese nombre dejada ahi se ejecutaria
-    // al arrancar. `/DEPENDENTLOADFLAG:0x800` (LOAD_LIBRARY_SEARCH_SYSTEM32) las busca solo en System32. Lo que carga el
-    // programa por nombre ya en marcha lo cubre `dll_hardening` (SetDefaultDllDirectories). Ver installer/README.md.
+    // Windows resolves the executable's STATIC imports (dxgi.dll, dwmapi.dll, uxtheme.dll...) BEFORE `main`, using the
+    // default order: the .exe directory is first, so a DLL with a matching name placed there would run at startup.
+    // `/DEPENDENTLOADFLAG:0x800` (LOAD_LIBRARY_SEARCH_SYSTEM32) searches for them only in System32. Loads by name after
+    // startup are covered by `dll_hardening` (SetDefaultDllDirectories). See installer/README.md.
     if std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc") {
         println!("cargo:rustc-link-arg-bins=/DEPENDENTLOADFLAG:0x800");
     }

@@ -1,16 +1,15 @@
-//! Utilidades compartidas de las pruebas de integración de este crate.
+//! Shared utilities for this crate's integration tests.
 
-/// Variable de entorno que activa las pruebas que LANZAN PROCESOS HIJO (copias del ejecutable, ventanas, archivos con
-/// nombre de DLL junto a un `.exe`): `TESELA_PROCESS_TESTS=1`. Un antivirus de escritorio puede bloquear ese patrón en un
-/// equipo de desarrollo; el CI (un runner efímero) las ejecuta siempre. En local se saltan con un mensaje.
+/// Environment variable enabling tests that LAUNCH CHILD PROCESSES (executable copies, windows, DLL-named files beside
+/// an `.exe`): `TESELA_PROCESS_TESTS=1`. Desktop antivirus may block this pattern on a development machine; CI (an
+/// ephemeral runner) always runs them. Locally they are skipped with a message.
 pub const PROCESS_TESTS_VAR: &str = "TESELA_PROCESS_TESTS";
 
-/// ¿Está definida `TESELA_PROCESS_TESTS=1`? Si no, lo dice por la salida de errores y la prueba debe volver sin hacer nada
-/// (las aserciones no se han debilitado: con la variable corren completas).
+/// Is `TESELA_PROCESS_TESTS=1` set? If not, report it to stderr and the test must return without doing anything (the
+/// assertions are not weakened: with the variable set, they run in full).
 ///
-/// En CI (variable `CI` definida, como hace GitHub Actions) el salto NO es posible: `cargo test` no enseña lo que una prueba
-/// que pasa escribe por stderr, así que una variable perdida del workflow dejaría estas pruebas en verde sin ejecutarse.
-/// Allí falta la variable = `panic!`.
+/// In CI (`CI` is set, as in GitHub Actions), skipping is NOT allowed: `cargo test` hides stderr from passing tests, so a
+/// missing workflow variable could leave these tests green without running them. In CI, a missing variable means `panic!`.
 pub fn process_tests_enabled() -> bool {
     if std::env::var(PROCESS_TESTS_VAR).is_ok_and(|v| v == "1") {
         return true;

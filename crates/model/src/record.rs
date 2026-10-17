@@ -19,19 +19,19 @@ pub const NO_PARENT: u32 = u32::MAX;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(C)]
 pub struct Record {
-    /// Bytes ocupados en disco (`AllocationSize`).
+    /// Bytes allocated on disk (`AllocationSize`).
     pub alloc: u64,
-    /// Tamaño lógico (`EndOfFile`).
+    /// Logical size (`EndOfFile`).
     pub logical: u64,
-    /// Id provisional del directorio padre (`NO_PARENT` = hueco; `0` en la raíz).
+    /// Provisional id of the parent directory (`NO_PARENT` = hole; `0` for the root).
     pub parent: u32,
-    /// Posición del nombre en el arena de nombres.
+    /// Name position in the name arena.
     pub name_off: u32,
-    /// Última modificación, en segundos Unix (0 si se desconoce).
+    /// Last modification time in Unix seconds (0 if unknown).
     pub mtime: u32,
-    /// Longitud del nombre en bytes WTF-8.
+    /// Name length in WTF-8 bytes.
     pub name_len: u16,
-    /// Flags de [`crate::flags`].
+    /// Flags from [`crate::flags`].
     pub flags: u16,
 }
 
@@ -61,7 +61,7 @@ impl Record {
 /// Entry data when adding it to a batch.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct EntryData {
-    /// Flags de [`crate::flags`].
+    /// Flags from [`crate::flags`].
     pub flags: u16,
     /// Bytes allocated on disk.
     pub alloc: u64,

@@ -61,8 +61,8 @@ pub fn decode_to_utf16(bytes: &[u8], out: &mut Vec<u16>) {
             .fold(init, |acc, c| (acc << 6) | (c & 0x3F) as u32);
         i += len;
         match len {
-            // Una secuencia de 3 bytes que codifica menos de U+0800 es "sobrelarga" (p. ej. `E0 80 80` = U+0000): no es WTF-8
-            // válido y no puede colarse como otro carácter (un NUL o un `\`).
+            // A 3-byte sequence encoding less than U+0800 is overlong (e.g. `E0 80 80` = U+0000): it is not valid WTF-8
+            // and cannot sneak through as another character (a NUL or `\`).
             3 if cp < 0x800 => out.push(0xFFFD),
             1..=3 => out.push(cp as u16), // incluye sustitutos desparejados codificados en 3 bytes
             _ if (0x10000..=0x10FFFF).contains(&cp) => {
@@ -144,7 +144,7 @@ mod tests {
             &[0xE0, 0x80, 0x80][..], // U+0000 sobrelargo
             &[0xE0, 0x80, 0xAF],     // U+002F ('/')
             &[0xE0, 0x81, 0x9C],     // U+005C ('\')
-            &[0xE0, 0x9F, 0xBF],     // U+07FF sobrelargo (el máximo)
+            &[0xE0, 0x9F, 0xBF],     // U+07FF overlong (the maximum)
         ] {
             let mut out = Vec::new();
             decode_to_utf16(bytes, &mut out);

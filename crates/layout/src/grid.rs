@@ -1,10 +1,10 @@
-//! Rejilla espacial uniforme para el hit-test: cada casilla guarda los índices de las celdas que la tocan (formato
-//! CSR: un vector de desplazamientos y otro de índices). Una consulta mira UNA casilla.
+//! Uniform spatial grid for hit testing: each cell stores indices of layout cells that touch it (CSR format: one vector
+//! of offsets and one of indices). A query checks ONE grid cell.
 
 use crate::geom::Rect;
 use crate::layout::Cell;
 
-/// Lado de una casilla de la rejilla, en px.
+/// Grid cell side length, in px.
 const BUCKET: f32 = 32.0;
 
 #[derive(Debug)]
@@ -65,7 +65,7 @@ impl Grid {
         }
     }
 
-    /// La celda más profunda que contiene el punto (a igual nivel, la de índice mayor), o `None`.
+    /// Deepest cell containing the point (highest index at the same level), or `None`.
     pub(crate) fn hit(&self, cells: &[Cell], x: f32, y: f32) -> Option<u32> {
         if !(x >= 0.0 && y >= 0.0) {
             return None;
@@ -86,7 +86,7 @@ impl Grid {
         best
     }
 
-    /// Entradas totales de la rejilla (para los tests y la documentación de costes).
+    /// Total grid entries (for tests and cost documentation).
     pub(crate) fn entries(&self) -> usize {
         self.items.len()
     }

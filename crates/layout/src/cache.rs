@@ -1,11 +1,10 @@
-//! Caché del layout por `(raíz, viewport, profundidad, versión)` (PLAN.md §3.8).
+//! Layout cache keyed by `(root, viewport, depth, version)` (PLAN.md §3.8).
 
 use crate::layout::{Key, Layout};
 use std::sync::Arc;
 use tesela_model::{Tree, View};
 
-/// Caché pequeña (las últimas claves usadas) de layouts. Guardar más de uno permite animar el zoom entre dos
-/// niveles y volver atrás sin recalcular.
+/// Small cache of recent layouts. Keeping more than one allows zooming between two levels and back without recalculating.
 #[derive(Debug)]
 pub struct LayoutCache {
     entries: Vec<(Key, Arc<Layout>)>,
@@ -15,7 +14,7 @@ pub struct LayoutCache {
 }
 
 impl LayoutCache {
-    /// Caché de hasta `capacity` layouts (mínimo 1).
+    /// Cache of up to `capacity` layouts (minimum 1).
     pub fn new(capacity: usize) -> LayoutCache {
         LayoutCache {
             entries: Vec::new(),
@@ -25,12 +24,12 @@ impl LayoutCache {
         }
     }
 
-    /// El layout de `key`: el guardado si la clave coincide exactamente, o uno nuevo (que desaloja al más antiguo).
+    /// Layout for `key`: the cached one if the key matches exactly, or a new one (evicting the oldest).
     pub fn get(&mut self, tree: &Tree, key: Key) -> Arc<Layout> {
         self.get_view(View::new(tree, None), key)
     }
 
-    /// Como [`LayoutCache::get`] sobre una vista con overlay: quien llama cambia `key.version` cuando cambia el overlay.
+    /// Like [`LayoutCache::get`] for a view with an overlay: the caller changes `key.version` when the overlay changes.
     pub fn get_view(&mut self, view: View, key: Key) -> Arc<Layout> {
         if let Some(pos) = self.entries.iter().position(|(k, _)| *k == key) {
             self.hits += 1;
@@ -48,17 +47,17 @@ impl LayoutCache {
         layout
     }
 
-    /// Veces que se devolvió un layout guardado.
+    /// Number of times a cached layout was returned.
     pub fn hits(&self) -> u64 {
         self.hits
     }
 
-    /// Veces que hubo que calcular.
+    /// Number of times a layout had to be calculated.
     pub fn misses(&self) -> u64 {
         self.misses
     }
 
-    /// Descarta todo (por ejemplo, al abrir otro árbol).
+    /// Discard everything (for example, when opening another tree).
     pub fn clear(&mut self) {
         self.entries.clear();
     }

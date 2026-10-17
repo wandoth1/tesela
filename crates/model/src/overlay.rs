@@ -1,21 +1,19 @@
-//! Overlay de limpieza (PLAN.md §3.6): el árbol cambia tras limpiar SIN reescanear y SIN copiar el `Tree`.
+//! Cleanup overlay (PLAN.md §3.6): the tree changes after cleanup WITHOUT rescanning or copying the `Tree`.
 //!
-//! * Un bitset de nodos eliminados (125 KB por millón de nodos).
-//! * Un `FxHashMap<NodeId, Delta>` para los ancestros: al eliminar algo se resta su tamaño a lo largo de los ~30 ancestros
-//!   como máximo.
-//! * Tamaño visible = base − delta. El layout reordena los hijos visibles de los nodos tocados.
-//! * Se descarta al reescanear (el árbol nuevo es otro).
+//! * A bitset of removed nodes (125 KB per million nodes).
+//! * An `FxHashMap<NodeId, Delta>` for ancestors: removing an item subtracts its size along at most ~30 ancestors.
+//! * Visible size = base − delta. The layout reorders visible children of touched nodes.
+//! * Discarded on rescan (the new tree is a different one).
 //!
-//! Invariante: cada ancestro de algo que cambió está en `delta`, así que un nodo que NO está en `delta` tiene exactamente
-//! los hijos y el orden del árbol base. Los histogramas (tipos, antigüedad) no se recalculan: la interfaz los marca como
-//! aproximados hasta reescanear.
+//! Invariant: every ancestor of a changed item is in `delta`, so a node NOT in `delta` has exactly the same children and
+//! order as the base tree. Histograms (types, age) are not recalculated: the interface marks them as approximate until a rescan.
 
 use crate::tree::{NodeId, Tree};
 use crate::{NO_PARENT, flags};
 use rustc_hash::FxHashMap;
 use std::ops::Range;
 
-/// Lo que se ha restado a un nodo.
+/// Amount subtracted from a node.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Delta {
     pub alloc: u64,
@@ -23,7 +21,7 @@ pub struct Delta {
     pub files: u64,
 }
 
-/// El overlay.
+/// The overlay.
 #[derive(Clone, Debug, Default)]
 pub struct Overlay {
     removed: Vec<u64>,
@@ -32,7 +30,7 @@ pub struct Overlay {
 }
 
 impl Overlay {
-    /// Overlay vacío para un árbol de `tree.len()` nodos.
+    /// Empty overlay for a tree with `tree.len()` nodes.
     pub fn new(tree: &Tree) -> Overlay {
         Overlay {
             removed: vec![0; tree.len().div_ceil(64)],
@@ -41,12 +39,12 @@ impl Overlay {
         }
     }
 
-    /// Contador que cambia con cada modificación (entra en la clave de la caché del layout).
+    /// Counter that changes with each modification (included in the layout cache key).
     pub fn version(&self) -> u64 {
         self.version
     }
 
-    /// ¿Se ha modificado algo?
+    /// Has anything changed?
     pub fn is_empty(&self) -> bool {
         self.version == 0
     }
@@ -57,24 +55,24 @@ impl Overlay {
             .is_some_and(|w| w >> (id % 64) & 1 != 0)
     }
 
-    /// ¿Está marcado como eliminado (él mismo, no sus ancestros)?
+    /// Is this node marked as removed (itself, not its ancestors)?
     pub fn is_removed(&self, id: NodeId) -> bool {
         self.bit(id)
     }
 
-    /// ¿Tiene algún cambio en sus hijos o en su tamaño (está en `delta`)?
+    /// Has anything changed in its children or size (is it in `delta`)?
     pub fn is_touched(&self, id: NodeId) -> bool {
         self.delta.contains_key(&id)
     }
 
-    /// Lo restado a `id`.
+    /// Amount subtracted from `id`.
     pub fn delta(&self, id: NodeId) -> Delta {
         self.delta.get(&id).copied().unwrap_or_default()
     }
 
-    /// Suma `d` a `from` (si `include_self`) y a todos sus ancestros. En cada nodo lo restado se acota a lo que el nodo
-    /// tiene; lo que sigue subiendo es lo que REALMENTE se restó en él (la diferencia respecto de antes), no `d`: si no, un
-    /// ancestro que ya estaba acotado (por una limpieza parcial previa de su carpeta) restaría de más en los de arriba.
+    /// Add `d` to `from` (if `include_self`) and all its ancestors. At each node, the subtraction is capped at what the
+    /// node contains; what continues upward is the amount ACTUALLY subtracted there (the difference from before), not
+    /// `d`. Otherwise, an ancestor already capped (by an earlier partial cleanup of its directory) would over-subtract above it.
     fn add_up(&mut self, tree: &Tree, from: NodeId, d: Delta, include_self: bool) {
         let mut d = d;
         let mut cur = from;
@@ -88,7 +86,7 @@ impl Overlay {
             let e = self.delta.entry(cur).or_default();
             let prev = *e;
             let n = tree.node(cur);
-            // Nunca se resta más de lo que había.
+            // Never subtract more than was present.
             e.alloc = e.alloc.saturating_add(d.alloc).min(n.alloc);
             e.logical = e.logical.saturating_add(d.logical).min(n.logical);
             e.files = e.files.saturating_add(d.files).min(n.files_below as u64);
@@ -104,8 +102,8 @@ impl Overlay {
         }
     }
 
-    /// Marca `id` (y con él todo lo que contiene) como eliminado y resta su tamaño visible a sus ancestros. Idempotente.
-    /// No se puede eliminar la raíz.
+    /// Mark `id` (and everything it contains) as removed and subtract its visible size from its ancestors. Idempotent.
+    /// The root cannot be removed.
     pub fn remove(&mut self, tree: &Tree, id: NodeId) {
         if id == 0 || id as usize >= tree.len() || self.bit(id) || !self.is_visible(tree, id) {
             return;
@@ -128,13 +126,13 @@ impl Overlay {
         self.version += 1;
     }
 
-    /// Resta `alloc`, `logical` y `files` a `id` y a sus ancestros (limpieza parcial de una carpeta que se queda).
+    /// Subtract `alloc`, `logical`, and `files` from `id` and its ancestors (partial cleanup of a directory that remains).
     pub fn shrink(&mut self, tree: &Tree, id: NodeId, alloc: u64, logical: u64, files: u64) {
         if id as usize >= tree.len() || !self.is_visible(tree, id) || (alloc | logical | files) == 0
         {
             return;
         }
-        // No más de lo que le queda visible.
+        // No more than its remaining visible amount.
         let d = Delta {
             alloc: alloc.min(self.alloc(tree, id)),
             logical: logical.min(self.logical(tree, id)),
@@ -144,7 +142,7 @@ impl Overlay {
         self.version += 1;
     }
 
-    /// ¿Es visible `id`? No lo está si él o alguno de sus ancestros se eliminó.
+    /// Is `id` visible? It is not if it or any ancestor was removed.
     pub fn is_visible(&self, tree: &Tree, id: NodeId) -> bool {
         let mut cur = id;
         loop {
@@ -158,7 +156,7 @@ impl Overlay {
         }
     }
 
-    /// Tamaño en disco visible.
+    /// Visible size on disk.
     pub fn alloc(&self, tree: &Tree, id: NodeId) -> u64 {
         if self.bit(id) {
             return 0;
@@ -166,7 +164,7 @@ impl Overlay {
         tree.node(id).alloc.saturating_sub(self.delta(id).alloc)
     }
 
-    /// Tamaño lógico visible.
+    /// Visible logical size.
     pub fn logical(&self, tree: &Tree, id: NodeId) -> u64 {
         if self.bit(id) {
             return 0;
@@ -174,7 +172,7 @@ impl Overlay {
         tree.node(id).logical.saturating_sub(self.delta(id).logical)
     }
 
-    /// Archivos visibles por debajo.
+    /// Visible descendant files.
     pub fn files_below(&self, tree: &Tree, id: NodeId) -> u64 {
         if self.bit(id) {
             return 0;
@@ -182,18 +180,18 @@ impl Overlay {
         (tree.node(id).files_below as u64).saturating_sub(self.delta(id).files)
     }
 
-    /// Bytes que el overlay ha restado de la raíz (lo escaneado ya no está en disco).
+    /// Bytes subtracted from the root by the overlay (scanned data no longer on disk).
     pub fn removed_alloc(&self) -> u64 {
         self.delta(0).alloc
     }
 }
 
-/// Los hijos visibles de un directorio (ver [`View::kids`]).
+/// Visible children of a directory (see [`View::kids`]).
 #[derive(Clone, Debug)]
 pub enum Kids {
-    /// El rango contiguo del árbol base (nada cambió en este directorio).
+    /// The base tree's contiguous range (nothing changed in this directory).
     Range(Range<NodeId>),
-    /// Los hijos que quedan, en orden de tamaño visible descendente (y por nombre a igual tamaño).
+    /// Remaining children, sorted by descending visible size (then by name for equal sizes).
     List(Vec<NodeId>),
 }
 
@@ -218,7 +216,7 @@ impl Kids {
     }
 }
 
-/// Un árbol visto a través de un overlay (o tal cual, sin él). Es `Copy`: dos referencias.
+/// A tree viewed through an overlay (or as-is, without one). `Copy`: two references.
 #[derive(Clone, Copy)]
 pub struct View<'a> {
     tree: &'a Tree,
@@ -241,7 +239,7 @@ impl<'a> View<'a> {
         self.overlay
     }
 
-    /// Versión del overlay (0 sin overlay), para la clave de la caché del layout.
+    /// Overlay version (0 without an overlay), for the layout cache key.
     pub fn version(&self) -> u64 {
         self.overlay.map_or(0, Overlay::version)
     }
@@ -267,19 +265,19 @@ impl<'a> View<'a> {
         }
     }
 
-    /// ¿Es visible (ni él ni sus ancestros se eliminaron)?
+    /// Is this visible (neither it nor its ancestors were removed)?
     pub fn is_visible(&self, id: NodeId) -> bool {
         self.overlay.is_none_or(|o| o.is_visible(self.tree, id))
     }
 
-    /// ¿Se ha tocado este directorio (cambió algo dentro)?
+    /// Was this directory touched (did anything inside it change)?
     pub fn is_touched(&self, id: NodeId) -> bool {
         self.overlay.is_some_and(|o| o.is_touched(id))
     }
 
-    /// Hijos visibles de `id`. Para un directorio que no se tocó es el rango del árbol base (sin reservar memoria); para uno
-    /// tocado, los que quedan, reordenados por su tamaño visible (el nodo sintético del sistema va al final, como en el
-    /// árbol base: quien lo coloca por tamaño es el layout).
+    /// Visible children of `id`. For an untouched directory, this is the base tree range (no allocation); for a touched
+    /// directory, it is the remaining children sorted by visible size (the synthetic system node stays last, as in the
+    /// base tree; the layout positions it by size).
     pub fn kids(&self, id: NodeId) -> Kids {
         let r = self.tree.children(id);
         let Some(o) = self.overlay.filter(|o| o.is_touched(id)) else {
@@ -324,7 +322,7 @@ mod tests {
         }
     }
 
-    /// R/{a/{x 100, y 50}, b/{z 30}, w 20}: raíz 200, a 150, b 30, w 20.
+    /// R/{a/{x 100, y 50}, b/{z 30}, w 20}: root 200, a 150, b 30, w 20.
     fn sample() -> Tree {
         let mut b = TreeBuilder::new();
         let mut root = Batch::detached(0);
@@ -365,7 +363,7 @@ mod tests {
         assert_eq!(v.alloc(0), 200);
         assert_eq!(v.version(), 0);
         assert!(matches!(v.kids(0), Kids::Range(_)));
-        // Un overlay vacío se trata como ninguno.
+        // An empty overlay is treated as absent.
         let o = Overlay::new(&t);
         let v = View::new(&t, Some(&o));
         assert!(v.overlay().is_none() && matches!(v.kids(0), Kids::Range(_)));
@@ -390,7 +388,7 @@ mod tests {
         // Idempotente.
         o.remove(&t, x);
         assert_eq!((o.alloc(&t, 0), o.version()), (100, 1));
-        // Los hijos visibles de `a` son solo `y`; los de `b` siguen siendo el rango del árbol.
+        // The visible child of `a` is only `y`; `b` still uses the tree range.
         let v = View::new(&t, Some(&o));
         assert_eq!(v.kids(a).iter().collect::<Vec<_>>(), vec![id(&t, a, "y")]);
         assert!(matches!(v.kids(id(&t, 0, "b")), Kids::Range(_)));
@@ -407,7 +405,7 @@ mod tests {
         o.remove(&t, a);
         assert!(!o.is_visible(&t, x) && !o.is_visible(&t, y));
         assert_eq!((o.alloc(&t, 0), o.files_below(&t, 0)), (50, 2));
-        // Eliminar un descendiente de lo ya eliminado no cambia nada.
+        // Removing a descendant of an already removed node changes nothing.
         o.remove(&t, x);
         assert_eq!((o.alloc(&t, 0), o.version()), (50, 1));
         let v = View::new(&t, Some(&o));
@@ -424,12 +422,12 @@ mod tests {
         let t = sample();
         let (a, b, w) = (id(&t, 0, "a"), id(&t, 0, "b"), id(&t, 0, "w"));
         let mut o = Overlay::new(&t);
-        // `b` pesaba 30 y queda en 15: pasa por debajo de `w` (20).
+        // `b` weighed 30 and is now 15: it moves below `w` (20).
         o.shrink(&t, b, 15, 15, 1);
         assert_eq!((o.alloc(&t, b), o.alloc(&t, 0)), (15, 185));
         let v = View::new(&t, Some(&o));
         assert_eq!(v.kids(0).iter().collect::<Vec<_>>(), vec![a, w, b]);
-        // A igual tamaño visible, por nombre.
+        // For equal visible sizes, sort by name.
         o.shrink(&t, w, 5, 5, 0);
         let v = View::new(&t, Some(&o));
         assert_eq!(
@@ -439,18 +437,18 @@ mod tests {
         );
     }
 
-    /// GM-M7: tras una limpieza parcial de una carpeta (`shrink`), eliminar un descendiente que el `shrink` ya había
-    /// contado solo en parte no puede restar dos veces a los ancestros: cada nivel pasa hacia arriba lo que de verdad restó.
+    /// GM-M7: after a partial directory cleanup (`shrink`), removing a descendant already partly counted by `shrink`
+    /// must not subtract twice from ancestors: each level passes upward only what it actually subtracted.
     #[test]
     fn shrink_en_una_carpeta_y_eliminar_un_descendiente_resta_exactamente_el_total_real() {
         let t = sample();
         let (a, b, w) = (id(&t, 0, "a"), id(&t, 0, "b"), id(&t, 0, "w"));
         let x = id(&t, a, "x");
         let mut o = Overlay::new(&t);
-        // `a` pesa 150 (x = 100, y = 50): una limpieza parcial le quita 120.
+        // `a` weighs 150 (x = 100, y = 50): a partial cleanup removes 120.
         o.shrink(&t, a, 120, 120, 1);
         assert_eq!((o.alloc(&t, a), o.alloc(&t, 0)), (30, 80));
-        // `x` sigue "visible" con sus 100: al eliminarlo `a` solo puede perder los 30 que le quedaban.
+        // `x` still appears "visible" with 100: removing it can make `a` lose only the 30 it had left.
         o.remove(&t, x);
         assert_eq!(o.alloc(&t, a), 0, "a queda vacía");
         assert_eq!(
@@ -458,12 +456,12 @@ mod tests {
             150,
             "a: lo restado está acotado a lo que tiene"
         );
-        // La raíz resta EXACTAMENTE 150 (120 + 30): quedan b (30) y w (20), no 0.
+        // The root subtracts EXACTLY 150 (120 + 30): b (30) and w (20) remain, not 0.
         assert_eq!(o.delta(0).alloc, 150, "doble resta en la raíz");
         assert_eq!(o.alloc(&t, 0), 50);
         assert_eq!(o.alloc(&t, b) + o.alloc(&t, w), 50);
         assert_eq!(o.removed_alloc(), 150);
-        // Lo mismo con el tamaño lógico y con los archivos: la raíz resta lo mismo que `a` (todo lo que `a` tenía).
+        // Same for logical size and files: the root subtracts the same amount as `a` (everything `a` contained).
         assert_eq!(o.delta(0).logical, o.delta(a).logical);
         assert_eq!(o.delta(0).files, o.delta(a).files);
         assert_eq!(o.logical(&t, a), 0);
@@ -486,7 +484,7 @@ mod tests {
             !o.is_removed(0) && o.version() == before,
             "la raíz no se puede eliminar"
         );
-        // Un id fuera de rango no hace nada.
+        // An out-of-range id changes nothing.
         o.remove(&t, 9_999);
         o.shrink(&t, 9_999, 1, 1, 1);
         assert_eq!(o.version(), before);

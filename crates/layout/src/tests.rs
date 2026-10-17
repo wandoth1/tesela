@@ -1,13 +1,13 @@
-//! Tests del layout sobre árboles sintéticos con semilla.
+//! Layout tests on seeded synthetic trees.
 
 use super::*;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tesela_model::{Batch, EntryData, FinishOptions, Tree, TreeBuilder, flags};
 
-// --- Generación de árboles ------------------------------------------------------------------------------------------
+// --- Tree generation -----------------------------------------------------------------------------------------------
 
-/// SplitMix64: generador pseudoaleatorio mínimo y reproducible.
+/// SplitMix64: minimal, reproducible pseudorandom generator.
 struct Rng(u64);
 
 impl Rng {
@@ -21,7 +21,7 @@ impl Rng {
     fn below(&mut self, n: usize) -> usize {
         (self.next() % n as u64) as usize
     }
-    /// Tamaño con cola pesada (de unos KB a unos GB).
+    /// Heavy-tailed size (from a few KB to a few GB).
     fn size(&mut self) -> u64 {
         let e = 12 + self.below(18) as u32; // 4 KiB .. 1 GiB
         (1u64 << e) + (self.next() % (1u64 << e))
@@ -39,7 +39,7 @@ fn name_of(s: &Spec) -> &str {
     }
 }
 
-/// Construye un `Tree` desde una especificación (la raíz es un directorio).
+/// Build a `Tree` from a specification (the root is a directory).
 fn build(root: &Spec, volume_used: Option<u64>) -> Tree {
     let mut b = TreeBuilder::new();
     let mut rb = Batch::detached(0);
@@ -89,7 +89,7 @@ fn build(root: &Spec, volume_used: Option<u64>) -> Tree {
     })
 }
 
-/// Carpeta raíz con `n` hijos: carpetas con archivos (profundidad 2) y archivos sueltos, tamaños con cola pesada.
+/// Root directory with `n` children: directories containing files (depth 2) and loose files, with heavy-tailed sizes.
 fn random_spec(seed: u64, n: usize, files_per_dir: usize) -> Spec {
     let mut r = Rng(seed);
     let mut kids = Vec::new();
@@ -136,7 +136,7 @@ fn assert_no_overlap(cells: &[&Cell]) {
     }
 }
 
-// --- squarified -----------------------------------------------------------------------------------------------------
+// --- Squarified -----------------------------------------------------------------------------------------------------
 
 #[test]
 fn squarify_cubre_el_rectangulo_y_reparte_proporcional() {
@@ -172,8 +172,8 @@ fn squarify_cubre_el_rectangulo_y_reparte_proporcional() {
 
 #[test]
 fn squarify_ejemplo_del_articulo_de_bruls() {
-    // Ejemplo de Bruls et al.: 6, 6, 4, 3, 2, 2, 1 en 6 x 4. La primera fila (6 y 6) son dos celdas de 3 x 2
-    // (relacion 1,5); anadir el 4 daria 4 x 1,5, 4 x 1,5 y 4 x 1 (peor relacion), asi que la fila se cierra.
+    // Bruls et al. example: 6, 6, 4, 3, 2, 2, 1 in 6 x 4. The first row (6 and 6) is two 3 x 2 cells
+    // (ratio 1.5); adding 4 would give 4 x 1.5, 4 x 1.5, and 4 x 1 (worse ratio), so the row is closed.
     let vals = [6.0, 6.0, 4.0, 3.0, 2.0, 2.0, 1.0];
     let mut out = Vec::new();
     squarify(&vals, 24.0, Rect::new(0.0, 0.0, 6.0, 4.0), &mut out);
@@ -189,7 +189,7 @@ fn squarify_ejemplo_del_articulo_de_bruls() {
 
 #[test]
 fn squarify_con_hueco_final_no_cambia_la_escala() {
-    // `total` mayor que la suma: lo que sobra queda sin repartir y las áreas siguen siendo proporcionales a `total`.
+    // `total` exceeds the sum: the remainder is not laid out and areas remain proportional to `total`.
     let vals = [50.0, 30.0];
     let rect = Rect::new(0.0, 0.0, 100.0, 100.0);
     let mut out = Vec::new();
@@ -230,7 +230,7 @@ fn el_area_es_proporcional_al_tamano_sin_solapes_y_dentro_del_viewport() {
         let total: f64 = tree.children(0).map(|c| tree.node(c).alloc as f64).sum();
         let l0 = level(&l, 0);
         assert!(!l0.is_empty());
-        // Proporcionalidad: cada celda de nivel 0 que es un nodo ocupa (alloc / total) del viewport.
+        // Proportionality: each level 0 node cell occupies (alloc / total) of the viewport.
         let mut covered = 0.0f64;
         for c in &l0 {
             assert!(
@@ -248,10 +248,10 @@ fn el_area_es_proporcional_al_tamano_sin_solapes_y_dentro_del_viewport() {
                 );
             }
         }
-        // El nivel 0 reparte TODO el viewport.
+        // Level 0 covers the ENTIRE viewport.
         assert!((covered - vp.area() as f64).abs() < 1.0, "cubre {covered}");
         assert_no_overlap(&l0);
-        // Las celdas insinuadas: dentro de su padre, sin solaparse entre sí y sin pasar del tope.
+        // Hinted cells: inside their parent, non-overlapping, and within the limit.
         let l1 = level(&l, 1);
         assert!(!l1.is_empty(), "seed {seed}: sin nivel insinuado");
         for c in &l1 {
@@ -291,7 +291,7 @@ fn el_layout_es_determinista() {
 
 #[test]
 fn otros_agrupa_el_sufijo_de_bloques_menores_de_24x24() {
-    // 6 grandes y 200 diminutos: los diminutos no caben en 24×24 px y se funden en "Otros".
+    // 6 large and 200 tiny: the tiny ones do not fit in 24×24 px and are merged into "Other".
     let mut kids: Vec<Spec> = (0..6)
         .map(|i| Spec::File(format!("grande{i}"), 1_000_000_000 - i as u64 * 1_000_000))
         .collect();
@@ -303,7 +303,7 @@ fn otros_agrupa_el_sufijo_de_bloques_menores_de_24x24() {
     let order = Children::of(&tree, 0);
     assert_eq!(l.others().len(), 1);
     let o = l.others()[0];
-    // El grupo es EXACTAMENTE el sufijo de la lista ordenada de hijos.
+    // The group is EXACTLY the suffix of the sorted child list.
     let expect_bytes: u64 = order
         .iter_from(o.start as usize)
         .map(|c| tree.node(c).alloc)
@@ -313,13 +313,13 @@ fn otros_agrupa_el_sufijo_de_bloques_menores_de_24x24() {
     assert_eq!(o.parent, 0);
     assert_eq!(o.start, 6, "los 6 grandes quedan fuera del grupo");
     assert_eq!(o.count, 200);
-    // Su celda existe, es la última y mide su parte proporcional.
+    // Its cell exists, is last, and has its proportional size.
     let last = l.cells().last().unwrap();
     assert_eq!(last.kind, CellKind::Others(0));
     let total: f64 = tree.children(0).map(|c| tree.node(c).alloc as f64).sum();
     let expect = 800.0 * 600.0 * o.bytes as f64 / total;
     assert!((last.rect.area() as f64 - expect).abs() < expect * 1e-3 + 0.5);
-    // Todas las demás celdas miden al menos 24×24 px de área; el total sigue cubriendo el viewport.
+    // All other cells are at least 24×24 px in area; together they still cover the viewport.
     for c in &l.cells()[..l.cells().len() - 1] {
         assert!(
             c.rect.area() >= 24.0 * 24.0 - 0.5,
@@ -348,7 +348,7 @@ fn abrir_otros_reparte_solo_el_sufijo() {
     k.root = o.root();
     let inner = Layout::compute(&tree, k);
     let order = Children::of(&tree, 0);
-    // Los 60 diminutos se repartieron ahora todo el viewport (puede quedar un sufijo, que sería otro "Otros").
+    // The 60 tiny items now cover the whole viewport (a suffix may remain, which would be another "Other").
     let shown: usize = inner
         .cells()
         .iter()
@@ -420,7 +420,7 @@ fn directorio_vacio_o_viewport_vacio_no_producen_celdas() {
 
 #[test]
 fn el_lod_no_dibuja_por_debajo_de_3x3_y_respeta_el_tope() {
-    // Una carpeta enorme con 50 000 archivos pequeños: no se crea ninguna celda de menos de 3 px de lado.
+    // A huge directory with 50,000 small files: no cell smaller than 3 px on a side is created.
     let mut kids = vec![];
     let files: Vec<Spec> = (0..50_000u64)
         .map(|i| Spec::File(format!("x{i}"), 4096 + (i % 997) * 4096))
@@ -434,7 +434,7 @@ fn el_lod_no_dibuja_por_debajo_de_3x3_y_respeta_el_tope() {
     for c in l.cells().iter().filter(|c| c.level == 1) {
         assert!(c.rect.w >= 3.0 && c.rect.h >= 3.0, "celda de {:?}", c.rect);
     }
-    // Con un tope bajo, se respeta y se avisa.
+    // A low limit is respected and reported.
     k.params.max_rects = 500;
     let l = Layout::compute(&tree, k);
     assert!(l.cells().len() <= 500, "{} celdas", l.cells().len());
@@ -449,7 +449,7 @@ fn el_bloque_del_sistema_se_coloca_por_tamano_y_se_oculta_si_pesa_menos_del_1_po
         Spec::File("c".into(), 5_000),
     ];
     let spec = Spec::Dir("raiz".into(), kids);
-    // Grande: 40 000 (> 1 %) -> entre `a` y `b` por tamaño.
+    // Large: 40,000 (> 1%) -> between `a` and `b` by size.
     let tree = build(&spec, Some(95_000 + 40_000));
     let order = Children::of(&tree, 0);
     assert_eq!(order.len(), 4);
@@ -458,10 +458,10 @@ fn el_bloque_del_sistema_se_coloca_por_tamano_y_se_oculta_si_pesa_menos_del_1_po
         .map(|c| tree.name_lossy(c).into_owned())
         .collect();
     assert_eq!(names, ["a", "[system-data]", "b", "c"]);
-    // El layout lo reparte entre los demás.
+    // The layout distributes it among the others.
     let l = Layout::compute(&tree, key((500, 400), Depth::One));
     assert_eq!(l.cells().len(), 4);
-    // Mínimo: 100 de 95 100 (< 1 %) -> oculto, y su espacio no se reparte.
+    // Minimum: 100 of 95,100 (< 1%) -> hidden, and its space is not redistributed.
     let tree = build(&spec, Some(95_000 + 100));
     let order = Children::of(&tree, 0);
     assert_eq!(order.len(), 3);
@@ -471,7 +471,7 @@ fn el_bloque_del_sistema_se_coloca_por_tamano_y_se_oculta_si_pesa_menos_del_1_po
     assert!((covered - 200_000.0).abs() < 1.0, "{covered}");
 }
 
-// --- Hit-test y caché -----------------------------------------------------------------------------------------------
+// --- Hit test and cache --------------------------------------------------------------------------------------------
 
 #[test]
 fn el_hit_test_coincide_con_la_busqueda_exhaustiva() {
@@ -486,7 +486,7 @@ fn el_hit_test_coincide_con_la_busqueda_exhaustiva() {
             (r.next() % 760_000) as f32 / 1000.0,
         );
         let got = l.hit(x, y);
-        // Exhaustivo: la celda más profunda que contiene el punto (a igual nivel, no hay dos: no se solapan).
+        // Exhaustive: deepest cell containing the point (there cannot be two at the same level; they do not overlap).
         let mut best: Option<usize> = None;
         for (i, c) in l.cells().iter().enumerate() {
             if c.rect.contains(x, y) && best.is_none_or(|b| c.level >= l.cells()[b].level) {
@@ -511,7 +511,7 @@ fn la_cache_devuelve_el_mismo_layout_solo_si_la_clave_coincide() {
     let b = cache.get(&tree, k);
     assert!(Arc::ptr_eq(&a, &b));
     assert_eq!((cache.hits(), cache.misses()), (1, 1));
-    // Cambia cada componente de la clave: viewport, profundidad, versión y raíz.
+    // Change each key component: viewport, depth, version, and root.
     let mut changed = vec![];
     let mut k2 = k;
     k2.size = (801, 600);
@@ -529,7 +529,7 @@ fn la_cache_devuelve_el_mismo_layout_solo_si_la_clave_coincide() {
         let c = cache.get(&tree, kk);
         assert!(!Arc::ptr_eq(&a, &c));
     }
-    // Capacidad 2: la clave original ya se desalojó.
+    // Capacity 2: the original key has already been evicted.
     let d = cache.get(&tree, k);
     assert!(!Arc::ptr_eq(&a, &d));
     cache.clear();
@@ -538,15 +538,15 @@ fn la_cache_devuelve_el_mismo_layout_solo_si_la_clave_coincide() {
     assert_eq!(cache.misses(), before + 1);
 }
 
-// --- Rendimiento ----------------------------------------------------------------------------------------------------
+// --- Performance ----------------------------------------------------------------------------------------------------
 
-/// Relayout de ~20 000 rectángulos en menos de 5 ms (PLAN.md §4, objetivo de la v0.2 que ya se mide aquí).
-/// Ignorado por defecto porque solo vale en `--release`:
+/// Relayout of ~20,000 rectangles in under 5 ms (PLAN.md §4, v0.2 target measured here).
+/// Ignored by default because it is meaningful only in `--release`:
 /// `cargo test -p tesela-layout --release -- --ignored relayout_de_20k`.
 #[test]
 #[ignore = "benchmark: ejecutar con --release"]
 fn relayout_de_20k_rectangulos_en_menos_de_5_ms() {
-    // 600 carpetas de 33 archivos de tamaños parecidos = ~20 400 celdas (cada una mide más de 3 x 3 px).
+    // 600 directories with 33 similarly sized files = ~20,400 cells (each larger than 3 x 3 px).
     let kids: Vec<Spec> = {
         let mut r = Rng(1234);
         (0..600)
@@ -571,7 +571,7 @@ fn relayout_de_20k_rectangulos_en_menos_de_5_ms() {
     for _ in 0..30 {
         let t = std::time::Instant::now();
         let l = Layout::compute(&tree, k);
-        // El primer hit-test construye la rejilla: también cuenta como parte del relayout.
+        // The first hit test builds the grid, so it is included in the relayout measurement.
         let _ = l.hit(10.0, 10.0);
         best = best.min(t.elapsed().as_secs_f64() * 1000.0);
         std::hint::black_box(&l);
@@ -580,11 +580,11 @@ fn relayout_de_20k_rectangulos_en_menos_de_5_ms() {
     assert!(best < 5.0, "{best:.2} ms para {n} celdas");
 }
 
-// --- "Otros" siempre progresa -------------------------------------------------------------------------------------------
+// --- "Other" always makes progress ---------------------------------------------------------------------------------
 
-/// Recorre TODAS las agrupaciones "Otros" a partir de `root`: cada una, al abrirse, tiene que reducir el conjunto
-/// (menos hijos que la raíz que la contiene) y acabar mostrando elementos. Devuelve cuántos nodos se vieron como celdas
-/// (cada hijo con tamaño aparece exactamente una vez) y la profundidad máxima de anidamiento.
+/// Traverse ALL "Other" groups starting from `root`: opening each one must reduce the set (fewer children than its
+/// containing root) and eventually show items. Returns the number of nodes seen as cells (each sized child appears
+/// exactly once) and the maximum nesting depth.
 fn explore_groups(tree: &Tree, root: Root, size: (u32, u32), depth: usize) -> (usize, usize) {
     assert!(
         depth < 8,
@@ -633,7 +633,7 @@ fn flat(n: usize, mut size_of: impl FnMut(usize) -> u64) -> Tree {
 fn con_muchos_hijos_iguales_ninguno_cabe_y_otros_se_pagina() {
     for n in [1500usize, 5000, 20_000] {
         let t = flat(n, |_| 1_000_000);
-        // 1200 × 800: ninguno de los n hijos llega a 24 × 24 px cuando n > 1666.
+        // At 1200 × 800, none of the n children reaches 24 × 24 px when n > 1666.
         let l = Layout::compute(&t, key((1200, 800), Depth::Two));
         let fits = (1200.0 * 800.0 / 576.0) as usize;
         if n > fits {
@@ -667,7 +667,7 @@ fn zipf_de_200k_hijos_se_puede_recorrer_entero_por_otros() {
 
 #[test]
 fn abrir_otros_siempre_cambia_la_raiz_y_muestra_elementos_con_cualquier_viewport() {
-    // Viewports pequeños y grandes, y tamaños mixtos: la propiedad no depende de la forma de la distribución.
+    // Small and large viewports, with mixed sizes: the property does not depend on the distribution shape.
     for (n, size) in [
         (3000usize, (320u32, 240u32)),
         (3000, (2560, 1440)),
@@ -683,8 +683,9 @@ fn abrir_otros_siempre_cambia_la_raiz_y_muestra_elementos_con_cualquier_viewport
 
 #[test]
 fn con_viewports_diminutos_abrir_otros_sigue_reduciendo_el_conjunto() {
-    // Por debajo de ~34 × 34 px la página mínima (2 hijos) alcanza a todo el conjunto: antes salía UN "Otros" con todo,
-    // idéntico a la raíz. Ahora, si una página no reduce el conjunto, no se agrupa y se reparten los hijos tal cual.
+    // Below ~34 × 34 px the minimum page (2 children) covers the whole set: previously this produced one "Other" group
+    // containing everything, identical to the root. Now, if a page does not reduce the set, nothing is grouped and the
+    // children are laid out as-is.
     for size in [
         (1u32, 1u32),
         (10, 10),
@@ -710,7 +711,7 @@ fn con_viewports_diminutos_abrir_otros_sigue_reduciendo_el_conjunto() {
             }
         }
     }
-    // El caso exacto: dos hijos iguales en un viewport de 20 × 20 se muestran los dos, sin "Otros".
+    // Exact case: two equal children in a 20 × 20 viewport both appear, without "Other".
     let t = flat(2, |_| 5_000_000);
     let l = Layout::compute(&t, key((20, 20), Depth::One));
     assert_eq!(l.others().len(), 0);
@@ -719,7 +720,7 @@ fn con_viewports_diminutos_abrir_otros_sigue_reduciendo_el_conjunto() {
 
 #[test]
 fn el_sufijo_normal_sigue_funcionando_y_el_cero_no_se_pagina() {
-    // Hijos de tamaños muy distintos: grandes + cola diminuta = un solo 'Otros' sufijo (comportamiento original).
+    // Very different child sizes: large items + tiny tail = one suffix "Other" group (original behavior).
     let mut kids: Vec<Spec> = (0..5)
         .map(|i| Spec::File(format!("g{i}"), 1_000_000_000 - i))
         .collect();
@@ -739,8 +740,8 @@ fn el_sufijo_normal_sigue_funcionando_y_el_cero_no_se_pagina() {
 
 #[test]
 fn el_presupuesto_limita_el_nivel_principal_y_el_exceso_va_a_otros() {
-    // 20 000 elementos iguales en 4000 × 4000: cada uno mide 800 px² (más que el área mínima de agrupación), así que
-    // antes se creaban 20 000 celdas con un presupuesto de 15 000.
+    // 20,000 equal items in 4000 × 4000: each is 800 px² (above the minimum grouping area), so previously 20,000 cells
+    // were created with a budget of 15,000.
     let n = 20_000usize;
     let t = flat(n, |_| 1_000_000);
     let size = (4000, 4000);
@@ -754,13 +755,13 @@ fn el_presupuesto_limita_el_nivel_principal_y_el_exceso_va_a_otros() {
         k.params.max_rects
     );
     assert!(l.stats().truncated);
-    // Una sola agrupación con el exceso: las demás celdas son hijos reales.
+    // One group contains the excess; all other cells are real children.
     assert_eq!(l.others().len(), 1);
     let o = l.others()[0];
     assert_eq!(o.count as usize, n - (k.params.max_rects - 1));
     assert_eq!(l.stats().grouped, o.count as usize);
     assert_eq!(level(&l, 0).len(), k.params.max_rects);
-    // La agrupación es un sufijo (los hijos van ordenados) y cubre exactamente lo que no se dibuja.
+    // The group is a suffix (children are sorted) and covers exactly what is not drawn.
     assert_eq!(o.start as usize, k.params.max_rects - 1);
     let nodes = l
         .cells()
@@ -768,13 +769,13 @@ fn el_presupuesto_limita_el_nivel_principal_y_el_exceso_va_a_otros() {
         .filter(|c| matches!(c.kind, CellKind::Node(_)))
         .count();
     assert_eq!(nodes + o.count as usize, n);
-    // El layout sigue cubriendo el viewport sin solapes.
+    // The layout still covers the viewport without overlaps.
     assert_no_overlap(&level(&l, 0));
-    // Abrir "Otros" reduce el conjunto y entre todo se ve cada hijo exactamente una vez.
+    // Opening "Other" reduces the set, and every child appears exactly once across the groups.
     let (seen, deep) = explore_groups(&t, Root::node(0), size, 0);
     assert_eq!(seen, n);
     assert!(deep <= 3, "profundidad {deep}");
-    // Con un presupuesto que no se alcanza, no hay agrupación ni aviso.
+    // If the budget is not reached, there is no group or warning.
     let mut k2 = k;
     k2.params.max_rects = 30_000;
     let l2 = Layout::compute(&t, k2);
@@ -784,7 +785,7 @@ fn el_presupuesto_limita_el_nivel_principal_y_el_exceso_va_a_otros() {
 
 #[test]
 fn el_presupuesto_es_unico_para_los_dos_niveles() {
-    // Carpetas con hijos: nivel principal + insinuado nunca pasan de `max_rects`, también con presupuestos pequeños.
+    // Directories with children: main + hinted levels never exceed `max_rects`, even with small budgets.
     let dirs: Vec<Spec> = (0..60)
         .map(|i| {
             Spec::Dir(
@@ -807,7 +808,7 @@ fn el_presupuesto_es_unico_para_los_dos_niveles() {
         );
         assert_eq!(l.stats().level0 + l.stats().level1, l.cells().len());
         assert!(level(&l, 0).len() <= max);
-        // El nivel principal cubre siempre todos los hijos (directamente o dentro de "Otros").
+        // The main level always covers every child (directly or inside "Other").
         let covered: usize = l
             .cells()
             .iter()
@@ -824,12 +825,12 @@ fn el_presupuesto_es_unico_para_los_dos_niveles() {
     }
 }
 
-// --- Overlay de limpieza ------------------------------------------------------------------------------------------------
+// --- Cleanup overlay -----------------------------------------------------------------------------------------------
 
 #[test]
 fn con_overlay_el_layout_oculta_lo_eliminado_y_usa_los_tamanos_visibles() {
     use tesela_model::{Overlay, View};
-    // raiz: d0 (3 archivos), f1, f2, d3...
+    // root: d0 (3 files), f1, f2, d3...
     let spec = random_spec(11, 12, 5);
     let tree = build(&spec, None);
     let mut o = Overlay::new(&tree);
@@ -838,21 +839,21 @@ fn con_overlay_el_layout_oculta_lo_eliminado_y_usa_los_tamanos_visibles() {
     let total = tree.node(0).alloc;
     let removed_alloc = tree.node(first).alloc;
     o.remove(&tree, first);
-    // Una limpieza parcial de otro hijo.
+    // Partially clean another child.
     let part = tree.node(second).alloc / 2;
     o.shrink(&tree, second, part, part, 0);
     let view = View::new(&tree, Some(&o));
     let mut k = key((900, 600), Depth::Two);
     k.version = 2;
     let l = Layout::compute_view(view, k);
-    // Ninguna celda es el nodo eliminado ni algo de dentro.
+    // No cell is the removed node or anything inside it.
     for c in l.cells() {
         if let CellKind::Node(n) = c.kind {
             assert!(view.is_visible(n), "celda de un nodo eliminado: {n}");
             assert_ne!(n, first);
         }
     }
-    // El área total sigue llenando el viewport y la suma visible es la de antes menos lo quitado.
+    // Total area still fills the viewport; visible size is the previous total minus the removed amount.
     let kids = Children::of_view(&view, 0);
     let sum: u64 = kids.iter_from(0).map(|c| view.alloc(c)).sum();
     assert_eq!(sum, total - removed_alloc - part);
@@ -862,10 +863,10 @@ fn con_overlay_el_layout_oculta_lo_eliminado_y_usa_los_tamanos_visibles() {
         (covered - 900.0 * 600.0).abs() < 900.0 * 600.0 * 0.01,
         "{covered}"
     );
-    // El orden de los hijos visibles es por tamaño visible descendente.
+    // Visible children are sorted by descending visible size.
     let sizes: Vec<u64> = kids.iter_from(0).map(|c| view.alloc(c)).collect();
     assert!(sizes.windows(2).all(|w| w[0] >= w[1]), "{sizes:?}");
-    // Sin overlay vuelve al árbol base; la caché distingue las versiones.
+    // Without an overlay, this returns to the base tree; the cache distinguishes versions.
     let base = Layout::compute(&tree, key((900, 600), Depth::Two));
     assert!(
         base.cells().len() > l.cells().len()

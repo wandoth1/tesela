@@ -1,23 +1,23 @@
-//! El layout propiamente dicho: de un nodo del árbol a una lista de celdas con su rectángulo.
+//! The layout itself: from a tree node to a list of cells and their rectangles.
 //!
-//! # Dos capas distintas (PLAN.md §2.9)
-//! * **Agrupación interactiva** ("Otros"): al repartir los hijos del nodo raíz, los de menos de 24×24 px (área
-//!   inferior a `min_group_px²`) se funden en UNA celda "Otros (N elementos, X)". Como los hijos van ordenados por
-//!   tamaño, esos hijos son siempre un SUFIJO de la lista ordenada, y la celda se puede abrir: es otra raíz
-//!   ([`Root`] con `start` > 0) que reparte solo ese sufijo. Solo se agrupa si hay al menos 2 elementos y alguno pesa.
-//! * **LOD de dibujo**: en el nivel insinuado no se dibuja nada por debajo de ~3×3 px (`lod_px`) y el total de
-//!   rectángulos tiene un tope (`max_rects`, ~15 000 por frame). El presupuesto es ÚNICO para los dos niveles y se
-//!   aplica antes del primer reparto: si el nivel principal tuviera más celdas que `max_rects`, el exceso (un sufijo
-//!   de los hijos ordenados) se agrupa en "Otros" y el nivel insinuado se queda con lo que sobre.
+//! # Two distinct layers (PLAN.md §2.9)
+//! * **Interactive grouping** ("Other"): while laying out the root node's children, those smaller than 24×24 px (area
+//!   below `min_group_px²`) are merged into ONE "Other (N items, X)" cell. Since children are sorted by size, these are
+//!   always a SUFFIX of the sorted list, and the cell can be opened: it becomes another root ([`Root`] with `start` > 0)
+//!   that lays out only that suffix. Grouping happens only when there are at least 2 items and one has nonzero size.
+//! * **Drawing LOD**: at the hinted level, items below ~3×3 px (`lod_px`) are not drawn, and the total number of
+//!   rectangles is capped (`max_rects`, ~15,000 per frame). The budget is SHARED by both levels and applied before the
+//!   first layout: if the main level would exceed `max_rects`, the excess (a suffix of sorted children) is grouped into
+//!   "Other" and the hinted level uses the remaining budget.
 //!
-//! # Profundidad
-//! Nivel 0: los hijos del nodo, con etiqueta. Nivel 1 (solo con [`Depth::Two`]): los hijos de cada carpeta del
-//! nivel 0, dentro de ella, insinuados.
+//! # Depth
+//! Level 0: the node's children, with labels. Level 1 (only with [`Depth::Two`]): each level 0 directory's children,
+//! hinted inside it.
 //!
-//! # Tamaños
-//! Se usa `alloc` (tamaño en disco). Un hijo con `alloc == 0` no ocupa área. El campo `version` de la clave es de
-//! quien llama: lo cambia cuando cambian los tamaños que ve el layout (un árbol nuevo y, en el incremento 3, la
-//! versión del overlay de limpieza) para invalidar la caché.
+//! # Sizes
+//! Uses `alloc` (size on disk). A child with `alloc == 0` occupies no area. The caller owns the key's `version` field and
+//! changes it when layout-visible sizes change (a new tree and, in increment 3, the cleanup overlay version) to
+//! invalidate the cache.
 
 use crate::geom::Rect;
 use crate::grid::Grid;
@@ -26,17 +26,17 @@ use crate::squarify::squarify;
 use std::sync::OnceLock;
 use tesela_model::{NodeId, Tree, View};
 
-/// Profundidad del layout.
+/// Layout depth.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Depth {
-    /// Solo los hijos del nodo.
+    /// Only the node's children.
     One,
-    /// Los hijos y, dentro de cada carpeta, una insinuación de sus hijos.
+    /// The children and, inside each directory, a hinted view of its children.
     Two,
 }
 
-/// Qué se reparte: los hijos visibles de `node` en las posiciones `start..end` (todos = `0..u32::MAX`; otra cosa es
-/// una agrupación "Otros" abierta, que puede ser un sufijo o una página).
+/// What to lay out: visible children of `node` at positions `start..end` (all = `0..u32::MAX`; an opened "Other" group
+/// may instead be a suffix or page).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct Root {
     pub node: NodeId,
@@ -45,7 +45,7 @@ pub struct Root {
 }
 
 impl Root {
-    /// Todos los hijos de `node`.
+    /// All children of `node`.
     pub fn node(node: NodeId) -> Root {
         Root {
             node,
@@ -54,27 +54,27 @@ impl Root {
         }
     }
 
-    /// ¿Es una agrupación "Otros" abierta (y no la carpeta entera)?
+    /// Is this an opened "Other" group (rather than the whole directory)?
     pub fn is_group(&self) -> bool {
         self.start > 0 || self.end != u32::MAX
     }
 }
 
-/// Parámetros del layout. Entran en la clave de la caché.
+/// Layout parameters. Included in the cache key.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Params {
-    /// Una celda con menos área que `min_group_px²` se agrupa en "Otros" (24 px, PLAN.md §2.9).
+    /// A cell with area below `min_group_px²` is grouped into "Other" (24 px, PLAN.md §2.9).
     pub min_group_px: f32,
-    /// En el nivel insinuado no se dibuja una celda con algún lado menor de esto (3 px).
+    /// At the hinted level, do not draw cells with any side smaller than this (3 px).
     pub lod_px: f32,
-    /// Tope de celdas del layout (15 000), niveles principal e insinuado JUNTOS. Se aplica antes de repartir el nivel
-    /// principal (agrupando el exceso en "Otros") y limita después el nivel insinuado.
+    /// Cell limit for the layout (15,000), counting main and hinted levels TOGETHER. Applied before laying out the main
+    /// level (grouping excess into "Other"), then limits the hinted level.
     pub max_rects: usize,
-    /// Alto de la banda de la etiqueta (nombre y tamaño) dentro de una celda que la lleva.
+    /// Height of the label strip (name and size) inside a labeled cell.
     pub header_px: f32,
-    /// Margen entre el borde de una celda y las celdas que insinúa.
+    /// Margin between a cell's edge and the cells it hints at.
     pub pad_px: f32,
-    /// Una celda de al menos este ancho y alto lleva etiqueta.
+    /// A cell at least this wide and high gets a label.
     pub label_min_w: f32,
     pub label_min_h: f32,
 }
@@ -94,13 +94,13 @@ impl Default for Params {
 }
 
 impl Params {
-    /// ¿Cabe la etiqueta (nombre y tamaño) en una celda de este rectángulo?
+    /// Does the label (name and size) fit in a cell of this rectangle?
     pub fn label_fits(&self, r: &Rect) -> bool {
         r.w >= self.label_min_w && r.h >= self.label_min_h
     }
 
-    /// Rectángulo interior de una celda donde se insinúan sus hijos: bajo la etiqueta si cabe; si no, casi todo.
-    /// `None` si queda demasiado pequeño para dibujar algo.
+    /// Interior rectangle where a cell's children are hinted: below the label if it fits, otherwise almost the whole cell.
+    /// `None` if it is too small to draw anything.
     pub fn inner_rect(&self, r: &Rect) -> Option<Rect> {
         let inner = if self.label_fits(r) {
             Rect::new(
@@ -116,53 +116,53 @@ impl Params {
     }
 }
 
-/// Clave de la caché: `(raíz, viewport, profundidad, versión)` más los parámetros.
+/// Cache key: `(root, viewport, depth, version)` plus parameters.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Key {
     pub root: Root,
-    /// Tamaño del viewport en px lógicos enteros (el origen lo decide quien dibuja).
+    /// Viewport size in integer logical pixels (the renderer chooses the origin).
     pub size: (u32, u32),
     pub depth: Depth,
-    /// Versión de los datos (árbol y overlay): la pone quien llama.
+    /// Data version (tree and overlay), set by the caller.
     pub version: u64,
     pub params: Params,
 }
 
-/// Qué es una celda.
+/// What a cell represents.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CellKind {
-    /// Un nodo del árbol.
+    /// A tree node.
     Node(NodeId),
-    /// La agrupación "Otros"; el índice lo es de [`Layout::others`].
+    /// The "Other" group; the index refers to [`Layout::others`].
     Others(u32),
 }
 
-/// Una celda del mapa.
+/// A map cell.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Cell {
     pub rect: Rect,
     pub kind: CellKind,
-    /// 0 = con etiqueta; 1 = insinuada dentro de una celda de nivel 0.
+    /// 0 = labeled; 1 = hinted inside a level 0 cell.
     pub level: u8,
-    /// Índice de la celda de nivel 0 que la contiene ([`NO_CELL`] en el nivel 0).
+    /// Index of the level 0 cell containing it ([`NO_CELL`] at level 0).
     pub parent: u32,
 }
 
-/// Valor de [`Cell::parent`] en las celdas de nivel 0.
+/// Value of [`Cell::parent`] for level 0 cells.
 pub const NO_CELL: u32 = u32::MAX;
 
-/// Agrupación "Otros": los hijos visibles `start..start + count` de `parent` (un sufijo o una página).
+/// "Other" group: visible children `start..start + count` of `parent` (a suffix or page).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Others {
     pub parent: NodeId,
     pub start: u32,
     pub count: u32,
-    /// Suma de `alloc` de los agrupados.
+    /// Sum of `alloc` for grouped children.
     pub bytes: u64,
 }
 
 impl Others {
-    /// La raíz que abre esta agrupación.
+    /// Root that opens this group.
     pub fn root(&self) -> Root {
         Root {
             node: self.parent,
@@ -172,20 +172,20 @@ impl Others {
     }
 }
 
-/// Cifras del cálculo (para los tests y para el informe de rendimiento).
+/// Calculation statistics (for tests and performance reports).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct LayoutStats {
-    /// Celdas de nivel 0.
+    /// Level 0 cells.
     pub level0: usize,
-    /// Celdas de nivel 1.
+    /// Level 1 cells.
     pub level1: usize,
-    /// Elementos que se agruparon en "Otros".
+    /// Items grouped into "Other".
     pub grouped: usize,
-    /// Se alcanzó `max_rects` y se dejaron celdas sin crear.
+    /// `max_rects` was reached and some cells were not created.
     pub truncated: bool,
 }
 
-/// Resultado del layout: celdas, agrupación y rejilla de hit-test (que se construye al primer uso).
+/// Layout result: cells, groups, and hit-test grid (built on first use).
 #[derive(Debug)]
 pub struct Layout {
     key: Key,
@@ -196,13 +196,13 @@ pub struct Layout {
 }
 
 impl Layout {
-    /// Calcula el layout de `key` sobre `tree` (sin overlay de limpieza).
+    /// Calculate the layout for `key` on `tree` (without a cleanup overlay).
     pub fn compute(tree: &Tree, key: Key) -> Layout {
         Layout::compute_view(View::new(tree, None), key)
     }
 
-    /// Calcula el layout de `key` sobre una vista del árbol (con el overlay de limpieza, si lo hay): los tamaños son los
-    /// visibles y los hijos de las carpetas tocadas, los que quedan.
+    /// Calculate the layout for `key` on a tree view (with its cleanup overlay, if any): sizes are visible sizes, and
+    /// children of touched directories are those that remain.
     pub fn compute_view(view: View, key: Key) -> Layout {
         let (w, h) = (key.size.0 as f32, key.size.1 as f32);
         let mut cells: Vec<Cell> = Vec::new();
@@ -222,11 +222,11 @@ impl Layout {
             let scale = area / total;
             let min_area = (params.min_group_px as f64).powi(2);
             let n = end - start;
-            // Los hijos van de mayor a menor: los que miden menos de `min_area` son un sufijo (búsqueda binaria).
+            // Children are sorted largest to smallest: those below `min_area` form a suffix (binary search).
             let big = start + partition(n, |i| alloc_of(start + i) as f64 * scale >= min_area);
-            // Hijos con tamaño: los de `alloc == 0` (al final) no tienen área y no se reparten.
+            // Sized children: those with `alloc == 0` (at the end) have no area and are not laid out.
             let sized = start + partition(n, |i| alloc_of(start + i) > 0);
-            // Entradas del nivel 0 antes de repartirlas: (valor, qué es, primer y último hijo que cubre).
+            // Level 0 entries before layout: (value, kind, first and last child covered).
             let mut items: Vec<(f64, CellKind, usize, usize)> = Vec::new();
             let add_group = |others: &mut Vec<Others>, first: usize, last: usize| {
                 let bytes: u64 = (first..last).map(alloc_of).fold(0u64, u64::saturating_add);
@@ -243,20 +243,20 @@ impl Layout {
                     last,
                 )
             };
-            // Páginas para el caso "ningún hijo llega al área mínima" (ver abajo): `fit` hijos caben en el área mínima.
+            // Pages for the "no child reaches the minimum area" case (below): `fit` children fit in the minimum area.
             let fit = ((area / min_area).floor() as usize).max(2);
             let page = fit.max((sized - start).div_ceil(fit));
             let none_fits = big == start && sized > start;
-            // Con un viewport DIMINUTO (menos de ~34×34 px) `page` alcanza a todo el conjunto: paginar daría una única
-            // "Otros" idéntica a la raíz y abrirla no avanzaría. Entonces no se agrupa nada y se reparten todos los hijos
-            // (aunque midan menos de 24×24): abrir "Otros" siempre reduce el conjunto, o no hay "Otros" que abrir.
+            // With a TINY viewport (less than ~34×34 px), `page` can cover the whole set: paging would produce one
+            // "Other" identical to the root, and opening it would make no progress. Do not group; lay out every child
+            // (even below 24×24): opening "Other" always reduces the set, or there is no "Other" to open.
             let single_page = none_fits && page >= sized - start;
             if none_fits && !single_page {
-                // NINGÚN hijo llega a 24×24 px (muchos hijos de tamaño parecido): agruparlos a todos daría una raíz
-                // idéntica y "Otros" no avanzaría nunca. Se PAGINA: páginas de `page` hijos consecutivos, cada una un
-                // "Otros" que, al abrirse, reparte solo sus elementos. Con `page >= area / min_area` el mayor de una
-                // página mide al menos el área mínima, así que abrir una página siempre muestra elementos, y como la
-                // página es más pequeña que el conjunto, abrir "Otros" siempre reduce el conjunto.
+                // NO child reaches 24×24 px (many similarly sized children): grouping all would create an identical root
+                // and "Other" would never make progress. Use PAGES: consecutive groups of `page` children, each an
+                // "Other" group that lays out only its own items when opened. With `page >= area / min_area`, the largest
+                // item on a page is at least the minimum area, so opening a page always shows items; since a page is
+                // smaller than the whole set, opening "Other" always reduces the set.
                 let mut pages: Vec<(usize, usize, u64)> = Vec::new();
                 let mut s = start;
                 while s < sized {
@@ -265,8 +265,8 @@ impl Layout {
                     pages.push((s, e, bytes));
                     s = e;
                 }
-                // Las páginas van de mayor a menor (los hijos van ordenados): las que no llegan al área mínima se
-                // funden en una sola agrupación final (la primera siempre llega: tiene al menos 1/páginas del total).
+                // Pages go from largest to smallest (children are sorted): those below the minimum area are merged into
+                // one final group (the first always qualifies: it has at least 1/page_count of the total).
                 let big_pages =
                     partition(pages.len(), |p| pages[p].2 as f64 * scale >= min_area).max(1);
                 for &(s, e, _) in &pages[..big_pages] {
@@ -277,12 +277,12 @@ impl Layout {
                     items.push(add_group(&mut others, s, e));
                 }
             } else {
-                // El sufijo candidato a "Otros" son los que quedan por debajo del área mínima, con tamaño o sin él.
+                // The candidate "Other" suffix contains items below the minimum area, with or without size.
                 let group_count = end - big;
                 let group_bytes: u64 = (big..end).map(alloc_of).fold(0u64, u64::saturating_add);
-                // Un grupo de un solo elemento no tiene sentido, ni uno que no pesa nada.
+                // A one-item group is pointless, as is a group with no size.
                 let grouped = group_count >= 2 && group_bytes > 0 && !single_page;
-                // Sin grupo, se reparten todos los que tienen tamaño (aunque alguno mida menos de 24×24 px).
+                // Without a group, lay out every item with size (even if some are below 24×24 px).
                 let prefix_end = if grouped { big } else { sized };
                 for i in start..prefix_end {
                     items.push((alloc_of(i) as f64, CellKind::Node(kids.get(i)), i, i + 1));
@@ -291,15 +291,15 @@ impl Layout {
                     items.push(add_group(&mut others, big, end));
                 }
             }
-            // PRESUPUESTO, antes del primer reparto: el nivel principal nunca pasa de `max_rects` celdas. Si hay más, el
-            // exceso (un sufijo: los hijos van ordenados de mayor a menor) se funde en UNA agrupación "Otros", que al
-            // abrirse reparte solo esos elementos (siempre son menos que la raíz que los contiene).
+            // BUDGET, before the first layout: the main level never exceeds `max_rects` cells. If it does, the excess
+            // (a suffix, since children are sorted largest to smallest) is merged into ONE "Other" group, which lays out
+            // only those items when opened (always fewer than the containing root).
             let cap = params.max_rects.max(2);
             if items.len() > cap {
                 stats.truncated = true;
                 let tail = cap - 1;
                 let (first, last) = (items[tail].2, items[items.len() - 1].3);
-                // Las agrupaciones que quedaban en la cola desaparecen (sus hijos van a la nueva).
+                // Any groups left in the tail disappear (their children move into the new group).
                 let keep_others = items[tail..]
                     .iter()
                     .find_map(|it| match it.1 {
@@ -338,40 +338,40 @@ impl Layout {
         }
     }
 
-    /// La clave con la que se calculó.
+    /// Key used to calculate the layout.
     pub fn key(&self) -> &Key {
         &self.key
     }
 
-    /// Todas las celdas: primero las de nivel 0 (de mayor a menor) y después las insinuadas.
+    /// All cells: level 0 first (largest to smallest), then hinted cells.
     pub fn cells(&self) -> &[Cell] {
         &self.cells
     }
 
-    /// Agrupaciones "Otros" (la celda [`CellKind::Others`]`(i)` es `others()[i]`).
+    /// "Other" groups (cell [`CellKind::Others`]`(i)` is `others()[i]`).
     pub fn others(&self) -> &[Others] {
         &self.others
     }
 
-    /// Cifras del cálculo.
+    /// Calculation statistics.
     pub fn stats(&self) -> LayoutStats {
         self.stats
     }
 
-    /// Celda más profunda bajo el punto `(x, y)` (en el espacio del layout: origen en la esquina del viewport).
-    /// Usa la rejilla espacial, que se construye en la primera consulta.
+    /// Deepest cell under point `(x, y)` (in layout space, with origin at the viewport corner).
+    /// Uses the spatial grid, built on the first query.
     pub fn hit(&self, x: f32, y: f32) -> Option<usize> {
         let (w, h) = (self.key.size.0 as f32, self.key.size.1 as f32);
         let grid = self.grid.get_or_init(|| Grid::build(&self.cells, w, h));
         grid.hit(&self.cells, x, y).map(|i| i as usize)
     }
 
-    /// Entradas de la rejilla (0 si aún no se ha usado).
+    /// Grid entries (0 if it has not been used yet).
     pub fn grid_entries(&self) -> usize {
         self.grid.get().map_or(0, Grid::entries)
     }
 
-    /// Índice de la celda de nivel 0 de `node`, si está en este layout.
+    /// Index of `node`'s level 0 cell, if it is in this layout.
     pub fn cell_of_node(&self, node: NodeId) -> Option<usize> {
         self.cells[..self.stats.level0]
             .iter()
@@ -379,7 +379,7 @@ impl Layout {
     }
 }
 
-/// Primer índice `i` en `0..n` para el que `pred(i)` es falso (`pred` debe ser verdadero y luego falso).
+/// First index `i` in `0..n` where `pred(i)` is false (`pred` must be true first, then false).
 fn partition(n: usize, pred: impl Fn(usize) -> bool) -> usize {
     let (mut lo, mut hi) = (0usize, n);
     while lo < hi {
@@ -393,8 +393,8 @@ fn partition(n: usize, pred: impl Fn(usize) -> bool) -> usize {
     lo
 }
 
-/// Nivel insinuado: los hijos de cada carpeta del nivel 0, de las más grandes a las más pequeñas (así el tope de
-/// rectángulos se gasta primero donde más se ve).
+/// Hinted level: children of each level 0 directory, largest to smallest (so the rectangle budget is spent first where
+/// it is most visible).
 fn hint_level(view: View, params: &Params, cells: &mut Vec<Cell>, stats: &mut LayoutStats) {
     let tree = view.tree();
     let level0 = cells.len();
@@ -421,7 +421,7 @@ fn hint_level(view: View, params: &Params, cells: &mut Vec<Cell>, stats: &mut La
             break;
         }
         let scale = (inner.w as f64) * (inner.h as f64) / total_alloc as f64;
-        // Los hijos que quedarían por debajo del área mínima de dibujo se dejan sin crear.
+        // Children below the minimum drawing area are not created.
         let mut count = partition(kids.len(), |i| {
             view.alloc(kids.get(i)) as f64 * scale >= lod_area
         });
@@ -436,8 +436,8 @@ fn hint_level(view: View, params: &Params, cells: &mut Vec<Cell>, stats: &mut La
         vals.clear();
         vals.extend((0..count).map(|i| view.alloc(kids.get(i)) as f64));
         rects.clear();
-        // `total` es el `alloc` de la carpeta: lo que no se reparte (la cola diminuta y el espacio propio de la
-        // carpeta) queda como hueco al final, sin cambiar la escala de las celdas que sí se dibujan.
+        // `total` is the directory's `alloc`: any undistributed amount (the tiny tail and the directory's own space)
+        // remains as a gap at the end, without changing the scale of cells that are drawn.
         squarify(&vals, total_alloc as f64, inner, &mut rects);
         for (i, r) in rects.iter().enumerate() {
             if r.w < params.lod_px || r.h < params.lod_px {

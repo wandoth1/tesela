@@ -1,26 +1,26 @@
-//! `TreeBuilder`: de registros planos (en cualquier orden) al `Tree` final (PLAN.md §3.2).
+//! `TreeBuilder`: from flat records (in any order) to the final `Tree` (PLAN.md §3.2).
 //!
-//! # Orden del algoritmo (`finish`)
-//! 1. Flags derivados: un directorio del que no llegó ningún lote es `INCOMPLETE`; uno cuyo listado falló, `ERROR`.
-//! 2. Adyacencia provisional (ordenación por cuenta del padre) y recorrido BFS desde la raíz. Lo que no cuelga de la
-//!    raíz (entradas cuyo padre no llegó) queda fuera del árbol y se cuenta como huérfano.
-//! 3. **Deduplicación de enlaces duros** por `FileId`, SOLO entre las entradas alcanzadas en el BFS (un huérfano no
-//!    puede quitarle el tamaño a un enlace que sí está en el árbol). Va ANTES de agregar porque pone `alloc` y
-//!    `logical` a 0 en los enlaces sobrantes, y eso cambia las sumas de los directorios.
-//! 4. Agregación bottom-up recorriendo ese BFS al revés: `alloc`, `logical`, `files_below`, los acumuladores `u64`
-//!    (saturantes) de los histogramas y `INCOMPLETE_BELOW`. Los umbrales del 50 % y el 80 % se aplican sobre los `u64`.
-//! 5. Ordenación de los hijos de cada directorio, UNA sola vez, por `(alloc desc, nombre asc)`; el nodo sintético
-//!    `SYSTEM_INFO` va el último. Solo existe si no hay directorios `INCOMPLETE` (si faltan cosas por escanear, la
-//!    diferencia con el espacio usado no es "espacio no explicado").
-//! 6. Asignación de los ids finales en BFS y escritura de `Node`, `mtime` e `hist`.
+//! # Algorithm order (`finish`)
+//! 1. Derived flags: a directory with no batch is `INCOMPLETE`; one whose listing failed is `ERROR`.
+//! 2. Provisional adjacency (sorted by parent count) and BFS traversal from the root. Entries not attached to the root
+//!    (their parent never arrived) remain outside the tree and are counted as orphans.
+//! 3. **Hard-link deduplication** by `FileId`, ONLY among entries reached by BFS (an orphan cannot take size away from a
+//!    link in the tree). This runs BEFORE aggregation because it sets `alloc` and `logical` to 0 on duplicate links,
+//!    changing directory totals.
+//! 4. Bottom-up aggregation by traversing BFS in reverse: `alloc`, `logical`, `files_below`, saturating `u64` histogram
+//!    accumulators, and `INCOMPLETE_BELOW`. The 50% and 80% thresholds use the `u64` values.
+//! 5. Sort each directory's children ONCE by `(alloc desc, name asc)`; the synthetic `SYSTEM_INFO` node goes last. It
+//!    exists only when there are no `INCOMPLETE` directories (if scan data is missing, the difference from used space
+//!    is not "unexplained space").
+//! 6. Assign final ids in BFS order and write `Node`, `mtime`, and `hist`.
 //!
-//! # Determinismo
-//! El `Tree` solo depende del árbol lógico, no de los ids provisionales ni del orden de llegada: los empates de
-//! tamaño se deshacen por nombre, y entre enlaces duros conserva el tamaño el de ruta completa menor en orden
-//! lexicográfico de bytes WTF-8 (la ruta se compone con `\` desde la raíz, sin incluir el nombre de la raíz).
+//! # Determinism
+//! The `Tree` depends only on the logical tree, not provisional ids or arrival order: size ties are broken by name, and
+//! among hard links the one with the lexicographically smallest full path in WTF-8 bytes retains the size (the path is
+//! built from the root, excluding the root's name).
 //!
-//! # Sin recursión
-//! Todo se hace con vectores indexados y recorridos iterativos: la profundidad del árbol no gasta pila.
+//! # No recursion
+//! Everything uses indexed vectors and iterative traversals: tree depth does not consume stack space.
 
 use crate::flags;
 use crate::record::{Batch, DirOutcome, NO_PARENT, Record};
@@ -29,14 +29,14 @@ use crate::types::{AGE_BUCKETS, FileType, age_bucket};
 use rustc_hash::FxHashMap;
 use std::cmp::Ordering;
 
-/// Errores al añadir un lote.
+/// Errors when adding a batch.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BuildError {
-    /// Los ids del lote no caben en `u32` o chocan con `NO_PARENT`.
+    /// Batch ids do not fit in `u32` or collide with `NO_PARENT`.
     IdOverflow,
-    /// El arena de nombres superaría los 4 GiB (los desplazamientos son `u32`).
+    /// The name arena would exceed 4 GiB (offsets are `u32`).
     NamesOverflow,
-    /// Un id se ha usado dos veces.
+    /// An id was used twice.
     DuplicateId(u32),
 }
 
@@ -54,21 +54,20 @@ impl std::fmt::Display for BuildError {
 
 impl std::error::Error for BuildError {}
 
-/// Opciones de [`TreeBuilder::finish`].
+/// Options for [`TreeBuilder::finish`].
 #[derive(Clone, Copy, Debug)]
 pub struct FinishOptions {
-    /// "Ahora" en segundos Unix, para los tramos de antigüedad (se pasa explícito para que sea determinista).
+    /// "Now" in Unix seconds, for age bands (passed explicitly for determinism).
     pub now_unix: u32,
-    /// Deduplicar enlaces duros por `FileId` (por defecto sí).
+    /// Deduplicate hard links by `FileId` (enabled by default).
     pub dedup_hard_links: bool,
-    /// Bytes usados del volumen (`total − libre`) si es un escaneo de volumen completo y terminado. Si supera lo
-    /// escaneado, la diferencia se añade como nodo sintético `SYSTEM_INFO` hijo de la raíz (PLAN.md §2.8); se recorta
-    /// a ≥ 0.
+    /// Volume bytes used (`total − free`) for a completed full-volume scan. If this exceeds the scanned size, the
+    /// difference is added as a synthetic `SYSTEM_INFO` child of the root (PLAN.md §2.8); it is clamped to ≥ 0.
     pub volume_used: Option<u64>,
 }
 
 impl FinishOptions {
-    /// Opciones por defecto con el "ahora" indicado.
+    /// Default options with the specified "now" time.
     pub fn new(now_unix: u32) -> FinishOptions {
         FinishOptions {
             now_unix,
@@ -78,7 +77,7 @@ impl FinishOptions {
     }
 }
 
-/// Nombre del nodo sintético de espacio no explicado (la interfaz lo muestra traducido según el flag).
+/// Name of the synthetic unexplained-space node (the interface translates it according to the flag).
 pub const SYSTEM_INFO_NAME: &[u8] = b"[system-data]";
 
 #[derive(Default)]
@@ -99,30 +98,30 @@ impl BitSet {
     }
 }
 
-/// Acumula lotes y construye el [`Tree`].
+/// Accumulates batches and builds the [`Tree`].
 #[derive(Default)]
 pub struct TreeBuilder {
-    /// Por id provisional; `parent == NO_PARENT` = sin entrada.
+    /// Indexed by provisional id; `parent == NO_PARENT` means no entry.
     recs: Vec<Record>,
-    /// Arena de nombres (los lotes se concatenan tal cual, así los hermanos quedan contiguos).
+    /// Name arena (batches are concatenated as-is, keeping siblings contiguous).
     names: Vec<u8>,
-    /// Directorios de los que llegó un lote.
+    /// Directories for which a batch arrived.
     enumerated: BitSet,
-    /// Directorios cuyo listado falló.
+    /// Directories whose listing failed.
     failed: BitSet,
-    /// Candidatos a enlace duro: (mitad baja del `FileId`, id provisional). 16 B por archivo.
+    /// Hard-link candidates: (low half of `FileId`, provisional id). 16 B per file.
     link_lo: Vec<(u64, u32)>,
-    /// Mitad alta del `FileId` cuando no es 0 (en NTFS siempre lo es; en ReFS no).
+    /// High half of `FileId` when nonzero (always zero on NTFS, not on ReFS).
     link_hi: FxHashMap<u32, u64>,
 }
 
 impl TreeBuilder {
-    /// Builder vacío.
+    /// Empty builder.
     pub fn new() -> TreeBuilder {
         TreeBuilder::default()
     }
 
-    /// Builder con espacio para `entries` entradas y `name_bytes` bytes de nombres.
+    /// Builder with capacity for `entries` entries and `name_bytes` bytes of names.
     pub fn with_capacity(entries: usize, name_bytes: usize) -> TreeBuilder {
         TreeBuilder {
             recs: Vec::with_capacity(entries),
@@ -132,12 +131,12 @@ impl TreeBuilder {
         }
     }
 
-    /// Entradas reservadas hasta ahora (ids provisionales vistos, con huecos).
+    /// Entries reserved so far (provisional ids seen, including holes).
     pub fn slots(&self) -> usize {
         self.recs.len()
     }
 
-    /// Añade un lote. Se admite cualquier orden de llegada. Si falla, el builder no cambia.
+    /// Add a batch. Any arrival order is allowed. On failure, the builder is unchanged.
     pub fn add_batch(&mut self, batch: Batch) -> Result<(), BuildError> {
         let Batch {
             dir,
@@ -189,7 +188,7 @@ impl TreeBuilder {
         Ok(())
     }
 
-    /// Construye el árbol. Ver la documentación del módulo para el orden de los pasos.
+    /// Build the tree. See the module documentation for the order of steps.
     pub fn finish(self, opts: &FinishOptions) -> Tree {
         let TreeBuilder {
             mut recs,
@@ -204,17 +203,17 @@ impl TreeBuilder {
             return Tree::placeholder();
         }
         let mut stats = TreeStats::default();
-        recs[0].flags |= flags::DIR; // la raíz siempre es un directorio
+        recs[0].flags |= flags::DIR; // the root is always a directory
 
-        // 1. Flags derivados.
+        // 1. Derived flags.
         for (id, r) in recs.iter_mut().enumerate() {
             if !r.is_present() {
                 continue;
             }
             let id = id as u32;
-            // Mismo criterio que el escáner (`classify::dir_flags`): un reparse point de directorio con CLOUD (etiqueta
-            // de la nube) es recorrible; con REPARSE sin CLOUD (junction, symlink, montaje) no se sigue y no es
-            // INCOMPLETE. Una carpeta de la nube sin poblar no se recorre, así que queda INCOMPLETE.
+            // Same rule as the scanner (`classify::dir_flags`): a directory reparse point with CLOUD (cloud tag) can be
+            // traversed; REPARSE without CLOUD (junction, symlink, mount) is not followed and is not INCOMPLETE. An
+            // unpopulated cloud directory is not traversed, so it remains INCOMPLETE.
             let followed = r.flags & flags::REPARSE == 0 || r.flags & flags::CLOUD != 0;
             if r.flags & flags::DIR != 0 && followed && !enumerated.get(id) {
                 r.flags |= flags::INCOMPLETE;
@@ -261,7 +260,7 @@ impl TreeBuilder {
         first[0] = 0;
 
         let mut order: Vec<u32> = Vec::with_capacity(n + 1);
-        let mut slot = vec![u32::MAX; n]; // índice del directorio en `acc`
+        let mut slot = vec![u32::MAX; n]; // directory index in `acc`
         let mut dir_count = 0u32;
         order.push(0);
         let mut i = 0;
@@ -276,8 +275,8 @@ impl TreeBuilder {
         }
         stats.orphans = present - order.len() as u64;
 
-        // 3. Deduplicación de enlaces duros, SOLO entre entradas que cuelgan de la raíz: un huérfano (su padre no
-        // llegó) no está en el árbol y no puede quitarle el tamaño a un enlace que sí está.
+        // 3. Hard-link deduplication, ONLY among entries attached to the root: an orphan (its parent never arrived) is
+        // not in the tree and cannot take size away from a link that is.
         if opts.dedup_hard_links {
             let mut reached = BitSet(vec![0u64; n / 64 + 1]);
             for &p in &order {
@@ -289,7 +288,7 @@ impl TreeBuilder {
         drop(link_lo);
         drop(link_hi);
 
-        // 4. Agregación bottom-up.
+        // 4. Bottom-up aggregation.
         let mut acc = vec![Acc::default(); dir_count as usize];
         for idx in (1..order.len()).rev() {
             let p = order[idx] as usize;
@@ -314,8 +313,8 @@ impl TreeBuilder {
                 if r.flags & flags::ERROR != 0 {
                     stats.error_dirs += 1;
                 }
-                // Los ancestros de un directorio incompleto (o con algo incompleto debajo) lo saben: su tamaño es un
-                // mínimo ("≥"). El hijo ya tiene su propio INCOMPLETE_BELOW porque se procesa antes que el padre.
+                // Ancestors of an incomplete directory (or one with incomplete content below) know their size is a
+                // lower bound ("≥"). The child already has its own INCOMPLETE_BELOW because it is processed first.
                 if r.flags & (flags::INCOMPLETE | flags::INCOMPLETE_BELOW) != 0 {
                     recs[par].flags |= flags::INCOMPLETE_BELOW;
                 }
@@ -326,7 +325,7 @@ impl TreeBuilder {
                     &names[r.name_off as usize..r.name_off as usize + r.name_len as usize],
                 );
                 dst.bytes[ty as usize] = dst.bytes[ty as usize].saturating_add(r.alloc);
-                // Un mtime de 0 es "desconocido" (o anterior a 1970): no cuenta como el tramo más antiguo.
+                // An mtime of 0 is "unknown" (or before 1970): it does not count toward the oldest age band.
                 if r.mtime != 0 {
                     let a = FileType::COUNT + age_bucket(opts.now_unix, r.mtime);
                     dst.bytes[a] = dst.bytes[a].saturating_add(r.alloc);
@@ -343,7 +342,7 @@ impl TreeBuilder {
             parent.alloc = parent.alloc.saturating_add(r.alloc);
             parent.logical = parent.logical.saturating_add(r.logical);
         }
-        stats.dirs += 1; // la raíz
+        stats.dirs += 1; // the root
         if recs[0].flags & flags::INCOMPLETE != 0 {
             stats.incomplete_dirs += 1;
         }
@@ -355,9 +354,9 @@ impl TreeBuilder {
         }
         stats.scanned_alloc = recs[0].alloc;
 
-        // Nodo sintético de espacio no explicado (solo hijo de la raíz).
+        // Synthetic unexplained-space node (only a child of the root).
         let synthetic = match opts.volume_used {
-            // Con directorios incompletos la diferencia no es "espacio no explicado", es lo que falta por escanear.
+            // With incomplete directories, the difference is not "unexplained space"; it is data still to be scanned.
             Some(used) if used > stats.scanned_alloc && stats.incomplete_dirs == 0 => {
                 let alloc = used - stats.scanned_alloc;
                 stats.unexplained_alloc = alloc;
@@ -378,7 +377,7 @@ impl TreeBuilder {
             _ => None,
         };
 
-        // 5 y 6. Orden de los hijos y ids finales en BFS.
+        // 5 and 6. Sort children and assign final ids in BFS order.
         let total = order.len() + synthetic.is_some() as usize;
         let mut nodes: Vec<Node> = Vec::with_capacity(total);
         let mut mtime: Vec<u32> = Vec::with_capacity(total);
@@ -417,7 +416,7 @@ impl TreeBuilder {
             let p = order[f] as usize;
             if p >= n {
                 f += 1;
-                continue; // el nodo sintético no tiene hijos
+                continue; // the synthetic node has no children
             }
             let kslice = &mut kids[first[p] as usize..first[p + 1] as usize];
             if kslice.len() > 1 {
@@ -447,7 +446,7 @@ impl TreeBuilder {
     }
 }
 
-/// Orden de hermanos: el nodo sintético el último; luego `alloc` descendente; luego nombre ascendente.
+/// Sibling order: synthetic node last; then descending `alloc`; then ascending name.
 fn compare_siblings(recs: &[Record], names: &[u8], a: u32, b: u32) -> Ordering {
     let (ra, rb) = (&recs[a as usize], &recs[b as usize]);
     let (sa, sb) = (
@@ -463,7 +462,7 @@ fn name_of<'a>(names: &'a [u8], r: &Record) -> &'a [u8] {
     &names[r.name_off as usize..r.name_off as usize + r.name_len as usize]
 }
 
-/// Acumuladores `u64` de un directorio: bytes por tipo (7) y por tramo de antigüedad (5) y número de archivos.
+/// Directory `u64` accumulators: bytes by type (7), by age band (5), and file count.
 #[derive(Clone, Copy, Default)]
 struct Acc {
     bytes: [u64; FileType::COUNT + AGE_BUCKETS],
@@ -471,7 +470,7 @@ struct Acc {
 }
 
 impl Acc {
-    /// Porcentajes (para dibujar) y resultados de los umbrales, todos calculados sobre los `u64`.
+    /// Percentages (for drawing) and threshold results, all calculated from the `u64` values.
     fn to_hist(self) -> Hist {
         let types = &self.bytes[..FileType::COUNT];
         let ages = &self.bytes[FileType::COUNT..];
@@ -481,14 +480,14 @@ impl Acc {
         }
         let mut h = Hist::EMPTY;
         h.type_pct = percentages(types);
-        // Tipo dominante: ESTRICTAMENTE más de la mitad de los bytes.
+        // Dominant type: STRICTLY more than half of the bytes.
         for (i, &b) in types.iter().enumerate() {
             if (b as u128) * 2 > total {
                 h.dominant_type = i as u8;
             }
         }
-        // Antigüedad, sobre los bytes de fecha conocida (mtime != 0): el tramo más antiguo tal que >= 80 % de esos
-        // bytes estén en él o en uno más antiguo.
+        // Age, using bytes with a known timestamp (mtime != 0): the oldest band containing >= 80% of those bytes,
+        // including any older bands.
         let known: u128 = ages.iter().map(|&b| b as u128).sum();
         if known > 0 {
             h.age_pct = percentages(ages);
@@ -505,7 +504,7 @@ impl Acc {
     }
 }
 
-/// Reparto en porcentajes enteros que suman exactamente 100 (método del mayor resto).
+/// Distribute integer percentages that sum to exactly 100 (largest remainder method).
 fn percentages<const N: usize>(v: &[u64]) -> [u8; N] {
     let total: u128 = v.iter().map(|&x| x as u128).sum();
     let mut out = [0u8; N];
@@ -527,8 +526,8 @@ fn percentages<const N: usize>(v: &[u64]) -> [u8; N] {
     out
 }
 
-/// Deduplica enlaces duros: en cada grupo con el mismo `FileId` conserva el tamaño el enlace de ruta completa menor
-/// (bytes WTF-8 de la ruta desde la raíz, con `\`); los demás pasan a `alloc = logical = 0` con el flag `HARDLINK`.
+/// Deduplicate hard links: in each group with the same `FileId`, the link with the lexicographically smallest full path
+/// (WTF-8 bytes from the root) retains the size; the others get `alloc = logical = 0` and the `HARDLINK` flag.
 fn dedup_hard_links(
     recs: &mut [Record],
     names: &[u8],
@@ -544,7 +543,7 @@ fn dedup_hard_links(
             j += 1;
         }
         if j - i >= 2 {
-            // Mismo FileId de 64 bits bajos: se separa por la mitad alta (casi siempre 0, salvo ReFS).
+            // Same low 64 bits of FileId: distinguish by the high half (usually 0, except on ReFS).
             let mut group: Vec<(u64, u32)> = link_lo[i..j]
                 .iter()
                 .map(|&(_, id)| (link_hi.get(&id).copied().unwrap_or(0), id))
@@ -586,8 +585,8 @@ fn resolve_group(
     }
 }
 
-/// Ruta de `id` desde la raíz (sin el nombre de la raíz), con `\`, en bytes WTF-8. Solo se llama para los
-/// miembros de grupos de colisión, que son pocos.
+/// Path of `id` from the root (excluding the root name), in WTF-8 bytes. Called only for
+/// members of collision groups, which are few.
 fn path_key(recs: &[Record], names: &[u8], id: u32) -> Vec<u8> {
     let mut parts: Vec<&[u8]> = Vec::new();
     let mut cur = id as usize;

@@ -2,20 +2,20 @@
 //! totals, deduplicated hard links, unexplained space, elapsed time, and errors.
 //!
 //! ```text
-//! tesela-scan <ruta> [--threads N] [--top N] [--json archivo|-] [--overwrite] [--no-priority] [--fallback]
-//!                    [--stop-after SEGUNDOS] [--mem] [--verbose]
+//! tesela-scan <path> [--threads N] [--top N] [--json file|-] [--overwrite] [--no-priority] [--fallback]
+//!                    [--stop-after SECONDS] [--mem] [--verbose]
 //! ```
 //!
-//! * `--top N`: los N hijos más grandes de la ruta (por defecto 20; 0 = ninguno).
-//! * `--json archivo`: escribe el resumen y el top-N en JSON. NUNCA pisa un archivo que ya exista (falla antes de
-//!   escanear y, por si aparece mientras tanto, al escribir con `create_new`); `--overwrite` lo reemplaza
-//!   explícitamente. `--json -` lo escribe por la salida estándar y el informe legible pasa a la salida de errores.
-//!   ATENCIÓN: contiene nombres de carpetas reales; no lo versiones (`*.scan.json` y `/scan-out/` están en
+//! * `--top N`: the N largest children of the path (default 20; 0 = none).
+//! * `--json file`: writes the summary and top N as JSON. NEVER overwrites an existing file (fails before scanning and,
+//!   if one appears meanwhile, when writing with `create_new`); `--overwrite` replaces it
+//!   explicitly. `--json -` writes to standard output and sends the readable report to standard error.
+//!   WARNING: it contains real folder names; do not check it in (`*.scan.json` and `/scan-out/` are in
 //!   `.gitignore`).
-//! * `--no-priority`: sin cola prioritaria. `--fallback`: fuerza `FindFirstFileExW`.
-//! * `--stop-after S`: "Parar y ver" a los S segundos (el árbol se construye con lo recibido).
-//! * `--mem`: imprime el private working set (antes, pico muestreado y en régimen con el árbol vivo).
-//! * `--verbose`: lista las rutas prioritarias y las muestras de error.
+//! * `--no-priority`: disable the priority queue. `--fallback`: force `FindFirstFileExW`.
+//! * `--stop-after S`: "Stop and inspect" after S seconds (the tree is built from entries received so far).
+//! * `--mem`: print the private working set (before, sampled peak, and steady state with the tree alive).
+//! * `--verbose`: list priority paths and error samples.
 
 mod dll_hardening;
 mod memory;
@@ -33,7 +33,7 @@ use tesela_scanner::{ApiUsed, ScanOptions, ScanResult, start};
 /// JSON output destination.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum JsonTarget {
-    /// `--json -`: la salida estándar.
+    /// `--json -`: standard output.
     Stdout,
     File(PathBuf),
 }
@@ -57,9 +57,9 @@ const USAGE: &str = "uso: tesela-scan <ruta> [--threads N] [--top N] [--json arc
   --json -         escribe el JSON por la salida estandar (el informe legible va a la de errores)
   --overwrite      con --json archivo: reemplaza el archivo si ya existe";
 
-/// Interpreta los argumentos. Llegan como `OsString` (`args_os`): una ruta con caracteres que no son Unicode válido (un
-/// nombre de carpeta con un sustituto desparejado, por ejemplo) no puede hacer que el programa entre en pánico ni que se
-/// pierda; las opciones y sus valores numéricos sí tienen que ser Unicode.
+/// Parse arguments. They arrive as `OsString` (`args_os`): a path containing invalid Unicode characters (for example, a
+/// folder name with an unpaired surrogate) must not panic or be lost; options and their numeric values must be Unicode.
+
 fn parse_args(mut it: impl Iterator<Item = OsString>) -> Result<Args, String> {
     let mut a = Args {
         root: PathBuf::new(),
@@ -81,7 +81,7 @@ fn parse_args(mut it: impl Iterator<Item = OsString>) -> Result<Args, String> {
             .ok_or_else(|| format!("{flag}: no es un número"))
     };
     while let Some(arg) = it.next() {
-        // Una ruta (o cualquier argumento) que no es Unicode válido no es una opción: se trata como la ruta a escanear.
+        // A path (or any argument) that is not valid Unicode cannot be an option; treat it as the path to scan.
         let Some(text) = arg.to_str() else {
             if have_root {
                 return Err("solo se admite una ruta".into());
@@ -131,9 +131,9 @@ fn parse_args(mut it: impl Iterator<Item = OsString>) -> Result<Args, String> {
     Ok(a)
 }
 
-/// ¿Tiene sentido imprimir el "espacio no explicado"? Solo en un escaneo TERMINADO de un volumen completo, con las cifras
-/// del VOLUMEN (no las de una cuota), sin directorios sin recorrer y sin error al construir el árbol: con cualquiera de
-/// ellos el residuo (usado − escaneado) mezclaría lo que falta por recorrer con lo realmente inexplicado.
+/// Should "unexplained space" be printed? Only for a COMPLETED full-volume scan using VOLUME figures (not quota figures),
+/// with no unvisited directories and no tree-build error: otherwise the residual (used − scanned) would mix unvisited
+/// data with genuinely unexplained space.
 fn unexplained_applies(
     full_volume: bool,
     cancelled: bool,
@@ -164,7 +164,7 @@ fn mib(b: u64) -> String {
     format!("{:.1} MiB", b as f64 / (1024.0 * 1024.0))
 }
 
-/// `println!` hacia un escritor cualquiera (la salida estándar, o la de errores si el JSON ocupa la estándar).
+/// `println!` to an arbitrary writer (standard output, or standard error if JSON uses standard output).
 macro_rules! outln {
     ($o:expr, $($a:tt)*) => {
         {
@@ -391,7 +391,7 @@ fn report(out: &mut dyn Write, args: &Args, r: &ScanResult, mem: Option<(u64, u6
             } else {
                 tree.name_lossy(id).into_owned()
             };
-            // "≥": el directorio o algo de lo que contiene no se llegó a recorrer entero.
+            // "≥": the directory or something it contains was not fully traversed.
             let inc = if n.flags & (flags::INCOMPLETE | flags::INCOMPLETE_BELOW) != 0 {
                 " ≥"
             } else {
@@ -407,7 +407,7 @@ fn report(out: &mut dyn Write, args: &Args, r: &ScanResult, mem: Option<(u64, u6
     }
 }
 
-/// Documento JSON del escaneo.
+/// JSON document for the scan.
 fn json_doc(args: &Args, r: &ScanResult) -> String {
     let (tree, s) = (&r.tree, &r.summary);
     let st = tree.stats();
@@ -449,7 +449,7 @@ fn json_doc(args: &Args, r: &ScanResult) -> String {
     serde_json::to_string_pretty(&doc).expect("JSON") + "\n"
 }
 
-/// Abre el archivo de salida SIN pisar nada (`create_new`), o reemplazándolo si `overwrite`.
+/// Open the output file WITHOUT overwriting anything (`create_new`), or replace it if `overwrite` is set.
 fn open_output(path: &Path, overwrite: bool) -> std::io::Result<std::fs::File> {
     let mut o = OpenOptions::new();
     o.write(true);
@@ -461,7 +461,7 @@ fn open_output(path: &Path, overwrite: bool) -> std::io::Result<std::fs::File> {
     o.open(path)
 }
 
-/// Frase en español para un error del escáner (la biblioteca devuelve errores tipados, sin texto para el usuario).
+/// Spanish phrase for a scanner error (the library returns typed errors without user-facing text).
 fn explain(e: &tesela_scanner::ScanError) -> String {
     use tesela_scanner::ScanError;
     match e {
@@ -482,7 +482,7 @@ fn exists_error(path: &Path) -> String {
     )
 }
 
-/// Escribe el JSON en `target`. Devuelve un mensaje de error legible.
+/// Write JSON to `target`. Returns a readable error message.
 fn write_json(
     target: &JsonTarget,
     overwrite: bool,
@@ -509,9 +509,9 @@ fn write_json(
 }
 
 fn main() -> ExitCode {
-    // LO PRIMERO: la búsqueda de DLL se limita a System32 (ver `dll_hardening`).
+    // FIRST: restrict DLL search to System32 (see `dll_hardening`).
     let _ = dll_hardening::restrict_dll_search();
-    // `--version` (o `-V`) como primer argumento: imprime la version por la salida estandar y sale (sin escanear).
+    // `--version` (or `-V`) as the first argument: print the version to standard output and exit (without scanning).
     if matches!(
         std::env::args_os()
             .nth(1)
@@ -532,7 +532,7 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    // Falla ANTES de escanear (puede tardar mucho) si el archivo ya existe y no se pidió reemplazarlo.
+    // Fail BEFORE scanning (which may take a long time) if the file already exists and replacement was not requested.
     if let Some(JsonTarget::File(p)) = &args.json
         && !args.overwrite
         && p.exists()
@@ -591,7 +591,7 @@ fn main() -> ExitCode {
         let peak = s.finish();
         (before, peak, memory::private_working_set().unwrap_or(0))
     });
-    // Con `--json -` el JSON ocupa la salida estándar: el informe legible va a la de errores.
+    // With `--json -`, JSON uses standard output, so the readable report goes to standard error.
     let to_stdout = args.json == Some(JsonTarget::Stdout);
     if to_stdout {
         report(&mut std::io::stderr(), &args, &result, mem);
@@ -626,7 +626,7 @@ mod tests {
     #[test]
     fn el_espacio_no_explicado_solo_sale_con_un_escaneo_completo_del_volumen() {
         assert!(unexplained_applies(true, false, true, 0, false));
-        // Cada condición por separado lo apaga (GM-m8).
+        // Each condition disables it independently (GM-m8).
         assert!(
             !unexplained_applies(false, false, true, 0, false),
             "no es un volumen entero"
@@ -648,14 +648,14 @@ mod tests {
 
     #[test]
     fn una_ruta_que_no_es_unicode_valido_se_conserva_y_no_provoca_panico() {
-        // Un sustituto desparejado (U+D800) es un nombre válido en NTFS y no es UTF-8/Unicode válido.
+        // An unpaired surrogate (U+D800) is a valid NTFS name but is not valid UTF-8/Unicode.
         let raw = OsString::from_wide(&[b'C' as u16, b':' as u16, 0x5C, 0xD800, b'x' as u16]);
         assert!(raw.to_str().is_none());
         let a = parse_args([raw.clone(), OsString::from("--top"), OsString::from("3")].into_iter())
             .unwrap();
         assert_eq!(a.root.as_os_str(), raw.as_os_str());
         assert_eq!(a.top, 3);
-        // También como valor de `--json`, y una segunda ruta sigue siendo un error de uso.
+        // Also as the value of `--json`; a second path remains a usage error.
         let a =
             parse_args([OsString::from("X"), OsString::from("--json"), raw.clone()].into_iter())
                 .unwrap();
