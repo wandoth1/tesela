@@ -1358,6 +1358,61 @@ fn la_lista_se_maneja_con_flechas_y_muestra_el_foco() {
     assert_eq!(explore(&h).root.node, dir);
 }
 
+/// UX-1: las unidades de la barra lateral que no son la actual se ven pulsables (fondo, cursor y pista) y se activan con el
+/// teclado; la actual no tiene estado de "pasar el puntero".
+#[test]
+fn las_unidades_de_la_barra_lateral_se_ven_pulsables() {
+    let mut h = harness(opts(user_folder()));
+    // La unidad actual (C:) no es pulsable: sin pista al pasar el puntero.
+    assert!(!super::explore::drive_row_is_interactive(true));
+    assert!(super::explore::drive_row_is_interactive(false));
+    h.get_by_label("Analizar Sistema (C:)").hover();
+    h.run_steps(14);
+    assert_eq!(
+        h.query_all_by_label("Analizar Sistema (C:)").count(),
+        1,
+        "la unidad actual no muestra la pista"
+    );
+    // Otra unidad: al pasar el puntero aparece la pista con el texto de `analyze-drive` y el cursor pasa a la mano.
+    let other = h.get_by_label("Analizar Almacén (E:)");
+    let rect = other.rect();
+    other.hover();
+    h.run_steps(14);
+    assert_eq!(
+        h.query_all_by_label("Analizar Almacén (E:)").count(),
+        2,
+        "el control y su pista"
+    );
+    assert_eq!(
+        h.output().platform_output.cursor_icon,
+        egui::CursorIcon::PointingHand
+    );
+    // Se pinta el fondo de "pasar el puntero" (el color suave de acento) detrás de la fila.
+    let soft = crate::theme::Palette::of(false).accent_soft;
+    assert!(
+        h.output().shapes.iter().any(|cs| matches!(
+            &cs.shape,
+            egui::epaint::Shape::Rect(r) if r.fill == soft && r.rect.contains_rect(rect.shrink(1.0))
+        )),
+        "sin fondo de hover en la fila"
+    );
+}
+
+/// UX-1: Intro y Espacio sobre una unidad enfocada empiezan el análisis (como el clic).
+#[test]
+fn intro_y_espacio_sobre_una_unidad_de_la_barra_lateral_empiezan_el_analisis() {
+    for key in [Key::Enter, Key::Space] {
+        let mut h = harness(opts(user_folder()));
+        assert_eq!(h.state().ui().screen_name(), "explore");
+        h.get_by_label("Analizar Almacén (E:)").focus();
+        h.run_steps(3);
+        assert!(h.get_by_label("Analizar Almacén (E:)").is_focused());
+        h.key_press(key);
+        h.run_steps(4);
+        assert_eq!(h.state().ui().screen_name(), "scan", "{key:?}");
+    }
+}
+
 #[test]
 fn los_controles_alcanzables_con_tab_muestran_el_foco() {
     let mut h = harness(opts(user_folder()));

@@ -875,6 +875,9 @@ impl Explore {
             let selected = Some(d.letter) == cur;
             let title = drive_title(env, d);
             let used = d.used_percent();
+            // Hueco para el fondo de "al pasar el puntero": se rellena cuando se sabe si la fila está bajo el puntero (la
+            // respuesta se calcula DESPUÉS de dibujar el contenido) y queda por debajo de él.
+            let hover_bg = ui.painter().add(egui::Shape::Noop);
             let resp = egui::Frame::new()
                 .fill(if selected {
                     pal.accent_soft
@@ -917,10 +920,29 @@ impl Explore {
                     env.tr.ta("analyze-drive", args!["name" => title.clone()]),
                 )
             });
+            // Solo las unidades que NO son la actual se pueden pulsar: se iluminan al pasar el puntero (como los elementos de
+            // la barra lateral), cambian el cursor y explican qué hacen. La actual no tiene estado de "pasar el puntero".
+            let resp = if drive_row_is_interactive(selected) {
+                if resp.hovered() {
+                    ui.painter().set(
+                        hover_bg,
+                        egui::epaint::RectShape::filled(
+                            resp.rect,
+                            CornerRadius::same(8),
+                            pal.accent_soft,
+                        ),
+                    );
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                resp.on_hover_text(env.tr.ta("analyze-drive", args!["name" => title.clone()]))
+            } else {
+                resp
+            };
             if resp.has_focus() {
                 widgets::focus_ring(ui.painter(), &pal, resp.rect, 8);
             }
-            if resp.clicked() && !selected {
+            // `clicked` también se activa con Intro y Espacio cuando la fila tiene el foco.
+            if resp.clicked() && drive_row_is_interactive(selected) {
                 env.actions.push(Action::StartScan(ScanRequest {
                     root: d.root(),
                     label: title.clone(),
@@ -1169,6 +1191,11 @@ fn legend_cell(
 }
 
 /// Elemento de la barra lateral. Devuelve `true` si se pulsó (y está habilitado).
+/// ¿Se puede pulsar la fila de esta unidad en la barra lateral? Solo si NO es la unidad que ya se está explorando.
+pub(crate) fn drive_row_is_interactive(selected: bool) -> bool {
+    !selected
+}
+
 fn sidebar_item(
     ui: &mut Ui,
     env: &mut Env,
