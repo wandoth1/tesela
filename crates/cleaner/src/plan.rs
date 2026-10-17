@@ -279,7 +279,10 @@ impl Plan {
     pub fn permanent_mail_files(&self, allow_unfit: bool) -> u64 {
         self.items
             .iter()
-            .filter(|i| i.destination == Destination::Permanent || (allow_unfit && i.is_unfit()))
+            .filter(|i| {
+                i.destination == Destination::Permanent
+                    || (allow_unfit && i.is_unfit() && !i.never_permanent())
+            })
             .map(|i| i.estimate.mail_local_files)
             .sum()
     }

@@ -523,7 +523,7 @@ impl CleanFlow {
             && let Stage::Confirm(c) = &self.stage
         {
             let plan = c.plan.clone();
-            let allow_local_mail_permanent = c.allow_mail_permanent;
+            let allow_local_mail_permanent = mail_consent_for_execution(c, allow_unfit);
             // E1: elevated processes cannot clean (the `cleaner` also rejects them); this is reported before creating the log.
             if blocked_by_elevation(backend.is_elevated(), dry, backend.is_demo()) {
                 self.note = Some(Note::Elevated);
@@ -691,6 +691,12 @@ fn can_execute(plan: &Plan, allow_unfit: bool, allow_mail_permanent: bool) -> bo
         || plan.bin.as_ref().is_some_and(|b| !b.items.is_empty())
         || (allow_unfit && plan.unfit_items().next().is_some());
     actionable && (plan.permanent_mail_files(allow_unfit) == 0 || allow_mail_permanent)
+}
+
+/// Consent is valid only while the confirmation still offers permanent deletion of local mail.
+/// A previously checked box must not authorize a PST that appears later after the amber group is deselected.
+fn mail_consent_for_execution(c: &Confirm, allow_unfit: bool) -> bool {
+    c.allow_mail_permanent && c.plan.permanent_mail_files(allow_unfit) > 0
 }
 
 /// Main button label depending on what there is.
@@ -1052,6 +1058,8 @@ fn confirm_groups(ui: &mut Ui, env: &mut Env, c: &mut Confirm, plan: &Plan) {
     }
     if plan.permanent_mail_files(c.allow_unfit) > 0 {
         ui.checkbox(&mut c.allow_mail_permanent, env.tr.t("confirm-mail-check"));
+    } else {
+        c.allow_mail_permanent = false;
     }
     // Other warnings: hard links, cloud, protected and rejected entries.
     let (shared_n, shared_b) = plan.shared_total();
@@ -2056,6 +2064,96 @@ mod responsiveness_tests {
         assert!(!can_execute(&plan, false, false));
         assert!(can_execute(&plan, false, true));
         assert_eq!(plan.mail_totals(), ((1, 1024), (0, 0)));
+    }
+
+    #[test]
+    fn kept_diagnostic_pst_does_not_require_mail_consent() {
+        let mut kept = mail_item(Destination::Recycle, Fit::Unfit(UnfitReason::TooBig));
+        kept.diagnostic_path = true;
+        let mut ordinary = mail_item(Destination::Recycle, Fit::Unfit(UnfitReason::TooBig));
+        ordinary.path = "synthetic-other/ordinary.bin".into();
+        ordinary.estimate.mail_local_files = 0;
+        ordinary.estimate.mail_local_bytes = 0;
+        let plan = Plan {
+            items: vec![kept, ordinary],
+            ..Plan::default()
+        };
+        assert_eq!(plan.kept_unfit_items().count(), 1);
+        assert_eq!(plan.unfit_items().count(), 1);
+        assert_eq!(plan.permanent_mail_files(true), 0);
+        assert!(can_execute(&plan, true, false));
+    }
+
+    #[test]
+    fn hiding_the_mail_box_revokes_its_consent() {
+        use crate::app::{Action, Settings};
+        use crate::i18n::{Lang, Tr};
+        use crate::icons::IconCache;
+        use egui_kittest::Harness;
+        use std::cell::RefCell;
+        use std::rc::Rc;
+
+        let mut plan = Plan::default();
+        plan.items.push(mail_item(
+            Destination::Recycle,
+            Fit::Unfit(UnfitReason::TooBig),
+        ));
+        let mut ordinary = mail_item(Destination::Permanent, Fit::Fits);
+        ordinary.path = "synthetic-other/ordinary.bin".into();
+        ordinary.estimate.mail_local_files = 0;
+        ordinary.estimate.mail_local_bytes = 0;
+        plan.items.push(ordinary);
+        let plan = Arc::new(plan);
+        let confirm = Rc::new(RefCell::new(Confirm {
+            plan: plan.clone(),
+            allow_unfit: true,
+            allow_mail_permanent: true,
+            show_all: false,
+            reconfirm: false,
+            focused: true,
+        }));
+        assert!(mail_consent_for_execution(&confirm.borrow(), true));
+        confirm.borrow_mut().allow_unfit = false;
+        assert!(!mail_consent_for_execution(&confirm.borrow(), false));
+
+        let tr = Tr::new(Lang::En);
+        let mut icons = IconCache::default();
+        let backend: Arc<dyn Backend> =
+            Arc::new(crate::demo_backend::DemoBackend::new(Duration::ZERO));
+        let c = confirm.clone();
+        let mut initialized = false;
+        let mut h = Harness::builder()
+            .with_size(vec2(900.0, 900.0))
+            .build_ui(move |ui| {
+                if !initialized {
+                    crate::fonts::install(ui.ctx(), crate::fonts::Scripts::NONE);
+                    initialized = true;
+                    return;
+                }
+                let mut actions: Vec<Action> = Vec::new();
+                let mut env = Env {
+                    tr: &tr,
+                    pal: Palette::of(false),
+                    icons: &mut icons,
+                    demo: true,
+                    animate: false,
+                    drives: &[],
+                    drives_loading: false,
+                    settings: Settings::default(),
+                    backend: &backend,
+                    dry_run: false,
+                    history: &[],
+                    modal_open: true,
+                    update: crate::update::UpdateView::default(),
+                    actions: &mut actions,
+                };
+                confirm_groups(ui, &mut env, &mut c.borrow_mut(), &plan);
+            });
+        h.run_steps(2);
+        assert!(!confirm.borrow().allow_mail_permanent);
+        confirm.borrow_mut().allow_unfit = true;
+        h.run_steps(1);
+        assert!(!confirm.borrow().allow_mail_permanent);
     }
 
     #[test]
