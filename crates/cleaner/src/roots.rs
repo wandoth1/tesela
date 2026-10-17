@@ -14,7 +14,9 @@ use crate::protect::{Exempt, Protection, ProtectionRoots};
 use crate::rules::CategoryId;
 use crate::sys::{self, FileIdentity};
 use std::path::{Path, PathBuf};
-use tesela_scanner::{BrowserRoots, KnownKind, browser_cache_dirs, known_folder};
+use tesela_scanner::{
+    BrowserRoots, KnownKind, WER_ZONE_REL, browser_cache_dirs, diagnostic_dirs, known_folder,
+};
 use windows_sys::Win32::UI::Shell::{
     FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_LocalAppData,
     FOLDERID_LocalAppDataLow, FOLDERID_Music, FOLDERID_Pictures, FOLDERID_Profile,
@@ -117,16 +119,6 @@ fn browser_zone_rel(id: CategoryId) -> Option<&'static str> {
         _ => None,
     }
 }
-
-/// La carpeta de WER de cada usuario, relativa a `%LOCALAPPDATA%`: DENEGADA entera (su configuración y todo lo que no sea un
-/// informe no se toca). Solo `ReportArchive` y `ReportQueue` son excepciones ([`WER_REPORT_DIRS`]).
-const WER_ZONE_REL: &str = r"Microsoft\Windows\WER";
-
-/// Las únicas carpetas de informes de errores del usuario, dentro de [`WER_ZONE_REL`]. No incluye `Temp`, `ERC` ni nada más.
-const WER_REPORT_DIRS: [&str; 2] = ["ReportArchive", "ReportQueue"];
-
-/// Volcados locales de bloqueo de aplicaciones (`DumpFolder` por defecto de WER), relativa a `%LOCALAPPDATA%`.
-const CRASH_DUMPS_REL: &str = "CrashDumps";
 
 fn kf(id: &windows_sys::core::GUID) -> Option<PathBuf> {
     known_folder(id).and_then(|p| canon(&p))
@@ -305,18 +297,19 @@ impl Roots {
                     .map(|(_, p)| p)
                     .collect()
             }
-            CategoryId::WerReports => self
-                .browser
-                .local_appdata
-                .iter()
-                .flat_map(|l| WER_REPORT_DIRS.map(|d| l.join(WER_ZONE_REL).join(d)))
-                .collect(),
-            CategoryId::CrashDumps => self
-                .browser
-                .local_appdata
-                .iter()
-                .map(|l| l.join(CRASH_DUMPS_REL))
-                .collect(),
+            // Las carpetas de informes de errores y de volcados salen del escáner (una sola definición de las rutas).
+            CategoryId::WerReports | CategoryId::CrashDumps => {
+                let kind = if id == CategoryId::WerReports {
+                    KnownKind::WerReports
+                } else {
+                    KnownKind::CrashDumps
+                };
+                diagnostic_dirs(&self.browser)
+                    .into_iter()
+                    .filter(|(k, _)| *k == kind)
+                    .map(|(_, p)| p)
+                    .collect()
+            }
             _ => Vec::new(),
         };
         let startup = self
