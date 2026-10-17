@@ -199,7 +199,7 @@ impl Basket {
         self.contents.contains(key)
     }
 
-    /// Quita de la cesta las entradas (rutas y "Contenido de") cuya clave está en `gone` y devuelve cuántas.
+    /// Removes basket entries (paths and "Contents of") whose key is in `gone`, and returns the number removed.
     fn drop_keys(&mut self, gone: &HashSet<PathKey>) -> usize {
         if gone.is_empty() {
             return 0;
@@ -214,8 +214,8 @@ impl Basket {
         before - self.entries.len()
     }
 
-    /// Añade un archivo o una carpeta ("Tu archivo"). Una carpeta conocida solo se añade con
-    /// [`Basket::add_contents_of`]; los intocables y los denegados rebotan.
+    /// Adds a file or folder ("Your file"). A known folder can only be added with
+    /// [`Basket::add_contents_of`]; untouchable and denied paths are rejected.
     pub fn add_path(&mut self, path: PathBuf, prot: &Protection) -> AddOutcome {
         let key = PathKey::new(&path);
         if !key.is_drive_path() {
@@ -228,7 +228,7 @@ impl Basket {
         if self.covers(&key) {
             return AddOutcome::AlreadyCovered;
         }
-        // El nuevo ancestro absorbe a lo que cuelga de él (rutas sueltas y contenidos de carpetas dentro de él).
+        // The new ancestor subsumes everything beneath it (standalone paths and contents of folders inside it).
         let gone: HashSet<PathKey> = below(&self.paths, &key)
             .chain(below(&self.contents, &key))
             .cloned()
@@ -243,7 +243,7 @@ impl Basket {
         AddOutcome::Added { absorbed }
     }
 
-    /// Añade "Contenido de X" para una carpeta conocida (`Verdict::ContentsOnly`).
+    /// Adds "Contents of X" for a known folder (`Verdict::ContentsOnly`).
     pub fn add_contents_of(&mut self, path: PathBuf, prot: &Protection) -> AddOutcome {
         let key = PathKey::new(&path);
         if !key.is_drive_path() {
@@ -256,7 +256,7 @@ impl Basket {
         if self.covers(&key) || self.contents.contains(&key) {
             return AddOutcome::AlreadyCovered;
         }
-        // Lo que cuelga de la carpeta (rutas sueltas) queda cubierto por su contenido.
+        // Paths beneath the folder are covered by its contents.
         let gone: HashSet<PathKey> = below(&self.paths, &key)
             .chain(below(&self.contents, &key))
             .cloned()
@@ -286,7 +286,7 @@ impl Basket {
         prot: &Protection,
     ) -> Vec<AddOutcome> {
         let mut out: Vec<AddOutcome> = Vec::with_capacity(items.len());
-        // (índice del resultado, ruta, clave, tipo) de lo que pasa las comprobaciones contra la cesta anterior.
+        // (result index, path, key, kind) for entries that pass checks against the previous basket.
         let mut cands: Vec<(usize, PathBuf, PathKey, BatchKind)> = Vec::new();
         let mut seen: HashSet<(BatchKind, PathKey)> = HashSet::new();
         for (path, kind) in items {
@@ -313,7 +313,7 @@ impl Basket {
             out.push(AddOutcome::Added { absorbed: 0 });
             cands.push((idx, path, key, kind));
         }
-        // Entre sí: lo que cuelga de otro elemento del mismo lote (o de su contenido) ya está cubierto por él.
+        // Within the batch, anything beneath another item (or its contents) is already covered by that item.
         let new_paths: BTreeSet<PathKey> = cands
             .iter()
             .filter(|c| c.3 == BatchKind::Path)
@@ -341,7 +341,7 @@ impl Basket {
                 keep.push((path, key, kind));
             }
         }
-        // Lo que ya había y cuelga de lo nuevo queda absorbido (una consulta por rango por elemento).
+        // Existing entries beneath a new item are subsumed (one range query per item).
         let mut gone: HashSet<PathKey> = HashSet::new();
         for (_, key, _) in &keep {
             gone.extend(below(&self.paths, key).cloned());

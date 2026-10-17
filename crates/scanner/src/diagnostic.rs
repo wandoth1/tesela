@@ -1,34 +1,35 @@
 //! Windows Error Reporting (WER) reports and current-user application crash dumps: the only diagnostic folders
 //! Tesela knows. READ-ONLY (`cleaner` performs cleanup and verifies each path again by handle).
 //!
-//! Fuentes (Microsoft Learn, revisadas el 2026-10-17):
-//! * `win32/wer/collecting-user-mode-dumps` y `win32/wer/wer-settings`: la carpeta por defecto de los volcados locales de
-//!   WER es `%LOCALAPPDATA%\CrashDumps` (`LocalDumps\DumpFolder`; la función no viene activada por defecto y, si se
-//!   redirige, es una clave de `HKLM`: aquí solo se conoce la ruta por defecto). El archivo y la cola de informes tienen
-//!   tope (`MaxArchiveCount` 1000, `MaxQueueCount` 50 por defecto).
-//! * `windows-server/failover-clustering/troubleshooting-using-wer-reports` (la cola guarda lo pendiente de subir, el archivo
-//!   lo ya subido) y el artículo archivado `archive/blogs/oanapl/windows-error-reporting-wer-for-developers` (la ruta por
-//!   usuario `%LOCALAPPDATA%\Microsoft\Windows\WER` con `ReportArchive` y `ReportQueue`).
+//! Sources (Microsoft Learn, reviewed on 2026-10-17):
+//! * `win32/wer/collecting-user-mode-dumps` and `win32/wer/wer-settings`: the default folder for local WER dumps is
+//!   `%LOCALAPPDATA%\CrashDumps` (`LocalDumps\DumpFolder`; the feature is disabled by default and, if redirected, is
+//!   configured under `HKLM`: only the default path is known here). The archive and report queue have limits
+//!   (`MaxArchiveCount` 1000, `MaxQueueCount` 50 by default).
+//! * `windows-server/failover-clustering/troubleshooting-using-wer-reports` (the queue stores reports waiting to upload,
+//!   the archive stores uploaded reports) and the archived article
+//!   `archive/blogs/oanapl/windows-error-reporting-wer-for-developers` (per-user path `%LOCALAPPDATA%\Microsoft\Windows\WER`
+//!   containing `ReportArchive` and `ReportQueue`).
 //!
-//! De `WER` solo cuentan `ReportArchive` y `ReportQueue`: nunca la carpeta `WER` entera, `ERC`, `Temp` ni la configuración.
+//! Under `WER`, only `ReportArchive` and `ReportQueue` are included: never the entire `WER` folder, `ERC`, `Temp`, or settings.
 
 use crate::browser::{BrowserRoots, real_dir_under};
 use crate::known::KnownKind;
 use std::path::PathBuf;
 
-/// La carpeta de WER del usuario, relativa a `%LOCALAPPDATA%`. NO es una raíz de limpieza: el `cleaner` la deniega entera y
-/// solo levanta esa denegación para [`WER_REPORT_DIRS`].
+/// The user's WER folder, relative to `%LOCALAPPDATA%`. It is NOT a cleanup root: `cleaner` denies it entirely and lifts
+/// that denial only for [`WER_REPORT_DIRS`].
 pub const WER_ZONE_REL: &str = r"Microsoft\Windows\WER";
 
 /// The only report folders under [`WER_ZONE_REL`].
 pub const WER_REPORT_DIRS: [&str; 2] = ["ReportArchive", "ReportQueue"];
 
-/// Volcados locales de bloqueo, relativa a `%LOCALAPPDATA%`.
+/// Local crash dumps, relative to `%LOCALAPPDATA%`.
 pub const CRASH_DUMPS_REL: &str = "CrashDumps";
 
-/// Candidate folders (whether or not they exist) and their kind: `ReportArchive` and `ReportQueue` as [`KnownKind::WerReports`], and
-/// `CrashDumps` as [`KnownKind::CrashDumps`]. Returns none if `%LOCALAPPDATA%` is unknown. `cleaner` uses these paths and verifies
-/// each root by handle (component by component), and shows why a path was rejected.
+/// Candidate folders (whether or not they exist) and their kind: `ReportArchive` and `ReportQueue` as [`KnownKind::WerReports`],
+/// and `CrashDumps` as [`KnownKind::CrashDumps`]. Returns none if `%LOCALAPPDATA%` is unknown. `cleaner` uses these paths,
+/// verifies each root by handle (component by component), and explains why a path was rejected.
 pub fn diagnostic_dirs(roots: &BrowserRoots) -> Vec<(KnownKind, PathBuf)> {
     let Some(local) = roots.local_appdata.as_deref() else {
         return Vec::new();
@@ -42,8 +43,8 @@ pub fn diagnostic_dirs(roots: &BrowserRoots) -> Vec<(KnownKind, PathBuf)> {
     v
 }
 
-/// Only folders that currently exist as real directories and whose ancestors below `%LOCALAPPDATA%` are also real directories (a
-/// link in the path would redirect everything beneath it): paths the scanner visits first.
+/// Only folders that currently exist as real directories and whose ancestors below `%LOCALAPPDATA%` are also real directories
+/// (a link in the path would redirect everything beneath it): these are the paths the scanner visits first.
 pub fn diagnostic_dirs_verified(roots: &BrowserRoots) -> Vec<(KnownKind, PathBuf)> {
     let Some(local) = roots.local_appdata.as_deref() else {
         return Vec::new();

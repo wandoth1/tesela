@@ -119,8 +119,8 @@ pub enum ScanError {
     Root(std::io::Error),
     /// The root is not a directory.
     NotADirectory(PathBuf),
-    /// La raíz es un enlace (junction, symlink de carpeta o punto de montaje) y los enlaces no se siguen: hay que elegir la
-    /// carpeta de destino. Lleva la ruta del propio enlace.
+    /// The root is a link (junction, directory symlink, or mount point), and links are not followed: select the target
+    /// folder instead. Contains the link's own path.
     RootIsLink(PathBuf),
     /// A thread panicked (a program error).
     Panicked,
@@ -160,25 +160,25 @@ pub enum ApiUsed {
     Mixed,
 }
 
-/// Espacio del volumen de la ruta escaneada, en tres magnitudes de ÁMBITOS distintos (no se mezclan):
-/// capacidad y libre del VOLUMEN, y disponible para el USUARIO (cuota de disco). El "espacio no explicado" usa solo las
-/// dos del volumen (`total - free`).
+/// Space information for the scanned path's volume, expressed as three values from distinct scopes (never mixed):
+/// volume capacity and free space, and space available to the USER (disk quota). "Unexplained space" uses only the two
+/// volume values (`total - free`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VolumeSpace {
-    /// Capacidad en bytes: la del volumen si `volume_scope`; si no, la cuota del usuario.
+    /// Capacity in bytes: the volume's when `volume_scope`; otherwise, the user's quota.
     pub total: u64,
-    /// Bytes libres: los del volumen entero si `volume_scope`; si no, los que le quedan al usuario.
+    /// Free bytes: for the entire volume when `volume_scope`; otherwise, those remaining for the user.
     pub free: u64,
-    /// Bytes disponibles para el usuario que escanea (ámbito usuario): menor que `free` si hay una cuota de disco.
+    /// Bytes available to the scanning user (user scope): less than `free` when a disk quota applies.
     pub available: u64,
-    /// `total` y `free` son del VOLUMEN (comparables con lo escaneado). Es `false` cuando hay una cuota y Windows no da la
-    /// capacidad real (clase `FileFsFullSizeInformationEx` no soportada): entonces `total` y `free` son del usuario y NO se
-    /// calcula el "espacio no explicado" (restar ámbitos distintos daría un residuo inventado).
+    /// Whether `total` and `free` describe the VOLUME (and can be compared with the scan). False when a quota applies and
+    /// Windows cannot provide the actual capacity (`FileFsFullSizeInformationEx` is unsupported): then `total` and `free`
+    /// are user-scoped and "unexplained space" is NOT calculated (subtracting different scopes would invent a residual).
     pub volume_scope: bool,
 }
 
 impl VolumeSpace {
-    /// Un volumen sin cuota: lo disponible para el usuario es todo lo libre.
+    /// For a volume without a quota, all free space is available to the user.
     pub fn new(total: u64, free: u64) -> VolumeSpace {
         VolumeSpace {
             total,
@@ -188,12 +188,12 @@ impl VolumeSpace {
         }
     }
 
-    /// ¿Limita una cuota de disco lo que el usuario puede usar?
+    /// Whether a disk quota limits what the user can use.
     pub fn quota_limited(&self) -> bool {
         !self.volume_scope || self.available < self.free
     }
 
-    /// Usado en el volumen (`total - free`), el único valor comparable con lo escaneado.
+    /// Used space on the volume (`total - free`), the only value comparable with the scan.
     pub fn used(&self) -> u64 {
         self.total.saturating_sub(self.free)
     }
@@ -210,72 +210,72 @@ impl From<sys::VolumeSizes> for VolumeSpace {
     }
 }
 
-/// Espacio del volumen que contiene `path` (capacidad y libre del volumen, y disponible para el usuario). SOLO LECTURA.
-/// Puede bloquearse con unidades de red o medios que no responden: llamar desde un hilo con plazo.
+/// Space on the volume containing `path` (volume capacity and free space, plus space available to the user). READ-ONLY.
+/// Network drives or unresponsive media may block: call from a thread with a timeout.
 pub fn volume_space(path: &Path) -> Result<VolumeSpace, std::io::Error> {
     sys::volume_space(&sys::wide(path))
         .map(VolumeSpace::from)
         .map_err(io_err)
 }
 
-/// Resultado de una ruta prioritaria.
+/// Result for a priority path.
 #[derive(Clone, Debug)]
 pub struct PriorityResult {
-    /// Ruta canónica.
+    /// Canonical path.
     pub path: PathBuf,
-    /// ¿Se terminó de recorrer entera?
+    /// Whether the entire path was traversed.
     pub done: bool,
-    /// Bytes en disco vistos (sin deduplicar enlaces duros).
+    /// Observed allocated bytes (hard links are not deduplicated).
     pub alloc: u64,
     /// Archivos vistos.
     pub files: u64,
 }
 
-/// Cifras del escaneo que no están en el árbol.
+/// Scan statistics that are not part of the tree.
 #[derive(Clone, Debug)]
 pub struct ScanSummary {
-    /// Ruta escaneada tal como se muestra (sin `\\?\` si no hace falta).
+    /// Scanned path as displayed (without `\\?\` when unnecessary).
     pub root: PathBuf,
-    /// Se canceló ("Parar y ver"): el árbol tiene directorios `INCOMPLETE` y no hay espacio no explicado.
+    /// Scan was cancelled ("Stop and view"): the tree contains `INCOMPLETE` directories and unexplained space is unavailable.
     pub cancelled: bool,
-    /// Tiempo desde el inicio hasta que acabó la enumeración (incluye listar la raíz y resolver rutas prioritarias).
+    /// Time from start until enumeration finished (including listing the root and resolving priority paths).
     pub elapsed_scan: Duration,
     /// Tiempo de `TreeBuilder::finish`.
     pub elapsed_build: Duration,
     /// Hilos usados.
     pub threads: usize,
-    /// API de enumeración.
+    /// Enumeration API.
     pub api: ApiUsed,
-    /// Sistema de archivos del volumen (`NTFS`, `ReFS`, `exFAT`...).
+    /// Volume file system (`NTFS`, `ReFS`, `exFAT`, etc.).
     pub fs_name: String,
-    /// Directorios que no se pudieron listar, por código de error de Windows.
+    /// Directories that could not be listed, grouped by Windows error code.
     pub errors_by_code: BTreeMap<u32, u64>,
-    /// Primeros directorios con error (código y ruta), para diagnóstico.
+    /// First directories that failed (error code and path), for diagnostics.
     pub error_samples: Vec<(u32, PathBuf)>,
-    /// Espacio del volumen (si Windows lo da).
+    /// Volume space information, when provided by Windows.
     pub volume: Option<VolumeSpace>,
-    /// La ruta escaneada es la raíz de una unidad.
+    /// Whether the scanned path is a drive root.
     pub full_volume: bool,
     /// Rutas prioritarias recorridas.
     pub priority: Vec<PriorityResult>,
-    /// Se agotaron los ids provisionales (más de 4 000 millones de entradas): el árbol está incompleto.
+    /// Provisional IDs were exhausted (more than 4 billion entries): the tree is incomplete.
     pub ids_exhausted: bool,
-    /// Error del builder (no debería ocurrir: significaría más de 4 000 M de entradas o 4 GiB de nombres).
+    /// Builder error (not expected: it would mean more than 4 billion entries or 4 GiB of names).
     pub build_error: Option<BuildError>,
 }
 
 impl ScanSummary {
-    /// Total de directorios con error.
+    /// Total number of directories with errors.
     pub fn errors(&self) -> u64 {
         self.errors_by_code.values().sum()
     }
 }
 
-/// Árbol y cifras de un escaneo.
+/// Tree and statistics for a scan.
 pub struct ScanResult {
-    /// El árbol final.
+    /// The final tree.
     pub tree: Tree,
-    /// Cifras que no están en el árbol.
+    /// Statistics not included in the tree.
     pub summary: ScanSummary,
 }
 
@@ -287,22 +287,22 @@ pub struct ScanHandle {
 }
 
 impl ScanHandle {
-    /// Contadores en vivo (atómicos).
+    /// Live counters (atomic).
     pub fn progress(&self) -> &Arc<Progress> {
         &self.progress
     }
 
-    /// Pide parar ("Parar y ver"): los hilos terminan su directorio actual y se construye el árbol con lo recibido.
+    /// Requests cancellation ("Stop and view"): workers finish their current directory and the tree is built from received data.
     pub fn cancel(&self) {
         self.cancel.store(true, Ordering::SeqCst);
     }
 
-    /// ¿Ha terminado ya el hilo coordinador?
+    /// Whether the coordinator thread has finished.
     pub fn is_finished(&self) -> bool {
         self.join.is_finished()
     }
 
-    /// Espera al resultado.
+    /// Waits for the result.
     pub fn wait(self) -> Result<ScanResult, ScanError> {
         self.join.join().map_err(|_| ScanError::Panicked)
     }
@@ -321,12 +321,13 @@ fn io_err(code: u32) -> std::io::Error {
 
 /// root errors are returned here; the rest runs on worker threads and is accessed through [`ScanHandle`].
 ///
-/// La ruta que da el usuario se abre SIN seguir su reparse point final y se clasifica con `classify::root_plan` ANTES de
-/// resolver nada: una raíz que es un junction, un symlink de carpeta o un punto de montaje se RECHAZA (`ScanError::RootIsLink`) en vez de recorrer su destino, igual que los enlaces que cuelgan de la raíz no se
-/// siguen. Solo después se calcula la ruta canónica, SOBRE ESE MISMO handle (sin una segunda apertura que siga el enlace
-/// y sin carrera entre comprobar y resolver). Las carpetas de la nube se recorren con su filtro, como siempre; los
-/// componentes intermedios que sean enlaces los resuelve el sistema (es una ruta, no un enlace elegido). Un volumen
-/// montado en una carpeta se escanea por su letra o por su ruta `\\?\Volume{...}\`, no por la carpeta de montaje.
+/// The user-provided path is opened WITHOUT following its final reparse point and classified with `classify::root_plan`
+/// BEFORE resolving anything: a root that is a junction, directory symlink, or mount point is REJECTED
+/// (`ScanError::RootIsLink`) instead of traversing its target, just as links beneath the root are not followed. Only then
+/// is the canonical path obtained FROM THAT SAME handle (without a second open that follows the link and without a race
+/// between checking and resolving). Cloud folders are traversed through their filter as usual; the system resolves any
+/// intermediate link components (this is a path, not a selected link). A volume mounted in a folder is scanned by its drive
+/// letter or `\\?\Volume{...}\` path, not through the mount folder.
 pub fn start(opts: ScanOptions) -> Result<ScanHandle, ScanError> {
     let t0 = Instant::now();
     let sys::Opened {
@@ -347,7 +348,7 @@ pub fn start(opts: ScanOptions) -> Result<ScanHandle, ScanError> {
 
     let fs_name = sys::fs_name(&attr_h).unwrap_or_default();
     drop(attr_h);
-    // Solo NTFS y ReFS tienen FileId estables y enlaces duros: en el resto no se guarda el FileId.
+    // Only NTFS and ReFS have stable FileIds and hard links: on other file systems, do not store FileIds.
     let store_ids = fs_name.eq_ignore_ascii_case("NTFS") || fs_name.eq_ignore_ascii_case("ReFS");
     let cluster = sys::cluster_bytes(&root_w).unwrap_or(4096);
 
@@ -362,11 +363,11 @@ pub fn start(opts: ScanOptions) -> Result<ScanHandle, ScanError> {
     sh.find_mode.store(opts.force_find, Ordering::Relaxed);
     let (tx, rx) = crossbeam_channel::unbounded::<Batch>();
 
-    // Nodo raíz (id 0) y listado de la raíz, en este hilo.
+    // Root node (id 0) and root listing, on this thread.
     let root_id = sh.reserve_ids(1);
     debug_assert_eq!(root_id, 0);
-    // La raíz pasa por la MISMA clasificación que los descendientes (`plan`, calculado arriba): aquí solo llegan las
-    // carpetas normales y las de la nube; un enlace ya se rechazó.
+    // The root uses the SAME classification as descendants (`plan`, computed above): only regular and cloud folders
+    // reach this point; links have already been rejected.
     let mut root_batch = Batch::detached(root_id);
     root_batch.push_utf16(
         0,
@@ -389,8 +390,8 @@ pub fn start(opts: ScanOptions) -> Result<ScanHandle, ScanError> {
         cloud: plan.open_cloud,
     };
     let mut st = WorkerState::new();
-    // Una raíz que no se debe listar (carpeta de la nube sin poblar) se queda sin lote de listado: el builder la marca
-    // `INCOMPLETE`, igual que a un descendiente así.
+    // A root that must not be listed (an unpopulated cloud folder) gets no listing batch: the builder marks it
+    // `INCOMPLETE`, as it does for such a descendant.
     let root_stats = if plan.walk {
         walker::process_dir(&sh, &tx, &root_task, true, &mut st)
             .map_err(|c| ScanError::Root(io_err(c)))?
@@ -406,11 +407,11 @@ pub fn start(opts: ScanOptions) -> Result<ScanHandle, ScanError> {
     walker::account(&sh, &root_task, &root_stats);
     let mut children = std::mem::take(&mut st.children);
 
-    // Cola prioritaria (solo con FileId: no hay adopción posible con FindFirstFileExW). Es la fase más cara del arranque
-    // (canonicaliza y consulta cada ruta conocida): si ya se pidió cancelar, se omite y el escaneo sigue con lo recibido.
+    // Priority queue (requires FileId; adoption is not possible with FindFirstFileExW). This is the most expensive startup
+    // phase (canonicalizes and queries each known path): if cancellation was requested, skip it and continue with received data.
     let find_mode = sh.find_mode.load(Ordering::Relaxed);
     let mut resolved = priority::Resolved::default();
-    // Sin `FileId` guardados (ni NTFS ni ReFS) no hay adopción posible: la cola prioritaria se basa en ellos.
+    // Without stored `FileId`s (neither NTFS nor ReFS), adoption is impossible: the priority queue relies on them.
     if store_ids
         && !find_mode
         && !cancel.load(Ordering::SeqCst)
@@ -497,7 +498,7 @@ pub fn start(opts: ScanOptions) -> Result<ScanHandle, ScanError> {
     })
 }
 
-/// Todo lo que necesita el hilo coordinador.
+/// Everything the coordinator thread needs.
 struct Ctx {
     sh: Arc<Shared>,
     tx: crossbeam_channel::Sender<Batch>,
@@ -514,7 +515,7 @@ struct Ctx {
     t0: Instant,
 }
 
-/// Hilo coordinador: lanza el colector y los trabajadores, espera, construye el árbol.
+/// Coordinator thread: starts the collector and workers, waits, and builds the tree.
 fn run(ctx: Ctx) -> ScanResult {
     let Ctx {
         sh,
@@ -569,8 +570,8 @@ fn run(ctx: Ctx) -> ScanResult {
     });
     let elapsed_scan = t0.elapsed();
 
-    // "Parar y ver": hubo cancelación Y quedó trabajo sin hacer. Que `pending` sea 0 no basta: al cancelar se descartan
-    // los subdirectorios recién descubiertos sin contarlos (`dropped`).
+    // "Stop and view": cancellation occurred AND work remained. `pending == 0` is not enough: cancellation discards newly
+    // discovered subdirectories without counting them (`dropped`).
     let ids_exhausted = sh.id_overflow.load(Ordering::SeqCst);
     let cancel_flag = cancel.load(Ordering::SeqCst);
     let unfinished = sh.pending.load(Ordering::SeqCst) != 0 || sh.dropped.load(Ordering::SeqCst);
@@ -579,7 +580,7 @@ fn run(ctx: Ctx) -> ScanResult {
     let mut fo = FinishOptions::new(now_unix);
     fo.dedup_hard_links = dedup;
     if full_volume && volume_gap && !cancelled && build_err.is_none() {
-        // Solo con magnitudes del VOLUMEN (con cuota y sin la clase Ex, `total` y `free` son del usuario: sin residuo).
+        // Use volume-scoped values only (with a quota and no Ex information class, `total` and `free` are user-scoped: no residual).
         fo.volume_used = volume
             .filter(|v| v.volume_scope)
             .map(|v| v.total.saturating_sub(v.free));
@@ -587,7 +588,7 @@ fn run(ctx: Ctx) -> ScanResult {
     let t1 = Instant::now();
     let tree = builder.finish(&fo);
     let elapsed_build = t1.elapsed();
-    // Segunda red: si el árbol quedó con directorios sin listar tras cancelar, también cuenta como detenido.
+    // Second safeguard: if cancellation left directories unlisted in the tree, the scan also counts as stopped.
     cancelled |= cancel_flag && tree.stats().incomplete_dirs > 0;
 
     let mut errors_by_code: BTreeMap<u32, u64> = BTreeMap::new();

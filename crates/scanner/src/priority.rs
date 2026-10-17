@@ -18,24 +18,24 @@ use tesela_model::{Batch, EntryData};
 
 /// A listed top-level folder (the root is listed before anything is resolved).
 pub(crate) struct RootChild {
-    /// Nombre EXACTO tal como lo lista el disco (una carpeta que distingue mayúsculas puede tener `Temp` y `temp`).
+    /// EXACT name as listed on disk (a case-sensitive folder may contain both `Temp` and `temp`).
     pub name: OsString,
     pub id: u32,
     pub tag: u16,
-    /// Carpeta de la nube (se abre dejando actuar a su filtro): si una ruta prioritaria ES esta carpeta y su tarea
-    /// general se sustituye, la tarea nueva tiene que conservar la marca.
+    /// Cloud folder (opened through its filter): if a priority path IS this folder and replaces its general task,
+    /// the replacement task must preserve this marker.
     pub cloud: bool,
 }
 
 #[derive(Default)]
 pub(crate) struct Resolved {
     pub adopt: HashMap<u128, Adopt>,
-    /// Rutas prioritarias aceptadas (índice = `Task::prio`).
+    /// Accepted priority paths (index = `Task::prio`).
     pub targets: Vec<PathBuf>,
     pub initial: Vec<Task>,
-    /// Ids de carpetas de primer nivel que son ellas mismas rutas prioritarias: su tarea general se sustituye.
+    /// IDs of top-level folders that are themselves priority paths: their general task is replaced.
     pub takeover: Vec<u32>,
-    /// Nodos precreados (ancestros y rutas prioritarias que no son de primer nivel).
+    /// Precreated nodes (ancestors and priority paths that are not top-level).
     pub batch: Option<Batch>,
 }
 
@@ -57,8 +57,8 @@ fn find_root_child<'a>(children: &'a [RootChild], name: &OsString) -> Option<&'a
     }
 }
 
-/// Prefijo de ruta en una forma comparable: la unidad `C:` es la misma con o sin `\\?\`, y los recursos de red
-/// (`\\<servidor>\<recurso>`) también; el resto (`Volume{GUID}`...) se compara por su texto. Todo en minúsculas.
+/// Path prefix in a comparable form: drive `C:` is the same with or without `\\?\`, as are network shares
+/// (`\\<server>\<share>`); other forms (`Volume{GUID}`, etc.) are compared as text. All characters are lowercased.
 fn norm_prefix(p: PrefixComponent<'_>) -> String {
     match p.kind() {
         Prefix::Disk(d) | Prefix::VerbatimDisk(d) => format!("{}:", d.to_ascii_lowercase() as char),
@@ -69,7 +69,7 @@ fn norm_prefix(p: PrefixComponent<'_>) -> String {
     }
 }
 
-/// (prefijo normalizado, componentes normales con su mayúscula original).
+/// (normalized prefix, normal components with their original casing).
 fn split(p: &Path) -> (String, Vec<OsString>) {
     let mut prefix = String::new();
     let mut comps = Vec::new();
@@ -127,9 +127,9 @@ fn resolve_candidate(
     p: &Path,
 ) -> Option<Candidate> {
     let long = sys::long_path(p).ok()?;
-    // `GetLongPathNameW` no normaliza `..`, y `split` los descartaba: `<raiz>\a\..\b` se validaba como `<raiz>\a\b` mientras el
-    // sistema la resolvería a `<raiz>\b`. Una candidata con `..` (o `.` inicial) es ambigua: se descarta. (`Path::components` ya
-    // normaliza los `.` intermedios.)
+    // `GetLongPathNameW` does not normalize `..`, and `split` discarded it: `<root>\a\..\b` was validated as
+    // `<root>\a\b` while the system resolves it to `<root>\b`. A candidate containing `..` (or an initial `.`) is
+    // ambiguous and is rejected. (`Path::components` already normalizes intermediate `.` components.)
     if long
         .components()
         .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
@@ -137,7 +137,7 @@ fn resolve_candidate(
         return None;
     }
     let (prefix, comps) = split(&long);
-    // La candidata es una ruta sin canonizar: las mayúsculas pueden no ser las del disco.
+    // The candidate is not canonicalized: its casing may differ from the on-disk names.
     if prefix != root_prefix
         || comps.len() <= root_comps.len()
         || !comps
@@ -173,7 +173,7 @@ pub(crate) fn resolve(
     candidates: Vec<PathBuf>,
 ) -> Resolved {
     let (root_prefix, root_comps) = split(root);
-    // 1. Candidatas que cuelgan de la raíz, validadas componente a componente desde ella (ver `resolve_candidate`).
+    // 1. Candidates beneath the root, validated component by component from it (see `resolve_candidate`).
     let mut accepted: Vec<Candidate> = Vec::new();
     for p in candidates {
         // Cancelled during startup: stop validating paths (I/O here may take time).
@@ -198,11 +198,11 @@ pub(crate) fn resolve(
             break;
         }
         let k = key(&rel);
-        // Igual o dentro de otra ya aceptada (comparación exacta: `Temp` y `temp` pueden ser carpetas distintas).
+        // Equal to or beneath another accepted path (exact comparison: `Temp` and `temp` may be different folders).
         if kept_keys.iter().any(|a| k.starts_with(a)) {
             continue;
         }
-        // Carpeta de primer nivel: ya existe.
+        // Top-level folder: it already exists.
         let Some(c1) = find_root_child(root_children, &rel[0]) else {
             continue;
         };
@@ -216,11 +216,11 @@ pub(crate) fn resolve(
                 parent = existing;
                 continue;
             }
-            // Datos tal como los dio el listado del padre al validar la candidata. Tiene que ser un directorio normal
-            // (`Walk`: tampoco uno con atributos de recuperación de la nube aunque no sea reparse point) con `FileId`.
+            // Data from the parent's listing when validating the candidate. It must be a normal directory
+            // (`Walk`: no cloud recall attributes, even if it is not a reparse point) with a `FileId`.
             let m = metas[i];
             if !(walkable(m.attrs, m.reparse_tag) && m.file_id != 0) {
-                // No es un directorio normal legible con FileId: se abandona esta ruta y se deshace lo añadido.
+                // Not a readable normal directory with a FileId: abandon this path and roll back the additions.
                 planned.truncate(mark);
                 for a in added {
                     by_key.remove(&a);
@@ -239,8 +239,8 @@ pub(crate) fn resolve(
             added.push(ck);
         }
         let idx = ids_of_target.len() as u16;
-        // La tarea de una ruta que es ELLA MISMA una carpeta de primer nivel sustituye a la general de esa carpeta:
-        // conserva su marca de nube. Una carpeta precreada (nivel 2 o más) es un directorio normal: nunca es de la nube.
+        // A priority path that IS a top-level folder replaces that folder's general task and preserves its cloud marker.
+        // A precreated folder (level 2 or deeper) is a normal directory, never a cloud folder.
         let cloud = match parent {
             NodeRef::Planned(j) => {
                 planned[j].target = Some(idx);
@@ -255,14 +255,14 @@ pub(crate) fn resolve(
         kept_keys.push(k);
     }
 
-    // 3. Reservar ids de golpe y publicar los nodos precreados.
+    // 3. Reserve IDs in one batch and publish the precreated nodes.
     let base = if planned.is_empty() {
         0
     } else {
         sh.reserve_ids(planned.len() as u32)
     };
     if sh.id_overflow.load(std::sync::atomic::Ordering::SeqCst) {
-        // Los ids se agotaron (el escaneo ya está cancelado y se marcará como tal): nada de lotes con ids envueltos.
+        // IDs are exhausted (the scan is already cancelled and will be marked accordingly): never return a batch with wrapped IDs.
         return Resolved::default();
     }
     let id_of = |r: NodeRef| match r {
@@ -329,14 +329,14 @@ mod tests {
     #[test]
     fn solo_se_recorre_un_directorio_normal() {
         assert!(walkable(DIR, 0));
-        // No es un directorio.
+        // Not a directory.
         assert!(!walkable(0, 0));
-        // Junction, symlink de carpeta o punto de montaje.
+        // Directory junction, symlink, or mount point.
         assert!(!walkable(DIR | REPARSE, TAG_MOUNT_POINT));
         assert!(!walkable(DIR | REPARSE, TAG_SYMLINK));
         // Carpeta de la nube ya poblada (`WalkCloud`): se recorre con su filtro, pero NO es un destino prioritario.
         assert!(!walkable(DIR | REPARSE, TAG_CLOUD));
-        // GM-M1: carpeta de la nube sin poblar, con o sin marca de reparse (`SkipUnpopulatedCloud`).
+        // GM-M1: unpopulated cloud folder, with or without a reparse tag (`SkipUnpopulatedCloud`).
         assert!(!walkable(DIR | REPARSE | RECALL_ON_DATA_ACCESS, TAG_CLOUD));
         assert!(!walkable(DIR | RECALL_ON_OPEN, 0));
         assert!(!walkable(DIR | RECALL_ON_DATA_ACCESS, 0));

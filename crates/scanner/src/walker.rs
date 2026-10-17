@@ -83,7 +83,7 @@ pub(crate) struct Shared {
     pub store_ids: bool,
     /// Provisional IDs were exhausted.
     pub id_overflow: AtomicBool,
-    /// Se descartaron subdirectorios pendientes por cancelación: el árbol queda incompleto aunque `pending` llegue a 0.
+    /// Pending subdirectories were dropped on cancellation: the tree remains incomplete even if `pending` reaches 0.
     pub dropped: AtomicBool,
     /// A worker thread panicked.
     pub panicked: AtomicBool,
@@ -159,11 +159,11 @@ pub(crate) struct WorkerState {
     buf: Vec<u64>,
     entries: Vec<Staged>,
     names: Vec<u16>,
-    /// Subdirectorios descubiertos por la última llamada a `process_dir`.
+    /// Subdirectories discovered by the last call to `process_dir`.
     pub children: Vec<Task>,
-    /// Solo se rellena al procesar la raíz: nombres de las carpetas de primer nivel (índice = etiqueta - 1).
+    /// Populated only when processing the root: names of top-level folders (index = label - 1).
     pub top_names: Vec<OsString>,
-    /// Había más carpetas de primer nivel que `MAX_TOP_NAMES`: las sobrantes comparten la última etiqueta.
+    /// There were more top-level folders than `MAX_TOP_NAMES`: the remaining folders share the last label.
     pub top_overflow: bool,
     pub errors: BTreeMap<u32, u64>,
     pub error_samples: Vec<(u32, Vec<u16>)>,
@@ -223,7 +223,7 @@ fn stage(entries: &mut Vec<Staged>, names: &mut Vec<u16>, cluster: u64, e: &RawE
     let is_dir = classify::is_dir(e.attrs);
     let alloc = match e.alloc {
         Some(a) => a,
-        // Respaldo: sin AllocationSize, EOF redondeado a cluster (los directorios no tienen estimación).
+        // Fallback: without AllocationSize, round EOF up to a cluster (directories have no estimate).
         None if is_dir => 0,
         None => classify::estimate_alloc(e.logical, cluster),
     };
@@ -239,7 +239,7 @@ fn stage(entries: &mut Vec<Staged>, names: &mut Vec<u16>, cluster: u64, e: &RawE
     });
 }
 
-/// Lista un directorio y deja las entradas en `entries`/`names`. Devuelve el código de error de Windows si falla.
+/// Lists a directory into `entries`/`names`. Returns the Windows error code on failure.
 fn list_dir(
     sh: &Shared,
     path: &[u16],
@@ -261,8 +261,8 @@ fn list_dir(
         match sys::enum_dir_extd(&h, buf, &mut |e| stage(entries, names, cluster, e)) {
             Ok(()) => return Ok(()),
             Err(code) if UNSUPPORTED_CODES.contains(&code) => {
-                // La clase extendida no sirve aquí. Si es la raíz, vale para todo el escaneo; si no, solo para este
-                // directorio (un sistema de archivos raro bajo la raíz).
+                // The extended information class is unavailable here. If this is the root, it applies to the whole scan;
+                // otherwise it applies only to this directory (an unusual file system beneath the root).
                 if is_root {
                     sh.find_mode.store(true, Ordering::Relaxed);
                 }
@@ -300,8 +300,8 @@ pub(crate) fn process_dir(
     let n = st.entries.len();
     let base = sh.reserve_ids(n as u32);
     if sh.id_overflow.load(Ordering::SeqCst) {
-        // Los ids provisionales se agotaron (el escaneo ya está cancelado y se marcará como tal): este directorio no
-        // entrega lote, porque sus ids habrían dado la vuelta y chocarían con los de otros nodos.
+        // Provisional IDs are exhausted (the scan is already cancelled and will be marked accordingly): this directory
+        // returns no batch because its IDs would wrap and collide with other nodes.
         return Err(ERROR_ARITHMETIC_OVERFLOW);
     }
     let mut batch = Batch::listing_with_capacity(task.id, base, n, st.names.len());
@@ -324,11 +324,11 @@ pub(crate) fn process_dir(
         } else {
             classify::entry_flags(e.attrs, e.reparse_tag)
         };
-        // Las carpetas de la nube (OneDrive...) ya pobladas son reparse points pero SÍ se recorren: su filtro permite
-        // listarlas. Las no pobladas no (listarlas provocaría descargas por red).
+        // Populated cloud folders (OneDrive, etc.) are reparse points but ARE traversed: their filter allows listing.
+        // Unpopulated folders are not (listing them could trigger network downloads).
         let cloud_dir = is_dir && action == classify::DirAction::WalkCloud;
         if is_dir && action == classify::DirAction::SkipReparse {
-            // Junction, symlink o punto de montaje de directorio: no se sigue y mide 0.
+            // Directory junction, symlink, or mount point: do not follow; size is zero.
             batch.push_utf16(
                 task.id,
                 name,
@@ -341,7 +341,7 @@ pub(crate) fn process_dir(
             continue;
         }
         if is_dir && action == classify::DirAction::SkipUnpopulatedCloud {
-            // Sin recorrer: se cuenta con su AllocationSize y el builder la marca INCOMPLETE (no llega su lote).
+            // Not traversed: count its AllocationSize and let the builder mark it INCOMPLETE (its batch is never delivered).
             batch.push_utf16(
                 task.id,
                 name,
@@ -374,7 +374,7 @@ pub(crate) fn process_dir(
             stats.alloc += e.alloc;
             continue;
         }
-        // Directorio real (o de la nube).
+        // Regular directory (or cloud folder).
         stats.dirs += 1;
         stats.alloc += e.alloc;
         let child_path = join(&task.path, name);
@@ -410,7 +410,7 @@ pub(crate) fn process_dir(
                 });
             }
             Some(a) => {
-                // Este directorio ya tiene nodo (precreado por la cola prioritaria): se deja un hueco en su lugar.
+                // This directory already has a node (precreated by the priority queue): leave a placeholder in its position.
                 batch.push_hole();
                 match a.kind {
                     AdoptKind::Ancestor => {
@@ -424,8 +424,8 @@ pub(crate) fn process_dir(
                         });
                     }
                     AdoptKind::Target(idx) => {
-                        // Se cuenta ANTES de reclamar: si la tarea inicial de esta ruta falla su reclamación y
-                        // termina entre medias, el contador no puede llegar a 0 y marcarla como hecha antes de tiempo.
+                        // Count BEFORE claiming: if the initial task for this path fails to claim and finishes in between,
+                        // the counter cannot reach 0 and mark the path complete too early.
                         prio_inc(sh, idx);
                         if sh.target_claimed(idx).swap(true, Ordering::AcqRel) {
                             prio_dec(sh, idx);
@@ -450,7 +450,7 @@ pub(crate) fn process_dir(
     Ok(stats)
 }
 
-/// Suma las cifras de un directorio a los contadores de progreso.
+/// Adds a directory's statistics to the progress counters.
 pub(crate) fn account(sh: &Shared, task: &Task, s: &DirStats) {
     let p = &sh.progress;
     p.files.fetch_add(s.files, Ordering::Relaxed);
@@ -468,14 +468,14 @@ pub(crate) fn account(sh: &Shared, task: &Task, s: &DirStats) {
     }
 }
 
-/// Cuenta una tarea más pendiente en la ruta prioritaria `idx`.
+/// Increments the pending-task count for priority path `idx`.
 fn prio_inc(sh: &Shared, idx: u16) {
     if let Some(t) = sh.progress.priority.get().and_then(|v| v.get(idx as usize)) {
         t.pending.fetch_add(1, Ordering::AcqRel);
     }
 }
 
-/// Descuenta una tarea de la ruta prioritaria `idx`; si era la última, la ruta está hecha.
+/// Decrements the task count for priority path `idx`; if it was the last one, the path is complete.
 fn prio_dec(sh: &Shared, idx: u16) {
     if let Some(t) = sh.progress.priority.get().and_then(|v| v.get(idx as usize))
         && t.pending.fetch_sub(1, Ordering::AcqRel) == 1
@@ -484,7 +484,7 @@ fn prio_dec(sh: &Shared, idx: u16) {
     }
 }
 
-/// Marca una tarea como terminada (y su ruta prioritaria como hecha si era la última).
+/// Marks a task complete (and its priority path complete if it was the last task).
 fn finish_task(sh: &Shared, task: &Task) {
     if task.prio != NO_PRIO {
         prio_dec(sh, task.prio);
@@ -492,8 +492,8 @@ fn finish_task(sh: &Shared, task: &Task) {
     sh.pending.fetch_sub(1, Ordering::SeqCst);
 }
 
-/// Publica las tareas hijas: se cuentan ANTES de terminar la tarea padre, así `pending == 0` solo ocurre cuando de
-/// verdad no queda trabajo. Las de rutas prioritarias van a la cola prioritaria compartida; el resto, a la cola local.
+/// Publishes child tasks: they are counted BEFORE the parent task finishes, so `pending == 0` occurs only when no work
+/// actually remains. Priority-path tasks go to the shared priority queue; the rest go to the local queue.
 fn push_children(sh: &Shared, local: &Worker<Task>, children: &mut Vec<Task>) {
     sh.pending.fetch_add(children.len(), Ordering::SeqCst);
     for c in children.drain(..) {
@@ -540,14 +540,14 @@ fn next_task(
     })
 }
 
-/// Lo que devuelve cada hilo al terminar.
+/// Data returned by each worker when it finishes.
 pub(crate) struct WorkerOut {
     pub errors: BTreeMap<u32, u64>,
     pub error_samples: Vec<(u32, Vec<u16>)>,
 }
 
-/// Espera de un hilo sin trabajo: primero gira, luego cede el turno y por último duerme con una pausa que crece
-/// (de 50 µs a 3,2 ms) para no consumir CPU mientras otros hilos terminan directorios grandes.
+/// Waits when a worker has no work: first spin, then yield, then sleep with an increasing delay
+/// (from 50 µs to 3.2 ms) to avoid burning CPU while other workers finish large directories.
 #[derive(Default)]
 struct Backoff {
     step: u32,
@@ -571,7 +571,7 @@ impl Backoff {
     }
 }
 
-/// Al soltarse durante un pánico (unwind) cancela el escaneo.
+/// Cancels the scan if dropped during a panic (unwinding).
 struct PanicGuard<'a>(&'a Shared);
 
 impl Drop for PanicGuard<'_> {
@@ -591,8 +591,8 @@ pub(crate) fn worker_loop(
     stealers: &[Stealer<Task>],
     me: usize,
 ) -> WorkerOut {
-    // Si este hilo entra en pánico, cancela el escaneo para que los demás salgan y el coordinador no se cuelgue
-    // esperando una tarea que nadie va a terminar.
+    // If this thread panics, cancel the scan so the others exit and the coordinator does not hang.
+    // waiting for a task that no worker will finish.
     let _guard = PanicGuard(sh);
     let mut st = WorkerState::new();
     let mut backoff = Backoff::default();
@@ -604,14 +604,14 @@ pub(crate) fn worker_loop(
             Some(task) => {
                 backoff.reset();
                 if task.claim && sh.target_claimed(task.prio).swap(true, Ordering::AcqRel) {
-                    // El recorrido general llegó antes a esta carpeta y la está escaneando él.
+                    // The general traversal reached this folder first and is scanning it.
                     finish_task(sh, &task);
                     continue;
                 }
                 if let Ok(stats) = process_dir(sh, &tx, &task, false, &mut st) {
                     account(sh, &task, &stats);
                     if sh.cancel.load(Ordering::Relaxed) {
-                        // Se descartan subdirectorios: aunque `pending` llegue a 0, el árbol queda incompleto.
+                        // Subdirectories are dropped: even if `pending` reaches 0, the tree remains incomplete.
                         if !st.children.is_empty() {
                             sh.dropped.store(true, Ordering::SeqCst);
                         }
@@ -666,7 +666,7 @@ mod tests {
         );
         assert!(overflow);
         assert_eq!(names.len(), 3);
-        // Con el tope real, la etiqueta más alta cabe en u16 sin envolver.
+        // With the real limit, the highest label fits in `u16` without wrapping.
         assert!(MAX_TOP_NAMES < u16::MAX as usize);
     }
 
@@ -681,7 +681,7 @@ mod tests {
         assert!(sh.cancel.load(Ordering::SeqCst));
     }
 
-    /// GM-m3: con los ids agotados `process_dir` no entrega ningún lote (sus ids darían la vuelta y chocarían con otros).
+    /// GM-m3: when IDs are exhausted, `process_dir` returns no batch (its IDs would wrap and collide with others).
     #[test]
     fn con_los_ids_agotados_no_se_entrega_ningun_lote() {
         let dir = std::env::temp_dir().join(format!("tesela-test-{}", uuid::Uuid::new_v4()));
@@ -702,7 +702,7 @@ mod tests {
         // Con ids de sobra entrega su lote.
         assert!(process_dir(&sh, &tx, &task, true, &mut st).is_ok());
         assert!(rx.try_recv().is_ok());
-        // Con el contador al borde: error, bandera de agotamiento, cancelación y ni un lote.
+        // At the counter limit: error, exhaustion flag, cancellation, and no batch.
         sh.ids.store(u32::MAX - 1, Ordering::SeqCst);
         let mut st = WorkerState::new();
         assert_eq!(
@@ -728,7 +728,7 @@ mod tests {
         assert!(r.is_err());
         assert!(sh.panicked.load(Ordering::SeqCst));
         assert!(sh.cancel.load(Ordering::SeqCst));
-        // Sin pánico, soltar la guarda no cancela nada.
+        // Without a panic, dropping the guard does not cancel anything.
         let sh = shared();
         drop(PanicGuard(&sh));
         assert!(!sh.cancel.load(Ordering::SeqCst));
