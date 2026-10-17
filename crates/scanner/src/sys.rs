@@ -335,7 +335,7 @@ pub struct RawEntry<'a> {
     pub logical: u64,
     /// `None` with `FindFirstFileExW` (it does not provide `AllocationSize`).
     pub alloc: Option<u64>,
-    /// 0 si la API no lo da.
+    /// 0 if the API does not provide it.
     pub file_id: u128,
     /// Reparse tag (valid only when the `REPARSE_POINT` attribute is set).
     pub reparse_tag: u32,
@@ -637,7 +637,7 @@ impl FsFullSizeEx {
     }
 }
 
-/// `NtQueryVolumeInformationFile` de la clase `class` sobre el handle, escribiendo en `info`. Devuelve el NTSTATUS si falla.
+/// Query volume information class `class` on the handle, writing into `info`. Returns the NTSTATUS on failure.
 fn nt_query<T>(h: &DirHandle, info: &mut T, class: i32) -> Result<(), i32> {
     // SAFETY: `IO_STATUS_BLOCK` is POD (a pointer/integer and a `usize`); an all-zero value is valid.
     let mut iosb: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };

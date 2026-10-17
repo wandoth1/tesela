@@ -32,21 +32,21 @@ unsafe fn wcslen(p: *const u16) -> usize {
 /// Current process user's SID as text (`S-1-5-21-...`), or `None` if Windows does not provide it.
 pub fn current_user_sid() -> Option<String> {
     let mut token: HANDLE = std::ptr::null_mut();
-    // SAFETY: el pseudo-handle del proceso actual siempre es válido; `token` es escribible.
+    // SAFETY: the current process pseudo-handle is always valid; `token` is writable.
     if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
         return None;
     }
     let sid = (|| {
         // First call: obtain the required size (intentionally fails with ERROR_INSUFFICIENT_BUFFER).
         let mut needed = 0u32;
-        // SAFETY: `token` es válido; búfer nulo de longitud 0 es la forma documentada de preguntar el tamaño.
+        // SAFETY: `token` is valid; a null buffer with length 0 is the documented way to query the required size.
         unsafe { GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut needed) };
         if needed == 0 {
             return None;
         }
         // Use `u64` to guarantee the alignment required by TOKEN_USER.
         let mut buf = vec![0u64; (needed as usize).div_ceil(8)];
-        // SAFETY: `buf` es escribible, alineado y de al menos `needed` bytes; `token` es válido.
+        // SAFETY: `buf` is writable, aligned, and at least `needed` bytes long; `token` is valid.
         let ok = unsafe {
             GetTokenInformation(
                 token,
@@ -59,20 +59,20 @@ pub fn current_user_sid() -> Option<String> {
         if ok == 0 {
             return None;
         }
-        // SAFETY: la llamada anterior rellenó `buf` con un TOKEN_USER (la memoria está alineada a 8 y es válida).
+        // SAFETY: the previous call filled `buf` with a TOKEN_USER (the memory is valid and aligned to 8 bytes).
         let sid_ptr = unsafe { (*(buf.as_ptr() as *const TOKEN_USER)).User.Sid };
         let mut wide: *mut u16 = std::ptr::null_mut();
-        // SAFETY: `sid_ptr` apunta a un SID válido dentro de `buf`; `wide` es escribible.
+        // SAFETY: `sid_ptr` points to a valid SID inside `buf`; `wide` is writable.
         if unsafe { ConvertSidToStringSidW(sid_ptr, &mut wide) } == 0 || wide.is_null() {
             return None;
         }
-        // SAFETY: `wide` es una cadena UTF-16 terminada en NUL que reservó Windows; se lee antes de liberarla.
+        // SAFETY: `wide` is a NUL-terminated UTF-16 string allocated by Windows; it is read before being freed.
         let text = unsafe { OsString::from_wide(std::slice::from_raw_parts(wide, wcslen(wide))) };
-        // SAFETY: `wide` se reservó con LocalAlloc dentro de ConvertSidToStringSidW y se libera una sola vez.
+        // SAFETY: `wide` was allocated with LocalAlloc inside ConvertSidToStringSidW and is freed exactly once.
         unsafe { LocalFree(wide as *mut _) };
         text.into_string().ok()
     })();
-    // SAFETY: `token` es el handle válido de arriba y se cierra una sola vez.
+    // SAFETY: `token` is the valid handle obtained above and is closed exactly once.
     unsafe { CloseHandle(token) };
     sid
 }
@@ -80,19 +80,19 @@ pub fn current_user_sid() -> Option<String> {
 /// A Windows known folder (`SHGetKnownFolderPath`, current user; may be redirected), or `None` on failure.
 pub fn known_folder(id: &GUID) -> Option<PathBuf> {
     let mut out: *mut u16 = std::ptr::null_mut();
-    // SAFETY: `id` apunta a un GUID válido (una constante `FOLDERID_*`); flags 0 y token nulo = usuario actual; `out` es
-    // escribible.
+    // SAFETY: `id` points to a valid GUID (a `FOLDERID_*` constant); flags 0 and a null token mean the current user; `out`
+    // is writable.
     let hr = unsafe { SHGetKnownFolderPath(id, 0, std::ptr::null_mut(), &mut out) };
     if hr < 0 || out.is_null() {
         if !out.is_null() {
-            // SAFETY: incluso si falla, la documentación pide liberar el puntero que se haya devuelto.
+            // SAFETY: the documentation requires freeing any pointer returned, even on failure.
             unsafe { CoTaskMemFree(out as *const _) };
         }
         return None;
     }
-    // SAFETY: tras un HRESULT correcto, `out` es una cadena UTF-16 terminada en NUL reservada con CoTaskMemAlloc.
+    // SAFETY: after a successful HRESULT, `out` is a NUL-terminated UTF-16 string allocated with CoTaskMemAlloc.
     let path = unsafe { OsString::from_wide(std::slice::from_raw_parts(out, wcslen(out))) };
-    // SAFETY: `out` se liberó con el asignador correcto y se libera una sola vez.
+    // SAFETY: `out` was allocated with the correct allocator and is freed exactly once.
     unsafe { CoTaskMemFree(out as *const _) };
     Some(path.into())
 }
@@ -114,20 +114,20 @@ fn env_path(name: &str) -> Option<PathBuf> {
 /// never the browser profile (history, bookmarks, cookies, credentials...).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum KnownKind {
-    /// `%TEMP%` del usuario.
+    /// The user's `%TEMP%` directory.
     UserTemp,
     /// `Windows\Temp`.
     WindowsTemp,
     ChromeCache,
     EdgeCache,
     FirefoxCache,
-    /// La carpeta Descargas.
+    /// The Downloads folder.
     Downloads,
-    /// La carpeta de la Papelera del usuario en el volumen.
+    /// The user's Recycle Bin folder on the volume.
     RecycleBin,
-    /// `ReportArchive` y `ReportQueue` de los informes de errores de Windows del usuario (ver [`crate::diagnostic_dirs`]).
+    /// The user's Windows error reports in `ReportArchive` and `ReportQueue` (see [`crate::diagnostic_dirs`]).
     WerReports,
-    /// `%LOCALAPPDATA%\CrashDumps`, los volcados locales de bloqueo de aplicaciones.
+    /// `%LOCALAPPDATA%\CrashDumps`, local application crash dumps.
     CrashDumps,
 }
 

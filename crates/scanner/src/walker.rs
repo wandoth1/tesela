@@ -445,7 +445,7 @@ pub(crate) fn process_dir(
         }
     }
     if tx.send(batch).is_err() {
-        sh.cancel.store(true, Ordering::SeqCst); // el colector ha muerto
+        sh.cancel.store(true, Ordering::SeqCst); // The collector has exited.
     }
     Ok(stats)
 }
@@ -583,7 +583,7 @@ impl Drop for PanicGuard<'_> {
     }
 }
 
-/// Bucle de un hilo de escaneo.
+/// Scan worker thread loop.
 pub(crate) fn worker_loop(
     sh: &Shared,
     tx: Sender<Batch>,
