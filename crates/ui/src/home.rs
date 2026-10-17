@@ -336,6 +336,16 @@ fn wide_button(
     resp
 }
 
+/// El separador "·" del aviso. Se PINTA (no es un `Label`): así no sale en el árbol de accesibilidad y un lector de
+/// pantalla lee el aviso y los dos enlaces, no "punto medio".
+fn dot_separator(ui: &mut Ui, color: Color32) {
+    let galley =
+        ui.painter()
+            .layout_no_wrap("·".to_owned(), egui::FontId::proportional(13.0), color);
+    let (rect, _) = ui.allocate_exact_size(galley.size(), Sense::empty());
+    ui.painter().galley(rect.min, galley, color);
+}
+
 /// El aviso discreto de una versión nueva: "Hay una versión nueva de Tesela: v0.1.5 · Ver novedades · Descartar". Ocupa la
 /// franja superior, a la izquierda del botón de ajustes. NO descarga nada: "Ver novedades" abre la página de la versión en
 /// el navegador, y "Descartar" lo oculta para esa versión.
@@ -358,14 +368,14 @@ fn update_notice(ui: &mut Ui, env: &mut Env, v: tesela_update::Version) {
                     .size(13.0)
                     .color(pal.text_muted),
             );
-            ui.label(RichText::new("·").size(13.0).color(pal.text_muted));
+            dot_separator(ui, pal.text_muted);
             let view = ui
                 .link(RichText::new(tr.t("update-view")).size(13.0))
                 .on_hover_text(tr.t("update-view-hover"));
             if view.clicked() {
                 acts.push(Action::OpenRelease(v));
             }
-            ui.label(RichText::new("·").size(13.0).color(pal.text_muted));
+            dot_separator(ui, pal.text_muted);
             if ui
                 .link(RichText::new(tr.t("update-dismiss")).size(13.0))
                 .clicked()

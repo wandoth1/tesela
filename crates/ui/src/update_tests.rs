@@ -451,6 +451,24 @@ fn el_aviso_sale_se_descarta_y_no_vuelve_a_salir_para_esa_version() {
 }
 
 #[test]
+fn un_aviso_descartado_no_vuelve_con_una_version_menor_o_igual_a_la_descartada() {
+    let higher = Version {
+        patch: newer().patch + 1,
+        ..newer()
+    };
+    for answer in [newer(), higher] {
+        let mock = Mock::tag(&answer.tag());
+        let mut p = on(None);
+        p.dismissed = Some(higher);
+        let mut h = harness(opts(p, LangPref::Es, Some(&mock)));
+        assert!(wait_until(&mut h, |_| mock.calls() == 1));
+        settle(&mut h);
+        assert!(view(&mut h).notice.is_none(), "{answer}");
+        assert!(h.query_by_label_contains("Hay una versión nueva").is_none());
+    }
+}
+
+#[test]
 fn ver_novedades_abre_la_pagina_que_construye_tesela_y_no_una_url_de_la_respuesta() {
     let mock = Mock::tag(&newer().tag());
     let mut h = harness(opts(on(None), LangPref::En, Some(&mock)));
@@ -476,7 +494,7 @@ fn ver_novedades_abre_la_pagina_que_construye_tesela_y_no_una_url_de_la_respuest
 
 #[test]
 fn los_textos_del_aviso_y_de_ajustes_salen_en_los_dos_idiomas() {
-    for (lang, settings, available, view_text, dismiss, check, explain) in [
+    for (lang, settings, available, view_text, dismiss, check, explain, when_first, only_number) in [
         (
             LangPref::Es,
             "Ajustes",
@@ -484,7 +502,9 @@ fn los_textos_del_aviso_y_de_ajustes_salen_en_los_dos_idiomas() {
             "Ver novedades",
             "Descartar",
             "Buscar actualizaciones al abrir Tesela",
-            "Nunca se descarga ni se instala nada",
+            "nunca se descarga ni se instala ninguna actualización",
+            "al marcar la casilla y, después, al abrirse",
+            "Solo se descarga el número de la última versión",
         ),
         (
             LangPref::En,
@@ -493,7 +513,9 @@ fn los_textos_del_aviso_y_de_ajustes_salen_en_los_dos_idiomas() {
             "See what's new",
             "Dismiss",
             "Check for updates when Tesela opens",
-            "Nothing is ever downloaded or installed",
+            "no update is ever downloaded or installed",
+            "when you tick the box and then when it opens",
+            "Only the latest version number is downloaded",
         ),
     ] {
         let mock = Mock::tag(&newer().tag());
@@ -503,10 +525,15 @@ fn los_textos_del_aviso_y_de_ajustes_salen_en_los_dos_idiomas() {
         h.get_by_label_contains(available);
         h.get_by_label(view_text);
         h.get_by_label(dismiss);
+        // Los separadores "·" se pintan: no son nodos de accesibilidad que un lector de pantalla lea.
+        assert!(h.query_by_label_contains("·").is_none());
         h.get_by_label(settings).click();
         h.run_steps(3);
         h.get_by_label(check);
         h.get_by_label_contains(explain);
+        // El consentimiento dice cuándo se consulta por primera vez y qué se descarga de verdad.
+        h.get_by_label_contains(when_first);
+        h.get_by_label_contains(only_number);
         // La explicación dice qué se consulta y qué se envía, sin prometer más de lo que hace.
         h.get_by_label_contains("GitHub");
     }

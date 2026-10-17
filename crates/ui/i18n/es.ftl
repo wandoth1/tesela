@@ -9,10 +9,10 @@ settings-language = Idioma
 
 # Comprobación de actualizaciones (opcional, desactivada por defecto). Qué se consulta y qué se envía se dice con honestidad.
 settings-update-check = Buscar actualizaciones al abrir Tesela
-settings-update-explain = Si lo activas, al abrir Tesela se pregunta a GitHub cuál es la última versión publicada (como mucho una vez al día). Solo se envía el nombre «Tesela»: ni versión ni datos de tu equipo. GitHub ve tu dirección IP, como cualquier página web. Nunca se descarga ni se instala nada.
+settings-update-explain = Si lo activas, Tesela pregunta a GitHub cuál es la última versión publicada: al marcar la casilla y, después, al abrirse (como mucho una vez al día). Solo se envía el nombre «Tesela»: ni versión ni datos de tu equipo. GitHub ve tu dirección IP, como cualquier página web. Solo se descarga el número de la última versión; nunca se descarga ni se instala ninguna actualización.
 update-available = Hay una versión nueva de Tesela: { $v }
 update-view = Ver novedades
-update-view-hover = Abre la página de esa versión en tu navegador. No descarga nada.
+update-view-hover = Abre la página de esa versión en tu navegador. Tesela no descarga nada.
 update-dismiss = Descartar
 update-failed = No se pudo comprobar si hay una versión nueva.
 
