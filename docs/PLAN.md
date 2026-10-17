@@ -1,183 +1,183 @@
-# Plan: analizador visual de espacio en disco para Windows (Rust)
+# Plan: visual disk space analyzer for Windows (Rust)
 
-> **Estado:** diseño **cerrado y validado** (2 rondas entre diseño UX y arquitectura + validación del asesor; ver §9). **Fase 0 completada** ([conclusiones](fase-0-conclusiones.md)); sus números ya están incorporados aquí (ronda 4 en §9). Lo único abierto son las comprobaciones pendientes del usuario en §6. Siguiente: MVP v0.1.
-> **Nombre de trabajo:** **Tesela**, la pieza de un mosaico, como cada bloque del treemap. Comprobado el 2026-10-15: no hay ningún crate `tesela` en crates.io, y en GitHub solo existe `raycoarana/tesela`, una librería Android de 2015 sin relación. Nombre libre en crates.io y winget (comprobado el 2026-10-15); marcas registradas sin revisar.
+> **Status:** design **closed and validated** (2 rounds between UX design and architecture + validation by the advisor; see §9). **Phase 0 completed** ([findings](phase-0-findings.md)); its numbers are already incorporated here (round 4 in §9). The only open items are the user's pending checks in §6. Next: MVP v0.1.
+> **Working name:** **Tesela**, the single piece of a mosaic, like each block of the treemap. Checked on 2026-10-15: there is no `tesela` crate on crates.io, and on GitHub the only match is `raycoarana/tesela`, an unrelated Android library from 2015. The name is free on crates.io and winget (checked on 2026-10-15); registered trademarks not reviewed.
 
 ---
 
-## 1. Decisiones clave
+## 1. Key decisions
 
-| Tema | Decisión | Por qué |
+| Topic | Decision | Why |
 |---|---|---|
-| Lenguaje | Rust estable; la MSRV la fija egui (hoy 1.95), con `rust-toolchain.toml` | Rápido, poca RAM y un único binario |
-| UI | **egui/eframe 0.36** con tema propio. Backend **`wgpu` compilado solo con DX12** (WARP de respaldo para RDP y máquinas virtuales sin GPU). Vulkan se excluye. El treemap se dibuja como un **`Mesh` teselado una vez y cacheado**. `glow` es el plan B solo si la prueba de RDP/Hyper-V (§6) falla con wgpu y funciona con glow | Medido en la fase 0: exe ≈ 10,5 MB; ≈ 70 MiB de private working set con el mapa; con `Mesh`, ~1–2 ms por frame. MIT/Apache, compatible con SignPath; AccessKit. Slint queda descartado por licencia (GPL o no-OSI). WinUI vía `windows-reactor` necesita el Windows App Runtime y sigue en preview |
-| Plan B de UI | Win32 + Direct2D | Más pequeño, pero supone meses de widgets, teclado y UIA |
-| Visualización | **Treemap squarified + lista con barras**, sincronizados. Sin sunburst | El treemap muestra la forma del disco; la lista da cifras exactas y es la vista accesible |
-| Tamaño que se muestra | **En disco** (`AllocationSize`) como valor principal; el lógico también aparece en el panel de detalles | Es lo que se libera de verdad. El Explorador muestra el lógico, así que se enseñan los dos |
-| Escaneo en el MVP | Walker paralelo propio con `GetFileInformationByHandleEx(FileIdExtdDirectoryInfo)` y `FindFirstFileExW` de respaldo | Obtiene `AllocationSize` y `FileId` por lotes. `walkdir` es de un solo hilo y `jwalk` está deprecado |
-| Escaneo rápido (v0.3) | Lectura de `$MFT` con `ntfs-reader` (`MftScan` en streaming) detrás de `trait MftSource` | Estilo WizTree, pero requiere administrador |
-| Elevación | Manifiesto `asInvoker`: **nunca** pide UAC al arrancar. Botón opcional "Modo rápido (administrador)" | Sin fricción. En v1.0, un helper elevado que solo escanea |
-| Borrado | **Destino según cada regla, independiente del riesgo** (ver §2.5). Todo pasa por la cesta | Mandar temporales a la Papelera no libera nada |
-| SO | Soporte oficial para Windows 10 22H2 y Windows 11; suelo técnico 1809. x64 desde el MVP; ARM64 se compila en CI desde el MVP y se publica en v1.0 | Rust exige Win10+. `aarch64-pc-windows-msvc` es Tier 1 |
-| Entregable | **Instalador MSI por usuario desde la v0.1** (WiX): sin administrador, se instala en `%LOCALAPPDATA%\Programs\Tesela`, acceso en el menú Inicio, aparece en Aplicaciones instaladas, actualiza encima y se firma con SignPath. Zip portable como opción secundaria. MSIX descartado | Decisión del usuario (2026-10-15). Coherente con "nunca UAC". MSIX aísla el sistema de archivos, lo que choca con leer todo el disco y la MFT |
-| Licencia | MIT / Apache-2.0 dual | Ecosistema Rust y requisito de SignPath |
-| Fuera del alcance | Telemetría, cuentas, "optimizador de registro", desinstalador, sunburst, triturado, reglas que borren sin intervención | Ruido sin valor |
+| Language | Stable Rust; the MSRV is set by egui (today 1.95), with `rust-toolchain.toml` | Fast, low RAM and a single binary |
+| UI | **egui/eframe 0.36** with a custom theme. **`wgpu` backend compiled with DX12 only** (WARP as the fallback for RDP and virtual machines without a GPU). Vulkan is excluded. The treemap is drawn as a **`Mesh` tessellated once and cached**. `glow` is plan B only if the RDP/Hyper-V test (§6) fails with wgpu and works with glow | Measured in phase 0: exe ≈ 10.5 MB; ≈ 70 MiB private working set with the map; with `Mesh`, ~1–2 ms per frame. MIT/Apache, compatible with SignPath; AccessKit. Slint is ruled out because of its license (GPL or non-OSI). WinUI via `windows-reactor` needs the Windows App Runtime and is still in preview |
+| UI plan B | Win32 + Direct2D | Smaller, but it means months of widgets, keyboard and UIA work |
+| Visualization | **Squarified treemap + list with bars**, kept in sync. No sunburst | The treemap shows the shape of the disk; the list gives exact figures and is the accessible view |
+| Size shown | **On disk** (`AllocationSize`) as the main value; the logical size also appears in the details panel | It is what is actually freed. Explorer shows the logical size, so both are shown |
+| Scan in the MVP | Own parallel walker with `GetFileInformationByHandleEx(FileIdExtdDirectoryInfo)` and `FindFirstFileExW` as the fallback | Gets `AllocationSize` and `FileId` in batches. `walkdir` is single-threaded and `jwalk` is deprecated |
+| Fast scan (v0.3) | `$MFT` read with `ntfs-reader` (streaming `MftScan`) behind a `trait MftSource` | WizTree style, but it requires administrator rights |
+| Elevation | `asInvoker` manifest: it **never** asks for UAC at startup. Optional "Fast mode (administrator)" button | No friction. In v1.0, an elevated helper that only scans |
+| Deletion | **Destination set by each rule, independent of risk** (see §2.5). Everything goes through the basket | Sending temporary files to the Recycle Bin frees nothing |
+| OS | Official support for Windows 10 22H2 and Windows 11; technical floor 1809. x64 from the MVP; ARM64 is built in CI from the MVP and published in v1.0 | Rust requires Win10+. `aarch64-pc-windows-msvc` is Tier 1 |
+| Deliverable | **Per-user MSI installer from v0.1** (WiX): no administrator, installs to `%LOCALAPPDATA%\Programs\Tesela`, Start menu shortcut, shows up in Installed apps, updates in place and is signed with SignPath. Portable zip as a secondary option. MSIX ruled out | User decision (2026-10-15). Consistent with "never UAC". MSIX isolates the file system, which clashes with reading the whole disk and the MFT |
+| License | MIT / Apache-2.0 dual | Rust ecosystem and a SignPath requirement |
+| Out of scope | Telemetry, accounts, "registry optimizer", uninstaller, sunburst, shredding, rules that delete without intervention | Noise with no value |
 
 ---
 
-## 2. Producto y UX
+## 2. Product and UX
 
-### 2.1 Principios
-1. **Tres clics para liberar espacio:** Analizar → "Limpiar lo seguro" → Confirmar.
-2. **Primero la respuesta, luego el detalle.** En segundos aparece "Puedes liberar al menos X GB" y luego el mapa.
-3. **Nunca se borra sin ver el total y el destino** (definitivo o Papelera).
-4. **El riesgo se ve antes de leerse:** color con icono y forma, nunca solo color.
-5. **Todo se explica en una frase:** cada sugerencia lleva su "por qué".
-6. **Ligera y honesta:** si algo no es claramente seguro, **no se preselecciona**. Solo se cuenta como liberado lo que realmente se ha liberado.
+### 2.1 Principles
+1. **Three clicks to free space:** Analyze → "Clean the safe stuff" → Confirm.
+2. **The answer first, then the detail.** Within seconds "You can free at least X GB" appears, and then the map.
+3. **Nothing is deleted without seeing the total and the destination** (permanent or Recycle Bin).
+4. **Risk is seen before it is read:** color with an icon and a shape, never color alone.
+5. **Everything is explained in one sentence:** every suggestion carries its "why".
+6. **Light and honest:** if something is not clearly safe, it is **not preselected**. Only what has really been freed is counted as freed.
 
-Terminología: la UI dice siempre "archivos" y "Papelera de reciclaje", como Windows en español.
+Terminology: the UI always says "files" and "Recycle Bin", as Windows does.
 
-### 2.2 Flujo
-1. **Inicio:** tarjetas por unidad con anillo de uso y la línea "Último análisis: hace 3 días · liberaste 8 GB", que solo aparece si hay historial.
-2. **Escaneo:** dos zonas (§2.4).
-3. **Exploración:** Mapa, Lista y Recomendaciones.
-4. **Cesta** agrupada por destino.
-5. **Confirmación:** "Liberar 11,0 GB y mover 3,2 GB a la Papelera".
-6. **Resumen:** "Liberados ahora: 11,0 GB", seguido de "3,2 GB están en la Papelera · [Vaciar ahora] [Abrir la Papelera]". "Vaciar ahora" se convierte en el botón principal si lo que hay en la Papelera supera lo ya liberado.
+### 2.2 Flow
+1. **Home:** one card per drive with a usage ring and the line "Last cleanup: 3 days ago · measured change in free space: 8 GB", which only appears if there is history.
+2. **Scan:** two zones (§2.4).
+3. **Exploration:** Map, List and Recommendations.
+4. **Basket** grouped by destination.
+5. **Confirmation:** "Free up to 11.0 GB and move 3.2 GB to the Recycle Bin".
+6. **Summary:** "Freed now: 11.0 GB", followed by "3.2 GB is in the Recycle Bin · [Empty now] [Open the Recycle Bin]". "Empty now" becomes the primary button if what is in the Recycle Bin exceeds what has already been freed.
 
-Al terminar de limpiar **no se reescanea**: los bloques se encogen con una animación y los totales se recalculan (§3.6).
+When cleaning finishes **there is no rescan**: the blocks shrink with an animation and the totals are recalculated (§3.6).
 
-### 2.3 Ventana principal
+### 2.3 Main window
 ```
 ┌──────────────────────────────────────────────────────────────────────────────┐
-│ [≡] Tesela   C: › Users › ana › AppData     [Buscar… Ctrl+F] [Colorear: Tipo ▾] [⚙] │
+│ [≡] Tesela   C: › Users › ana › AppData     [Search… Ctrl+F] [Color by: Type ▾] [⚙] │
 ├────────────┬─────────────────────────────────────────────┬───────────────────┤
-│ UNIDADES   │   ┌─────────────┬──────────┬───────────┐   │ DETALLES          │
-│ ▣ C: 400/500│   │ AppData     │ Videos   │ Descargas │   │ Videos            │
-│ ▢ D:200/1000│   │  32 GB      │ 28 GB    │ 12 GB     │   │ En disco 28,3 GB  │
-│ VISTAS     │   │             │          ├───────────┤   │ Tamaño   28,1 GB  │
-│ ◉ Mapa     │   │             │          │ Docs 8 GB │   │ 142 archivos      │
-│ ○ Lista    │   ├─────────┬───┴──────────┤           │   │ Mod.: 92 % < 2022 │
-│ ○ Recomend.│   │ node_mod│ Windows y otros datos  ⓘ │   │ Riesgo: Revisar   │
-│   (14 GB)  │   └─────────┴──────────────────────────┘   │ [Explorador][Ruta]│
+│ DRIVES     │   ┌─────────────┬──────────┬───────────┐   │ DETAILS           │
+│ ▣ C: 400/500│   │ AppData     │ Videos   │ Downloads │   │ Videos            │
+│ ▢ D:200/1000│   │  32 GB      │ 28 GB    │ 12 GB     │   │ On disk  28.3 GB  │
+│ VIEWS      │   │             │          ├───────────┤   │ Size     28.1 GB  │
+│ ◉ Map      │   │             │          │ Docs 8 GB │   │ 142 files         │
+│ ○ List     │   ├─────────┬───┴──────────┤           │   │ Mod.: 92 % < 2022 │
+│ ○ Recomm.  │   │ node_mod│ Windows and other data ⓘ │   │ Risk: Review      │
+│   (14 GB)  │   └─────────┴──────────────────────────┘   │ [Explorer][Path]  │
 ├────────────┴─────────────────────────────────────────────┴───────────────────┤
-│ CESTA: 23 elementos · 14,2 GB     [Ver] [Vaciar]          [Limpiar 14,2 GB ▸]│
+│ BASKET: 23 items · 14.2 GB       [View] [Empty]          [Clean 14.2 GB ▸]   │
 ├──────────────────────────────────────────────────────────────────────────────┤
-│ 400 GB usados de 500 GB · 1,0 M archivos · escaneado hace 2 min  [Reescanear]│
+│ 400 GB used of 500 GB · 1.0 M files · scanned 2 min ago         [Rescan]     │
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-### 2.4 Pantalla de escaneo (veredicto temprano)
+### 2.4 Scan screen (early verdict)
 ```
-┌ Mientras analizamos tu disco… ───────────────────────────────────────┐
-│ Puedes liberar al menos 9,0 GB              [  Limpiar lo seguro  ]  │
-│ (se actualiza según avanza)   ◌ Revisando 2 de 5 sitios…             │
-│  ✓ Temporales de Windows ........ 2,0 GB                             │
-│  ✓ Caché de navegadores ......... 7,0 GB                             │
-│  ✓ Papelera de reciclaje ........ 0,5 GB   (Revisar)                 │
-│  ◌ Carpetas de proyectos ........ buscando…                          │
+┌ While we scan your disk… ────────────────────────────────────────────┐
+│ You can free at least 9.0 GB             [ Clean the safe stuff ]    │
+│ (updates as it goes)          ◌ Checking 2 of 5 places…              │
+│  ✓ Windows temporary files ...... 2.0 GB                             │
+│  ✓ Browser cache ................ 7.0 GB                             │
+│  ✓ Recycle Bin .................. 0.5 GB   (Review)                  │
+│  ◌ Project folders .............. searching…                         │
 │ ──────────────────────────────────────────────────────────────────── │
-│ Mapa: Users ████████ · Windows ██ · …               [Parar y ver]    │
+│ Map: Users ████████ · Windows ██ · …               [Stop and view]   │
 └──────────────────────────────────────────────────────────────────────┘
 ```
-- Las rutas conocidas se escanean primero, por una cola prioritaria (§3.3). Cada fila muestra su cifra final al terminar y no vuelve a cambiar.
-- "Limpiar lo seguro" se activa cuando acaba el barrido de las rutas conocidas.
-- El titular **suma solo las filas Seguro**, que es exactamente lo que hace "Limpiar lo seguro". En el ejemplo la Papelera (Revisar) se muestra, pero no cuenta.
-- Mientras quedan filas pendientes el titular dice "**al menos**". Al terminar pasa a "Puedes liberar 14,2 GB" con una animación de contador. Si aparece algo más tarde, se muestra con un chip "+3,1 GB encontrados".
-- **Parar y ver:** se construye el árbol con lo recibido hasta ese momento. Las carpetas que no se recorrieron enteras muestran "≥ X GB" con rayas diagonales tenues, la única trama activa por defecto. Si una de ellas va a la cesta, el `cleaner` la vuelve a medir antes de confirmar.
+- Known paths are scanned first, through a priority queue (§3.3). Each row shows its final figure when it finishes and does not change again.
+- "Clean the safe stuff" becomes active when the sweep of the known paths ends.
+- The headline **adds up only the Safe rows**, which is exactly what "Clean the safe stuff" does. In the example the Recycle Bin (Review) is shown but does not count.
+- While rows are still pending, the headline says "**at least**". When it finishes it changes to "You can free 14.2 GB" with a counter animation. If something turns up later, it is shown with a "+3.1 GB found" chip.
+- **Stop and view:** the tree is built with what has been received up to that moment. Folders that were not walked in full show "≥ X GB" with faint diagonal stripes, the only pattern active by default. If one of them goes to the basket, the `cleaner` measures it again before confirming.
 
-### 2.5 Riesgo y destino: dos ejes distintos
-**Riesgo** (Seguro / Revisar / Solo informar):
-- 🟢 Escudo con check: se puede preseleccionar y entra en "Limpiar lo seguro".
-- 🟠 Ojo: nunca se preselecciona.
-- 🔺 Triángulo "Solo informar": sin casilla.
+### 2.5 Risk and destination: two separate axes
+**Risk** (Safe / Review / Info only):
+- 🟢 Shield with a check: can be preselected and is included in "Clean the safe stuff".
+- 🟠 Eye: never preselected.
+- 🔺 "Info only" triangle: no checkbox.
 
-**Destino** (icono propio, sin colores de riesgo):
-- 🗑̸ **Definitivo:** solo lo regenerable **clasificado por una regla**. Frase de la cesta: "Se elimina y se vuelve a crear sola".
-- 🗑 **Papelera:** todo lo demás. Frase: "Va a la Papelera de reciclaje · puedes recuperarlo".
-- Si algo no cabe en la Papelera (supera el límite real del volumen, o es una unidad de red o extraíble), aparece un tercer grupo ámbar: "**Se eliminará definitivamente porque no cabe en la Papelera**", con una casilla explícita. Esto se recalcula **al ejecutar**, no al marcar; si cambia, se pide confirmar otra vez.
-- Ajuste avanzado "**Enviar siempre todo a la Papelera**".
-- **Orden de ejecución:** si en la cesta están juntos "Vaciar Papelera" y elementos con destino Papelera, la Papelera se vacía **primero** y después se mueven los elementos. Así lo que el usuario quiere conservar recuperable no se borra en el mismo paso.
-- Lo que el usuario arrastra a mano o no está clasificado ("Tu archivo") tiene riesgo Revisar y destino Papelera, y **nunca** se borra definitivamente salvo por el caso de la casilla anterior. La confirmación muestra los 5 elementos más grandes y la frase "Son archivos tuyos; no se recrean".
+**Destination** (its own icon, no risk colors):
+- 🗑̸ **Permanent:** only regenerable items **classified by a rule**. Basket phrase: "Deleted, and it is recreated on its own".
+- 🗑 **Recycle Bin:** everything else. Phrase: "Goes to the Recycle Bin · you can recover it".
+- If something does not fit in the Recycle Bin (it exceeds the volume's real limit, or it is on a network or removable drive), a third amber group appears: "**Will be deleted permanently because it cannot be sent to the Recycle Bin**", with an explicit checkbox. This is recalculated **at execution time**, not when it is checked; if it changes, confirmation is requested again.
+- Advanced setting "**Always send everything to the Recycle Bin**".
+- **Execution order:** if "Empty the Recycle Bin" and items with a Recycle Bin destination are in the basket together, the Recycle Bin is emptied **first** and then the items are moved. That way what the user wants to keep recoverable is not deleted in the same step.
+- What the user drags in by hand or is not classified ("Your file") has Review risk and a Recycle Bin destination, and is **never** deleted permanently except through the checkbox case above. The confirmation shows the 5 largest items and the phrase "These are your own files; they are not recreated".
 
-### 2.6 Asistente de limpieza
-| Categoría | Riesgo | Destino | Versión |
+### 2.6 Cleanup assistant
+| Category | Risk | Destination | Version |
 |---|---|---|---|
-| Temporales (`%TEMP%`, `Windows\Temp` si hay acceso), **solo los no modificados en los últimos 7 días** (`min_age_hours = 168`: la fecha más reciente de creación, escritura y cambio; es el criterio de `cleanmgr`, "no modificados en la última semana"; "por qué": "Archivos temporales sin modificar en la última semana; los recientes se dejan por si un instalador los está usando") | 🟢 | Definitivo (se saltan los archivos en uso) | MVP |
-| Caché de navegadores (Chrome, Edge, Firefox): **solo directorios concretos de caché** (Chromium: `Cache`, `Code Cache`, `GPUCache`, `ShaderCache`/`GrShaderCache`; Firefox: `cache2` y `startupCache` bajo `%LOCALAPPDATA%`). **El perfil del navegador nunca es caché**: historial, marcadores, cookies, credenciales y almacenamiento persistente jamás son candidatos | 🟢 | Definitivo | MVP |
-| Papelera ("Vaciar") | 🟠 | Definitivo (es la acción en sí). **Alcance enumerado:** se purga solo la lista de elementos capturada al confirmar; lo que entre después no se toca y se informa | MVP |
-| `pagefile.sys`, `hiberfil.sys` (solo se explica: reducirlo o desactivarlo exige un símbolo del sistema **como administrador**; `powercfg /h off` quita también la suspensión híbrida y el inicio rápido; `powercfg /h /type reduced` lo encoge y conserva el inicio rápido; Tesela no ejecuta nada) | 🔺 | — | MVP |
-| `node_modules`, `target`, `.venv`, `__pycache__`, `.gradle`, detectados por un archivo vecino (`package.json`, `Cargo.toml`, `pyvenv.cfg`…) | 🟢 | **Papelera** por defecto ("Se puede reinstalar con un comando. Va a la Papelera por si tenías cambios locales"). **Destino definitivo DIFERIDO a la v0.2:** la fase 0 midió ~2× el umbral de 10 s para 100k archivos, pero en una sola medición. En la v0.2 se repite ≥ 3 veces con un árbol realista, y se prueba **"renombrar primero"**: renombrar la carpeta a un nombre lápida hermano falla si hay archivos abiertos (cierra en seguro) y después se borra la renombrada | v0.2 |
-| Descargas antiguas (> 6 meses), instaladores viejos | 🟠 | Papelera | v0.2 |
-| Archivos grandes (> 500 MB) | 🟠 (solo se destacan) | Papelera | v0.2 |
-| Duplicados (tamaño → hash parcial → hash completo; siempre queda una copia) | 🟠 | Papelera | v1.0 |
-| WinSxS, puntos de restauración | 🔺 (consejo de DISM / configuración; la app no ejecuta nada) | — | v1.0 |
+| Temporary files (`%TEMP%`, `Windows\Temp` if accessible), **only those not modified in the last 7 days** (`min_age_hours = 168`: the most recent of the creation, write and change dates; it is the `cleanmgr` criterion, "not modified in the last week"; "why": "Temporary files not modified in the last week; recent ones are left in case an installer is using them") | 🟢 | Permanent (files in use are skipped) | MVP |
+| Browser cache (Chrome, Edge, Firefox): **only specific cache directories** (Chromium: `Cache`, `Code Cache`, `GPUCache`, `ShaderCache`/`GrShaderCache`; Firefox: `cache2` and `startupCache` under `%LOCALAPPDATA%`). **The browser profile is never cache**: history, bookmarks, cookies, credentials and persistent storage are never candidates | 🟢 | Permanent | MVP |
+| Recycle Bin ("Empty") | 🟠 | Permanent (it is the action itself). **Enumerated scope:** only the list of items captured at confirmation is purged; what arrives afterwards is not touched and is reported | MVP |
+| `pagefile.sys`, `hiberfil.sys` (explained only: shrinking or disabling it requires a command prompt **as administrator**; `powercfg /h off` also removes hybrid sleep and fast startup; `powercfg /h /type reduced` shrinks it and keeps fast startup; Tesela runs nothing) | 🔺 | — | MVP |
+| `node_modules`, `target`, `.venv`, `__pycache__`, `.gradle`, detected by a neighboring file (`package.json`, `Cargo.toml`, `pyvenv.cfg`…) | 🟢 | **Recycle Bin** by default ("It can be reinstalled with one command. It goes to the Recycle Bin in case you had local changes"). **Permanent destination DEFERRED to v0.2:** phase 0 measured ~2× the 10 s threshold for 100k files, but in a single measurement. In v0.2 it is repeated ≥ 3 times with a realistic tree, and **"rename first"** is tested: renaming the folder to a sibling tombstone name fails if there are open files (it stops safely) and then the renamed folder is deleted | v0.2 |
+| Old downloads (> 6 months), old installers | 🟠 | Recycle Bin | v0.2 |
+| Large files (> 500 MB) | 🟠 (only highlighted) | Recycle Bin | v0.2 |
+| Duplicates (size → partial hash → full hash; one copy always remains) | 🟠 | Recycle Bin | v1.0 |
+| WinSxS, restore points | 🔺 (DISM / settings advice; the app runs nothing) | — | v1.0 |
 
-**Navegador abierto:** se detectan `chrome.exe`, `msedge.exe` y `firefox.exe`. Si el navegador está abierto, su fila **no se preselecciona** y no entra en "Limpiar lo seguro". La fila dice "**Cierra Chrome para liberar hasta 1,9 GB**" y ofrece [Volver a comprobar]. El motivo es que Chromium abre su caché con `FILE_SHARE_DELETE`: con el navegador abierto el borrado "funciona", pero no libera nada hasta que Chrome suelta los archivos y además le corrompe el índice. La fase 0 midió que esto pasa también con `std::fs::remove_file` y `DeleteFileW`, no solo con POSIX: el nombre desaparece y el espacio queda retenido. Lo de Chrome es una extrapolación de un handle sintético. Por eso no se limpia una caché en uso. La app nunca cierra el navegador. Antes de limpiar, las cifras se dan como "unos" o "hasta".
+**Browser open:** `chrome.exe`, `msedge.exe` and `firefox.exe` are detected. If the browser is open, its row is **not preselected** and is not included in "Clean the safe stuff". The row says "**Close Chrome to free up to 1.9 GB**" and offers [Check again]. The reason is that Chromium opens its cache with `FILE_SHARE_DELETE`: with the browser open the deletion "works", but frees nothing until Chrome releases the files, and it also corrupts the browser's index. Phase 0 measured that this also happens with `std::fs::remove_file` and `DeleteFileW`, not just with POSIX: the name disappears and the space stays held. The Chrome case is an extrapolation from a synthetic handle. That is why a cache in use is not cleaned. The app never closes the browser. Before cleaning, figures are given as "about" or "up to".
 
-**OneDrive:** los archivos que solo están en la nube no se pueden seleccionar para liberar espacio. Si se borra un archivo sincronizado, la confirmación avisa: "Sincronizado con OneDrive: borrarlo también lo quita de la nube".
+**OneDrive:** files that exist only in the cloud cannot be selected to free space. If a synced file is deleted, the confirmation warns: "Synced with OneDrive: deleting it also removes it from the cloud".
 
-### 2.7 Protección
-- **Intocables como destino** (su contenido sí se puede limpiar): la raíz del perfil, `AppData`, `AppData\Local`, `Roaming`, `LocalLow`, `C:\`, `C:\Users` y los ancestros de rutas denegadas.
-  - En el mapa llevan borde punteado y candado.
-  - En el menú, "Añadir a la cesta" aparece desactivado con un texto que explica por qué; "Ver contenido" ocupa su lugar.
-  - Si se arrastran a la cesta, rebotan.
-- **Denegadas por completo:** `C:\Windows` (salvo los temporales conocidos), `Program Files`, `ProgramData` (salvo las cachés conocidas), `System Volume Information`, `$Recycle.Bin` (salvo la acción "Vaciar"), los perfiles de otros usuarios, `C:\Users\Default`, `C:\Users\Public`, los metadatos `$` y la carpeta de la propia app.
-- **Raíces de carpetas conocidas** (Documentos, Escritorio, Vídeos…): se añaden como "**Contenido de Vídeos**", sin incluir la carpeta en sí. Riesgo Revisar, destino Papelera.
-- **Carpetas que contienen algo protegido:** no se aceptan como destino entero (quedan "intocables": candado y rebote); se puede limpiar su contenido no protegido. Es más seguro que aceptarlas con nota, y es lo que hace el código auditado.
-- **Cesta normalizada:** si se añade un nodo cuyo ancestro ya está en la cesta, no se duplica; si se añade un ancestro, absorbe a sus descendientes.
-- **La defensa real es el crate `cleaner`, no la UI.** Calcula el conjunto efectivo y, justo antes de borrar cada elemento, vuelve a validar la ruta protegida, comprueba que no es un reparse point y que el tamaño no ha cambiado mucho (TOCTOU). Esto aplica tanto a la Papelera como al borrado definitivo.
-- Los archivos en uso o sin permiso se saltan, se cuentan y se explican en el resumen.
+### 2.7 Protection
+- **Untouchable as a target** (their contents can be cleaned): the profile root, `AppData`, `AppData\Local`, `Roaming`, `LocalLow`, `C:\`, `C:\Users` and the ancestors of denied paths.
+  - On the map they have a dotted border and a padlock.
+  - In the menu, "Add to basket" appears disabled with a text explaining why; "View contents" takes its place.
+  - If they are dragged to the basket, they bounce back.
+- **Denied entirely:** `C:\Windows` (except the known temporary files), `Program Files`, `ProgramData` (except the known caches), `System Volume Information`, `$Recycle.Bin` (except the "Empty" action), other users' profiles, `C:\Users\Default`, `C:\Users\Public`, the `$` metadata files and the app's own folder.
+- **Known-folder roots** (Documents, Desktop, Videos…): they are added as "**Contents of Videos**", without including the folder itself. Review risk, Recycle Bin destination.
+- **Folders that contain something protected:** they are not accepted as a whole target (they stay "untouchable": padlock and bounce); their unprotected contents can be cleaned. This is safer than accepting them with a note, and it is what the audited code does.
+- **Normalized basket:** if a node is added whose ancestor is already in the basket, it is not duplicated; if an ancestor is added, it absorbs its descendants.
+- **The real defense is the `cleaner` crate, not the UI.** It computes the effective set and, right before deleting each item, validates the protected path again, checks that it is not a reparse point and that the size has not changed much (TOCTOU). This applies to both the Recycle Bin and permanent deletion.
+- Files in use or without permission are skipped, counted and explained in the summary.
 
-### 2.8 Espacio no explicado
-- Hay un bloque gris sintético, ordenado por tamaño como un hijo más de la raíz: "**Windows y otros datos del sistema · 40 GB**", con un icono ⓘ. Se calcula como `total − libre − escaneado` con magnitudes **del volumen** (`NtQueryVolumeInformationFile(FileFsFullSizeInformation)`), medido al terminar. La cuota del usuario se muestra aparte ("Disponible para tu cuenta") y nunca se mezcla en el residuo; sin la consulta y con cuota, no hay bloque.
-- Se recorta a ≥ 0 y se oculta si es menor del 1 %. Solo aparece en el escaneo de un volumen completo y se marca "aproximado".
-- Tooltip: "Incluye archivos de Windows, hibernación, puntos de restauración y carpetas que tu usuario no puede ver. Es normal y no se puede borrar desde aquí". Enlace "Ver el detalle (modo administrador)".
-- Si el hueco supera el 5 %, la barra de estado muestra "El mapa explica 360 de 400 GB. ¿Y el resto?". Aparte se indica "N carpetas sin permiso".
+### 2.8 Unexplained space
+- There is a synthetic gray block, sorted by size like one more child of the root: "**Windows and other system data · 40 GB**", with an ⓘ icon. It is computed as `total − free − scanned` using magnitudes **of the volume** (`NtQueryVolumeInformationFile(FileFsFullSizeInformation)`), measured when the scan finishes. The user's quota is shown separately ("Available to your account") and is never mixed into the remainder; without the query and with a quota, there is no block.
+- It is clamped to ≥ 0 and hidden if it is under 1 %. It only appears in the scan of a whole volume and is marked "approximate".
+- Tooltip: "Includes Windows files, hibernation, restore points and folders your user cannot see. This is normal and cannot be deleted from here". Link "See the detail (administrator mode)".
+- If the gap exceeds 5 %, the status bar shows "The map explains 360 of 400 GB. What about the rest?". Separately, "N folders without permission" is shown.
 
-### 2.9 Treemap y color
-- Muestra un nivel de hijos y una insinuación tenue del siguiente, con esquinas de 4 px y separación de 2 px. La etiqueta solo aparece si cabe.
-- **Dos capas distintas:**
-  - Agrupación interactiva: los bloques de menos de 24×24 px se juntan en "Otros (1.000 elementos, 400 MB)", que se puede abrir. Es el sufijo del slice ordenado.
-  - LOD de dibujo: no se subdivide nada por debajo de unos 3×3 px y hay un tope de ~15k rectángulos por frame.
-- Navegación: zoom animado de 180 ms, breadcrumb, tooltip y menú contextual. En el MVP el menú tiene Abrir en el Explorador, Copiar ruta, Añadir a la cesta y Propiedades; "Excluir" llega en la v1.0.
-- **Colorear por Tipo** (Okabe-Ito):
-  - Vídeo `#0072B2`, imágenes `#E69F00`, audio `#CC79A7`, documentos `#009E73`, comprimidos `#D55E00`, programas `#56B4E9`, otros `#8A8F98`.
-  - Una carpeta toma el color de su tipo dominante **solo si supera el 50 % de los bytes**. Si no, es "**Mixto**", un gris azulado más claro, distinto de "Otros".
-  - Una franja inferior de 4 px muestra los 3 tipos principales cuando el bloque mide ≥ 48 px. El tooltip desglosa porcentajes.
-- **Colorear por Antigüedad:** usa 5 tramos según mtime (< 1 mes, 6 meses, 1 año, 3 años, más). La carpeta toma el tramo donde cae el 80 % de sus bytes. Tooltip: "El 92 % de esto no se modifica desde 2022". Siempre dice "modificado", nunca "usado".
-- **Colorear por Riesgo:** solo se colorean los elementos que tienen recomendación.
-- **Grises con significado:**
-  - "Solo informar": triángulo, no se puede seleccionar.
-  - Bloque del sistema: ⓘ.
-  - "Mixto": con su franja.
-  - El bloque del sistema y los "solo informar" se quedan grises en todos los modos.
-- Tras una limpieza, los histogramas se marcan como "≈ / Aproximado hasta reescanear".
-- Tramas opcionales de accesibilidad por tipo: **puntos** (las rayas quedan reservadas para "incompleto").
+### 2.9 Treemap and color
+- It shows one level of children and a faint hint of the next, with 4 px corners and 2 px spacing. The label only appears if it fits.
+- **Two distinct layers:**
+  - Interactive grouping: blocks smaller than 24×24 px are merged into "Others (1,000 items, 400 MB)", which can be opened. It is the suffix of the sorted slice.
+  - Drawing LOD: nothing is subdivided below about 3×3 px and there is a cap of ~15k rectangles per frame.
+- Navigation: 180 ms animated zoom, breadcrumb, tooltip and context menu. In the MVP the menu has Open in Explorer, Copy path, Add to basket and Properties; "Exclude" arrives in v1.0.
+- **Color by Type** (Okabe-Ito):
+  - Video `#0072B2`, images `#E69F00`, audio `#CC79A7`, documents `#009E73`, archives `#D55E00`, programs `#56B4E9`, other `#8A8F98`.
+  - A folder takes the color of its dominant type **only if it exceeds 50 % of the bytes**. Otherwise it is "**Mixed**", a lighter bluish gray, distinct from "Other".
+  - A 4 px bottom strip shows the top 3 types when the block is ≥ 48 px. The tooltip breaks down the percentages.
+- **Color by Age:** uses 5 bands by mtime (< 1 month, 6 months, 1 year, 3 years, older). A folder takes the band where 80 % of its bytes fall. Tooltip: "92 % of this has not been modified since 2022". It always says "modified", never "used".
+- **Color by Risk:** only items that have a recommendation are colored.
+- **Grays with meaning:**
+  - "Info only": triangle, cannot be selected.
+  - System block: ⓘ.
+  - "Mixed": with its strip.
+  - The system block and the "info only" items stay gray in all modes.
+- After a cleanup, the histograms are marked "≈ / Approximate until rescan".
+- Optional accessibility patterns by type: **dots** (stripes remain reserved for "incomplete").
 
-### 2.10 Identidad, accesibilidad e idiomas
-- **Paleta** (claro / oscuro):
-  - Fondo `#F5F6F8` / `#1B1D21`
-  - Superficie `#FFFFFF` / `#25282E`
-  - Acento `#0F6CBD` / `#4CA3F0`
-  - Seguro `#107C41` / `#3FB871`
-  - Revisar `#B26A00` / `#F2B24D`
-  - Solo informar / peligro `#C42B1C` / `#FF6B5E`
-- **Fuentes:** se cargan del sistema en tiempo de ejecución, sin redistribuirlas: `SegUIVar.ttf` si existe (medido: egui aplica `wght` de 300 a 700; `opsz` no se aplica solo), si no `segoeui.ttf` + `segoeuib.ttf`. La ruta se obtiene con `SHGetKnownFolderPath(FOLDERID_Fonts)`. **No se embeben fuentes de egui** (`default_fonts` desactivado); las escrituras no latinas usan reservas del sistema. Si no hubiera ninguna fuente del sistema utilizable, la app avisa y sale.
-- **Iconos:** un subconjunto de unos 30 de **Fluent UI System Icons** (MIT, © Microsoft, confirmado), embebidos. Se ven igual en Win10 y Win11. No se depende de `SegoeIcons.ttf`.
-- **Fondo sólido.** Mica no funciona con wgpu (medido en 4 configuraciones). Solo volvería si se cambiara al plan B `glow`.
-- **Idiomas:** español e inglés desde el día 1 (`fluent-bundle`), sin cadenas literales en el código.
-- **Accesibilidad:**
-  - DPI PerMonitorV2.
-  - Foco visible de 2 px y treemap navegable con flechas.
-  - AccessKit en la lista.
-  - Se respeta "reducir animaciones" (`SPI_GETCLIENTAREAANIMATION`), también en el progreso indeterminado y los indicadores de espera.
-  - Contraste AA.
+### 2.10 Identity, accessibility and languages
+- **Palette** (light / dark):
+  - Background `#F5F6F8` / `#1B1D21`
+  - Surface `#FFFFFF` / `#25282E`
+  - Accent `#0F6CBD` / `#4CA3F0`
+  - Safe `#107C41` / `#3FB871`
+  - Review `#B26A00` / `#F2B24D`
+  - Info only / danger `#C42B1C` / `#FF6B5E`
+- **Fonts:** loaded from the system at runtime, without redistributing them: `SegUIVar.ttf` if it exists (measured: egui applies `wght` from 300 to 700; `opsz` is not applied on its own), otherwise `segoeui.ttf` + `segoeuib.ttf`. The path is obtained with `SHGetKnownFolderPath(FOLDERID_Fonts)`. **No egui fonts are embedded** (`default_fonts` disabled); non-Latin scripts use system fallbacks. If there were no usable system font at all, the app warns and exits.
+- **Icons:** a subset of about 30 **Fluent UI System Icons** (MIT, © Microsoft, confirmed), embedded. They look the same on Win10 and Win11. It does not depend on `SegoeIcons.ttf`.
+- **Solid background.** Mica does not work with wgpu (measured in 4 configurations). It would only come back if we switched to plan B `glow`.
+- **Languages:** Spanish and English from day 1 (`fluent-bundle`), with no literal strings in the code.
+- **Accessibility:**
+  - PerMonitorV2 DPI.
+  - 2 px visible focus and a treemap navigable with the arrow keys.
+  - AccessKit in the list.
+  - "Reduce animations" is respected (`SPI_GETCLIENTAREAANIMATION`), also in the indeterminate progress and the wait indicators.
+  - AA contrast.
 
-### 2.11 Persistencia
-- `%APPDATA%\Tesela\config.toml`: ajustes.
-- `%LOCALAPPDATA%\Tesela\history.jsonl`: **solo resúmenes** (fecha, unidad, usado, liberado ahora, enviado a la Papelera). Se puede borrar desde Ajustes. Nunca se guarda el árbol.
-- Cesta al relanzar como administrador: se guarda en un archivo de `%LOCALAPPDATA%` con una ACL restringida. El proceso nuevo la lee, vuelve a validar las rutas, recalcula los tamaños y la borra. Si la elevación es con **otra cuenta**, se avisa y no se recupera.
+### 2.11 Persistence
+- `%APPDATA%\Tesela\config.toml`: settings.
+- `%LOCALAPPDATA%\Tesela\history.jsonl`: **summaries only** (date, drive, used, freed now, sent to the Recycle Bin). It can be deleted from Settings. The tree is never stored.
+- Basket when relaunching as administrator: it is saved to a file in `%LOCALAPPDATA%` with a restricted ACL. The new process reads it, validates the paths again, recalculates the sizes and deletes it. If the elevation is with **another account**, a warning is shown and it is not recovered.
 
 ---
 
