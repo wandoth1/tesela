@@ -207,6 +207,7 @@ fn outcome_name(o: Outcome) -> String {
         Outcome::Denied => "denied".into(),
         Outcome::Changed => "changed".into(),
         Outcome::Protected => "protected".into(),
+        Outcome::MailConsentRequired => "mail-consent-required".into(),
         Outcome::Young => "too-recent".into(),
         Outcome::Reparse => "reparse-skipped".into(),
         Outcome::Failed(c) => format!("error-{c}"),

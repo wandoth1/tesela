@@ -53,6 +53,7 @@ fn mk_env(
     Arc::new(Env {
         protection: prot,
         mode,
+        allow_local_mail_permanent: false,
         min_age_ft: duration_to_ft(Duration::from_secs(min_age_hours * 3600)),
         now_ft: now_filetime(),
         cancel: Arc::new(AtomicBool::new(false)),
@@ -798,6 +799,7 @@ fn medicion_a_m3_borrado_de_100000_archivos_con_registro() {
         let env = Arc::new(Env {
             protection: no_protection(),
             mode: Mode::Delete,
+            allow_local_mail_permanent: false,
             min_age_ft: 0,
             now_ft: now_filetime(),
             cancel: Arc::new(AtomicBool::new(false)),

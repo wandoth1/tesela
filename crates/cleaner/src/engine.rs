@@ -140,21 +140,22 @@ impl Stats {
     }
 }
 
-/// Count mail names before opening children, including locked files. No path is followed.
-fn count_mail(stats: &Stats, name: &[u16], bytes: u64) {
+fn has_mail_extension(name: &[u16], ascii: &[u8; 3]) -> bool {
     let Some(dot) = name.iter().rposition(|&c| c == u16::from(b'.')) else {
-        return;
+        return false;
     };
     let extension = &name[dot + 1..];
-    let matches = |ascii: &[u8; 3]| {
-        extension.len() == 3
-            && extension
-                .iter()
-                .zip(ascii)
-                .all(|(&c, &a)| c == u16::from(a) || c == u16::from(a.to_ascii_uppercase()))
-    };
-    let local = matches(b"pst");
-    let cache = matches(b"ost") || matches(b"nst");
+    extension.len() == 3
+        && extension
+            .iter()
+            .zip(ascii)
+            .all(|(&c, &a)| c == u16::from(a) || c == u16::from(a.to_ascii_uppercase()))
+}
+
+/// Count mail names before opening children, including locked files. No path is followed.
+fn count_mail(stats: &Stats, name: &[u16], bytes: u64) {
+    let local = has_mail_extension(name, b"pst");
+    let cache = has_mail_extension(name, b"ost") || has_mail_extension(name, b"nst");
     if local {
         Stats::add(&stats.mail_local_files, 1);
         Stats::add(&stats.mail_local_bytes, bytes);
@@ -317,6 +318,8 @@ pub enum Outcome {
     Denied,
     Changed,
     Protected,
+    /// A `.pst` was kept because permanent deletion was not explicitly acknowledged.
+    MailConsentRequired,
     Young,
     Reparse,
     Failed(Win32),
@@ -343,6 +346,7 @@ pub type EventSink = dyn Fn(Event) + Send + Sync;
 pub struct Env {
     pub protection: Arc<Protection>,
     pub mode: Mode,
+    pub allow_local_mail_permanent: bool,
     /// Antigüedad mínima en intervalos de 100 ns (0 = sin límite).
     pub min_age_ft: i64,
     /// "Ahora" (FILETIME).
@@ -397,6 +401,8 @@ pub enum RootStatus {
     Changed,
     /// La ruta resuelta de la raíz no es la aprobada o ahora está protegida.
     Protected,
+    /// An individual `.pst` was kept because permanent deletion was not acknowledged.
+    MailConsentRequired,
     /// La ruta resuelta de la raíz no es de una unidad local con letra (UNC, también hacia un disco local, o red).
     NotLocal,
     /// La raíz es un archivo en uso.
@@ -1022,16 +1028,9 @@ fn entry_file(
         );
         return;
     }
+    let name: Vec<u16> = path.file_name().unwrap_or_default().encode_wide().collect();
     if env.mode == Mode::Measure {
-        count_mail(
-            &unit.stats,
-            &path
-                .file_name()
-                .unwrap_or_default()
-                .encode_wide()
-                .collect::<Vec<_>>(),
-            m.alloc,
-        );
+        count_mail(&unit.stats, &name, m.alloc);
     }
     let final_path = match sys::final_path(&h) {
         Ok(p) => p,
@@ -1063,6 +1062,26 @@ fn entry_file(
             m.alloc,
             m.links,
             Outcome::Protected,
+        );
+        return;
+    }
+    // The approval snapshot can become stale. An execution without explicit local-mail consent
+    // must never permanently delete a .pst, including one discovered after approval.
+    if env.mode != Mode::Measure
+        && !env.allow_local_mail_permanent
+        && has_mail_extension(&name, b"pst")
+    {
+        unit.set_status(RootStatus::MailConsentRequired);
+        Stats::add(&unit.stats.protected, 1);
+        Stats::add(&unit.stats.protected_bytes, m.alloc);
+        emit(
+            unit,
+            path.to_path_buf(),
+            false,
+            Some(m.identity),
+            m.alloc,
+            m.links,
+            Outcome::MailConsentRequired,
         );
         return;
     }
@@ -1372,6 +1391,26 @@ fn process_child(
             m.alloc,
             m.links,
             Outcome::Young,
+        );
+        return true;
+    }
+    // The directory may now contain a .pst that was absent from the approval estimate. Keep it
+    // unless the user explicitly acknowledged permanent deletion of local mail.
+    if env.mode != Mode::Measure
+        && !env.allow_local_mail_permanent
+        && has_mail_extension(name, b"pst")
+    {
+        Stats::add(&unit.stats.protected, 1);
+        Stats::add(&unit.stats.protected_bytes, m.alloc);
+        parent.kept.store(true, Ordering::Release);
+        emit(
+            unit,
+            child_path,
+            false,
+            Some(m.identity),
+            m.alloc,
+            m.links,
+            Outcome::MailConsentRequired,
         );
         return true;
     }

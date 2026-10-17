@@ -469,10 +469,12 @@ impl Cleaner {
         cancel: &Arc<AtomicBool>,
         progress: &Arc<AtomicU64>,
         sink: Option<Arc<engine::EventSink>>,
+        allow_local_mail_permanent: bool,
     ) -> Arc<Env> {
         Arc::new(Env {
             protection: self.protection.clone(),
             mode,
+            allow_local_mail_permanent,
             min_age_ft: engine::duration_to_ft(min_age),
             now_ft: engine::now_filetime(),
             cancel: cancel.clone(),
@@ -553,17 +555,11 @@ impl Cleaner {
                 Unit::new(
                     i,
                     c.spec.clone(),
-                    self.env(Mode::Measure, c.min_age, cancel, &progress, None),
+                    self.env(Mode::Measure, c.min_age, cancel, &progress, None, false),
                 )
             })
             .collect();
         engine::run(&units, self.threads);
-        // Verified diagnostic roots: descendants are never permanently deleted, even if manually added as "Your file".
-        let diag_roots: Vec<PathKey> = [CategoryId::WerReports, CategoryId::CrashDumps]
-            .into_iter()
-            .flat_map(|id| self.roots.category_roots(id))
-            .map(|p| PathKey::new(&p))
-            .collect();
         for (c, u) in cands.into_iter().zip(units) {
             let est = u.stats.snapshot();
             let id = plan.items.len();
@@ -597,8 +593,7 @@ impl Cleaner {
             } else {
                 Fit::Fits
             };
-            let canon_key = PathKey::new(&c.canon);
-            let diagnostic_path = diag_roots.iter().any(|r| canon_key.is_same_or_under(r));
+            let diagnostic_path = self.roots.is_diagnostic_path(&c.canon);
             plan.items.push(PlanItem {
                 id,
                 category: c.category,

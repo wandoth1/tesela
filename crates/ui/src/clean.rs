@@ -277,6 +277,7 @@ impl CleanFlow {
         let opts = ExecOptions {
             dry_run: dry,
             allow_unfit_permanent: false,
+            allow_local_mail_permanent: false,
             log: None,
         };
         match backend.execute(&plan, &opts, &Progress::new()) {
@@ -522,6 +523,7 @@ impl CleanFlow {
             && let Stage::Confirm(c) = &self.stage
         {
             let plan = c.plan.clone();
+            let allow_local_mail_permanent = c.allow_mail_permanent;
             // E1: elevado no se limpia (también lo rechaza el `cleaner`; aquí se avisa antes de crear el registro).
             if blocked_by_elevation(backend.is_elevated(), dry, backend.is_demo()) {
                 self.note = Some(Note::Elevated);
@@ -544,6 +546,7 @@ impl CleanFlow {
                 Ok(ExecOptions {
                     dry_run: dry,
                     allow_unfit_permanent: allow_unfit,
+                    allow_local_mail_permanent,
                     log,
                 })
             });
