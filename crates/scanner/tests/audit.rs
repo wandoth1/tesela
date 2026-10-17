@@ -1,4 +1,4 @@
-//! Tests de integración de las correcciones de la auditoría del incremento 1 (sobre árboles sintéticos en `%TEMP%`).
+//! Integration tests for the increment 1 audit fixes (over synthetic trees in `%TEMP%`).
 
 mod common;
 
@@ -22,7 +22,7 @@ fn find(tree: &Tree, rel: &str) -> u32 {
     id
 }
 
-/// Escaneo previo descartado (NTFS refresca el mtime de un directorio en el índice de su padre de forma diferida).
+/// Discarded warm-up scan (NTFS lazily refreshes a directory's mtime in its parent's index).
 fn settle(t: &TempTree) {
     let mut o = opts(t);
     o.priority_paths = Some(vec![]);
@@ -78,7 +78,7 @@ fn el_espacio_no_explicado_se_calcula_de_punta_a_punta_con_un_volumen_inyectado(
     );
     assert_eq!(r.tree.node(last).alloc, used - st.scanned_alloc);
     assert_eq!(r.tree.node(0).alloc, used);
-    // Con cuota de disco, lo disponible para el usuario no entra en el cálculo (es de otro ámbito): sale lo mismo.
+    // With a disk quota, the user's available space is outside the calculation (it has a different scope): the result is unchanged.
     let mut quota = VolumeSpace::new(10 << 30, 4 << 30);
     quota.available = 1 << 30;
     assert!(quota.quota_limited() && quota.used() == used);
@@ -87,8 +87,8 @@ fn el_espacio_no_explicado_se_calcula_de_punta_a_punta_con_un_volumen_inyectado(
     let rq = scan(oq).unwrap();
     assert_eq!(rq.tree.stats().unexplained_alloc, used - st.scanned_alloc);
     assert_eq!(rq.summary.volume, Some(quota));
-    // Con cuota y SIN la capacidad real del volumen (clase 14 no soportada), `total` y `free` son del usuario: no hay
-    // residuo (restarlos al escaneado mezclaría ámbitos) y no se añade el bloque del sistema.
+    // With a quota and WITHOUT the actual volume capacity (class 14 unsupported), `total` and `free` are user-scoped: there
+    // is no residual (subtracting them from the scan would mix scopes), and the system block is not added.
     let mut user_scope = VolumeSpace::new(10 << 30, 4 << 30);
     user_scope.volume_scope = false;
     assert!(user_scope.quota_limited());
@@ -104,7 +104,7 @@ fn el_espacio_no_explicado_se_calcula_de_punta_a_punta_con_un_volumen_inyectado(
             .all(|n| n.flags & flags::SYSTEM_INFO == 0)
     );
     assert_eq!(ru.summary.volume, Some(user_scope));
-    // Si lo usado es menor que lo escaneado se recorta a 0 y no hay nodo.
+    // If used space is less than the scanned amount, it is clamped to 0 and there is no node.
     o.volume_override = Some(VolumeSpace::new(10 << 30, (10 << 30) - 100));
     let r = scan(o).unwrap();
     assert_eq!(r.tree.stats().unexplained_alloc, 0);
@@ -119,7 +119,7 @@ fn el_espacio_no_explicado_se_calcula_de_punta_a_punta_con_un_volumen_inyectado(
 #[test]
 fn cancelar_con_cualquier_retardo_nunca_deja_espacio_no_explicado_sobre_un_arbol_incompleto() {
     let t = TempTree::new();
-    // Cadena profunda (cada nivel con un archivo) más un abanico de carpetas con subcarpetas.
+    // A deep chain (one file at each level) plus a fan-out of folders with subfolders.
     let mut chain = String::new();
     for i in 0..40 {
         chain.push_str(&format!("c{i}/"));
@@ -187,7 +187,7 @@ fn cancelar_con_cualquier_retardo_nunca_deja_espacio_no_explicado_sobre_un_arbol
 
 #[test]
 fn con_distincion_de_mayusculas_la_cola_prioritaria_no_confunde_hermanos() {
-    // 1) Carpeta de primer nivel `cs` sensible a mayúsculas, con hermanos Temp / temp / TEMP.
+    // 1) Case-sensitive top-level folder `cs`, with siblings Temp / temp / TEMP.
     let t = TempTree::new();
     t.mkdir("cs");
     if !t.case_sensitive("cs") {
@@ -241,7 +241,7 @@ fn con_distincion_de_mayusculas_la_cola_prioritaria_no_confunde_hermanos() {
         .collect();
     assert_eq!(counts, [1, 3, 3]);
 
-    // 2) La propia raíz distingue mayúsculas: Temp / temp / TEMP son carpetas de primer nivel.
+    // 2) The root itself is case-sensitive: Temp / temp / TEMP are top-level folders.
     let t2 = TempTree::new();
     if !t2.case_sensitive("") {
         return;

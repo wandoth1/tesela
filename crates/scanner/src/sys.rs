@@ -335,7 +335,7 @@ pub struct RawEntry<'a> {
     pub logical: u64,
     /// `None` with `FindFirstFileExW` (it does not provide `AllocationSize`).
     pub alloc: Option<u64>,
-    /// 0 si la API no lo da.
+    /// 0 if the API does not provide it.
     pub file_id: u128,
     /// Reparse tag (valid only when the `REPARSE_POINT` attribute is set).
     pub reparse_tag: u32,
@@ -545,7 +545,7 @@ pub struct VolumeSizes {
     pub volume_scope: bool,
 }
 
-/// `FILE_FS_FULL_SIZE_INFORMATION` (clase 7, `ntifs.h`).
+/// `FILE_FS_FULL_SIZE_INFORMATION` (class 7, `ntifs.h`).
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 struct FsFullSize {
@@ -556,7 +556,7 @@ struct FsFullSize {
     bytes_per_sector: u32,
 }
 
-/// `FILE_FS_FULL_SIZE_INFORMATION_EX` (clase 14, `ntifs.h`; Windows 10 1809+).
+/// `FILE_FS_FULL_SIZE_INFORMATION_EX` (class 14, `ntifs.h`; Windows 10 1809+).
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 struct FsFullSizeEx {
@@ -637,7 +637,7 @@ impl FsFullSizeEx {
     }
 }
 
-/// `NtQueryVolumeInformationFile` de la clase `class` sobre el handle, escribiendo en `info`. Devuelve el NTSTATUS si falla.
+/// Query volume information class `class` on the handle, writing into `info`. Returns the NTSTATUS on failure.
 fn nt_query<T>(h: &DirHandle, info: &mut T, class: i32) -> Result<(), i32> {
     // SAFETY: `IO_STATUS_BLOCK` is POD (a pointer/integer and a `usize`); an all-zero value is valid.
     let mut iosb: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
@@ -775,7 +775,7 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
-    /// Directorio del propio proyecto (existe siempre durante `cargo test`) para lecturas de prueba.
+    /// The project directory itself (always present during `cargo test`) for test reads.
     fn manifest_dir() -> Vec<u16> {
         wide(Path::new(env!("CARGO_MANIFEST_DIR")))
     }
@@ -806,14 +806,14 @@ mod tests {
         })
         .expect("find");
         let a_logical: BTreeMap<_, _> = a.iter().map(|(k, v)| (k.clone(), v.0)).collect();
-        // Las dos APIs ven los mismos nombres y los mismos tamaños lógicos de los archivos.
+        // Both APIs see the same names and the same logical file sizes.
         assert_eq!(a.keys().collect::<Vec<_>>(), b.keys().collect::<Vec<_>>());
         for (name, l) in &b {
             if a[name].3 & 0x10 == 0 {
                 assert_eq!(a_logical[name], *l, "{name}");
             }
         }
-        // El FileId de Cargo.toml no es 0 y el AllocationSize cubre el tamaño.
+        // Cargo.toml's FileId is not 0, and its AllocationSize covers its size.
         let (logical, alloc, id, _) = a["Cargo.toml"];
         assert_ne!(id, 0);
         assert!(alloc >= logical || alloc == 0);
@@ -837,7 +837,7 @@ mod tests {
         assert!(m.file_id.is_some_and(|id| id != 0));
         assert!(m.attrs & 0x10 != 0, "es un directorio");
         assert!(m.mtime_filetime > 0);
-        // El FileId de `src` visto desde el padre es el mismo que da dir_meta al abrirlo.
+        // The FileId for `src` seen from its parent matches the one returned by dir_meta when it is opened.
         let listed = collect_extd(&path);
         let mut src = path.clone();
         src.extend(r"\src".encode_utf16());
@@ -877,7 +877,7 @@ mod tests {
 
     #[test]
     fn un_nombre_largo_no_rompe_la_enumeracion_extd() {
-        // Cubre la lectura de nombres de longitud variable: el directorio de ejecutables de test tiene nombres largos.
+        // Covers reading variable-length names: the test executable directory has long names.
         let exe = std::env::current_exe().unwrap();
         let dir = exe.parent().unwrap();
         let listed = collect_extd(&wide(dir));
@@ -887,9 +887,9 @@ mod tests {
 
     #[test]
     fn sin_soporte_de_identidad_los_metadatos_imprescindibles_siguen_llegando() {
-        // Inyección de errores: la consulta de FileIdInfo (y la de la etiqueta de reparse) "no están soportadas"
-        // (50 = ERROR_NOT_SUPPORTED, 87 = ERROR_INVALID_PARAMETER). No es un error: el identificador queda en `None` y
-        // el resto de metadatos (atributos, mtime, tamaños) son los mismos que con la consulta real.
+        // Injected failures: the FileIdInfo query (and the reparse-tag query) report "not supported"
+        // (50 = ERROR_NOT_SUPPORTED, 87 = ERROR_INVALID_PARAMETER). This is not an error: the identifier is `None`, and
+        // the remaining metadata (attributes, mtime, sizes) matches the real query.
         let path = manifest_dir();
         let h = open_dir(&path, FILE_READ_ATTRIBUTES, false).unwrap();
         let real = dir_meta(&h).unwrap();
@@ -903,7 +903,7 @@ mod tests {
                 (real.attrs, real.mtime_filetime, real.alloc, real.logical)
             );
         }
-        // Con identificador inyectado, se respeta; la etiqueta de un directorio normal es 0 y su consulta ni se hace.
+        // An injected identifier is preserved; a normal directory's tag is 0, and its query is not made.
         let m = dir_meta_with(&h, |_| Ok(7), |_| panic!("no es un reparse point")).unwrap();
         assert_eq!(m.file_id, Some(7));
         assert_eq!(m.attrs & FILE_ATTRIBUTE_REPARSE_POINT, 0);
@@ -913,14 +913,14 @@ mod tests {
     fn la_etiqueta_de_reparse_de_la_consulta_real_es_cero_en_un_directorio_normal() {
         let path = manifest_dir();
         let h = open_dir(&path, FILE_READ_ATTRIBUTES, false).unwrap();
-        // Recorre la consulta real de la etiqueta (la API de verdad) aunque no sea un reparse point.
+        // Exercises the real tag query (the actual API) even though this is not a reparse point.
         let t: FILE_ATTRIBUTE_TAG_INFO = query_info(&h, FileAttributeTagInfo).unwrap();
         assert_eq!(t.ReparseTag, 0);
         assert_eq!(dir_meta(&h).unwrap().reparse_tag, 0);
     }
 
-    /// Estructura de la clase 7 con cuota: `TotalAllocationUnits` es lo disponible PARA EL USUARIO (su cuota), no la
-    /// capacidad del volumen; 8 sectores de 512 B = unidades de 4096 B.
+    /// Class 7 structure with a quota: `TotalAllocationUnits` is what is available TO THE USER (their quota), not the
+    /// volume capacity; 8 sectors of 512 B = 4096 B units.
     fn class7(total: i64, caller: i64, actual: i64) -> FsFullSize {
         FsFullSize {
             total_units: total,
@@ -950,7 +950,7 @@ mod tests {
 
     #[test]
     fn la_clase_14_con_cuota_da_capacidad_y_libre_del_volumen_y_lo_disponible_del_usuario() {
-        // Volumen de 1000 unidades (4096 B), 400 libres de verdad; cuota del usuario de 100 unidades con 60 libres.
+        // Volume with 1000 units (4096 B), 400 truly free; user quota of 100 units with 60 free.
         let info = FsFullSizeEx {
             actual_total_units: 1000,
             actual_available_units: 400,
@@ -970,7 +970,7 @@ mod tests {
                 volume_scope: true
             }
         );
-        // Usado del volumen = total - libre del volumen (ámbito único).
+        // Volume used = total - volume free (single scope).
         assert_eq!(v.total - v.free, 2_457_600);
         // Valores absurdos se recortan: available <= free <= total.
         let odd = FsFullSizeEx {
@@ -993,13 +993,13 @@ mod tests {
 
     #[test]
     fn la_clase_7_con_cuota_no_da_residuo_y_sin_cuota_si() {
-        // Con cuota: `TotalAllocationUnits` (100) es de la cuota; lo libre real del volumen (400) es mayor que lo que le
-        // queda al usuario (60). `total - free` mezclaría ámbitos: se marca fuera del ámbito de volumen (sin residuo) y se
-        // enseñan las cifras DEL USUARIO, coherentes entre sí.
+        // With a quota, `TotalAllocationUnits` (100) is quota-scoped; the volume's actual free space (400) is greater than
+        // what remains for the user (60). `total - free` would mix scopes: mark the values as outside volume scope (no
+        // residual) and expose the USER-scoped figures, which are consistent with each other.
         let v = class7(100, 60, 400).sizes().unwrap();
         assert!(!v.volume_scope);
         assert_eq!((v.total, v.free, v.available), (409_600, 245_760, 245_760));
-        // Sin cuota: lo disponible para el usuario es lo libre del volumen y `total` es la capacidad.
+        // Without a quota, the user's available space is the volume's free space, and `total` is its capacity.
         let v = class7(1000, 400, 400).sizes().unwrap();
         assert!(v.volume_scope);
         assert_eq!(
@@ -1022,8 +1022,8 @@ mod tests {
     fn las_consultas_reales_de_nt_son_coherentes() {
         let path = manifest_dir();
         let h = open_dir(&path, FILE_READ_ATTRIBUTES, false).unwrap();
-        // La clase 7 existe en todo Windows soportado; la 14 (1809+) también en los equipos de prueba, pero si el sistema
-        // no la soporta la consulta falla con un NTSTATUS y la cadena sigue con la 7.
+        // Class 7 exists on every supported Windows version; class 14 (1809+) is also available on the test machines, but
+        // if the system does not support it, the query returns an NTSTATUS and the sequence continues with class 7.
         let v7 = nt_full_size(&h).expect("FileFsFullSizeInformation");
         assert!(
             v7.total > 0 && v7.available <= v7.free && v7.free <= v7.total,
@@ -1032,7 +1032,7 @@ mod tests {
         if let Ok(v14) = nt_full_size_ex(&h) {
             assert!(v14.volume_scope);
             assert!(v14.total > 0 && v14.available <= v14.free && v14.free <= v14.total);
-            // Sin cuota en el equipo, las dos clases coinciden en la capacidad.
+            // Without a quota on this machine, both classes report the same capacity.
             if v7.volume_scope {
                 assert_eq!(v7.total, v14.total);
             }
@@ -1051,12 +1051,12 @@ mod tests {
             available: 10,
             volume_scope: true,
         };
-        // La clase 14 manda: ni se consultan las demás.
+        // Class 14 takes precedence: the others are not queried.
         assert_eq!(
             volume_space_with(&path, |_| Ok(ok14), |_| panic!("no"), |_| panic!("no")).unwrap(),
             ok14
         );
-        // Sin clase 14 (Windows < 1809): la clase 7 con cuota da cifras del usuario y NO ámbito de volumen.
+        // Without class 14 (Windows < 1809): class 7 with a quota reports user-scoped figures, NOT volume-scoped values.
         let v = volume_space_with(
             &path,
             fail,
@@ -1065,7 +1065,7 @@ mod tests {
         )
         .unwrap();
         assert!(!v.volume_scope);
-        // Sin clase 14 ni 7: GetDiskFreeSpaceExW solo vale sin cuota.
+        // Without class 14 or 7: GetDiskFreeSpaceExW is valid only without a quota.
         let v = volume_space_with(&path, fail, fail, |_| Ok((400, 1000, 400))).unwrap();
         assert_eq!(
             v,
@@ -1089,8 +1089,8 @@ mod tests {
         assert!(total > 0 && avail <= free.max(total));
     }
 
-    /// Carpeta temporal propia (`%TEMP%\tesela-test-<uuid>`) que se borra al soltarla; los junctions se quitan antes como
-    /// enlaces (`remove_dir` sobre un junction borra solo el enlace).
+    /// Test-owned temporary folder (`%TEMP%\tesela-test-<uuid>`) removed on drop; junctions are removed first as links
+    /// (`remove_dir` on a junction removes only the link).
     struct Tmp(PathBuf, Vec<PathBuf>);
 
     impl Tmp {
@@ -1130,13 +1130,13 @@ mod tests {
         let target = t.0.join("destino");
         std::fs::create_dir(&target).unwrap();
         let link = t.junction("enlace", &target);
-        // Con el destino vivo: se abre el ENLACE (atributo REPARSE) y la ruta final es la del enlace, no la del destino.
+        // With the target present: the LINK is opened (REPARSE attribute), and the final path is the link's, not the target's.
         let o = open_resolved(&link).unwrap();
         assert_ne!(o.meta.attrs & FILE_ATTRIBUTE_REPARSE_POINT, 0);
         assert_ne!(o.meta.reparse_tag, 0);
         assert_eq!(dunce::simplified(&o.path), link);
-        // Con el destino borrado seguir el enlace daría ERROR_FILE_NOT_FOUND / ERROR_PATH_NOT_FOUND; un enlace que no se
-        // sigue sigue abriéndose. Es la prueba directa de que el destino no se abre.
+        // With the target deleted, following the link would return ERROR_FILE_NOT_FOUND / ERROR_PATH_NOT_FOUND; a link
+        // that is not followed still opens. This directly proves that the target is not opened.
         drop(o);
         std::fs::remove_dir(&target).unwrap();
         assert!(std::fs::canonicalize(&link).is_err(), "seguirlo fallaría");
@@ -1147,7 +1147,7 @@ mod tests {
 
     #[test]
     fn open_resolved_de_la_raiz_de_una_unidad() {
-        // El caso real más común: la raíz de la unidad del propio proyecto.
+        // The most common real case: the drive root containing the project itself.
         let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let drive = manifest.components().next().unwrap();
         let root = PathBuf::from(format!("{}\\", drive.as_os_str().to_string_lossy()));
@@ -1162,7 +1162,7 @@ mod tests {
         let t = Tmp::new();
         let sub = t.0.join("Sub Carpeta");
         std::fs::create_dir(&sub).unwrap();
-        // Con otra capitalización y barras mixtas se obtiene la ruta tal como está en el disco.
+        // Different casing and mixed separators still return the path as it appears on disk.
         let sloppy =
             PathBuf::from(t.0.to_string_lossy().to_uppercase().replace('\\', "/") + "/sub carpeta");
         let o = open_resolved(&sloppy).unwrap();
@@ -1171,15 +1171,15 @@ mod tests {
         assert!(open_resolved(&t.0.join("no existe")).is_err());
     }
 
-    /// GM-S1: en el listado extendido el campo de la etiqueta de reparse comparte memoria con `EaSize`; solo vale con el
-    /// atributo `REPARSE_POINT`.
+    /// GM-S1: in extended listings, the reparse-tag field shares memory with `EaSize`; it is valid only with the
+    /// `REPARSE_POINT` attribute.
     #[test]
     fn la_etiqueta_de_reparse_solo_vale_con_el_atributo() {
-        // Un directorio o archivo normal con atributos extendidos (`EaSize` = 0x9000_001A): no es una etiqueta de nube.
+        // A normal directory or file with extended attributes (`EaSize` = 0x9000_001A): this is not a cloud tag.
         assert_eq!(entry_reparse_tag(0x10, 0x9000_001A), 0);
         assert_eq!(entry_reparse_tag(0x20, 0xA000_0003), 0);
         assert_eq!(entry_reparse_tag(0, 7), 0);
-        // Con el atributo, la etiqueta tal cual.
+        // With the attribute, the tag is returned as is.
         assert_eq!(
             entry_reparse_tag(0x10 | FILE_ATTRIBUTE_REPARSE_POINT, 0xA000_0003),
             0xA000_0003
@@ -1235,7 +1235,7 @@ mod tests {
         std::fs::create_dir(&sub).unwrap();
         let long = long_path(&sub).unwrap();
         assert_eq!(dunce::simplified(&long), sub);
-        // La carpeta temporal tal como la da el entorno (a veces en 8.3) también se expande.
+        // The temporary folder as provided by the environment (sometimes in 8.3 form) is expanded too.
         assert!(long_path(&std::env::temp_dir()).is_ok());
         assert_eq!(long_path(&t.0.join("no existe")), Err(2));
     }

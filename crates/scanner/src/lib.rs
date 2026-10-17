@@ -240,9 +240,9 @@ pub struct ScanSummary {
     pub cancelled: bool,
     /// Time from start until enumeration finished (including listing the root and resolving priority paths).
     pub elapsed_scan: Duration,
-    /// Tiempo de `TreeBuilder::finish`.
+    /// Time spent in `TreeBuilder::finish`.
     pub elapsed_build: Duration,
-    /// Hilos usados.
+    /// Threads used.
     pub threads: usize,
     /// Enumeration API.
     pub api: ApiUsed,
@@ -256,7 +256,7 @@ pub struct ScanSummary {
     pub volume: Option<VolumeSpace>,
     /// Whether the scanned path is a drive root.
     pub full_volume: bool,
-    /// Rutas prioritarias recorridas.
+    /// Priority paths traversed.
     pub priority: Vec<PriorityResult>,
     /// Provisional IDs were exhausted (more than 4 billion entries): the tree is incomplete.
     pub ids_exhausted: bool,

@@ -112,54 +112,54 @@ try {
     $path = New-Mutant 'perusermode-0' @('UPDATE `Property` SET `Value`=''0'' WHERE `Property`=''MSIINSTALLPERUSER''')
     Check 'MSIINSTALLPERUSER=0' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*no es por usuario por defecto*')
     $path = New-WordCountMutant 'wordcount-bit8' 10
-    Check 'con el bit "no hace falta elevar" (el motor ignora MSIINSTALLPERUSER y "para todos" no pediria administrador: 1925)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*declara*no hace falta elevar*')
+    Check 'con el bit "no hace falta elevar" (el motor ignora MSIINSTALLPERUSER y "para todos" no pediria administrador: 1925)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*declares*no elevation required*')
     $path = New-WordCountMutant 'wordcount-clean' 2
-    Check 'contador de palabras 2 (sin el bit) es valido' (-not (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*no hace falta elevar*'))
+    Check 'contador de palabras 2 (sin el bit) es valido' (-not (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*no elevation required*'))
 
     $path = New-Mutant 'upgradecode' @('UPDATE `Property` SET `Value`=''{11111111-2222-3333-4444-555555555555}'' WHERE `Property`=''UpgradeCode''')
     Check 'otro UpgradeCode' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*UpgradeCode*')
 
     $path = New-Mutant 'unknown-property' @('INSERT INTO `Property` (`Property`, `Value`) VALUES (''EVILPROP'', ''x'')')
-    Check 'una propiedad que no esta en la lista cerrada' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*propiedad no esperada*EVILPROP*')
+    Check 'una propiedad que no esta en la lista cerrada' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*unexpected property in the Property table*EVILPROP*')
 
     # --- Registry: HKMU\Software\Tesela only, with the eight expected values -------------------------------------------
     $path = New-Mutant 'hklm' @('INSERT INTO `Registry` (`Registry`, `Root`, `Key`, `Name`, `Value`, `Component_`) VALUES (''evilreg'', 2, ''Software\Evil'', ''n'', ''v'', ''TeselaExe'')')
-    Check 'registro en HKLM fijo (no HKMU)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*registro fuera de HKMU*')
+    Check 'registro en HKLM fijo (no HKMU)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*registry entry outside HKMU*')
     $path = New-Mutant 'hkcu' @('UPDATE `Registry` SET `Root`=1 WHERE `Name`=''tesela.exe''')
-    Check 'registro en HKCU fijo (no HKMU: una instalacion para todos escribiria en el usuario)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*registro fuera de HKMU*')
+    Check 'registro en HKCU fijo (no HKMU: una instalacion para todos escribiria en el usuario)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*registry entry outside HKMU*')
     $path = New-Mutant 'reg-otraclave' @('UPDATE `Registry` SET `Key`=''Software\Otra'' WHERE `Name`=''tesela.exe''')
-    Check 'registro en otra clave' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*registro fuera de HKMU*')
+    Check 'registro en otra clave' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*registry entry outside HKMU*')
     $path = New-Mutant 'reg-valor' @('UPDATE `Registry` SET `Value`=''C:\Otra\'' WHERE `Name`=''InstallFolder''')
-    Check 'InstallFolder con otro valor' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*InstallFolder*se esperaba*[[]INSTALLFOLDER]*')
+    Check 'InstallFolder con otro valor' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*registry value InstallFolder*expected*[[]INSTALLFOLDER]*')
     $path = New-Mutant 'reg-extra' @('INSERT INTO `Registry` (`Registry`, `Root`, `Key`, `Name`, `Value`, `Component_`) VALUES (''extrareg'', -1, ''Software\Tesela'', ''Otro'', ''v'', ''TeselaExe'')')
-    Check 'un valor de registro de mas' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*escribe 9 valores de registro*')
+    Check 'un valor de registro de mas' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*writes 9 registry values*')
     $path = New-Mutant 'reg-nodesktop' @('DELETE FROM `Registry` WHERE `Name`=''DesktopShortcut''')
-    Check 'sin el valor DesktopShortcut (el escritorio no se recordaria)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*DesktopShortcut: hay 0 filas*')
+    Check 'sin el valor DesktopShortcut (el escritorio no se recordaria)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*registry value DesktopShortcut: found 0 rows*')
 
     $path = New-Mutant 'extrafile' @('INSERT INTO `File` (`File`, `Component_`, `FileName`, `FileSize`, `Sequence`) VALUES (''evil'', ''TeselaExe'', ''evil.exe'', 1, 99)')
     $p = Test-MsiPackage -Path $path -ExpectedVersion $version
-    Check 'un archivo de mas' ((Has-Problem $p '*archivo inesperado*evil.exe*') -and (Has-Problem $p '*lleva 6 archivos*'))
+    Check 'un archivo de mas' ((Has-Problem $p '*unexpected file in the MSI*evil.exe*') -and (Has-Problem $p '*contains 6 files*'))
 
     # --- NO CODE: only the expected type 51 / 35 custom actions ---------------------------------------------------------
     $caCols = '`Action`, `Type`, `Source`, `Target`'
     $path = New-Mutant 'ca-dll' @("INSERT INTO ``CustomAction`` ($caCols) VALUES ('Evil', 1, 'Bin', 'x')")
-    Check 'una accion personalizada de tipo 1 (DLL)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*accion personalizada de tipo 1*Evil*')
+    Check 'una accion personalizada de tipo 1 (DLL)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*custom action type 1*Evil*')
     $path = New-Mutant 'ca-exe' @("INSERT INTO ``CustomAction`` ($caCols) VALUES ('Evil', 2, 'Bin', 'x')")
-    Check 'una accion personalizada de tipo 2 (EXE)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*accion personalizada de tipo 2*Evil*')
+    Check 'una accion personalizada de tipo 2 (EXE)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*custom action type 2*Evil*')
     $path = New-Mutant 'ca-script' @("INSERT INTO ``CustomAction`` ($caCols) VALUES ('Evil', 6, 'Bin', 'x')")
-    Check 'una accion personalizada de tipo 6 (script)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*accion personalizada de tipo 6*Evil*')
+    Check 'una accion personalizada de tipo 6 (script)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*custom action type 6*Evil*')
     $path = New-Mutant 'ca-type34' @("INSERT INTO ``CustomAction`` ($caCols) VALUES ('Evil', 34, 'INSTALLFOLDER', 'x')")
-    Check 'una accion personalizada de tipo 34 (EXE desde una carpeta)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*accion personalizada de tipo 34*Evil*')
+    Check 'una accion personalizada de tipo 34 (EXE desde una carpeta)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*custom action type 34*Evil*')
     $path = New-Mutant 'ca-type51-extra' @("INSERT INTO ``CustomAction`` ($caCols) VALUES ('Evil', 51, 'INSTALLFOLDER', 'C:\Evil')")
-    Check 'una accion de tipo 51 que no esta en la lista esperada' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*accion personalizada no esperada*Evil*')
+    Check 'una accion de tipo 51 que no esta en la lista esperada' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*unexpected custom action*Evil*')
     $path = New-Mutant 'ca-type35-extra' @("INSERT INTO ``CustomAction`` ($caCols) VALUES ('Evil', 35, 'INSTALLFOLDER', 'C:\Evil')")
-    Check 'una accion de tipo 35 que no esta en la lista esperada' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*accion personalizada no esperada*Evil*')
+    Check 'una accion de tipo 35 que no esta en la lista esperada' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*unexpected custom action*Evil*')
     $path = New-Mutant 'ca-target' @('UPDATE `CustomAction` SET `Target`=''[TESELA_PREV_MACHINE]'' WHERE `Action`=''TeselaFolderPrevUser''')
-    Check 'una accion esperada con otro destino' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*TeselaFolderPrevUser*se esperaba tipo 51*')
+    Check 'una accion esperada con otro destino' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*custom action TeselaFolderPrevUser*expected type 51*')
     $path = New-Mutant 'ca-source' @('UPDATE `CustomAction` SET `Source`=''ALLUSERS'' WHERE `Action`=''TeselaRememberDesktop''')
-    Check 'una accion esperada sobre otra propiedad' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*TeselaRememberDesktop*se esperaba tipo 51*')
+    Check 'una accion esperada sobre otra propiedad' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*custom action TeselaRememberDesktop*expected type 51*')
     $path = New-Mutant 'ca-missing' @('DELETE FROM `CustomAction` WHERE `Action`=''TeselaFolderDefaultUser''')
-    Check 'falta una accion esperada' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*falta la accion TeselaFolderDefaultUser*')
+    Check 'falta una accion esperada' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*missing action TeselaFolderDefaultUser*')
 
     # Reject extra tables even when EMPTY: Environment, ServiceInstall, Class, Extension, ProgId, Binary, Error.
     $tables = [ordered]@{
@@ -174,15 +174,15 @@ try {
     }
     foreach ($t in $tables.Keys) {
         $path = New-Mutant ('table-' + $t) @($tables[$t])
-        Check "tabla extra vacia: $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*tabla no permitida*$t*")
+        Check "tabla extra vacia: $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*table not allowed*$t*")
     }
 
     $path = New-Mutant 'noshortcut' @('DELETE FROM `Shortcut`')
-    Check 'sin accesos directos' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*accesos directos*')
+    Check 'sin accesos directos' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*expected exactly 2 shortcuts*')
     $path = New-Mutant 'nodesktopshortcut' @('DELETE FROM `Shortcut` WHERE `Shortcut`=''DesktopShortcut''')
-    Check 'sin el acceso directo del escritorio' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*acceso directo DesktopShortcut*DesktopFolder*')
+    Check 'sin el acceso directo del escritorio' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*shortcut DesktopShortcut*DesktopFolder*')
     $path = New-Mutant 'desktopshortcut-dir' @('UPDATE `Shortcut` SET `Directory_`=''ProgramMenuFolder'' WHERE `Shortcut`=''DesktopShortcut''')
-    Check 'acceso directo del escritorio en el menu Inicio' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*acceso directo DesktopShortcut*DesktopFolder*')
+    Check 'acceso directo del escritorio en el menu Inicio' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*shortcut DesktopShortcut*DesktopFolder*')
 
     # --- Registry searches for previous installs (four, HKCU and HKLM) --------------------------------------------------
     $path = New-Mutant 'nosearch' @('DELETE FROM `AppSearch`')
@@ -190,29 +190,29 @@ try {
     $path = New-Mutant 'nosearch-machine' @('DELETE FROM `AppSearch` WHERE `Property`=''TESELA_PREV_MACHINE''')
     Check 'sin la busqueda de la instalacion para todos (el bloqueo del cambio de ambito no la veria)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*TESELA_PREV_MACHINE*')
     $path = New-Mutant 'reglocator-type2' @('UPDATE `RegLocator` SET `Type`=2')
-    Check 'RegLocator con Type=2 (vista de 32 bits) en lugar de 18' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*busqueda de registro*tipo 18*')
+    Check 'RegLocator con Type=2 (vista de 32 bits) en lugar de 18' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*expected ONE registry search*type 18*')
     $path = New-Mutant 'reglocator-root' @('UPDATE `RegLocator` SET `Root`=1 WHERE `Signature_`=''PrevMachineFolder''')
-    Check 'la busqueda de la instalacion para todos mirando en HKCU' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*PrevMachineFolder*raiz 2*')
+    Check 'la busqueda de la instalacion para todos mirando en HKCU' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*PrevMachineFolder*root 2*')
     $path = New-Mutant 'reglocator-name' @('UPDATE `RegLocator` SET `Name`=''Otro'' WHERE `Signature_`=''PrevUserFolder''')
     Check 'una busqueda con otro nombre de valor' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*PrevUserFolder*')
 
     # --- RemoveFile: one row only (INSTALLFOLDER, if empty) -------------------------------------------------------------
     $path = New-Mutant 'removefile-extra' @('INSERT INTO `RemoveFile` (`FileKey`, `Component_`, `FileName`, `DirProperty`, `InstallMode`) VALUES (''evilrm'', ''TeselaExe'', ''*.*'', ''INSTALLFOLDER'', 2)')
     $p = Test-MsiPackage -Path $path -ExpectedVersion $version
-    Check 'una fila de RemoveFile de mas (con *.*)' ((Has-Problem $p '*RemoveFile no esperada*evilrm*') -and (Has-Problem $p '*exactamente 1 fila*'))
+    Check 'una fila de RemoveFile de mas (con *.*)' ((Has-Problem $p '*unexpected RemoveFile row*evilrm*') -and (Has-Problem $p '*RemoveFile must have exactly 1 row*'))
     $path = New-Mutant 'removefile-otradir' @('UPDATE `RemoveFile` SET `DirProperty`=''ProgramMenuFolder'' WHERE `FileKey`=''RemoveInstallFolder''')
-    Check 'RemoveFile sobre otra carpeta' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*RemoveFile no esperada*')
+    Check 'RemoveFile sobre otra carpeta' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*unexpected RemoveFile row*')
     $path = New-Mutant 'removefile-none' @('DELETE FROM `RemoveFile`')
-    Check 'sin RemoveFile (la carpeta de instalacion quedaria al desinstalar)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*exactamente 1 fila*')
+    Check 'sin RemoveFile (la carpeta de instalacion quedaria al desinstalar)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*RemoveFile must have exactly 1 row*')
 
     # --- EXACT directory tree (Directory_Parent and DefaultDir) ----------------------------------------------------------
     foreach ($case in @(
-            @('INSTALLFOLDER colgando de ProgramMenuFolder (padre equivocado)', 'INSTALLFOLDER', "UPDATE ``Directory`` SET ``Directory_Parent``='ProgramMenuFolder' WHERE ``Directory``='INSTALLFOLDER'", '*carpeta INSTALLFOLDER*Directory_Parent*TARGETDIR*'),
-            @('INSTALLFOLDER sin padre', 'INSTALLFOLDER', "UPDATE ``Directory`` SET ``Directory_Parent``='' WHERE ``Directory``='INSTALLFOLDER'", '*carpeta INSTALLFOLDER*Directory_Parent*TARGETDIR*'),
-            @('ProgramMenuFolder colgando de INSTALLFOLDER', 'ProgramMenuFolder', "UPDATE ``Directory`` SET ``Directory_Parent``='INSTALLFOLDER' WHERE ``Directory``='ProgramMenuFolder'", '*carpeta ProgramMenuFolder*Directory_Parent*TARGETDIR*'),
-            @('DesktopFolder colgando de INSTALLFOLDER', 'DesktopFolder', "UPDATE ``Directory`` SET ``Directory_Parent``='INSTALLFOLDER' WHERE ``Directory``='DesktopFolder'", '*carpeta DesktopFolder*Directory_Parent*TARGETDIR*'),
-            @('TARGETDIR con padre', 'TARGETDIR', "UPDATE ``Directory`` SET ``Directory_Parent``='INSTALLFOLDER' WHERE ``Directory``='TARGETDIR'", '*carpeta TARGETDIR*Directory_Parent*'),
-            @('INSTALLFOLDER con otro nombre (DefaultDir)', 'INSTALLFOLDER', "UPDATE ``Directory`` SET ``DefaultDir``='OtraCarpeta' WHERE ``Directory``='INSTALLFOLDER'", '*carpeta INSTALLFOLDER*DefaultDir*Tesela*')
+            @('INSTALLFOLDER colgando de ProgramMenuFolder (padre equivocado)', 'INSTALLFOLDER', "UPDATE ``Directory`` SET ``Directory_Parent``='ProgramMenuFolder' WHERE ``Directory``='INSTALLFOLDER'", '*directory INSTALLFOLDER*Directory_Parent*TARGETDIR*'),
+            @('INSTALLFOLDER sin padre', 'INSTALLFOLDER', "UPDATE ``Directory`` SET ``Directory_Parent``='' WHERE ``Directory``='INSTALLFOLDER'", '*directory INSTALLFOLDER*Directory_Parent*TARGETDIR*'),
+            @('ProgramMenuFolder colgando de INSTALLFOLDER', 'ProgramMenuFolder', "UPDATE ``Directory`` SET ``Directory_Parent``='INSTALLFOLDER' WHERE ``Directory``='ProgramMenuFolder'", '*directory ProgramMenuFolder*Directory_Parent*TARGETDIR*'),
+            @('DesktopFolder colgando de INSTALLFOLDER', 'DesktopFolder', "UPDATE ``Directory`` SET ``Directory_Parent``='INSTALLFOLDER' WHERE ``Directory``='DesktopFolder'", '*directory DesktopFolder*Directory_Parent*TARGETDIR*'),
+            @('TARGETDIR con padre', 'TARGETDIR', "UPDATE ``Directory`` SET ``Directory_Parent``='INSTALLFOLDER' WHERE ``Directory``='TARGETDIR'", '*directory TARGETDIR*Directory_Parent*'),
+            @('INSTALLFOLDER con otro nombre (DefaultDir)', 'INSTALLFOLDER', "UPDATE ``Directory`` SET ``DefaultDir``='OtraCarpeta' WHERE ``Directory``='INSTALLFOLDER'", '*directory INSTALLFOLDER*DefaultDir*Tesela*')
         )) {
         $path = New-Mutant ('dir-' + $case[1] + '-' + [guid]::NewGuid().ToString('N').Substring(0, 6)) @($case[2])
         Check ('carpetas: ' + $case[0]) (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) $case[3])
@@ -221,21 +221,21 @@ try {
     $path = New-Mutant 'dir-shortlong' @("UPDATE ``Directory`` SET ``DefaultDir``='Tesela|Tesela' WHERE ``Directory``='INSTALLFOLDER'")
     Check 'carpetas: DefaultDir corto|largo con el nombre largo esperado es valido' (-not (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*DefaultDir*'))
     $path = New-Mutant 'dir-extra' @("INSERT INTO ``Directory`` (``Directory``, ``Directory_Parent``, ``DefaultDir``) VALUES ('EvilDir', 'TARGETDIR', 'Evil')")
-    Check 'carpetas: una carpeta de mas' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*carpeta no esperada*EvilDir*')
+    Check 'carpetas: una carpeta de mas' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*unexpected directory*EvilDir*')
     $path = New-Mutant 'dir-programfiles' @("INSERT INTO ``Directory`` (``Directory``, ``Directory_Parent``, ``DefaultDir``) VALUES ('ProgramFiles64Folder', 'TARGETDIR', '.')")
-    Check 'carpetas: ProgramFiles64Folder fija en el arbol (el ambito lo decide la accion, no el arbol)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*carpeta no esperada*ProgramFiles64Folder*')
+    Check 'carpetas: ProgramFiles64Folder fija en el arbol (el ambito lo decide la accion, no el arbol)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*unexpected directory*ProgramFiles64Folder*')
     $path = New-Mutant 'dir-missing' @("DELETE FROM ``Directory`` WHERE ``Directory``='DesktopFolder'")
-    Check 'carpetas: falta una carpeta esperada' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*carpeta DesktopFolder*0 filas*')
+    Check 'carpetas: falta una carpeta esperada' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*directory DesktopFolder*0 rows*')
 
     # --- Components: directory, attributes, and desktop condition -------------------------------------------------------
     $path = New-Mutant 'component-nocond' @('UPDATE `Component` SET `Condition`='''' WHERE `Component`=''DesktopShortcut''')
-    Check 'el acceso directo del escritorio sin condicion (se crearia siempre)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*componente DesktopShortcut*Condition*DESKTOPSHORTCUT*')
+    Check 'el acceso directo del escritorio sin condicion (se crearia siempre)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*component DesktopShortcut*Condition*DESKTOPSHORTCUT*')
     $path = New-Mutant 'component-cond-exe' @('UPDATE `Component` SET `Condition`=''DESKTOPSHORTCUT="1"'' WHERE `Component`=''TeselaExe''')
-    Check 'tesela.exe con una condicion (no se instalaria sin la casilla)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*componente TeselaExe*Condition*')
+    Check 'tesela.exe con una condicion (no se instalaria sin la casilla)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*component TeselaExe*Condition*')
     $path = New-Mutant 'component-dir' @('UPDATE `Component` SET `Directory_`=''DesktopFolder'' WHERE `Component`=''TeselaExe''')
-    Check 'tesela.exe en el escritorio' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*componente TeselaExe en DesktopFolder*')
+    Check 'tesela.exe en el escritorio' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*component TeselaExe is in DesktopFolder*')
     $path = New-Mutant 'component-attr' @('UPDATE `Component` SET `Attributes`=4 WHERE `Component`=''TeselaExe''')
-    Check 'componente de 32 bits' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*componente TeselaExe*Attributes*260*')
+    Check 'componente de 32 bits' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*component TeselaExe*Attributes*260*')
 
     # --- MajorUpgrade and newer-version block: exact values -------------------------------------------------------------
     $upgCodeValue = '{7E8F4B67-A7D4-415B-9F8F-2E0B88AA88BB}'
@@ -253,17 +253,17 @@ try {
     Check 'Upgrade: reponer las dos filas tal cual sigue siendo valido' ((Test-MsiPackage -Path $path -ExpectedVersion $version).Count -eq 0)
 
     $path = New-Mutant 'upgrade-nodown' @($delDown)
-    Check 'Upgrade: falta la fila de bloqueo de versiones posteriores' ((Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*falta la fila de Upgrade*bloquear*WIX_DOWNGRADE_DETECTED*') -and (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*tabla Upgrade tiene 1 filas*'))
+    Check 'Upgrade: falta la fila de bloqueo de versiones posteriores' ((Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*missing Upgrade row*bloquear*WIX_DOWNGRADE_DETECTED*') -and (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*Upgrade table has 1 rows*'))
     $path = New-Mutant 'upgrade-noup' @($delUp)
-    Check 'Upgrade: falta la fila de reemplazo de versiones anteriores' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*falta la fila de Upgrade*reemplazar*WIX_UPGRADE_DETECTED*')
+    Check 'Upgrade: falta la fila de reemplazo de versiones anteriores' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*missing Upgrade row*reemplazar*WIX_UPGRADE_DETECTED*')
     $path = New-Mutant 'upgrade-noneatall' @($delDown, $delUp)
-    Check 'Upgrade: sin MajorUpgrade (tabla vacia)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*tabla Upgrade tiene 0 filas*')
+    Check 'Upgrade: sin MajorUpgrade (tabla vacia)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*Upgrade table has 0 rows*')
     $path = New-Mutant 'upgrade-down-attr0' @($delDown, (Down-Row $version '1033' 0))
-    Check 'Upgrade: bloqueo sin OnlyDetect (Attributes = 0: desinstalaria la version posterior)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*bloquear*Attributes = ''0''*se esperaba ''2''*')
+    Check 'Upgrade: bloqueo sin OnlyDetect (Attributes = 0: desinstalaria la version posterior)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*bloquear*Attributes = ''0''*expected ''2''*')
     $path = New-Mutant 'upgrade-down-attr258' @($delDown, (Down-Row $version '1033' 258))
     Check 'Upgrade: bloqueo con VersionMin inclusivo (Attributes = 258)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*bloquear*Attributes = ''258''*')
     $path = New-Mutant 'upgrade-up-attr1' @($delUp, (Up-Row $version '1033' 1))
-    Check 'Upgrade: reemplazo sin VersionMax inclusivo (Attributes = 1)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*reemplazar*Attributes = ''1''*se esperaba ''513''*')
+    Check 'Upgrade: reemplazo sin VersionMax inclusivo (Attributes = 1)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*reemplazar*Attributes = ''1''*expected ''513''*')
     $path = New-Mutant 'upgrade-up-attr512' @($delUp, (Up-Row $version '1033' 512))
     Check 'Upgrade: reemplazo sin MigrateFeatures (Attributes = 512)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*reemplazar*Attributes = ''512''*')
     $path = New-Mutant 'upgrade-down-min' @($delDown, (Down-Row '0.0.1' '1033' 2))
@@ -273,11 +273,11 @@ try {
     $path = New-Mutant 'upgrade-down-lang' @($delDown, (Down-Row $version '3082' 2))
     Check 'Upgrade: bloqueo con otro idioma' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*bloquear*Language = ''3082''*')
     $path = New-Mutant 'upgrade-down-prop' @($delDown, (Down-Row $version '1033' 2 'OTRA_PROPIEDAD'))
-    Check 'Upgrade: bloqueo con otra ActionProperty' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*falta la fila de Upgrade*WIX_DOWNGRADE_DETECTED*')
+    Check 'Upgrade: bloqueo con otra ActionProperty' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*missing Upgrade row*WIX_DOWNGRADE_DETECTED*')
     $path = New-Mutant 'upgrade-down-code' @($delDown, (Down-Row $version '1033' 2 'WIX_DOWNGRADE_DETECTED' '{11111111-2222-3333-4444-555555555555}'))
     Check 'Upgrade: bloqueo con otro UpgradeCode' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*bloquear*UpgradeCode*')
     $path = New-Mutant 'upgrade-extra' @((Down-Row '0.0.1' '1033' 2 'OTRA_PROPIEDAD'))
-    Check 'Upgrade: una fila de mas' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*tabla Upgrade tiene 3 filas*')
+    Check 'Upgrade: una fila de mas' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*Upgrade table has 3 rows*')
     # With a different expected version, VersionMin/VersionMax no longer match.
     $p = Test-MsiPackage -Path $Msi -ExpectedVersion '9.9.9'
     Check 'Upgrade: otra version esperada (VersionMax y VersionMin siguen a la version del producto)' ((Has-Problem $p '*reemplazar*VersionMax*9.9.9*') -and (Has-Problem $p '*bloquear*VersionMin*9.9.9*'))
@@ -285,15 +285,15 @@ try {
     # --- LaunchCondition: exactly FOUR, each with a message (Condition is the primary key: delete and insert) ------------
     $lcMsg = 'Mensaje de prueba'
     $path = New-Mutant 'lc-nonot' @("DELETE FROM ``LaunchCondition`` WHERE ``Condition``='NOT WIX_DOWNGRADE_DETECTED'", "INSERT INTO ``LaunchCondition`` (``Condition``, ``Description``) VALUES ('WIX_DOWNGRADE_DETECTED', '$lcMsg')")
-    Check 'LaunchCondition sin NOT (bloquearia a quien NO instala una anterior)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*exactamente estas 5 LaunchCondition*NOT WIX_DOWNGRADE_DETECTED*')
+    Check 'LaunchCondition sin NOT (bloquearia a quien NO instala una anterior)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*expected exactly these 5 LaunchConditions*NOT WIX_DOWNGRADE_DETECTED*')
     $path = New-Mutant 'lc-other' @("DELETE FROM ``LaunchCondition`` WHERE ``Condition``='NOT WIX_DOWNGRADE_DETECTED'", "INSERT INTO ``LaunchCondition`` (``Condition``, ``Description``) VALUES ('NOT WIX_UPGRADE_DETECTED', '$lcMsg')")
-    Check 'LaunchCondition sobre otra propiedad' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*exactamente estas 5 LaunchCondition*')
+    Check 'LaunchCondition sobre otra propiedad' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*expected exactly these 5 LaunchConditions*')
     $path = New-Mutant 'lc-none' @("DELETE FROM ``LaunchCondition``")
-    Check 'sin LaunchCondition' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*exactamente estas 5 LaunchCondition*')
+    Check 'sin LaunchCondition' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*expected exactly these 5 LaunchConditions*')
     $path = New-Mutant 'lc-extra' @("INSERT INTO ``LaunchCondition`` (``Condition``, ``Description``) VALUES ('1=1', '$lcMsg')")
-    Check 'una LaunchCondition de mas' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*exactamente estas 5 LaunchCondition*')
+    Check 'una LaunchCondition de mas' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*expected exactly these 5 LaunchConditions*')
     $path = New-Mutant 'lc-nomsg' @('UPDATE `LaunchCondition` SET `Description`='' '' WHERE `Condition`=''NOT WIX_DOWNGRADE_DETECTED''')
-    Check 'LaunchCondition con el mensaje en blanco' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*LaunchCondition*no tiene mensaje*')
+    Check 'LaunchCondition con el mensaje en blanco' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*LaunchCondition*has no message*')
     # The three scope checks: remove any one (Condition is the key; delete by exact value because MSI SQL has no LIKE).
     $lcScope = @(
         @('el cambio de ambito de por usuario a para todos', $MsiExpectedLaunchConditions[1]),
@@ -303,243 +303,243 @@ try {
     )
     foreach ($c in $lcScope) {
         $path = New-Mutant ('lc-del-' + [guid]::NewGuid().ToString('N').Substring(0, 6)) @("DELETE FROM ``LaunchCondition`` WHERE ``Condition``='$($c[1])'")
-        Check ('sin la LaunchCondition de ' + $c[0]) (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*exactamente estas 5 LaunchCondition*')
+        Check ('sin la LaunchCondition de ' + $c[0]) (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*expected exactly these 5 LaunchConditions*')
     }
     # M2: without "OR TESELA_PREV_USER<>""", this user's per-user installation would lose to another account's.
     $noOwn = $MsiExpectedLaunchConditions[2].Replace(' OR TESELA_PREV_USER<>""', '')
     $path = New-Mutant 'lc-noown' @("DELETE FROM ``LaunchCondition`` WHERE ``Condition``='$($MsiExpectedLaunchConditions[2])'", "INSERT INTO ``LaunchCondition`` (``Condition``, ``Description``) VALUES ('$noOwn', '$lcMsg')")
-    Check 'LaunchCondition de para todos instalada que bloquea tambien a quien tiene su instalacion por usuario (M2)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*exactamente estas 5 LaunchCondition*')
+    Check 'LaunchCondition for machine installation also blocks an owner of a per-user installation (M2)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*expected exactly these 5 LaunchConditions*')
     # The condition must allow the full UI and repairs; without "UILevel>=5" it is no longer exact.
     $noUi = $MsiExpectedLaunchConditions[1].Replace(' OR UILevel>=5', '')
     $path = New-Mutant 'lc-nouilevel' @("DELETE FROM ``LaunchCondition`` WHERE ``Condition``='$($MsiExpectedLaunchConditions[1])'", "INSERT INTO ``LaunchCondition`` (``Condition``, ``Description``) VALUES ('$noUi', '$lcMsg')")
-    Check 'LaunchCondition de cambio de ambito sin dejar pasar la interfaz completa' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*exactamente estas 5 LaunchCondition*')
+    Check 'LaunchCondition de cambio de ambito sin dejar pasar la interfaz completa' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*expected exactly these 5 LaunchConditions*')
 
     # Ensure these checks TAKE EFFECT: their actions must exist, be unconditional, and be correctly sequenced.
     $path = New-Mutant 'seq-noremove' @("DELETE FROM ``InstallExecuteSequence`` WHERE ``Action``='RemoveExistingProducts'")
-    Check 'sin RemoveExistingProducts en InstallExecuteSequence' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*falta RemoveExistingProducts*')
+    Check 'sin RemoveExistingProducts en InstallExecuteSequence' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*RemoveExistingProducts is missing*')
     $path = New-Mutant 'seq-removecond' @("UPDATE ``InstallExecuteSequence`` SET ``Condition``='0' WHERE ``Action``='RemoveExistingProducts'")
-    Check 'RemoveExistingProducts con condicion' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*RemoveExistingProducts lleva la condicion*')
+    Check 'RemoveExistingProducts con condicion' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*RemoveExistingProducts has condition*')
     $path = New-Mutant 'seq-removelate' @("UPDATE ``InstallExecuteSequence`` SET ``Sequence``=6500 WHERE ``Action``='RemoveExistingProducts'")
-    Check 'RemoveExistingProducts fuera de InstallValidate..InstallInitialize' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*RemoveExistingProducts*entre InstallValidate e InstallInitialize*')
+    Check 'RemoveExistingProducts fuera de InstallValidate..InstallInitialize' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*RemoveExistingProducts*between InstallValidate and InstallInitialize*')
     foreach ($t in 'InstallExecuteSequence', 'InstallUISequence') {
         foreach ($a in 'FindRelatedProducts', 'LaunchConditions') {
             $path = New-Mutant "seq-no-$a-$t" @("DELETE FROM ``$t`` WHERE ``Action``='$a'")
-            Check "sin $a en $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*falta $a en $t*")
+            Check "sin $a en $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*missing $a in $t*")
             $path = New-Mutant "seq-cond-$a-$t" @("UPDATE ``$t`` SET ``Condition``='0' WHERE ``Action``='$a'")
-            Check "$a con condicion en $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*$a en $t lleva la condicion*")
+            Check "$a con condicion en $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*$a in $t has condition*")
         }
     }
     # FindRelatedProducts must precede LaunchConditions in both sequences; otherwise the property is empty when the
     # condition is evaluated, so the block does nothing even when all rows are present.
     foreach ($t in 'InstallExecuteSequence', 'InstallUISequence') {
         $path = New-Mutant "seq-order-frp-after-$t" @("UPDATE ``$t`` SET ``Sequence``=200 WHERE ``Action``='FindRelatedProducts'")
-        Check "FindRelatedProducts (200) despues de LaunchConditions (100) en $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*FindRelatedProducts*antes de LaunchConditions*$t*")
+        Check "FindRelatedProducts (200) despues de LaunchConditions (100) en $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*FindRelatedProducts*must run before LaunchConditions*$t*")
         $path = New-Mutant "seq-order-lc-before-$t" @("UPDATE ``$t`` SET ``Sequence``=10 WHERE ``Action``='LaunchConditions'")
-        Check "LaunchConditions (10) antes de FindRelatedProducts (25) en $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*FindRelatedProducts*antes de LaunchConditions*$t*")
+        Check "LaunchConditions (10) antes de FindRelatedProducts (25) en $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*FindRelatedProducts*must run before LaunchConditions*$t*")
         $path = New-Mutant "seq-order-equal-$t" @("UPDATE ``$t`` SET ``Sequence``=100 WHERE ``Action``='FindRelatedProducts'")
-        Check "FindRelatedProducts y LaunchConditions con el mismo numero de secuencia en $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*FindRelatedProducts*antes de LaunchConditions*$t*")
+        Check "FindRelatedProducts y LaunchConditions con el mismo numero de secuencia en $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*FindRelatedProducts*must run before LaunchConditions*$t*")
     }
 
     # Identifiers and properties are CASE-SENSITIVE (Windows Installer behaves this way).
     $path = New-Mutant 'case-parent' @("UPDATE ``Directory`` SET ``Directory_Parent``='targetdir' WHERE ``Directory``='INSTALLFOLDER'")
-    Check 'Directory_Parent en minusculas (targetdir)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*carpeta INSTALLFOLDER*Directory_Parent*')
+    Check 'Directory_Parent en minusculas (targetdir)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*directory INSTALLFOLDER*Directory_Parent*')
     $path = New-Mutant 'case-actionproperty' @($delDown, (Down-Row $version '1033' 2 'wix_downgrade_detected'))
-    Check 'ActionProperty del bloqueo en minusculas (wix_downgrade_detected)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*falta la fila de Upgrade*WIX_DOWNGRADE_DETECTED*')
+    Check 'ActionProperty del bloqueo en minusculas (wix_downgrade_detected)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*missing Upgrade row*WIX_DOWNGRADE_DETECTED*')
     $path = New-Mutant 'case-launchcondition' @("DELETE FROM ``LaunchCondition`` WHERE ``Condition``='NOT WIX_DOWNGRADE_DETECTED'", "INSERT INTO ``LaunchCondition`` (``Condition``, ``Description``) VALUES ('NOT wix_downgrade_detected', '$lcMsg')")
-    Check 'LaunchCondition con la propiedad en minusculas' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*exactamente estas 5 LaunchCondition*')
+    Check 'LaunchCondition con la propiedad en minusculas' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*expected exactly these 5 LaunchConditions*')
     $path = New-Mutant 'case-secure' @("UPDATE ``Property`` SET ``Value``='DESKTOPSHORTCUT;INSTALLFOLDER;wix_upgrade_detected;wix_downgrade_detected' WHERE ``Property``='SecureCustomProperties'")
-    Check 'SecureCustomProperties en minusculas' ((Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*SecureCustomProperties no incluye WIX_DOWNGRADE_DETECTED*') -and (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*SecureCustomProperties no incluye WIX_UPGRADE_DETECTED*'))
+    Check 'SecureCustomProperties en minusculas' ((Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*SecureCustomProperties does not include WIX_DOWNGRADE_DETECTED*') -and (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*SecureCustomProperties does not include WIX_UPGRADE_DETECTED*'))
 
     # --- Secure properties: EXACTLY the expected set (INSTALLFOLDER and DESKTOPSHORTCUT must be secure) ------------------
     $secureAll = 'DESKTOPSHORTCUT;INSTALLFOLDER;WIX_DOWNGRADE_DETECTED;WIX_UPGRADE_DETECTED'
     $path = New-Mutant 'secure-no-installfolder' @("UPDATE ``Property`` SET ``Value``='DESKTOPSHORTCUT;WIX_DOWNGRADE_DETECTED;WIX_UPGRADE_DETECTED' WHERE ``Property``='SecureCustomProperties'")
-    Check 'INSTALLFOLDER sin ser propiedad segura (una instalacion para todos elevada la ignoraria)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*SecureCustomProperties no incluye INSTALLFOLDER*')
+    Check 'INSTALLFOLDER sin ser propiedad segura (una instalacion para todos elevada la ignoraria)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*SecureCustomProperties does not include INSTALLFOLDER*')
     $path = New-Mutant 'secure-no-desktop' @("UPDATE ``Property`` SET ``Value``='INSTALLFOLDER;WIX_DOWNGRADE_DETECTED;WIX_UPGRADE_DETECTED' WHERE ``Property``='SecureCustomProperties'")
-    Check 'DESKTOPSHORTCUT sin ser propiedad segura' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*SecureCustomProperties no incluye DESKTOPSHORTCUT*')
+    Check 'DESKTOPSHORTCUT sin ser propiedad segura' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*SecureCustomProperties does not include DESKTOPSHORTCUT*')
     $path = New-Mutant 'secure-allusers' @("UPDATE ``Property`` SET ``Value``='$secureAll;ALLUSERS' WHERE ``Property``='SecureCustomProperties'")
-    Check 'ALLUSERS como propiedad segura (ya pasa siempre al servidor; no hace falta)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*SecureCustomProperties incluye ALLUSERS*')
+    Check 'ALLUSERS como propiedad segura (ya pasa siempre al servidor; no hace falta)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*SecureCustomProperties includes ALLUSERS*')
     $path = New-Mutant 'secure-peruser' @("UPDATE ``Property`` SET ``Value``='$secureAll;MSIINSTALLPERUSER' WHERE ``Property``='SecureCustomProperties'")
-    Check 'MSIINSTALLPERUSER como propiedad segura' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*SecureCustomProperties incluye MSIINSTALLPERUSER*')
+    Check 'MSIINSTALLPERUSER como propiedad segura' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*SecureCustomProperties includes MSIINSTALLPERUSER*')
     $path = New-Mutant 'secure-extra' @("UPDATE ``Property`` SET ``Value``='$secureAll;TESELA_LANG' WHERE ``Property``='SecureCustomProperties'")
-    Check 'una propiedad segura de mas' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*SecureCustomProperties incluye TESELA_LANG*')
+    Check 'una propiedad segura de mas' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*SecureCustomProperties includes TESELA_LANG*')
     $path = New-Mutant 'secure-props' @("UPDATE ``Property`` SET ``Value``='WIX_UPGRADE_DETECTED' WHERE ``Property``='SecureCustomProperties'")
-    Check 'SecureCustomProperties sin WIX_DOWNGRADE_DETECTED' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*SecureCustomProperties no incluye WIX_DOWNGRADE_DETECTED*')
+    Check 'SecureCustomProperties sin WIX_DOWNGRADE_DETECTED' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*SecureCustomProperties does not include WIX_DOWNGRADE_DETECTED*')
     $path = New-Mutant 'default-installfolder' @('INSERT INTO `Property` (`Property`, `Value`) VALUES (''INSTALLFOLDER'', ''C:\Fija\'')')
-    Check 'INSTALLFOLDER con valor por defecto en la tabla Property (pisaria el calculo por ambito)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*INSTALLFOLDER tiene un valor por defecto*')
+    Check 'INSTALLFOLDER con valor por defecto en la tabla Property (pisaria el calculo por ambito)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*property INSTALLFOLDER has a default value*')
     $path = New-Mutant 'default-desktop' @('INSERT INTO `Property` (`Property`, `Value`) VALUES (''DESKTOPSHORTCUT'', ''1'')')
-    Check 'DESKTOPSHORTCUT marcada por defecto' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*DESKTOPSHORTCUT tiene un valor por defecto*')
+    Check 'DESKTOPSHORTCUT marcada por defecto' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*property DESKTOPSHORTCUT has a default value*')
     $path = New-Mutant 'default-scope' @('UPDATE `Property` SET `Value`=''machine'' WHERE `Property`=''TESELA_SCOPE''')
-    Check 'el ambito de la ventana parte en "para todos"' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*TESELA_SCOPE por defecto*user*')
+    Check 'el ambito de la ventana parte en "para todos"' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*TESELA_SCOPE default*user*')
 
     # --- Shortcuts: no arguments and the install directory as working directory -----------------------------------------
     $path = New-Mutant 'shortcut-args' @("UPDATE ``Shortcut`` SET ``Arguments``='--demo'")
-    Check 'acceso directo con argumentos' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*acceso directo*lleva argumentos*--demo*')
+    Check 'acceso directo con argumentos' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*shortcut*has arguments*--demo*')
     $path = New-Mutant 'shortcut-args-desktop' @("UPDATE ``Shortcut`` SET ``Arguments``='--demo' WHERE ``Shortcut``='DesktopShortcut'")
     Check 'acceso directo del escritorio con argumentos' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*DesktopShortcut lleva argumentos*--demo*')
     $path = New-Mutant 'shortcut-wkdir' @("UPDATE ``Shortcut`` SET ``WkDir``='ProgramMenuFolder'")
     Check 'acceso directo con otra carpeta de trabajo' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*WkDir*ProgramMenuFolder*INSTALLFOLDER*')
     $path = New-Mutant 'shortcut-nowkdir' @("UPDATE ``Shortcut`` SET ``WkDir``=''")
-    Check 'acceso directo sin carpeta de trabajo' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*WkDir*se esperaba*INSTALLFOLDER*')
+    Check 'acceso directo sin carpeta de trabajo' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*WkDir*expected*INSTALLFOLDER*')
 
     # --- Fixed component GUIDs -------------------------------------------------------------------------------------------
     $path = New-Mutant 'component-guid' @("UPDATE ``Component`` SET ``ComponentId``='{11111111-2222-3333-4444-555555555555}' WHERE ``Component``='StartMenuShortcut'")
-    Check 'otro GUID en el componente del acceso directo' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*componente StartMenuShortcut*GUID*')
+    Check 'otro GUID en el componente del acceso directo' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*component StartMenuShortcut*GUID*')
     $path = New-Mutant 'component-guid-exe' @("UPDATE ``Component`` SET ``ComponentId``='{11111111-2222-3333-4444-555555555555}' WHERE ``Component``='TeselaExe'")
-    Check 'otro GUID en el componente de tesela.exe' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*componente TeselaExe*GUID*')
+    Check 'otro GUID en el componente de tesela.exe' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*component TeselaExe*GUID*')
     $path = New-Mutant 'component-guid-desktop' @("UPDATE ``Component`` SET ``ComponentId``='{11111111-2222-3333-4444-555555555555}' WHERE ``Component``='DesktopShortcut'")
-    Check 'otro GUID en el componente del acceso directo del escritorio' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*componente DesktopShortcut*GUID*')
+    Check 'otro GUID en el componente del acceso directo del escritorio' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*component DesktopShortcut*GUID*')
 
     # --- AppSearch: action is unconditional and precedes CostFinalize in both sequences; empty Signature ------------------
     foreach ($t in 'InstallExecuteSequence', 'InstallUISequence') {
         $path = New-Mutant "appsearch-none-$t" @("DELETE FROM ``$t`` WHERE ``Action``='AppSearch'")
-        Check "sin la accion AppSearch en $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*falta AppSearch en $t*")
+        Check "sin la accion AppSearch en $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*missing AppSearch in $t*")
         $path = New-Mutant "appsearch-cond-$t" @("UPDATE ``$t`` SET ``Condition``='0' WHERE ``Action``='AppSearch'")
-        Check "AppSearch con condicion en $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*AppSearch en $t lleva la condicion*")
+        Check "AppSearch con condicion en $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*AppSearch in $t has condition*")
         $path = New-Mutant "appsearch-late-$t" @("UPDATE ``$t`` SET ``Sequence``=2000 WHERE ``Action``='AppSearch'")
-        Check "AppSearch despues de CostFinalize en $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*AppSearch*tiene que ir antes de CostFinalize*$t*")
+        Check "AppSearch despues de CostFinalize en $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*AppSearch*must run before CostFinalize*$t*")
     }
     $sigStatements = @('INSERT INTO `Signature` (`Signature`, `FileName`) VALUES (''EvilSearch'', ''evil.dll'')')
     $path = New-Mutant 'signature-row' $sigStatements
-    Check 'una fila en la tabla Signature (busqueda de archivo no declarada)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*tabla Signature tiene 3 filas*exactamente 2*')
+    Check 'una fila en la tabla Signature (busqueda de archivo no declarada)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*Signature table has 3 rows*exactly 2*')
 
     # --- Sequence rows for scope, directory, and language logic ----------------------------------------------------------
     foreach ($t in 'InstallExecuteSequence', 'InstallUISequence') {
         $path = New-Mutant "logic-nofolder-$t" @("DELETE FROM ``$t`` WHERE ``Action``='TeselaFolderPrevUser'")
-        Check "sin TeselaFolderPrevUser en $t (una actualizacion no conservaria la carpeta)" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*falta TeselaFolderPrevUser en $t*")
+        Check "sin TeselaFolderPrevUser en $t (una actualizacion no conservaria la carpeta)" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*missing TeselaFolderPrevUser in $t*")
         $path = New-Mutant "logic-cond-$t" @("UPDATE ``$t`` SET ``Condition``='1' WHERE ``Action``='TeselaFolderDefaultMachine'")
-        Check "TeselaFolderDefaultMachine con otra condicion en $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*TeselaFolderDefaultMachine en $t lleva la condicion*")
+        Check "TeselaFolderDefaultMachine con otra condicion en $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*TeselaFolderDefaultMachine in $t has condition*")
         $path = New-Mutant "logic-seq-$t" @("UPDATE ``$t`` SET ``Sequence``=105 WHERE ``Action``='TeselaSetProtected64'")
         $p = Test-MsiPackage -Path $path -ExpectedVersion $version
-        Check "TeselaSetProtected64 despues de LaunchConditions en $t" ((Has-Problem $p "*TeselaSetProtected64 en $t tiene la secuencia 105*") -and (Has-Problem $p '*TeselaSetProtected64*antes de LaunchConditions*'))
+        Check "TeselaSetProtected64 despues de LaunchConditions en $t" ((Has-Problem $p "*TeselaSetProtected64 in $t has sequence 105*") -and (Has-Problem $p '*TeselaSetProtected64*after AppSearch and before LaunchConditions*'))
         $path = New-Mutant "logic-beforesearch-$t" @("UPDATE ``$t`` SET ``Sequence``=40 WHERE ``Action``='TeselaFolderPrevMachine'")
-        Check "TeselaFolderPrevMachine antes de AppSearch en $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*TeselaFolderPrevMachine*despues de AppSearch*')
+        Check "TeselaFolderPrevMachine antes de AppSearch en $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*TeselaFolderPrevMachine*after AppSearch and before LaunchConditions*')
     }
     $path = New-Mutant 'logic-desktop-exec' @("UPDATE ``InstallExecuteSequence`` SET ``Condition``='DESKTOPSHORTCUT=""""' WHERE ``Action``='TeselaRememberDesktop'")
-    Check 'TeselaRememberDesktop en el servidor sin la guarda UILevel (volveria a marcar la casilla que el usuario desmarco)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*TeselaRememberDesktop en InstallExecuteSequence lleva la condicion*')
+    Check 'TeselaRememberDesktop en el servidor sin la guarda UILevel (volveria a marcar la casilla que el usuario desmarco)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*TeselaRememberDesktop in InstallExecuteSequence has condition*')
     $path = New-Mutant 'logic-scope-exec' @("INSERT INTO ``InstallExecuteSequence`` (``Action``, ``Condition``, ``Sequence``) VALUES ('TeselaLangEs1', '', 62)")
-    Check 'el idioma elegido tambien en la secuencia del servidor' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*TeselaLangEs1 esta en InstallExecuteSequence*')
+    Check 'el idioma elegido tambien en la secuencia del servidor' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*TeselaLangEs1 is in InstallExecuteSequence*')
     $path = New-Mutant 'lang-missing-id' @("UPDATE ``InstallUISequence`` SET ``Condition``='TESELA_LANG="""" AND (UserLanguageID=9226 OR UserLanguageID=10250)' WHERE ``Action``='TeselaLangEs2'")
-    Check 'las acciones de idioma no cubren todos los LANGID del espanol' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*TeselaLangEs1..3 no cubren exactamente*')
+    Check 'las acciones de idioma no cubren todos los LANGID del espanol' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*TeselaLangEs1..3 do not cover exactly the Spanish LANGIDs*')
     $path = New-Mutant 'lang-extra-id' @("UPDATE ``InstallUISequence`` SET ``Condition``='TESELA_LANG="""" AND (UserLanguageID=1033)' WHERE ``Action``='TeselaLangEs3'")
-    Check 'una accion de idioma con un LANGID que no es espanol (1033)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*TeselaLangEs1..3 no cubren exactamente*')
+    Check 'una accion de idioma con un LANGID que no es espanol (1033)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*TeselaLangEs1..3 do not cover exactly the Spanish LANGIDs*')
 
     # --- UI strings: every English Tx* has a Spanish counterpart and is displayed ---------------------------------------
     $path = New-Mutant 'tx-no-es' @('DELETE FROM `CustomAction` WHERE `Action`=''TeselaEs_TxNext''')
-    Check 'un texto sin version en espanol' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*TxNext no tiene su version en espanol*')
+    Check 'un texto sin version en espanol' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*text TxNext has no Spanish version*')
     $path = New-Mutant 'tx-no-seqrow' @('DELETE FROM `InstallUISequence` WHERE `Action`=''TeselaEs_TxNext''')
-    Check 'un texto en espanol sin fila de secuencia' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*falta TeselaEs_TxNext en InstallUISequence*')
+    Check 'un texto en espanol sin fila de secuencia' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*missing TeselaEs_TxNext in InstallUISequence*')
     $path = New-Mutant 'tx-bad-cond' @('UPDATE `InstallUISequence` SET `Condition`=''1'' WHERE `Action`=''TeselaEs_TxNext''')
-    Check 'un texto en espanol que se aplica siempre (sin TESELA_LANG="es")' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*TeselaEs_TxNext en InstallUISequence lleva la condicion*')
+    Check 'un texto en espanol que se aplica siempre (sin TESELA_LANG="es")' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*TeselaEs_TxNext in InstallUISequence has condition*')
     $path = New-Mutant 'tx-in-exec' @("INSERT INTO ``InstallExecuteSequence`` (``Action``, ``Condition``, ``Sequence``) VALUES ('TeselaEs_TxNext', '', 63)")
-    Check 'un texto en espanol en la secuencia del servidor' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*TeselaEs_TxNext esta en InstallExecuteSequence*')
+    Check 'un texto en espanol en la secuencia del servidor' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*TeselaEs_TxNext is in InstallExecuteSequence*')
     $path = New-Mutant 'tx-bad-seq' @('UPDATE `InstallUISequence` SET `Sequence`=1500 WHERE `Action`=''TeselaEs_TxNext''')
-    Check 'un texto en espanol despues de las ventanas' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*TeselaEs_TxNext*antes de las ventanas*')
+    Check 'un texto en espanol despues de las ventanas' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*TeselaEs_TxNext*before the dialogs*')
     $path = New-Mutant 'tx-brackets' @('UPDATE `Property` SET `Value`=''Siguiente [INSTALLFOLDER]'' WHERE `Property`=''TxNext''')
-    Check 'un texto con una propiedad dentro (no se vuelve a formatear)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*TxNext contiene corchetes*')
+    Check 'un texto con una propiedad dentro (no se vuelve a formatear)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*text TxNext contains brackets*')
     $path = New-Mutant 'tx-es-brackets' @('UPDATE `CustomAction` SET `Target`=''Siguiente [INSTALLFOLDER]'' WHERE `Action`=''TeselaEs_TxNext''')
-    Check 'un texto en espanol con una propiedad dentro' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*texto en espanol de TxNext contiene corchetes*')
+    Check 'un texto en espanol con una propiedad dentro' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*Spanish text for TxNext contains brackets*')
     $path = New-Mutant 'tx-es-empty' @('UPDATE `CustomAction` SET `Target`='' '' WHERE `Action`=''TeselaEs_TxNext''')
-    Check 'un texto en espanol vacio' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*TeselaEs_TxNext tiene que ser de tipo 51*con texto*')
+    Check 'un texto en espanol vacio' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*TeselaEs_TxNext must be type 51*have text*')
     $path = New-Mutant 'tx-orphan' @('INSERT INTO `Property` (`Property`, `Value`) VALUES (''TxHuerfano'', ''Texto'')')
     $p = Test-MsiPackage -Path $path -ExpectedVersion $version
-    Check 'un texto que no se muestra en ninguna ventana' ((Has-Problem $p '*TxHuerfano no se muestra*') -and (Has-Problem $p '*TxHuerfano no tiene su version en espanol*'))
+    Check 'un texto que no se muestra en ninguna ventana' ((Has-Problem $p '*text TxHuerfano is not shown in any dialog*') -and (Has-Problem $p '*text TxHuerfano has no Spanish version*'))
     $path = New-Mutant 'tx-es-orphan' @("INSERT INTO ``CustomAction`` ($caCols) VALUES ('TeselaEs_TxSinIngles', 51, 'TxSinIngles', 'Texto')")
-    Check 'una accion de texto sin propiedad en ingles' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*accion de texto sin propiedad en ingles*TeselaEs_TxSinIngles*')
+    Check 'una accion de texto sin propiedad en ingles' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*text action has no English property*TeselaEs_TxSinIngles*')
     $path = New-Mutant 'tx-missing' @('UPDATE `Control` SET `Text`=''[TxNoExiste]'' WHERE `Dialog_`=''WelcomeDlg'' AND `Control`=''Body''')
-    Check 'una ventana muestra un texto que no existe' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*muestra el texto [[]TxNoExiste]*')
+    Check 'una ventana muestra un texto que no existe' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*displays text [[]TxNoExiste]*missing from the Property table*')
 
     # --- UI: dialogs, controls without images, and native events only ---------------------------------------------------
     $path = New-Mutant 'ui-extra-dialog' @('INSERT INTO `Dialog` (`Dialog`, `HCentering`, `VCentering`, `Width`, `Height`, `Attributes`, `Title`, `Control_First`) VALUES (''EvilDlg'', 50, 50, 100, 100, 3, ''x'', ''Ok'')')
-    Check 'una ventana de mas' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*ventana no esperada*EvilDlg*')
+    Check 'una ventana de mas' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*unexpected dialog*EvilDlg*')
     $path = New-Mutant 'ui-missing-dialog' @('DELETE FROM `Dialog` WHERE `Dialog`=''InvalidDirDlg''')
-    Check 'falta una ventana' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*falta la ventana InvalidDirDlg*')
+    Check 'falta una ventana' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*missing dialog InvalidDirDlg*')
     $path = New-Mutant 'ui-bitmap' @('UPDATE `Control` SET `Type`=''Bitmap'' WHERE `Dialog_`=''WelcomeDlg'' AND `Control`=''Body''')
-    Check 'un control de imagen (necesita Binary)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*control no permitido*WelcomeDlg.Body*Bitmap*')
+    Check 'un control de imagen (necesita Binary)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*control not allowed*WelcomeDlg.Body*Bitmap*')
     $path = New-Mutant 'ui-icon' @('UPDATE `Control` SET `Type`=''Icon'' WHERE `Dialog_`=''WelcomeDlg'' AND `Control`=''Body''')
-    Check 'un control de icono' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*control no permitido*WelcomeDlg.Body*Icon*')
+    Check 'un control de icono' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*control not allowed*WelcomeDlg.Body*Icon*')
     $evCols = '`Dialog_`, `Control_`, `Event`, `Argument`, `Condition`, `Ordering`'
     $path = New-Mutant 'ui-doaction' @("INSERT INTO ``ControlEvent`` ($evCols) VALUES ('WelcomeDlg', 'Next', 'DoAction', 'TeselaFolderPrevUser', '1', 5)")
-    Check 'un evento DoAction (llamaria a una accion personalizada)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*evento de control no permitido*WelcomeDlg.Next*DoAction*')
+    Check 'un evento DoAction (llamaria a una accion personalizada)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*disallowed control event*WelcomeDlg.Next*DoAction*')
     $path = New-Mutant 'ui-badprop' @("INSERT INTO ``ControlEvent`` ($evCols) VALUES ('WelcomeDlg', 'Next', '[SecureCustomProperties]', 'x', '1', 5)")
-    Check 'una ventana que cambia una propiedad que no debe' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*propiedad no permitida*SecureCustomProperties*')
+    Check 'una ventana que cambia una propiedad que no debe' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*disallowed property*SecureCustomProperties*')
     $path = New-Mutant 'ui-newdialog-missing' @("INSERT INTO ``ControlEvent`` ($evCols) VALUES ('WelcomeDlg', 'Next', 'NewDialog', 'NoExisteDlg', '1', 5)")
-    Check 'un NewDialog a una ventana que no existe' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*abre la ventana*NoExisteDlg*no existe*')
+    Check 'un NewDialog a una ventana que no existe' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*opens dialog*NoExisteDlg*does not exist*')
     $path = New-Mutant 'ui-settargetpath' @("INSERT INTO ``ControlEvent`` ($evCols) VALUES ('WelcomeDlg', 'Next', 'SetTargetPath', 'ProgramMenuFolder', '1', 5)")
-    Check 'un SetTargetPath sobre otra carpeta' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*SetTargetPath sobre*ProgramMenuFolder*')
+    Check 'un SetTargetPath sobre otra carpeta' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*SetTargetPath targets disallowed path*ProgramMenuFolder*')
     $path = New-Mutant 'ui-enddialog' @("INSERT INTO ``ControlEvent`` ($evCols) VALUES ('WelcomeDlg', 'Next', 'EndDialog', 'Raro', '1', 5)")
-    Check 'un EndDialog con un valor que no es de la lista' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*EndDialog con el valor*Raro*')
+    Check 'un EndDialog con un valor que no es de la lista' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*EndDialog has disallowed value*Raro*')
     $path = New-Mutant 'ui-scope-missing-row' @('DELETE FROM `ControlEvent` WHERE `Dialog_`=''ScopeDlg'' AND `Control_`=''Next'' AND `Argument`=''[TESELA_PREV_USER]''')
     $p = Test-MsiPackage -Path $path -ExpectedVersion $version
-    Check 'falta la fila de la ventana de ambito que conserva la carpeta de la instalacion por usuario' ((Has-Problem $p '*falta el evento de la interfaz*TESELA_PREV_USER*') -and (Has-Problem $p '*ScopeDlg.Next tiene que tener 9 eventos*'))
+    Check 'falta la fila de la ventana de ambito que conserva la carpeta de la instalacion por usuario' ((Has-Problem $p '*missing UI event*TESELA_PREV_USER*') -and (Has-Problem $p '*ScopeDlg.Next must have 9 events*'))
     $path = New-Mutant 'ui-scope-cond' @('DELETE FROM `ControlEvent` WHERE `Dialog_`=''ScopeDlg'' AND `Control_`=''Next'' AND `Argument`=''[TESELA_DEFAULT_USER]''', "INSERT INTO ``ControlEvent`` ($evCols) VALUES ('ScopeDlg', 'Next', '[INSTALLFOLDER]', '[TESELA_DEFAULT_USER]', '1', 8)")
-    Check 'la fila de la carpeta por defecto por usuario pisaria la carpeta personalizada (sin condicion)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*falta el evento de la interfaz*TESELA_DEFAULT_USER*')
+    Check 'la fila de la carpeta por defecto por usuario pisaria la carpeta personalizada (sin condicion)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*missing UI event*TESELA_DEFAULT_USER*')
     $path = New-Mutant 'ui-scope-allusers' @('DELETE FROM `ControlEvent` WHERE `Dialog_`=''ScopeDlg'' AND `Control_`=''Next'' AND `Event`=''[ALLUSERS]'' AND `Argument`=''1''', "INSERT INTO ``ControlEvent`` ($evCols) VALUES ('ScopeDlg', 'Next', '[ALLUSERS]', '0', 'TESELA_SCOPE=""machine""', 1)")
-    Check 'la ventana de ambito deja de poner ALLUSERS=1 para todos' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*falta el evento de la interfaz*ALLUSERS*')
+    Check 'la ventana de ambito deja de poner ALLUSERS=1 para todos' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*missing UI event*ALLUSERS*')
     $path = New-Mutant 'ui-folder-notarget' @('DELETE FROM `ControlEvent` WHERE `Dialog_`=''FolderDlg'' AND `Control_`=''Next'' AND `Event`=''SetTargetPath''')
-    Check 'FolderDlg.Next sin SetTargetPath' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*FolderDlg.Next tiene que hacer SetTargetPath*')
+    Check 'FolderDlg.Next sin SetTargetPath' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*FolderDlg.Next must call SetTargetPath*')
     $path = New-Mutant 'ui-folder-novalidate' @('DELETE FROM `ControlEvent` WHERE `Dialog_`=''FolderDlg'' AND `Control_`=''Next'' AND `Event`=''SpawnDialog''')
-    Check 'FolderDlg.Next sin la ventana de carpeta no valida' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*FolderDlg.Next tiene que hacer SetTargetPath*')
+    Check 'FolderDlg.Next sin la ventana de carpeta no valida' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*FolderDlg.Next must call SetTargetPath*')
     $path = New-Mutant 'ui-scope-nodisable' @('DELETE FROM `ControlCondition` WHERE `Dialog_`=''ScopeDlg'' AND `Control_`=''Next'' AND `Action`=''Disable''')
-    Check 'la ventana de ambito deja pulsar Siguiente aunque el ambito choque con la instalacion existente' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*ScopeDlg.Next tiene que desactivarse*')
+    Check 'la ventana de ambito deja pulsar Siguiente aunque el ambito choque con la instalacion existente' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*ScopeDlg.Next must be disabled*')
     $path = New-Mutant 'ui-browse-prop' @('UPDATE `Control` SET `Property`=''INSTALLFOLDER'' WHERE `Dialog_`=''BrowseDlg'' AND `Control`=''DirectoryList''')
     Check 'el dialogo de examinar trabaja sobre otra propiedad' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*BrowseDlg.DirectoryList*_BrowseProperty*')
     $path = New-Mutant 'ui-folderedit' @('UPDATE `Control` SET `Property`=''ALLUSERS'' WHERE `Dialog_`=''FolderDlg'' AND `Control`=''FolderEdit''')
-    Check 'el campo de carpeta no es sobre INSTALLFOLDER' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*FolderDlg.FolderEdit tiene que ser un PathEdit sobre INSTALLFOLDER*')
+    Check 'el campo de carpeta no es sobre INSTALLFOLDER' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*FolderDlg.FolderEdit must be a PathEdit on INSTALLFOLDER*')
     $path = New-Mutant 'ui-checkbox' @('UPDATE `CheckBox` SET `Value`=''2'' WHERE `Property`=''DESKTOPSHORTCUT''')
     Check 'la casilla del escritorio con otro valor' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*CheckBox*DESKTOPSHORTCUT*')
     $path = New-Mutant 'ui-errordialog' @('UPDATE `Property` SET `Value`=''WelcomeDlg'' WHERE `Property`=''ErrorDialog''')
     Check 'la propiedad ErrorDialog apunta a otra ventana' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*ErrorDialog*ErrorDlg*')
     $path = New-Mutant 'ui-radio-extra' @('INSERT INTO `RadioButton` (`Property`, `Order`, `Value`, `X`, `Y`, `Width`, `Height`, `Text`) VALUES (''TESELA_SCOPE'', 3, ''otro'', 0, 80, 100, 16, ''x'')')
-    Check 'una tercera opcion de ambito' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*opciones ''user'' y ''machine''*')
+    Check 'una tercera opcion de ambito' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*scope group must have the ''user'' and ''machine'' options*')
     $path = New-Mutant 'ui-eventmapping' @('INSERT INTO `EventMapping` (`Dialog_`, `Control_`, `Event`, `Attribute`) VALUES (''WelcomeDlg'', ''Body'', ''ActionText'', ''Text'')')
-    Check 'una suscripcion de evento de mas' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*suscripcion de evento no esperada*WelcomeDlg*')
+    Check 'una suscripcion de evento de mas' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*unexpected event subscription*WelcomeDlg*')
     $path = New-Mutant 'ui-actiontext' @('INSERT INTO `ActionText` (`Action`, `Description`) VALUES (''EvilAction'', ''x'')')
-    Check 'texto de progreso de una accion no esperada' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*texto de progreso*EvilAction*')
+    Check 'texto de progreso de una accion no esperada' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*progress text for unexpected action*EvilAction*')
     $path = New-Mutant 'ui-exit-seq' @("UPDATE ``AdminUISequence`` SET ``Sequence``=-5 WHERE ``Action``='FatalError'")
-    Check 'FatalError mal colocada en AdminUISequence (ICE20)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*FatalError con la secuencia -3 en AdminUISequence*')
+    Check 'FatalError mal colocada en AdminUISequence (ICE20)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*missing FatalError at sequence -3 in AdminUISequence*')
     $path = New-Mutant 'ui-welcome-cond' @("UPDATE ``InstallUISequence`` SET ``Condition``='' WHERE ``Action``='WelcomeDlg'")
-    Check 'la bienvenida se mostraria tambien al reparar o desinstalar' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*WelcomeDlg en InstallUISequence lleva la condicion*')
+    Check 'la bienvenida se mostraria tambien al reparar o desinstalar' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*WelcomeDlg in InstallUISequence has condition*')
     $path = New-Mutant 'ui-progress-late' @("UPDATE ``InstallUISequence`` SET ``Sequence``=1400 WHERE ``Action``='ProgressDlg'")
-    Check 'ProgressDlg despues de ExecuteAction' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*ProgressDlg tiene que ir antes de ExecuteAction*')
+    Check 'ProgressDlg despues de ExecuteAction' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*ProgressDlg must run before ExecuteAction*')
 
     # --- m6: a registry key without a product must not create a dead end (check tesela.exe) ---------------------------------------
     $path = New-Mutant 'exe-no-locator' @('DELETE FROM `RegLocator` WHERE `Signature_`=''PrevUserExe''', 'DELETE FROM `AppSearch` WHERE `Signature_`=''PrevUserExe''', 'DELETE FROM `Signature` WHERE `Signature`=''PrevUserExe''')
     $p = Test-MsiPackage -Path $path -ExpectedVersion $version
-    Check 'sin la comprobacion de tesela.exe de la instalacion por usuario' ((Has-Problem $p '*RegLocator tiene 5 busquedas*') -and (Has-Problem $p '*PrevUserExe*'))
+    Check 'sin la comprobacion de tesela.exe de la instalacion por usuario' ((Has-Problem $p '*RegLocator has 5 registry searches*') -and (Has-Problem $p '*PrevUserExe*'))
     $path = New-Mutant 'exe-other-file' @('UPDATE `Signature` SET `FileName`=''otra.exe'' WHERE `Signature`=''PrevMachineExe''')
-    Check 'la comprobacion busca otro archivo (no tesela.exe)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*Signature PrevMachineExe tiene que buscar solo el archivo tesela.exe*')
+    Check 'la comprobacion busca otro archivo (no tesela.exe)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*Signature PrevMachineExe must search only for file tesela.exe*')
     $path = New-Mutant 'exe-minversion' @('UPDATE `Signature` SET `MinVersion`=''9.0.0'' WHERE `Signature`=''PrevUserExe''')
     Check 'la comprobacion exige una version' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*Signature PrevUserExe*')
     $path = New-Mutant 'exe-locator-type' @('UPDATE `RegLocator` SET `Type`=18 WHERE `Signature_`=''PrevUserExe''')
     Check 'la busqueda de tesela.exe como valor crudo (no comprobaria nada)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*busqueda de registro PrevUserExe*tipo 16*')
     foreach ($a in 'TeselaStaleUser', 'TeselaStaleMachine') {
         $path = New-Mutant "stale-del-$a" @("DELETE FROM ``CustomAction`` WHERE ``Action``='$a'")
-        Check "sin la accion $a (la clave sin producto bloquearia)" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*falta la accion $a*")
+        Check "sin la accion $a (la clave sin producto bloquearia)" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*missing action $a*")
         foreach ($t2 in 'InstallExecuteSequence', 'InstallUISequence') {
             $path = New-Mutant "stale-cond-$a-$t2" @("UPDATE ``$t2`` SET ``Condition``='1' WHERE ``Action``='$a'")
-            Check "$a con otra condicion en $t2" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*$a en $t2 lleva la condicion*")
+            Check "$a con otra condicion en $t2" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*$a in $t2 has condition*")
         }
     }
 
     # --- m2: ALL property and EndDialog events of ALL windows are fixed ------------------------------------------------------------
     $path = New-Mutant 'ev-folder-back' @("INSERT INTO ``ControlEvent`` ($evCols) VALUES ('FolderDlg', 'Back', '[INSTALLFOLDER]', 'C:" + [char]92 + "Windows" + [char]92 + "System32" + [char]92 + "', '1', 5)")
-    Check 'un boton Atras que cambia INSTALLFOLDER' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*evento de propiedad NO esperado*FolderDlg|Back|[[]INSTALLFOLDER]*')
+    Check 'un boton Atras que cambia INSTALLFOLDER' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*unexpected property event*FolderDlg|Back|[[]INSTALLFOLDER]*')
     $path = New-Mutant 'ev-cancel-allusers' @("INSERT INTO ``ControlEvent`` ($evCols) VALUES ('CancelDlg', 'Yes', '[ALLUSERS]', '1', '1', 5)")
-    Check 'un boton de la ventana de cancelar que pone ALLUSERS=1' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*evento de propiedad NO esperado*CancelDlg|Yes|[[]ALLUSERS]*')
+    Check 'un boton de la ventana de cancelar que pone ALLUSERS=1' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*unexpected property event*CancelDlg|Yes|[[]ALLUSERS]*')
     $path = New-Mutant 'ev-welcome-end' @("INSERT INTO ``ControlEvent`` ($evCols) VALUES ('WelcomeDlg', 'Next', 'EndDialog', 'Return', '1', 5)")
-    Check 'un EndDialog Return en la bienvenida (se saltaria todas las ventanas)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*EndDialog NO esperado*WelcomeDlg|Next|Return*')
+    Check 'un EndDialog Return en la bienvenida (se saltaria todas las ventanas)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*unexpected EndDialog*WelcomeDlg|Next|Return*')
     $path = New-Mutant 'ev-end-missing' @('DELETE FROM `ControlEvent` WHERE `Dialog_`=''ExitDialog'' AND `Control_`=''Finish'' AND `Event`=''EndDialog''')
-    Check 'sin el EndDialog del boton Finalizar' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*falta el EndDialog esperado: ExitDialog|Finish|Return*')
+    Check 'sin el EndDialog del boton Finalizar' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*missing expected EndDialog: ExitDialog|Finish|Return*')
     $path = New-Mutant 'ev-end-value' @('DELETE FROM `ControlEvent` WHERE `Dialog_`=''CancelDlg'' AND `Control_`=''No'' AND `Event`=''EndDialog''', "INSERT INTO ``ControlEvent`` ($evCols) VALUES ('CancelDlg', 'No', 'EndDialog', 'Exit', '1', 1)")
-    Check 'el No de cancelar con el valor Exit (cancelaria igualmente)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*EndDialog NO esperado*CancelDlg|No|Exit*')
+    Check 'el No de cancelar con el valor Exit (cancelaria igualmente)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*unexpected EndDialog*CancelDlg|No|Exit*')
     $path = New-Mutant 'ev-folderok-cond' @('DELETE FROM `ControlEvent` WHERE `Dialog_`=''FolderDlg'' AND `Control_`=''Next'' AND `Event`=''[TESELA_FOLDER_OK]'' AND `Ordering`=4', "INSERT INTO ``ControlEvent`` ($evCols) VALUES ('FolderDlg', 'Next', '[TESELA_FOLDER_OK]', '{}', '0', 4)")
-    Check 'la bandera de carpeta ok no se retira nunca en una carpeta protegida' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*falta el evento de propiedad esperado*TESELA_FOLDER_OK*')
+    Check 'la bandera de carpeta ok no se retira nunca en una carpeta protegida' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*missing expected property event*TESELA_FOLDER_OK*')
     $path = New-Mutant 'ev-folder-next-direct' @('DELETE FROM `ControlEvent` WHERE `Dialog_`=''FolderDlg'' AND `Control_`=''Next'' AND `Event`=''SpawnDialog''')
-    Check 'Siguiente de carpeta sin la ventana de carpeta no valida' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*FolderDlg.Next tiene que hacer SetTargetPath*')
+    Check 'Siguiente de carpeta sin la ventana de carpeta no valida' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*FolderDlg.Next must call SetTargetPath*')
 
     # --- B1/shield: the all-users Install button shows the UAC shield (ElevationShield) ------------------------------------------
     $path = New-Mutant 'noshield' @('UPDATE `Control` SET `Attributes`=2 WHERE `Dialog_`=''VerifyReadyDlg'' AND `Control`=''InstallElevated''')
-    Check 'el boton Instalar de "para todos" sin el escudo de UAC' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*InstallElevated*escudo*')
+    Check 'el boton Instalar de "para todos" sin el escudo de UAC' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*InstallElevated*UAC shield*')
 
     # --- An API error is not an empty table -----------------------------------------------------------------------------
     $m = Open-MsiDatabase $Msi

@@ -334,7 +334,7 @@ mod tests {
         // Directory junction, symlink, or mount point.
         assert!(!walkable(DIR | REPARSE, TAG_MOUNT_POINT));
         assert!(!walkable(DIR | REPARSE, TAG_SYMLINK));
-        // Carpeta de la nube ya poblada (`WalkCloud`): se recorre con su filtro, pero NO es un destino prioritario.
+        // Populated cloud folder (`WalkCloud`): it is traversed through its filter, but is NOT a priority target.
         assert!(!walkable(DIR | REPARSE, TAG_CLOUD));
         // GM-M1: unpopulated cloud folder, with or without a reparse tag (`SkipUnpopulatedCloud`).
         assert!(!walkable(DIR | REPARSE | RECALL_ON_DATA_ACCESS, TAG_CLOUD));
@@ -359,8 +359,8 @@ mod tests {
         assert_eq!(split(Path::new(r"C:\Datos\Ana")).1, ["Datos", "Ana"]);
     }
 
-    /// Carpeta temporal propia (`%TEMP%\tesela-test-<uuid>`) que se borra al soltarla; los junctions se quitan antes como
-    /// enlaces (`remove_dir` sobre un junction borra solo el enlace).
+    /// Test-owned temporary folder (`%TEMP%\tesela-test-<uuid>`) removed on drop; junctions are first removed as links
+    /// (`remove_dir` on a junction removes only the link).
     struct Tmp(PathBuf, Vec<PathBuf>);
 
     impl Tmp {
@@ -371,7 +371,7 @@ mod tests {
             Tmp(p, Vec::new())
         }
 
-        /// `mklink /J` hacia una carpeta de ESTE mismo árbol (nunca una unidad ni un volumen).
+        /// `mklink /J` to a folder in THIS same tree (never a drive or volume).
         fn junction(&mut self, link: &str, target: &str) -> PathBuf {
             let (l, t) = (self.0.join(link), self.0.join(target));
             let out = std::process::Command::new("cmd")
@@ -413,12 +413,12 @@ mod tests {
         }
     }
 
-    /// Raíz canónica (como la da `open_resolved`) de la carpeta temporal.
+    /// Canonical root of the temporary folder (as returned by `open_resolved`).
     fn canonical_root(t: &Tmp) -> PathBuf {
         sys::open_resolved(&t.0).unwrap().path
     }
 
-    /// Árbol: `real\sub\hondo`, `otra` y un junction `enlace` -> `real` (todo dentro de la carpeta temporal propia).
+    /// Tree: `real\sub\hondo`, `otra`, and a junction `enlace` -> `real` (all inside the test-owned temporary folder).
     fn tree() -> Tmp {
         let mut t = Tmp::new();
         std::fs::create_dir_all(t.0.join("real").join("sub").join("hondo")).unwrap();
@@ -440,7 +440,7 @@ mod tests {
         let t = tree();
         let root = canonical_root(&t);
         let sh = shared();
-        // `enlace\sub` es `real\sub` pasando por un junction: antes se canonizaba hacia el destino y se aceptaba.
+        // `enlace\sub` is `real\sub` through a junction: it was previously canonicalized to the target and accepted.
         let r = resolve(
             &sh,
             &root,
@@ -452,10 +452,10 @@ mod tests {
             "una ruta que pasa por un enlace no es prioritaria"
         );
         assert!(r.batch.is_none() && r.adopt.is_empty());
-        // Lo mismo si el enlace es la propia candidata.
+        // The same applies when the link itself is the candidate.
         let r = resolve(&sh, &root, &children(), vec![t.0.join("enlace")]);
         assert!(r.targets.is_empty() && r.takeover.is_empty());
-        // Y un enlace más arriba aunque el resto de la ruta sea normal.
+        // Also reject a higher link even when the rest of the path is ordinary.
         let r = resolve(
             &sh,
             &root,
@@ -463,7 +463,7 @@ mod tests {
             vec![t.0.join("enlace").join("sub").join("hondo")],
         );
         assert!(r.targets.is_empty());
-        // La ruta real sí se acepta, con la cadena de ancestros precreada.
+        // The real path is accepted, with its ancestor chain precreated.
         let r = resolve(
             &sh,
             &root,
@@ -478,7 +478,7 @@ mod tests {
 
     #[test]
     fn una_candidata_con_punto_punto_se_descarta() {
-        // R-m2: `real\..\otra` NO es `real\otra` (que aquí existe): el sistema la resolvería a `otra`. Se descarta.
+        // R-m2: `real\..\otra` is NOT `real\otra` (which exists here): the system would resolve it to `otra`. Discard it.
         let t = tree();
         std::fs::create_dir(t.0.join("real").join("otra")).unwrap();
         let root = canonical_root(&t);
@@ -495,7 +495,7 @@ mod tests {
                 r.targets
             );
         }
-        // Sin `..` la misma carpeta sí vale (la prueba no es vacía).
+        // Without `..`, the same folder is valid (the test is not vacuous).
         let r = resolve(&sh, &root, &children(), vec![t.0.join("real").join("otra")]);
         assert_eq!(r.targets, [root.join("real").join("otra")]);
     }
@@ -505,10 +505,10 @@ mod tests {
         let t = tree();
         let root = canonical_root(&t);
         let sh = shared();
-        // Mayúsculas distintas de las del disco: se acepta y la ruta sale con los nombres reales.
+        // Different casing from disk: accepted, and the path is returned with the actual names.
         let r = resolve(&sh, &root, &children(), vec![t.0.join("REAL").join("Sub")]);
         assert_eq!(r.targets, [root.join("real").join("sub")]);
-        // Fuera de la raíz, la propia raíz, una ruta que no existe y una que es un archivo: nada.
+        // Outside the root, the root itself, a nonexistent path, and a file path: none are accepted.
         let other = Tmp::new();
         std::fs::write(t.0.join("otra").join("a.txt"), b"x").unwrap();
         let r = resolve(
@@ -530,8 +530,8 @@ mod tests {
         let t = tree();
         let root = canonical_root(&t);
         let sh = shared();
-        // GM-M1: la candidata ES una carpeta de primer nivel: su tarea sustituye a la general y antes salía siempre con
-        // `cloud: false`. Con la marca del `RootChild` se conserva (y sin ella, no se inventa).
+        // GM-M1: the candidate IS a top-level folder, so its task replaces the general task and previously always had
+        // `cloud: false`. Preserve the marker from `RootChild` (and do not invent one when it is absent).
         for cloud in [true, false] {
             let kids = vec![child("real", 1, cloud), child("otra", 3, false)];
             let r = resolve(&sh, &root, &kids, vec![t.0.join("real")]);
@@ -543,7 +543,7 @@ mod tests {
                 (1, 1, true)
             );
         }
-        // Una ruta más profunda se precrea como directorio normal: nunca es de la nube.
+        // A deeper path is precreated as an ordinary directory: it is never a cloud folder.
         let kids = vec![child("real", 1, true)];
         let r = resolve(&sh, &root, &kids, vec![t.0.join("real").join("sub")]);
         assert_eq!(r.initial.len(), 1);

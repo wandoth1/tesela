@@ -145,7 +145,7 @@ mod tests {
 
     #[test]
     fn placeholders_de_la_nube() {
-        // OneDrive: reparse con la etiqueta CLOUD (varios nibbles posibles).
+        // OneDrive: reparse point with the CLOUD tag (several nibbles are possible).
         assert_eq!(
             entry_flags(0x20 | 0x400, 0x9000_001A),
             flags::REPARSE | flags::CLOUD
@@ -158,10 +158,10 @@ mod tests {
             entry_flags(0x20 | 0x400, 0x9000_F01A),
             flags::REPARSE | flags::CLOUD
         );
-        // Solo atributos de recuperación (sin reparse).
+        // Recall attributes only (no reparse point).
         assert_eq!(entry_flags(0x20 | 0x0040_0000, 0), flags::CLOUD);
         assert_eq!(entry_flags(0x20 | 0x0004_0000, 0), flags::CLOUD);
-        // Otras etiquetas de reparse no son de la nube, y la etiqueta sin el atributo REPARSE se ignora.
+        // Other reparse tags are not cloud tags, and a tag without the REPARSE attribute is ignored.
         assert_eq!(entry_flags(0x20 | 0x400, 0x8000_0017), flags::REPARSE); // WOF
         assert_eq!(entry_flags(0x20, 0x9000_001A), 0);
     }
@@ -176,7 +176,7 @@ mod tests {
             !is_cloud_reparse(0x10, 0x9000_001A),
             "sin el atributo REPARSE_POINT la etiqueta no vale"
         );
-        // Un atributo de recuperación sin reparse es CLOUD pero no un reparse de la nube.
+        // A recall attribute without a reparse point is CLOUD, but is not a cloud reparse point.
         assert!(!is_cloud_reparse(0x10 | 0x0040_0000, 0));
     }
 
@@ -195,9 +195,9 @@ mod tests {
             dir_action(DIR | REPARSE, 0xA000_000C),
             DirAction::SkipReparse
         ); // symlink
-        // Carpeta de la nube poblada: se recorre con su filtro.
+        // Populated cloud folder: traverse it through its filter.
         assert_eq!(dir_action(DIR | REPARSE, 0x9000_001A), DirAction::WalkCloud);
-        // No poblada (cualquiera de los dos atributos), con o sin reparse: NO se recorre.
+        // Unpopulated (either attribute), with or without a reparse point: do NOT traverse it.
         assert_eq!(
             dir_action(DIR | REPARSE | RECALL_OPEN, 0x9000_001A),
             DirAction::SkipUnpopulatedCloud
@@ -210,7 +210,7 @@ mod tests {
             dir_action(DIR | RECALL_DATA, 0),
             DirAction::SkipUnpopulatedCloud
         );
-        // Un junction con atributos de recuperación sigue siendo un reparse sin seguir.
+        // A junction with recall attributes is still a reparse point that must not be followed.
         assert_eq!(
             dir_action(DIR | REPARSE | RECALL_DATA, 0xA000_0003),
             DirAction::SkipReparse
@@ -225,7 +225,7 @@ mod tests {
         let f = |attrs, tag| dir_flags(attrs, tag);
         assert_eq!(f(DIR, 0), flags::DIR);
         assert_eq!(f(DIR | REPARSE, 0xA000_0003), flags::DIR | flags::REPARSE);
-        // Junction con atributo de recuperación: sin CLOUD (no es recorrible).
+        // Junction with a recall attribute: no CLOUD flag (it is not traversable).
         assert_eq!(
             f(DIR | REPARSE | RECALL_DATA, 0xA000_0003),
             flags::DIR | flags::REPARSE
@@ -243,7 +243,7 @@ mod tests {
         const REPARSE: u32 = 0x400;
         const RECALL_OPEN: u32 = 0x0004_0000;
         const RECALL_DATA: u32 = 0x0040_0000;
-        // Raíz normal.
+        // Normal root.
         assert_eq!(
             root_plan(DIR, 0),
             RootPlan {
@@ -253,7 +253,7 @@ mod tests {
                 zero_size: false
             }
         );
-        // Carpeta de la nube ya poblada: se recorre abriéndola con su filtro.
+        // Populated cloud folder: traverse it by opening it through its filter.
         assert_eq!(
             root_plan(DIR | REPARSE, 0x9000_001A),
             RootPlan {
@@ -263,7 +263,7 @@ mod tests {
                 zero_size: false
             }
         );
-        // Carpeta de la nube NO poblada (cualquiera de los dos atributos): no se lista y conserva su tamaño.
+        // Unpopulated cloud folder (either attribute): do not list it and preserve its size.
         for recall in [RECALL_OPEN, RECALL_DATA] {
             assert_eq!(
                 root_plan(DIR | REPARSE | recall, 0x9000_001A),
@@ -276,7 +276,7 @@ mod tests {
             );
         }
         assert!(!root_plan(DIR | RECALL_DATA, 0).walk);
-        // Junction o symlink: no se sigue y mide 0 (aunque lleve atributos de recuperación).
+        // Junction or symlink: do not follow it and report size 0 (even if it has recall attributes).
         for tag in [0xA000_0003, 0xA000_000C] {
             assert_eq!(
                 root_plan(DIR | REPARSE | RECALL_DATA, tag),

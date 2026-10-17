@@ -279,7 +279,7 @@ function Get-MsiRows {
     param($Msi, [string]$Sql, [int]$Columns, [switch]$NoTableCheck)
     if (-not $NoTableCheck) {
         $m = [regex]::Match($Sql, 'FROM\s+`([^`]+)`')
-        if (-not $m.Success) { throw "consulta sin tabla: $Sql" }
+        if (-not $m.Success) { throw "query has no table: $Sql" }
         if ($Msi.Tables -notcontains $m.Groups[1].Value) { return @() }
     }
     $rows = New-Object System.Collections.Generic.List[object]
@@ -320,15 +320,15 @@ function Test-MsiUserInterface {
     param($Msi, $Props, $Seq, $Problems)
     $dlgRows = @(Get-MsiRows $Msi 'SELECT `Dialog`, `Attributes`, `Title` FROM `Dialog`' 3)
     $dlgIds = @($dlgRows | ForEach-Object { $_[0] })
-    foreach ($d in $MsiExpectedDialogs) { if ($dlgIds -cnotcontains $d) { $Problems.Add("falta la ventana $d") } }
-    foreach ($d in $dlgIds) { if ($MsiExpectedDialogs -cnotcontains $d) { $Problems.Add("ventana no esperada: $d") } }
-    if ($Props['ErrorDialog'] -cne 'ErrorDlg') { $Problems.Add("la propiedad ErrorDialog es '$($Props['ErrorDialog'])', se esperaba 'ErrorDlg'") }
+    foreach ($d in $MsiExpectedDialogs) { if ($dlgIds -cnotcontains $d) { $Problems.Add("missing dialog $d") } }
+    foreach ($d in $dlgIds) { if ($MsiExpectedDialogs -cnotcontains $d) { $Problems.Add("unexpected dialog: $d") } }
+    if ($Props['ErrorDialog'] -cne 'ErrorDlg') { $Problems.Add("ErrorDialog property is '$($Props['ErrorDialog'])'; expected 'ErrorDlg'") }
 
     # Controls: types without images only. Referenced strings: `[Tx...]`.
     $ctl = @(Get-MsiRows $Msi 'SELECT `Dialog_`, `Control`, `Type`, `Property`, `Text`, `Attributes` FROM `Control`' 6)
     $referenced = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::Ordinal)
     foreach ($c in $ctl) {
-        if ($MsiAllowedControlTypes -cnotcontains $c[2]) { $Problems.Add("control no permitido: $($c[0]).$($c[1]) es de tipo $($c[2]) (solo controles sin imagen)") }
+        if ($MsiAllowedControlTypes -cnotcontains $c[2]) { $Problems.Add("control not allowed: $($c[0]).$($c[1]) has type $($c[2]) (only controls without images)") }
         foreach ($m in [regex]::Matches($c[4], '\[([A-Za-z0-9_]+)\]')) {
             $n = $m.Groups[1].Value
             if ($n -clike 'Tx*') { [void]$referenced.Add($n) }
@@ -343,19 +343,19 @@ function Test-MsiUserInterface {
     }
     # The per-machine Install button has the UAC shield (ElevationShield, 0x00800000): Windows prompts for admin when continuing.
     $shield = @($ctl | Where-Object { $_[0] -ceq 'VerifyReadyDlg' -and $_[1] -ceq 'InstallElevated' })
-    if ($shield.Count -cne 1 -or (([int]$shield[0][5]) -band 8388608) -eq 0) { $Problems.Add('VerifyReadyDlg.InstallElevated (el boton Instalar de "para todos") tiene que llevar el escudo de UAC (ElevationShield)') }
+    if ($shield.Count -cne 1 -or (([int]$shield[0][5]) -band 8388608) -eq 0) { $Problems.Add('VerifyReadyDlg.InstallElevated (the "for everyone" Install button) must have the UAC shield (ElevationShield)') }
     # Desktop checkbox: property DESKTOPSHORTCUT with value 1.
     $cb = @(Get-MsiRows $Msi 'SELECT `Property`, `Value` FROM `CheckBox`' 2)
     if ($cb.Count -cne 1 -or $cb[0][0] -cne 'DESKTOPSHORTCUT' -or $cb[0][1] -cne '1') {
-        $Problems.Add('la tabla CheckBox tiene que tener exactamente una casilla: DESKTOPSHORTCUT = 1')
+        $Problems.Add('the CheckBox table must contain exactly one checkbox: DESKTOPSHORTCUT = 1')
     }
     $fold = @($ctl | Where-Object { $_[0] -ceq 'FolderDlg' -and $_[1] -ceq 'FolderEdit' })
-    if ($fold.Count -cne 1 -or $fold[0][2] -cne 'PathEdit' -or $fold[0][3] -cne 'INSTALLFOLDER') { $Problems.Add('FolderDlg.FolderEdit tiene que ser un PathEdit sobre INSTALLFOLDER') }
+    if ($fold.Count -cne 1 -or $fold[0][2] -cne 'PathEdit' -or $fold[0][3] -cne 'INSTALLFOLDER') { $Problems.Add('FolderDlg.FolderEdit must be a PathEdit on INSTALLFOLDER') }
     $scope = @($ctl | Where-Object { $_[0] -ceq 'ScopeDlg' -and $_[1] -ceq 'ScopeGroup' })
-    if ($scope.Count -cne 1 -or $scope[0][2] -cne 'RadioButtonGroup' -or $scope[0][3] -cne 'TESELA_SCOPE') { $Problems.Add('ScopeDlg.ScopeGroup tiene que ser un grupo de opciones sobre TESELA_SCOPE') }
+    if ($scope.Count -cne 1 -or $scope[0][2] -cne 'RadioButtonGroup' -or $scope[0][3] -cne 'TESELA_SCOPE') { $Problems.Add('ScopeDlg.ScopeGroup must be a radio button group bound to TESELA_SCOPE') }
     $scopeValues = @($rb | Where-Object { $_[0] -ceq 'TESELA_SCOPE' } | ForEach-Object { $_[1] } | Sort-Object)
-    if (($scopeValues -join ',') -cne 'machine,user') { $Problems.Add("el grupo de ambito tiene que tener las opciones 'user' y 'machine'; tiene: $($scopeValues -join ',')") }
-    if ($Props['TESELA_SCOPE'] -cne 'user') { $Problems.Add("TESELA_SCOPE por defecto = '$($Props['TESELA_SCOPE'])', se esperaba 'user' (por usuario como predeterminado)") }
+    if (($scopeValues -join ',') -cne 'machine,user') { $Problems.Add("the scope group must have the 'user' and 'machine' options; found: $($scopeValues -join ',')") }
+    if ($Props['TESELA_SCOPE'] -cne 'user') { $Problems.Add("TESELA_SCOPE default = '$($Props['TESELA_SCOPE'])'; expected 'user' (per-user by default)") }
 
     # Control events: native events only, and every target dialog exists.
     $ev = @(Get-MsiRows $Msi 'SELECT `Dialog_`, `Control_`, `Event`, `Argument`, `Condition`, `Ordering` FROM `ControlEvent`' 6)
@@ -364,49 +364,49 @@ function Test-MsiUserInterface {
         $isProp = $e[2] -cmatch '^\[(.+)\]$'
         if ($isProp) {
             $pn = $Matches[1]
-            if ($MsiAllowedPublishedProperties -cnotcontains $pn) { $Problems.Add("evento de control sobre una propiedad no permitida: $name cambia [$pn]") }
+            if ($MsiAllowedPublishedProperties -cnotcontains $pn) { $Problems.Add("control event targets a disallowed property: $name changes [$pn]") }
         } elseif ($MsiAllowedControlEvents -cnotcontains $e[2]) {
-            $Problems.Add("evento de control no permitido: $name usa $($e[2]) (solo eventos nativos de Windows Installer)")
+            $Problems.Add("disallowed control event: $name uses $($e[2]) (only native Windows Installer events are allowed)")
         }
-        if (@('NewDialog', 'SpawnDialog', 'SpawnWaitDialog') -ccontains $e[2] -and $dlgIds -cnotcontains $e[3]) { $Problems.Add("$name abre la ventana '$($e[3])', que no existe") }
-        if ($e[2] -ceq 'EndDialog' -and $MsiAllowedEndDialogValues -cnotcontains $e[3]) { $Problems.Add("${name}: EndDialog con el valor '$($e[3])'") }
-        if ($e[2] -ceq 'SetTargetPath' -and $MsiAllowedSetTargetPath -cnotcontains $e[3]) { $Problems.Add("${name}: SetTargetPath sobre '$($e[3])'") }
+        if (@('NewDialog', 'SpawnDialog', 'SpawnWaitDialog') -ccontains $e[2] -and $dlgIds -cnotcontains $e[3]) { $Problems.Add("$name opens dialog '$($e[3])', which does not exist") }
+        if ($e[2] -ceq 'EndDialog' -and $MsiAllowedEndDialogValues -cnotcontains $e[3]) { $Problems.Add("${name}: EndDialog has disallowed value '$($e[3])'") }
+        if ($e[2] -ceq 'SetTargetPath' -and $MsiAllowedSetTargetPath -cnotcontains $e[3]) { $Problems.Add("${name}: SetTargetPath targets disallowed path '$($e[3])'") }
     }
     # Scope and directory, row by row.
     $got = @($ev | Where-Object { $_[0] -ceq 'ScopeDlg' -or ($_[0] -ceq 'FolderDlg' -and $_[1] -ceq 'Next' -and $_[2] -ceq 'SetTargetPath') } | ForEach-Object { $_ -join '|' })
-    foreach ($x in $MsiExpectedScopeEvents) { if ($got -cnotcontains $x) { $Problems.Add("falta el evento de la interfaz: $x") } }
+    foreach ($x in $MsiExpectedScopeEvents) { if ($got -cnotcontains $x) { $Problems.Add("missing UI event: $x") } }
     $scopeNext = @($ev | Where-Object { $_[0] -ceq 'ScopeDlg' -and $_[1] -ceq 'Next' })
-    if ($scopeNext.Count -cne 9) { $Problems.Add("ScopeDlg.Next tiene que tener 9 eventos; tiene $($scopeNext.Count)") }
+    if ($scopeNext.Count -cne 9) { $Problems.Add("ScopeDlg.Next must have 9 events; found $($scopeNext.Count)") }
 # ALL property events in ALL dialogs: exactly the expected set, no more and no less.
     $propEvents = @($ev | Where-Object { $_[2] -cmatch '^\[.+\]$' } | ForEach-Object { $_ -join '|' })
-    foreach ($x in $MsiExpectedPropertyEvents) { if ($propEvents -cnotcontains $x) { $Problems.Add("falta el evento de propiedad esperado: $x") } }
-    foreach ($x in $propEvents) { if ($MsiExpectedPropertyEvents -cnotcontains $x) { $Problems.Add("evento de propiedad NO esperado (una ventana cambia una propiedad que no debe): $x") } }
+    foreach ($x in $MsiExpectedPropertyEvents) { if ($propEvents -cnotcontains $x) { $Problems.Add("missing expected property event: $x") } }
+    foreach ($x in $propEvents) { if ($MsiExpectedPropertyEvents -cnotcontains $x) { $Problems.Add("unexpected property event (a dialog changes a property it must not change): $x") } }
 # ALL EndDialog rows: exactly the expected set.
     $ends = @($ev | Where-Object { $_[2] -ceq 'EndDialog' } | ForEach-Object { "$($_[0])|$($_[1])|$($_[3])" })
-    foreach ($x in $MsiExpectedEndDialogs) { if ($ends -cnotcontains $x) { $Problems.Add("falta el EndDialog esperado: $x") } }
-    foreach ($x in $ends) { if ($MsiExpectedEndDialogs -cnotcontains $x) { $Problems.Add("EndDialog NO esperado (cerraria una ventana donde no toca): $x") } }
+    foreach ($x in $MsiExpectedEndDialogs) { if ($ends -cnotcontains $x) { $Problems.Add("missing expected EndDialog: $x") } }
+    foreach ($x in $ends) { if ($MsiExpectedEndDialogs -cnotcontains $x) { $Problems.Add("unexpected EndDialog (would close a dialog at the wrong time): $x") } }
 # FolderDlg.Next: SetTargetPath (1), TESELA_FOLDER_OK flag (2-4), NewDialog VerifyReadyDlg (5), and SpawnDialog InvalidDirDlg (6).
     $fn = @($ev | Where-Object { $_[0] -ceq 'FolderDlg' -and $_[1] -ceq 'Next' } | Sort-Object { [int]$_[5] })
     if ($fn.Count -cne 6 -or $fn[0][2] -cne 'SetTargetPath' -or $fn[4][2] -cne 'NewDialog' -or $fn[4][3] -cne 'VerifyReadyDlg' -or $fn[4][4] -cne 'TESELA_FOLDER_OK=1' -or $fn[5][2] -cne 'SpawnDialog' -or $fn[5][3] -cne 'InvalidDirDlg' -or $fn[5][4] -cne 'NOT TESELA_FOLDER_OK') {
-        $Problems.Add('FolderDlg.Next tiene que hacer SetTargetPath, calcular TESELA_FOLDER_OK, abrir VerifyReadyDlg si es 1 y abrir InvalidDirDlg si no')
+        $Problems.Add('FolderDlg.Next must call SetTargetPath, calculate TESELA_FOLDER_OK, open VerifyReadyDlg when it is 1, and open InvalidDirDlg otherwise')
     }
 # Browse uses the native dialog controls (PathEdit, DirectoryCombo, and DirectoryList bound to _BrowseProperty).
     $browse = @($ctl | Where-Object { $_[0] -ceq 'BrowseDlg' -and @('PathEdit', 'DirectoryCombo', 'DirectoryList') -ccontains $_[2] })
-    if ($browse.Count -cne 3) { $Problems.Add('BrowseDlg tiene que tener PathEdit, DirectoryCombo y DirectoryList') }
-    foreach ($b in $browse) { if ($b[3] -cne '_BrowseProperty') { $Problems.Add("BrowseDlg.$($b[1]) trabaja sobre '$($b[3])', se esperaba _BrowseProperty") } }
+    if ($browse.Count -cne 3) { $Problems.Add('BrowseDlg must contain PathEdit, DirectoryCombo, and DirectoryList') }
+    foreach ($b in $browse) { if ($b[3] -cne '_BrowseProperty') { $Problems.Add("BrowseDlg.$($b[1]) uses '$($b[3])'; expected _BrowseProperty") } }
 # The Next button in the scope dialog is disabled if the selected scope conflicts with an existing install.
     $cc = @(Get-MsiRows $Msi 'SELECT `Dialog_`, `Control_`, `Action`, `Condition` FROM `ControlCondition`' 4)
     $dis = @($cc | Where-Object { $_[0] -ceq 'ScopeDlg' -and $_[1] -ceq 'Next' -and $_[2] -ceq 'Disable' })
-    if ($dis.Count -cne 1 -or $dis[0][3] -cne $MsiExpectedScopeDisable) { $Problems.Add('ScopeDlg.Next tiene que desactivarse cuando el ambito elegido choca con una instalacion del otro ambito') }
+    if ($dis.Count -cne 1 -or $dis[0][3] -cne $MsiExpectedScopeDisable) { $Problems.Add('ScopeDlg.Next must be disabled when the selected scope conflicts with an installation in the other scope') }
     $erDlg = @(Get-MsiRows $Msi 'SELECT `Dialog`, `Attributes` FROM `Dialog`' 2 | Where-Object { $_[0] -ceq 'ErrorDlg' })
-    if ($erDlg.Count -eq 1 -and (([int]$erDlg[0][1]) -band 65536) -eq 0) { $Problems.Add('ErrorDlg no esta marcada como ventana de errores') }
+    if ($erDlg.Count -eq 1 -and (([int]$erDlg[0][1]) -band 65536) -eq 0) { $Problems.Add('ErrorDlg is not marked as an error dialog') }
     $em = @(Get-MsiRows $Msi 'SELECT `Dialog_`, `Control_`, `Event`, `Attribute` FROM `EventMapping`' 4 | ForEach-Object { $_ -join '|' })
-    foreach ($x in $MsiExpectedEventMappings) { if ($em -cnotcontains $x) { $Problems.Add("falta la suscripcion de evento: $x") } }
-    foreach ($x in $em) { if ($MsiExpectedEventMappings -cnotcontains $x) { $Problems.Add("suscripcion de evento no esperada: $x") } }
+    foreach ($x in $MsiExpectedEventMappings) { if ($em -cnotcontains $x) { $Problems.Add("missing event subscription: $x") } }
+    foreach ($x in $em) { if ($MsiExpectedEventMappings -cnotcontains $x) { $Problems.Add("unexpected event subscription: $x") } }
     $at = @(Get-MsiRows $Msi 'SELECT `Action` FROM `ActionText`' 1)
-    foreach ($a in $at) { if ($MsiAllowedActionText -cnotcontains $a[0]) { $Problems.Add("texto de progreso de una accion no esperada: $($a[0])") } }
+    foreach ($a in $at) { if ($MsiAllowedActionText -cnotcontains $a[0]) { $Problems.Add("progress text for unexpected action: $($a[0])") } }
     $ui = @(Get-MsiRows $Msi 'SELECT `Key`, `Text` FROM `UIText`' 2)
-    if ($ui.Count -cne 1 -or $ui[0][0] -cne 'NewFolder') { $Problems.Add('la tabla UIText tiene que tener solo NewFolder') }
+    if ($ui.Count -cne 1 -or $ui[0][0] -cne 'NewFolder') { $Problems.Add('the UIText table must contain only NewFolder') }
 
 # Strings: each Tx* property (English) has a type-51 TeselaEs_<id> action (Spanish), its InstallUISequence row with
 # TESELA_LANG="es" between CostFinalize and the dialogs, and no InstallExecuteSequence row; every displayed string must exist.
@@ -416,26 +416,26 @@ function Test-MsiUserInterface {
     $migrate = if ($Seq['InstallUISequence'].ContainsKey('MigrateFeatureStates')) { [int]$Seq['InstallUISequence']['MigrateFeatureStates'][2] } else { 1200 }
     $seqNums = New-Object System.Collections.Generic.HashSet[int]
     foreach ($id in $tx) {
-        if ($Props[$id] -cmatch '[\[\]]') { $Problems.Add("el texto $id contiene corchetes (el valor de una propiedad no se vuelve a formatear): '$($Props[$id])'") }
-        if ([string]::IsNullOrWhiteSpace($Props[$id])) { $Problems.Add("el texto $id esta vacio") }
-        if (-not $referenced.Contains($id)) { $Problems.Add("el texto $id no se muestra en ninguna ventana (sobra)") }
+        if ($Props[$id] -cmatch '[\[\]]') { $Problems.Add("text $id contains brackets (a property value is not formatted again): '$($Props[$id])'") }
+        if ([string]::IsNullOrWhiteSpace($Props[$id])) { $Problems.Add("text $id is empty") }
+        if (-not $referenced.Contains($id)) { $Problems.Add("text $id is not shown in any dialog (unused)") }
         $es = @($ca | Where-Object { $_[0] -ceq "TeselaEs_$id" })
-        if ($es.Count -cne 1) { $Problems.Add("el texto $id no tiene su version en espanol (accion TeselaEs_$id)"); continue }
-        if ($es[0][1] -cne '51' -or $es[0][2] -cne $id -or [string]::IsNullOrWhiteSpace($es[0][3])) { $Problems.Add("TeselaEs_$id tiene que ser de tipo 51 sobre la propiedad $id y con texto") }
-        if ($es[0][3] -cmatch '[\[\]]') { $Problems.Add("el texto en espanol de $id contiene corchetes") }
+        if ($es.Count -cne 1) { $Problems.Add("text $id has no Spanish version (action TeselaEs_$id)"); continue }
+        if ($es[0][1] -cne '51' -or $es[0][2] -cne $id -or [string]::IsNullOrWhiteSpace($es[0][3])) { $Problems.Add("TeselaEs_$id must be type 51, target property $id, and have text") }
+        if ($es[0][3] -cmatch '[\[\]]') { $Problems.Add("Spanish text for $id contains brackets") }
         $row = $Seq['InstallUISequence']["TeselaEs_$id"]
-        if ($null -eq $row) { $Problems.Add("falta TeselaEs_$id en InstallUISequence"); continue }
-        if ($row[1] -cne 'TESELA_LANG="es"') { $Problems.Add("TeselaEs_$id en InstallUISequence lleva la condicion '$($row[1])', se esperaba TESELA_LANG=""es""") }
+        if ($null -eq $row) { $Problems.Add("missing TeselaEs_$id in InstallUISequence"); continue }
+        if ($row[1] -cne 'TESELA_LANG="es"') { $Problems.Add("TeselaEs_$id in InstallUISequence has condition '$($row[1])'; expected TESELA_LANG=""es""") }
         $n = [int]$row[2]
-        if ($n -le 1006 -or $n -ge $migrate) { $Problems.Add("TeselaEs_$id (secuencia $n) tiene que ir despues de la deteccion de idioma (1006) y antes de las ventanas (MigrateFeatureStates, $migrate)") }
-        if (-not $seqNums.Add($n)) { $Problems.Add("TeselaEs_$id comparte el numero de secuencia $n con otra accion de texto") }
-        if ($Seq['InstallExecuteSequence'].ContainsKey("TeselaEs_$id")) { $Problems.Add("TeselaEs_$id esta en InstallExecuteSequence (los textos solo se cambian en la interfaz)") }
+        if ($n -le 1006 -or $n -ge $migrate) { $Problems.Add("TeselaEs_$id (sequence $n) must run after language detection (1006) and before the dialogs (MigrateFeatureStates, $migrate)") }
+        if (-not $seqNums.Add($n)) { $Problems.Add("TeselaEs_$id shares sequence number $n with another text action") }
+        if ($Seq['InstallExecuteSequence'].ContainsKey("TeselaEs_$id")) { $Problems.Add("TeselaEs_$id is in InstallExecuteSequence (text is changed only in the UI)") }
     }
     foreach ($c in $ca) {
-        if ($c[0] -clike 'TeselaEs_*' -and $tx -cnotcontains $c[0].Substring(9)) { $Problems.Add("accion de texto sin propiedad en ingles: $($c[0])") }
+        if ($c[0] -clike 'TeselaEs_*' -and $tx -cnotcontains $c[0].Substring(9)) { $Problems.Add("text action has no English property: $($c[0])") }
     }
-    foreach ($id in $referenced) { if (-not $Props.ContainsKey($id)) { $Problems.Add("una ventana muestra el texto [$id], que no esta en la tabla Property") } }
-    if ($tx.Count -lt 10) { $Problems.Add("la interfaz tiene solo $($tx.Count) textos") }
+    foreach ($id in $referenced) { if (-not $Props.ContainsKey($id)) { $Problems.Add("a dialog displays text [$id], which is missing from the Property table") } }
+    if ($tx.Count -lt 10) { $Problems.Add("the UI has only $($tx.Count) text properties") }
 }
 
 function Test-MsiPackage {
@@ -446,41 +446,41 @@ function Test-MsiPackage {
     try {
         # Tables: closed list.
         foreach ($t in $msi.Tables) {
-            if ($MsiAllowedTables -cnotcontains $t) { $problems.Add("tabla no permitida en el MSI: $t") }
+            if ($MsiAllowedTables -cnotcontains $t) { $problems.Add("table not allowed in the MSI: $t") }
         }
 
         # Case-sensitive hashtable (@{} is not): Windows Installer property names are case-sensitive.
         $props = New-Object System.Collections.Hashtable ([System.StringComparer]::Ordinal)
         foreach ($r in (Get-MsiRows $msi 'SELECT `Property`, `Value` FROM `Property`' 2)) { $props[$r[0]] = $r[1] }
-        if ($props['ProductVersion'] -cne $ExpectedVersion) { $problems.Add("ProductVersion = '$($props['ProductVersion'])', se esperaba '$ExpectedVersion'") }
-        if ($props['UpgradeCode'] -cne $MsiExpectedUpgradeCode) { $problems.Add("UpgradeCode = '$($props['UpgradeCode'])': NO se puede cambiar (installer/README.md)") }
+        if ($props['ProductVersion'] -cne $ExpectedVersion) { $problems.Add("ProductVersion = '$($props['ProductVersion'])'; expected '$ExpectedVersion'") }
+        if ($props['UpgradeCode'] -cne $MsiExpectedUpgradeCode) { $problems.Add("UpgradeCode = '$($props['UpgradeCode'])': must not be changed (installer/README.md)") }
         if ($props['ProductName'] -cne 'Tesela') { $problems.Add("ProductName = '$($props['ProductName'])'") }
         if ($props['Manufacturer'] -cne 'Tesela contributors') { $problems.Add("Manufacturer = '$($props['Manufacturer'])'") }
         foreach ($p in 'ARPPRODUCTICON', 'ARPURLINFOABOUT') {
-            if (-not $props[$p]) { $problems.Add("falta la propiedad $p (Aplicaciones instaladas)") }
+            if (-not $props[$p]) { $problems.Add("missing property $p (Installed Apps)") }
         }
         if ($props['ARPURLINFOABOUT'] -cne 'https://github.com/wandoth1/tesela') { $problems.Add("ARPURLINFOABOUT = '$($props['ARPURLINFOABOUT'])'") }
         # Closed property list (UI strings start with Tx).
         foreach ($k in $props.Keys) {
-            if ($MsiAllowedProperties -cnotcontains $k -and $k -cnotlike 'Tx*') { $problems.Add("propiedad no esperada en la tabla Property: $k = '$($props[$k])'") }
+            if ($MsiAllowedProperties -cnotcontains $k -and $k -cnotlike 'Tx*') { $problems.Add("unexpected property in the Property table: $k = '$($props[$k])'") }
         }
 
         # DUAL SCOPE: per-user by default (ALLUSERS=2 and MSIINSTALLPERUSER=1; ALLUSERS=1 on the command line selects
         # per-machine install); the Summary Information word-count bit 3 must also be clear ("no elevation required").
         $allUsers = $props['ALLUSERS']
-        if (-not ($allUsers -ceq '2' -and $props['MSIINSTALLPERUSER'] -ceq '1')) { $problems.Add("no es por usuario por defecto: ALLUSERS='$allUsers' MSIINSTALLPERUSER='$($props['MSIINSTALLPERUSER'])' (se esperaba 2 y 1)") }
+        if (-not ($allUsers -ceq '2' -and $props['MSIINSTALLPERUSER'] -ceq '1')) { $problems.Add("not per-user by default: ALLUSERS='$allUsers' MSIINSTALLPERUSER='$($props['MSIINSTALLPERUSER'])' (expected 2 and 1)") }
         $wordCount = [int](Get-MsiSummaryProperty $msi 15)
-        if (($wordCount -band 8) -cne 0) { $problems.Add("el Summary Information declara 'no hace falta elevar' (bit 8 del contador de palabras = $wordCount): un paquete de doble modo no puede llevarlo, el motor ignora MSIINSTALLPERUSER y 'para todos' no pediria administrador (error 1925)") }
+        if (($wordCount -band 8) -cne 0) { $problems.Add("Summary Information declares 'no elevation required' (word-count bit 8 = $wordCount): a dual-purpose package cannot set this; the engine ignores MSIINSTALLPERUSER and an all-users install would not request administrator rights (error 1925)") }
         # The directory and desktop checkbox start WITHOUT values: per-user and unchecked by default.
         foreach ($p in 'INSTALLFOLDER', 'DESKTOPSHORTCUT') {
-            if ($props.ContainsKey($p) -and $props[$p] -cne '') { $problems.Add("la propiedad $p tiene un valor por defecto en la tabla Property ('$($props[$p])'): tiene que partir vacia") }
+            if ($props.ContainsKey($p) -and $props[$p] -cne '') { $problems.Add("property $p has a default value in the Property table ('$($props[$p])'); it must start empty") }
         }
 
         $files = @(Get-MsiRows $msi 'SELECT `File`, `FileName`, `FileSize` FROM `File`' 3)
         $longNames = @($files | ForEach-Object { ($_[1] -split '\|')[-1] })
-        foreach ($n in $MsiExpectedFiles) { if ($longNames -cnotcontains $n) { $problems.Add("falta el archivo $n") } }
-        foreach ($n in $longNames) { if ($MsiExpectedFiles -cnotcontains $n) { $problems.Add("archivo inesperado en el MSI: $n") } }
-        if ($files.Count -cne $MsiExpectedFiles.Count) { $problems.Add("el MSI lleva $($files.Count) archivos, se esperaban $($MsiExpectedFiles.Count)") }
+        foreach ($n in $MsiExpectedFiles) { if ($longNames -cnotcontains $n) { $problems.Add("missing file $n") } }
+        foreach ($n in $longNames) { if ($MsiExpectedFiles -cnotcontains $n) { $problems.Add("unexpected file in the MSI: $n") } }
+        if ($files.Count -cne $MsiExpectedFiles.Count) { $problems.Add("the MSI contains $($files.Count) files; expected $($MsiExpectedFiles.Count)") }
 
         # NO CODE: the CustomAction table is EXACTLY the expected list plus one TeselaEs_<Text> action per string; all are
         # type 51 (property) or 35 (directory). No DLLs, EXEs, scripts, or Binary rows.
@@ -488,91 +488,91 @@ function Test-MsiPackage {
         $expectedCa = @{}
         foreach ($e in $MsiExpectedCustomActions) { $expectedCa[$e.Action] = $e }
         foreach ($c in $ca) {
-            if ($MsiAllowedCustomActionTypes -cnotcontains $c[1]) { $problems.Add("accion personalizada de tipo $($c[1]) ($($c[0])): solo se admiten los tipos 51 (fijar una propiedad) y 35 (fijar una carpeta)"); continue }
+            if ($MsiAllowedCustomActionTypes -cnotcontains $c[1]) { $problems.Add("custom action type $($c[1]) ($($c[0])): only types 51 (set a property) and 35 (set a directory) are allowed"); continue }
             if ($c[0] -clike 'TeselaEs_*') { continue }
-            if (-not $expectedCa.ContainsKey($c[0])) { $problems.Add("accion personalizada no esperada: $($c[0]) (tipo $($c[1]), origen '$($c[2])', destino '$($c[3])')"); continue }
+            if (-not $expectedCa.ContainsKey($c[0])) { $problems.Add("unexpected custom action: $($c[0]) (type $($c[1]), source '$($c[2])', target '$($c[3])')"); continue }
             $e = $expectedCa[$c[0]]
-            if ($c[1] -cne $e.Type -or $c[2] -cne $e.Source -or $c[3] -cne $e.Target) { $problems.Add("la accion $($c[0]) es tipo $($c[1]) origen '$($c[2])' destino '$($c[3])'; se esperaba tipo $($e.Type) origen '$($e.Source)' destino '$($e.Target)'") }
+            if ($c[1] -cne $e.Type -or $c[2] -cne $e.Source -or $c[3] -cne $e.Target) { $problems.Add("custom action $($c[0]) has type $($c[1]), source '$($c[2])', and target '$($c[3])'; expected type $($e.Type), source '$($e.Source)', and target '$($e.Target)'") }
         }
         foreach ($e in $MsiExpectedCustomActions) {
-            if (@($ca | Where-Object { $_[0] -ceq $e.Action }).Count -cne 1) { $problems.Add("falta la accion $($e.Action)") }
+            if (@($ca | Where-Object { $_[0] -ceq $e.Action }).Count -cne 1) { $problems.Add("missing action $($e.Action)") }
         }
 
         # Registry: ONLY HKMU\Software\Tesela with the eight expected values.
         $reg = @(Get-MsiRows $msi 'SELECT `Registry`, `Root`, `Key`, `Name`, `Value`, `Component_` FROM `Registry`' 6)
         foreach ($r in $reg) {
             # -1 = HKEY_CURRENT_USER or HKEY_LOCAL_MACHINE according to scope (HKMU)
-            if ($r[1] -cne '-1' -or $r[2] -cne $MsiExpectedRegistryKey) { $problems.Add("registro fuera de HKMU\Software\Tesela: raiz $($r[1]), clave '$($r[2])'") }
+            if ($r[1] -cne '-1' -or $r[2] -cne $MsiExpectedRegistryKey) { $problems.Add("registry entry outside HKMU\Software\Tesela: root $($r[1]), key '$($r[2])'") }
         }
-        if ($reg.Count -ceq 0) { $problems.Add('no hay valores de registro (los componentes los necesitan como KeyPath)') }
+        if ($reg.Count -ceq 0) { $problems.Add('no registry values found (components require them as KeyPath)') }
         foreach ($e in $MsiExpectedRegistry) {
             $found = @($reg | Where-Object { $_[3] -ceq $e.Name })
-            if ($found.Count -cne 1) { $problems.Add("el valor de registro $($e.Name): hay $($found.Count) filas, se esperaba 1"); continue }
-            if ($found[0][4] -cne $e.Value -or $found[0][5] -cne $e.Component) { $problems.Add("el valor de registro $($e.Name) es '$($found[0][4])' en el componente '$($found[0][5])'; se esperaba '$($e.Value)' en '$($e.Component)'") }
+            if ($found.Count -cne 1) { $problems.Add("registry value $($e.Name): found $($found.Count) rows; expected 1"); continue }
+            if ($found[0][4] -cne $e.Value -or $found[0][5] -cne $e.Component) { $problems.Add("registry value $($e.Name) is '$($found[0][4])' in component '$($found[0][5])'; expected '$($e.Value)' in '$($e.Component)'") }
         }
-        if ($reg.Count -cne $MsiExpectedRegistry.Count) { $problems.Add("el MSI escribe $($reg.Count) valores de registro, se esperaban $($MsiExpectedRegistry.Count)") }
+        if ($reg.Count -cne $MsiExpectedRegistry.Count) { $problems.Add("the MSI writes $($reg.Count) registry values; expected $($MsiExpectedRegistry.Count)") }
 
         # Directories: the EXACT tree (each Directory and its Directory_Parent) and, where set by the .wxs, its DefaultDir
         # (which may be "short|long": the long name is the final segment).
         $dirs = @(Get-MsiRows $msi 'SELECT `Directory`, `Directory_Parent`, `DefaultDir` FROM `Directory`' 3)
         $expectedIds = @($MsiExpectedDirectories | ForEach-Object { $_.Id })
         foreach ($d in $dirs) {
-            if ($expectedIds -cnotcontains $d[0]) { $problems.Add("carpeta no esperada: $($d[0])") }
+            if ($expectedIds -cnotcontains $d[0]) { $problems.Add("unexpected directory: $($d[0])") }
         }
         foreach ($e in $MsiExpectedDirectories) {
             $found = @($dirs | Where-Object { $_[0] -ceq $e.Id })
-            if ($found.Count -cne 1) { $problems.Add("carpeta $($e.Id): hay $($found.Count) filas en la tabla Directory, se esperaba 1"); continue }
-            if ($found[0][1] -cne $e.Parent) { $problems.Add("carpeta $($e.Id): Directory_Parent = '$($found[0][1])', se esperaba '$($e.Parent)'") }
+            if ($found.Count -cne 1) { $problems.Add("directory $($e.Id): found $($found.Count) rows in the Directory table; expected 1"); continue }
+            if ($found[0][1] -cne $e.Parent) { $problems.Add("directory $($e.Id): Directory_Parent = '$($found[0][1])'; expected '$($e.Parent)'") }
             $leafName = ($found[0][2] -split '\|')[-1]
-            if ($null -cne $e.DefaultDir -and $leafName -cne $e.DefaultDir) { $problems.Add("carpeta $($e.Id): DefaultDir = '$($found[0][2])', se esperaba '$($e.DefaultDir)'") }
+            if ($null -cne $e.DefaultDir -and $leafName -cne $e.DefaultDir) { $problems.Add("directory $($e.Id): DefaultDir = '$($found[0][2])'; expected '$($e.DefaultDir)'") }
         }
         $comps = @(Get-MsiRows $msi 'SELECT `Component`, `Directory_`, `ComponentId`, `Attributes`, `Condition`, `KeyPath` FROM `Component`' 6)
         $regIds = @($reg | ForEach-Object { $_[0] })
         foreach ($c in $comps) {
-            if (-not $MsiExpectedComponentDirs.ContainsKey($c[0])) { $problems.Add("componente inesperado: $($c[0])"); continue }
-            if ($c[1] -cne $MsiExpectedComponentDirs[$c[0]]) { $problems.Add("componente $($c[0]) en $($c[1]), se esperaba $($MsiExpectedComponentDirs[$c[0]])") }
-            if ($c[2] -cne $MsiExpectedComponentIds[$c[0]]) { $problems.Add("componente $($c[0]): GUID = '$($c[2])', se esperaba '$($MsiExpectedComponentIds[$c[0]])' (los GUID de componente son fijos)") }
-            if ($c[3] -cne $MsiExpectedComponentAttributes) { $problems.Add("componente $($c[0]): Attributes = '$($c[3])', se esperaba '$MsiExpectedComponentAttributes' (KeyPath de registro, 64 bits)") }
+            if (-not $MsiExpectedComponentDirs.ContainsKey($c[0])) { $problems.Add("unexpected component: $($c[0])"); continue }
+            if ($c[1] -cne $MsiExpectedComponentDirs[$c[0]]) { $problems.Add("component $($c[0]) is in $($c[1]); expected $($MsiExpectedComponentDirs[$c[0]])") }
+            if ($c[2] -cne $MsiExpectedComponentIds[$c[0]]) { $problems.Add("component $($c[0]): GUID = '$($c[2])'; expected '$($MsiExpectedComponentIds[$c[0]])' (component GUIDs are fixed)") }
+            if ($c[3] -cne $MsiExpectedComponentAttributes) { $problems.Add("component $($c[0]): Attributes = '$($c[3])'; expected '$MsiExpectedComponentAttributes' (registry KeyPath, 64-bit)") }
             $wantCond = if ($c[0] -ceq 'DesktopShortcut') { $MsiExpectedDesktopCondition } else { '' }
-            if ($c[4] -cne $wantCond) { $problems.Add("componente $($c[0]): Condition = '$($c[4])', se esperaba '$wantCond'") }
-            if ($regIds -cnotcontains $c[5]) { $problems.Add("componente $($c[0]): su KeyPath '$($c[5])' no es un valor de registro") }
+            if ($c[4] -cne $wantCond) { $problems.Add("component $($c[0]): Condition = '$($c[4])'; expected '$wantCond'") }
+            if ($regIds -cnotcontains $c[5]) { $problems.Add("component $($c[0]): KeyPath '$($c[5])' is not a registry value") }
         }
         foreach ($k in $MsiExpectedComponentIds.Keys) {
-            if (@($comps | Where-Object { $_[0] -ceq $k }).Count -cne 1) { $problems.Add("falta el componente $k") }
+            if (@($comps | Where-Object { $_[0] -ceq $k }).Count -cne 1) { $problems.Add("missing component $k") }
         }
 
         # Shortcuts: Start menu and desktop, targeting tesela.exe with no arguments (a shortcut using `--scan <path>` or
         # `--demo` would change Tesela behavior on launch) and with the working directory set to the install directory.
         $sc = @(Get-MsiRows $msi 'SELECT `Shortcut`, `Directory_`, `Name`, `Target`, `Icon_`, `Arguments`, `WkDir`, `Component_` FROM `Shortcut`' 8)
         $wantSc = @(@{ Id = 'StartMenuShortcut'; Dir = 'ProgramMenuFolder' }, @{ Id = 'DesktopShortcut'; Dir = 'DesktopFolder' })
-        if ($sc.Count -cne 2) { $problems.Add("se esperaban exactamente 2 accesos directos (menu Inicio y escritorio) hacia tesela.exe; hay $($sc.Count)") }
+        if ($sc.Count -cne 2) { $problems.Add("expected exactly 2 shortcuts (Start menu and desktop) to tesela.exe; found $($sc.Count)") }
         foreach ($w in $wantSc) {
             $s = @($sc | Where-Object { $_[0] -ceq $w.Id })
             if ($s.Count -cne 1 -or $s[0][1] -cne $w.Dir -or $s[0][3] -cne '[INSTALLFOLDER]tesela.exe' -or $s[0][7] -cne $w.Id) {
-                $problems.Add("se esperaba el acceso directo $($w.Id) en $($w.Dir) hacia [INSTALLFOLDER]tesela.exe")
+                $problems.Add("expected shortcut $($w.Id) in $($w.Dir) to [INSTALLFOLDER]tesela.exe")
                 continue
             }
-            if ($s[0][5] -cne '') { $problems.Add("el acceso directo $($w.Id) lleva argumentos: '$($s[0][5])'") }
-            if ($s[0][6] -cne 'INSTALLFOLDER') { $problems.Add("el acceso directo $($w.Id) tiene WkDir = '$($s[0][6])', se esperaba 'INSTALLFOLDER'") }
+            if ($s[0][5] -cne '') { $problems.Add("shortcut $($w.Id) has arguments: '$($s[0][5])'") }
+            if ($s[0][6] -cne 'INSTALLFOLDER') { $problems.Add("shortcut $($w.Id) has WkDir = '$($s[0][6])'; expected 'INSTALLFOLDER'") }
         }
         $icons = @(Get-MsiRows $msi 'SELECT `Name` FROM `Icon`' 1)
-        if ($icons.Count -cne 1) { $problems.Add("se esperaba 1 icono en el MSI; hay $($icons.Count)") }
+        if ($icons.Count -cne 1) { $problems.Add("expected 1 icon in the MSI; found $($icons.Count)") }
 
         # MajorUpgrade: the two EXACT Upgrade table rows (see $MsiExpectedUpgradeRows and its explanation).
         $up = @(Get-MsiRows $msi 'SELECT `UpgradeCode`, `VersionMin`, `VersionMax`, `Language`, `Attributes`, `Remove`, `ActionProperty` FROM `Upgrade`' 7)
-        if ($up.Count -cne $MsiExpectedUpgradeRows.Count) { $problems.Add("la tabla Upgrade tiene $($up.Count) filas, se esperaban $($MsiExpectedUpgradeRows.Count) (MajorUpgrade)") }
+        if ($up.Count -cne $MsiExpectedUpgradeRows.Count) { $problems.Add("the Upgrade table has $($up.Count) rows; expected $($MsiExpectedUpgradeRows.Count) (MajorUpgrade)") }
         foreach ($e in $MsiExpectedUpgradeRows) {
             $rows = @($up | Where-Object { $_[6] -ceq $e.ActionProperty })
-            if ($rows.Count -cne 1) { $problems.Add("falta la fila de Upgrade para $($e.Name) (ActionProperty $($e.ActionProperty)): hay $($rows.Count)"); continue }
+            if ($rows.Count -cne 1) { $problems.Add("missing Upgrade row for $($e.Name) (ActionProperty $($e.ActionProperty)): found $($rows.Count)"); continue }
             $r = $rows[0]
             $min = if ($e.Min -ceq 'V') { $ExpectedVersion } else { $e.Min }
             $max = if ($e.MaxIsVersion) { $ExpectedVersion } else { '' }
             if ($r[0] -cne $MsiExpectedUpgradeCode) { $problems.Add("Upgrade ($($e.Name)): UpgradeCode = '$($r[0])'") }
-            if ($r[1] -cne $min) { $problems.Add("Upgrade ($($e.Name)): VersionMin = '$($r[1])', se esperaba '$min'") }
-            if ($r[2] -cne $max) { $problems.Add("Upgrade ($($e.Name)): VersionMax = '$($r[2])', se esperaba '$max'") }
-            if ($r[3] -cne $MsiExpectedLanguage) { $problems.Add("Upgrade ($($e.Name)): Language = '$($r[3])', se esperaba '$MsiExpectedLanguage'") }
-            if ($r[4] -cne $e.Attributes) { $problems.Add("Upgrade ($($e.Name)): Attributes = '$($r[4])', se esperaba '$($e.Attributes)'") }
-            if ($r[5] -cne '') { $problems.Add("Upgrade ($($e.Name)): Remove = '$($r[5])', se esperaba vacio") }
+            if ($r[1] -cne $min) { $problems.Add("Upgrade ($($e.Name)): VersionMin = '$($r[1])'; expected '$min'") }
+            if ($r[2] -cne $max) { $problems.Add("Upgrade ($($e.Name)): VersionMax = '$($r[2])'; expected '$max'") }
+            if ($r[3] -cne $MsiExpectedLanguage) { $problems.Add("Upgrade ($($e.Name)): Language = '$($r[3])'; expected '$MsiExpectedLanguage'") }
+            if ($r[4] -cne $e.Attributes) { $problems.Add("Upgrade ($($e.Name)): Attributes = '$($r[4])'; expected '$($e.Attributes)'") }
+            if ($r[5] -cne '') { $problems.Add("Upgrade ($($e.Name)): Remove = '$($r[5])'; expected empty") }
         }
         # Launch conditions: exactly FOUR, each with a message (the newer-version block and the three scope checks).
         #
@@ -581,9 +581,9 @@ function Test-MsiPackage {
         $lcOk = $lc.Count -ceq $MsiExpectedLaunchConditions.Count
         foreach ($x in $MsiExpectedLaunchConditions) { if ($lcGot -cnotcontains $x) { $lcOk = $false } }
         if (-not $lcOk) {
-            $problems.Add("se esperaban exactamente estas $($MsiExpectedLaunchConditions.Count) LaunchCondition: " + (($MsiExpectedLaunchConditions | ForEach-Object { "'$_'" }) -join ', ') + '; hay: ' + (($lcGot | ForEach-Object { "'$_'" }) -join ', '))
+            $problems.Add("expected exactly these $($MsiExpectedLaunchConditions.Count) LaunchConditions: " + (($MsiExpectedLaunchConditions | ForEach-Object { "'$_'" }) -join ', ') + '; found: ' + (($lcGot | ForEach-Object { "'$_'" }) -join ', '))
         } else {
-            foreach ($r in $lc) { if ([string]::IsNullOrWhiteSpace($r[1])) { $problems.Add("la LaunchCondition '$($r[0])' no tiene mensaje") } }
+            foreach ($r in $lc) { if ([string]::IsNullOrWhiteSpace($r[1])) { $problems.Add("LaunchCondition '$($r[0])' has no message") } }
         }
         # For the above to TAKE EFFECT: FindRelatedProducts (sets Upgrade table properties) and LaunchConditions
         # (evaluates the condition) must be unconditional in both install sequences; RemoveExistingProducts
@@ -596,8 +596,8 @@ function Test-MsiPackage {
         }
         foreach ($t in 'InstallExecuteSequence', 'InstallUISequence') {
             foreach ($a in 'FindRelatedProducts', 'LaunchConditions') {
-                if (-not $seq[$t].ContainsKey($a)) { $problems.Add("falta $a en $t (sin el, el bloqueo o la deteccion de versiones no se evalua)") }
-                elseif ($seq[$t][$a][1] -cne '') { $problems.Add("$a en ${t} lleva la condicion '$($seq[$t][$a][1])' (tiene que ser incondicional)") }
+                if (-not $seq[$t].ContainsKey($a)) { $problems.Add("missing $a in $t (without it, version blocking or detection is not evaluated)") }
+                elseif ($seq[$t][$a][1] -cne '') { $problems.Add("$a in ${t} has condition '$($seq[$t][$a][1])' (it must be unconditional)") }
             }
         }
         # FindRelatedProducts must run BEFORE LaunchConditions: it sets WIX_DOWNGRADE_DETECTED. In the opposite order,
@@ -607,19 +607,19 @@ function Test-MsiPackage {
             if ($seq[$t].ContainsKey('FindRelatedProducts') -and $seq[$t].ContainsKey('LaunchConditions')) {
                 $frp = [int]$seq[$t]['FindRelatedProducts'][2]
                 $lcs = [int]$seq[$t]['LaunchConditions'][2]
-                if ($frp -ge $lcs) { $problems.Add("FindRelatedProducts (secuencia $frp) tiene que ir antes de LaunchConditions (secuencia $lcs) en ${t}: si no, el bloqueo de versiones posteriores no surte efecto") }
+                if ($frp -ge $lcs) { $problems.Add("FindRelatedProducts (sequence $frp) must run before LaunchConditions (sequence $lcs) in ${t}; otherwise the newer-version block has no effect") }
             }
         }
         $ies = $seq['InstallExecuteSequence']
         if (-not $ies.ContainsKey('RemoveExistingProducts')) {
-            $problems.Add('falta RemoveExistingProducts en InstallExecuteSequence (MajorUpgrade no desinstalaria la version anterior)')
+            $problems.Add('RemoveExistingProducts is missing from InstallExecuteSequence (MajorUpgrade would not uninstall the previous version)')
         } else {
             $rep = $ies['RemoveExistingProducts']
-            if ($rep[1] -cne '') { $problems.Add("RemoveExistingProducts lleva la condicion '$($rep[1])' (tiene que ser incondicional)") }
+            if ($rep[1] -cne '') { $problems.Add("RemoveExistingProducts has condition '$($rep[1])' (it must be unconditional)") }
             $lo = if ($ies.ContainsKey('InstallValidate')) { [int]$ies['InstallValidate'][2] } else { $null }
             $hi = if ($ies.ContainsKey('InstallInitialize')) { [int]$ies['InstallInitialize'][2] } else { $null }
             if ($null -ceq $lo -or $null -ceq $hi -or [int]$rep[2] -le $lo -or [int]$rep[2] -ge $hi) {
-                $problems.Add("RemoveExistingProducts (secuencia $($rep[2])) tiene que ir entre InstallValidate e InstallInitialize")
+                $problems.Add("RemoveExistingProducts (sequence $($rep[2])) must run between InstallValidate and InstallInitialize")
             }
         }
         # SECURE PROPERTIES: exactly the expected set. The two Upgrade table properties (WIX_*) must survive the UI-to-server
@@ -628,10 +628,10 @@ function Test-MsiPackage {
         # v0.1.4 R-S3 decision. See installer/Tesela.wxs, which also explains the AlwaysInstallElevated risk).
         $secure = @(($props['SecureCustomProperties'] -split ';') | Where-Object { $_ })
         foreach ($a in $MsiExpectedSecure) {
-            if ($secure -cnotcontains $a) { $problems.Add("SecureCustomProperties no incluye $a (tiene: '$($props['SecureCustomProperties'])')") }
+            if ($secure -cnotcontains $a) { $problems.Add("SecureCustomProperties does not include $a (contains: '$($props['SecureCustomProperties'])')") }
         }
         foreach ($a in $secure) {
-            if ($MsiExpectedSecure -cnotcontains $a) { $problems.Add("SecureCustomProperties incluye $a, que no es una propiedad segura esperada (tiene: '$($props['SecureCustomProperties'])')") }
+            if ($MsiExpectedSecure -cnotcontains $a) { $problems.Add("SecureCustomProperties includes $a, which is not an expected secure property (contains: '$($props['SecureCustomProperties'])')") }
         }
 
         # RemoveFile: ONE row only (remove INSTALLFOLDER if empty), with no file name: a FileName value (e.g.
@@ -640,47 +640,47 @@ function Test-MsiPackage {
         $rm = @(Get-MsiRows $msi 'SELECT `FileKey`, `Component_`, `FileName`, `DirProperty`, `InstallMode` FROM `RemoveFile`' 5)
         foreach ($r in $rm) {
             if ($r[2] -cne '' -or $r[3] -cne 'INSTALLFOLDER' -or $r[4] -cne '2') {
-                $problems.Add("fila de RemoveFile no esperada: '$($r[0])' FileName='$($r[2])' DirProperty='$($r[3])' InstallMode='$($r[4])'")
+                $problems.Add("unexpected RemoveFile row: '$($r[0])' FileName='$($r[2])' DirProperty='$($r[3])' InstallMode='$($r[4])'")
             }
         }
-        if ($rm.Count -cne 1) { $problems.Add("RemoveFile tiene que tener exactamente 1 fila (INSTALLFOLDER, solo si queda vacia); hay $($rm.Count)") }
+        if ($rm.Count -cne 1) { $problems.Add("RemoveFile must have exactly 1 row (INSTALLFOLDER, only if empty); found $($rm.Count)") }
 
         # Previous installs: FOUR registry searches (HKCU and HKLM, InstallFolder and DesktopShortcut; no custom action)
         # into TESELA_PREV_*. They support scope-change blocking, upgrade directory selection, and the remembered desktop shortcut.
         # BOTH roots are searched because AppSearch runs before the UI
         # selects a scope.
         $loc = @(Get-MsiRows $msi 'SELECT `Signature_`, `Root`, `Key`, `Name`, `Type` FROM `RegLocator`' 5)
-        if ($loc.Count -cne $MsiExpectedRegLocators.Count) { $problems.Add("RegLocator tiene $($loc.Count) busquedas de registro, se esperaban $($MsiExpectedRegLocators.Count)") }
+        if ($loc.Count -cne $MsiExpectedRegLocators.Count) { $problems.Add("RegLocator has $($loc.Count) registry searches; expected $($MsiExpectedRegLocators.Count)") }
         $app = @(Get-MsiRows $msi 'SELECT `Property`, `Signature_` FROM `AppSearch`' 2)
-        if ($app.Count -cne $MsiExpectedRegLocators.Count) { $problems.Add("AppSearch tiene $($app.Count) filas, se esperaban $($MsiExpectedRegLocators.Count)") }
+        if ($app.Count -cne $MsiExpectedRegLocators.Count) { $problems.Add("AppSearch has $($app.Count) rows; expected $($MsiExpectedRegLocators.Count)") }
         foreach ($e in $MsiExpectedRegLocators) {
             $l = @($loc | Where-Object { $_[0] -ceq $e.Id })
             # Type 18 = 2 (raw value) + 16 (64-bit view: the package is x64); 16 = directory (containing tesela.exe) in the 64-bit view.
             if ($l.Count -cne 1 -or $l[0][1] -cne $e.Root -or $l[0][2] -cne $MsiExpectedRegistryKey -or $l[0][3] -cne $e.Name -or $l[0][4] -cne $e.Type) {
-                $problems.Add("se esperaba UNA busqueda de registro $($e.Id): raiz $($e.Root), Software" + [char]92 + "Tesela, valor $($e.Name), tipo $($e.Type)")
+                $problems.Add("expected ONE registry search $($e.Id): root $($e.Root), Software" + [char]92 + "Tesela, value $($e.Name), type $($e.Type)")
             }
             $a = @($app | Where-Object { $_[1] -ceq $e.Id })
-            if ($a.Count -cne 1 -or $a[0][0] -cne $e.Property) { $problems.Add("AppSearch tiene que asignar $($e.Property) con la busqueda $($e.Id)") }
+            if ($a.Count -cne 1 -or $a[0][0] -cne $e.Property) { $problems.Add("AppSearch must assign $($e.Property) using search $($e.Id)") }
         }
         # AppSearch (the action that runs the search) must be unconditional and run BEFORE CostFinalize in both install
         # sequences; otherwise the remembered directory is not restored during upgrade, repair, or uninstall, leaving
         # files in a custom directory orphaned.
         foreach ($t in 'InstallExecuteSequence', 'InstallUISequence') {
-            if (-not $seq[$t].ContainsKey('AppSearch')) { $problems.Add("falta AppSearch en $t"); continue }
-            if ($seq[$t]['AppSearch'][1] -cne '') { $problems.Add("AppSearch en ${t} lleva la condicion '$($seq[$t]['AppSearch'][1])' (tiene que ser incondicional)") }
-            if (-not $seq[$t].ContainsKey('CostFinalize')) { $problems.Add("falta CostFinalize en $t"); continue }
+            if (-not $seq[$t].ContainsKey('AppSearch')) { $problems.Add("missing AppSearch in $t"); continue }
+            if ($seq[$t]['AppSearch'][1] -cne '') { $problems.Add("AppSearch in ${t} has condition '$($seq[$t]['AppSearch'][1])' (it must be unconditional)") }
+            if (-not $seq[$t].ContainsKey('CostFinalize')) { $problems.Add("missing CostFinalize in $t"); continue }
             if ([int]$seq[$t]['AppSearch'][2] -ge [int]$seq[$t]['CostFinalize'][2]) {
-                $problems.Add("AppSearch (secuencia $($seq[$t]['AppSearch'][2])) tiene que ir antes de CostFinalize (secuencia $($seq[$t]['CostFinalize'][2])) en ${t}")
+                $problems.Add("AppSearch (sequence $($seq[$t]['AppSearch'][2])) must run before CostFinalize (sequence $($seq[$t]['CostFinalize'][2])) in ${t}")
             }
         }
         # The Signature table contains only the two tesela.exe check rows (PrevUserExe and PrevMachineExe); no additional file
         # or directory searches.
         $sig = @(Get-MsiRows $msi 'SELECT `Signature`, `FileName`, `MinVersion`, `MaxVersion`, `MinSize`, `MaxSize`, `MinDate`, `MaxDate`, `Languages` FROM `Signature`' 9)
         $sigWant = @($MsiExpectedRegLocators | Where-Object { $_.File })
-        if ($sig.Count -cne $sigWant.Count) { $problems.Add("la tabla Signature tiene $($sig.Count) filas, tiene que tener exactamente $($sigWant.Count) (la comprobacion de tesela.exe)") }
+        if ($sig.Count -cne $sigWant.Count) { $problems.Add("the Signature table has $($sig.Count) rows; it must contain exactly $($sigWant.Count) (the tesela.exe check)") }
         foreach ($e in $sigWant) {
             $s = @($sig | Where-Object { $_[0] -ceq $e.Id })
-            if ($s.Count -cne 1 -or $s[0][1] -cne $e.File -or (($s[0][2..8] -join '') -cne '')) { $problems.Add("Signature $($e.Id) tiene que buscar solo el archivo $($e.File) (sin version, tamano ni fecha)") }
+            if ($s.Count -cne 1 -or $s[0][1] -cne $e.File -or (($s[0][2..8] -join '') -cne '')) { $problems.Add("Signature $($e.Id) must search only for file $($e.File) (no version, size, or date)") }
         }
 
         # Sequence rows for the logic actions (exact action, condition, and number), and their order relative to standard
@@ -692,34 +692,34 @@ function Test-MsiPackage {
             foreach ($e in $MsiExpectedLogicRows) {
                 if ($e.Where -ceq 'ui' -and -not $isUi) { continue }
                 if ($e.Where -ceq 'exec' -and $isUi) { continue }
-                if (-not $seq[$t].ContainsKey($e.Action)) { $problems.Add("falta $($e.Action) en $t"); continue }
+                if (-not $seq[$t].ContainsKey($e.Action)) { $problems.Add("missing $($e.Action) in $t"); continue }
                 $r = $seq[$t][$e.Action]
-                if ($r[1] -cne $e.Cond) { $problems.Add("$($e.Action) en ${t} lleva la condicion '$($r[1])', se esperaba '$($e.Cond)'") }
-                if ([int]$r[2] -cne [int]$e.Seq) { $problems.Add("$($e.Action) en ${t} tiene la secuencia $($r[2]), se esperaba $($e.Seq)") }
+                if ($r[1] -cne $e.Cond) { $problems.Add("$($e.Action) in ${t} has condition '$($r[1])'; expected '$($e.Cond)'") }
+                if ([int]$r[2] -cne [int]$e.Seq) { $problems.Add("$($e.Action) in ${t} has sequence $($r[2]); expected $($e.Seq)") }
             }
             foreach ($e in $MsiExpectedLogicRows) {
                 if ($e.Seq -gt 100) { continue }
                 if (-not $seq[$t].ContainsKey($e.Action) -or -not $seq[$t].ContainsKey('AppSearch') -or -not $seq[$t].ContainsKey('LaunchConditions')) { continue }
                 $n = [int]$seq[$t][$e.Action][2]
                 if ($n -le [int]$seq[$t]['AppSearch'][2] -or $n -ge [int]$seq[$t]['LaunchConditions'][2]) {
-                    $problems.Add("$($e.Action) (secuencia $n) tiene que ir despues de AppSearch y antes de LaunchConditions en ${t}")
+                    $problems.Add("$($e.Action) (sequence $n) must run after AppSearch and before LaunchConditions in ${t}")
                 }
             }
         }
         foreach ($k in $MsiLangEsSeq.Keys) {
-            if (-not $seq['InstallUISequence'].ContainsKey($k)) { $problems.Add("falta $k en InstallUISequence"); continue }
-            if ([int]$seq['InstallUISequence'][$k][2] -cne $MsiLangEsSeq[$k]) { $problems.Add("$k tiene la secuencia $($seq['InstallUISequence'][$k][2]), se esperaba $($MsiLangEsSeq[$k])") }
-            if ($seq['InstallExecuteSequence'].ContainsKey($k)) { $problems.Add("$k esta en InstallExecuteSequence (el idioma solo se elige en la interfaz)") }
+            if (-not $seq['InstallUISequence'].ContainsKey($k)) { $problems.Add("missing $k in InstallUISequence"); continue }
+            if ([int]$seq['InstallUISequence'][$k][2] -cne $MsiLangEsSeq[$k]) { $problems.Add("$k has sequence $($seq['InstallUISequence'][$k][2]); expected $($MsiLangEsSeq[$k])") }
+            if ($seq['InstallExecuteSequence'].ContainsKey($k)) { $problems.Add("$k is in InstallExecuteSequence (language is selected only in the UI)") }
         }
         # The three language actions cover ALL Spanish LANGIDs and only those (each condition: TESELA_LANG="" AND (...)).
         $ids = New-Object System.Collections.Generic.List[int]
         foreach ($k in $MsiLangEsSeq.Keys) {
             if (-not $seq['InstallUISequence'].ContainsKey($k)) { continue }
             $cond = $seq['InstallUISequence'][$k][1]
-            if ($cond -cnotmatch '^TESELA_LANG="" AND \(UserLanguageID=\d+( OR UserLanguageID=\d+)*\)$') { $problems.Add("la condicion de $k no tiene la forma esperada: '$cond'"); continue }
+            if ($cond -cnotmatch '^TESELA_LANG="" AND \(UserLanguageID=\d+( OR UserLanguageID=\d+)*\)$') { $problems.Add("condition for $k does not have the expected form: '$cond'"); continue }
             foreach ($m in [regex]::Matches($cond, 'UserLanguageID=(\d+)')) { $ids.Add([int]$m.Groups[1].Value) }
         }
-        if ((($ids | Sort-Object) -join ',') -cne (($MsiSpanishLangIds | Sort-Object) -join ',')) { $problems.Add('las acciones TeselaLangEs1..3 no cubren exactamente los LANGID del espanol') }
+        if ((($ids | Sort-Object) -join ',') -cne (($MsiSpanishLangIds | Sort-Object) -join ',')) { $problems.Add('TeselaLangEs1..3 do not cover exactly the Spanish LANGIDs') }
         # Dialogs in the UI sequence: Welcome (new install) or Maintenance (already installed), Progress before
         # ExecuteAction, and the three exit dialogs (-1 success, -2 user cancellation, -3 error) in both UI and admin sequences.
         $ui = $seq['InstallUISequence']
@@ -729,19 +729,19 @@ function Test-MsiPackage {
             @{ Action = 'ProgressDlg'; Cond = '' }
         )
         foreach ($s in $showRows) {
-            if (-not $ui.ContainsKey($s.Action)) { $problems.Add("falta $($s.Action) en InstallUISequence"); continue }
-            if ($ui[$s.Action][1] -cne $s.Cond) { $problems.Add("$($s.Action) en InstallUISequence lleva la condicion '$($ui[$s.Action][1])', se esperaba '$($s.Cond)'") }
-            if ($ui.ContainsKey('MigrateFeatureStates') -and [int]$ui[$s.Action][2] -le [int]$ui['MigrateFeatureStates'][2]) { $problems.Add("$($s.Action) tiene que ir despues de MigrateFeatureStates (despues de calcular los costes)") }
-            if ($ui.ContainsKey('ExecuteAction') -and [int]$ui[$s.Action][2] -ge [int]$ui['ExecuteAction'][2]) { $problems.Add("$($s.Action) tiene que ir antes de ExecuteAction") }
+            if (-not $ui.ContainsKey($s.Action)) { $problems.Add("missing $($s.Action) in InstallUISequence"); continue }
+            if ($ui[$s.Action][1] -cne $s.Cond) { $problems.Add("$($s.Action) in InstallUISequence has condition '$($ui[$s.Action][1])'; expected '$($s.Cond)'") }
+            if ($ui.ContainsKey('MigrateFeatureStates') -and [int]$ui[$s.Action][2] -le [int]$ui['MigrateFeatureStates'][2]) { $problems.Add("$($s.Action) must run after MigrateFeatureStates (after costs are calculated)") }
+            if ($ui.ContainsKey('ExecuteAction') -and [int]$ui[$s.Action][2] -ge [int]$ui['ExecuteAction'][2]) { $problems.Add("$($s.Action) must run before ExecuteAction") }
         }
-        if ($ui.ContainsKey('ProgressDlg') -and $ui.ContainsKey('WelcomeDlg') -and [int]$ui['ProgressDlg'][2] -le [int]$ui['WelcomeDlg'][2]) { $problems.Add('ProgressDlg tiene que ir despues de WelcomeDlg') }
-        if (-not $ui.ContainsKey('ExecuteAction')) { $problems.Add('falta ExecuteAction en InstallUISequence') }
+        if ($ui.ContainsKey('ProgressDlg') -and $ui.ContainsKey('WelcomeDlg') -and [int]$ui['ProgressDlg'][2] -le [int]$ui['WelcomeDlg'][2]) { $problems.Add('ProgressDlg must run after WelcomeDlg') }
+        if (-not $ui.ContainsKey('ExecuteAction')) { $problems.Add('missing ExecuteAction in InstallUISequence') }
         $exitRows = @(@{ Action = 'ExitDialog'; Seq = -1 }, @{ Action = 'UserExit'; Seq = -2 }, @{ Action = 'FatalError'; Seq = -3 })
         $adm = New-Object System.Collections.Hashtable ([System.StringComparer]::Ordinal)
         foreach ($r in (Get-MsiRows $msi 'SELECT `Action`, `Condition`, `Sequence` FROM `AdminUISequence`' 3)) { $adm[$r[0]] = $r }
         foreach ($x in $exitRows) {
-            if (-not $ui.ContainsKey($x.Action) -or [int]$ui[$x.Action][2] -cne $x.Seq) { $problems.Add("falta $($x.Action) con la secuencia $($x.Seq) en InstallUISequence") }
-            if (-not $adm.ContainsKey($x.Action) -or [int]$adm[$x.Action][2] -cne $x.Seq) { $problems.Add("falta $($x.Action) con la secuencia $($x.Seq) en AdminUISequence (ICE20)") }
+            if (-not $ui.ContainsKey($x.Action) -or [int]$ui[$x.Action][2] -cne $x.Seq) { $problems.Add("missing $($x.Action) at sequence $($x.Seq) in InstallUISequence") }
+            if (-not $adm.ContainsKey($x.Action) -or [int]$adm[$x.Action][2] -cne $x.Seq) { $problems.Add("missing $($x.Action) at sequence $($x.Seq) in AdminUISequence (ICE20)") }
         }
 
         # The UI (dialogs, controls, events, and strings).

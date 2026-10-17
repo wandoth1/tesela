@@ -41,7 +41,7 @@ use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf, Prefix};
 use windows_sys::Win32::UI::Shell::{FOLDERID_LocalAppData, FOLDERID_RoamingAppData};
 
-/// Navegador cuyas carpetas se conocen.
+/// Browser whose folders are known.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum BrowserFamily {
     Chrome,
@@ -935,7 +935,7 @@ mod tests {
             // `..` anywhere, even if the path ends at an existing cache.
             ud.join(r"Default\Login Data\..\Cache"),
             ud.join(r"..\..\Google\Chrome\User Data\Default\Cache"),
-            // Prefijos raros.
+            // Unusual prefixes.
             PathBuf::from(format!(r"\\.\{drive}:\x")),
             PathBuf::from(r"\\?\GLOBALROOT\Device\HarddiskVolume1\Users\x"),
             PathBuf::from(format!("{bs}{bs}?{bs}UNC{bs}{host}{bs}{share}{bs}x")),
@@ -1148,13 +1148,13 @@ mod tests {
             real_dir_under(&base, &base.join("a").join("b")),
             Some(base.join("a").join("b"))
         );
-        // La propia base no se comprueba.
+        // The base itself is not checked.
         assert_eq!(real_dir_under(&base, &base), Some(base.clone()));
         // It is outside the base, does not exist, or is a file.
         assert_eq!(real_dir_under(&base, &t.0.join("otra")), None);
         assert_eq!(real_dir_under(&base, &base.join("no-existe")), None);
         assert_eq!(real_dir_under(&base, &base.join("a").join("f.txt")), None);
-        // Un `..` no cuela.
+        // A `..` component is rejected.
         assert_eq!(
             real_dir_under(&base, &base.join("a").join("..").join("a")),
             None

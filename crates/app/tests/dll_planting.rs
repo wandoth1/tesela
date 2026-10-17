@@ -1,16 +1,16 @@
-//! Una DLL con el nombre de una importación estática dejada junto al `.exe` no se carga: se comprueba con archivos VACÍOS (no
-//! son DLL y no ejecutan nada) con los nombres de las DLL que `tesela.exe` importa y de las que `wgpu` carga por nombre.
+//! A DLL named after a static import and placed next to the `.exe` is not loaded: this is checked using EMPTY files (not
+//! DLLs, and they execute nothing) named after the DLLs imported by `tesela.exe` and those `wgpu` loads by name.
 //!
-//! Sin `/DEPENDENTLOADFLAG:0x800` (build.rs) el cargador de Windows resuelve las importaciones estáticas con el orden
-//! predeterminado, que mira la carpeta del `.exe` ANTES que `System32`: un `dxgi.dll` vacío al lado hace que el proceso ni
-//! arranque (código de salida distinto de 0 antes de llegar a `main`). Con la bandera arranca y sale con 0.
+//! Without `/DEPENDENTLOADFLAG:0x800` (build.rs), the Windows loader resolves static imports in the default order,
+//! which checks the `.exe` folder BEFORE `System32`: an empty `dxgi.dll` beside it prevents the process from starting
+//! (nonzero exit code before reaching `main`). With the flag, it starts and exits with 0.
 
 mod common;
 
 use std::path::PathBuf;
 use std::process::Command;
 
-/// Nombres de las DLL que `tesela.exe` importa de forma estática (y no son `KnownDLLs`) o que se cargan por nombre.
+/// DLL names that `tesela.exe` imports statically (and that are not `KnownDLLs`) or that are loaded by name.
 const PLANTED: [&str; 12] = [
     "dxgi",
     "dwmapi",
@@ -58,11 +58,11 @@ fn archivos_con_nombre_de_dll_junto_al_exe_no_impiden_arrancar() {
     assert!(text.contains("tesela "), "{text}");
 }
 
-/// ¿Abre la ventana y pinta? `--demo --bench-hover 1` imprime los frames medidos; si no llega a pintar, no hay cifras. Se
-/// reintenta porque la medición es intermitente (ventana sin pintar al arrancar) también sin ninguna DLL falsa.
+/// Does the window open and render? `--demo --bench-hover 1` prints the measured frames; if it does not render, there are no
+/// figures. Retry because the measurement is intermittent (the window may not render at startup), even without fake DLLs.
 fn paints(exe: &std::path::Path) -> bool {
-    // Defensa en profundidad: el perfil del proceso (APPDATA y LOCALAPPDATA) apunta a carpetas temporales propias; ninguna prueba
-    // puede tocar el perfil real del usuario.
+    // Defense in depth: the process profile (APPDATA and LOCALAPPDATA) points to test-owned temporary folders; no test
+    // can touch the user's real profile.
     let base = exe.parent().unwrap();
     let (roaming, local) = (base.join("Roaming"), base.join("Local"));
     std::fs::create_dir_all(&roaming).unwrap();
@@ -80,12 +80,12 @@ fn paints(exe: &std::path::Path) -> bool {
     })
 }
 
-/// Con archivos vacíos con nombre de DLL junto al `.exe` (`d3d12`, `dcomp`, `d3dcompiler_47`, `dxcompiler`, `dxil`... las que
-/// `wgpu` carga POR NOMBRE al abrir la ventana), el programa abre y pinta igual: se cargan las de `System32`. Es la prueba de
-/// `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)`: con `LOAD_LIBRARY_SEARCH_DEFAULT_DIRS` (que incluye la carpeta de
-/// la aplicación) o sin la llamada, `wgpu` cargaría el archivo vacío y no podría crear la superficie. (`--version` no sirve: sale
-/// antes de que nada cargue por nombre.) Sin escritorio gráfico o sin DX12 el CONTROL (sin archivos falsos) tampoco pinta: entonces
-/// no hay nada que comparar y la prueba se omite.
+/// With empty files named after DLLs placed next to the `.exe` (`d3d12`, `dcomp`, `d3dcompiler_47`, `dxcompiler`, `dxil`... the ones
+/// `wgpu` loads BY NAME when opening the window), the program still opens and renders: the copies from `System32` are loaded.
+/// This verifies `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)`: with `LOAD_LIBRARY_SEARCH_DEFAULT_DIRS` (which includes
+/// the application folder) or without the call, `wgpu` would load the empty file and fail to create the surface. (`--version` is
+/// not useful: it exits before anything is loaded by name.) Without a graphical desktop or DX12, the CONTROL (without fake files)
+/// does not render either, so there is nothing to compare and the test is skipped.
 #[test]
 fn con_dll_falsas_junto_al_exe_la_ventana_abre_y_pinta() {
     if !common::process_tests_enabled() {
@@ -96,7 +96,7 @@ fn con_dll_falsas_junto_al_exe_la_ventana_abre_y_pinta() {
     let control_exe = control.0.join("tesela-control.exe");
     std::fs::copy(env!("CARGO_BIN_EXE_tesela"), &control_exe).unwrap();
     if !paints(&control_exe) {
-        // En CI no se omite: sin esto, un runner sin escritorio gráfico dejaría la prueba en verde sin comprobar nada.
+        // Do not skip in CI: without this, a runner with no graphical desktop would pass the test without checking anything.
         assert!(
             std::env::var_os("CI").is_none(),
             "en CI el control (sin archivos falsos) tiene que abrir y pintar la ventana: la prueba no puede omitirse"
@@ -125,7 +125,7 @@ fn u32_at(b: &[u8], o: usize) -> usize {
     u32::from_le_bytes(b[o..o + 4].try_into().unwrap()) as usize
 }
 
-/// `DependentLoadFlags` del directorio de configuración de carga del PE (lo que escribe `/DEPENDENTLOADFLAG`), si lo lleva.
+/// `DependentLoadFlags` from the PE load-configuration directory (what `/DEPENDENTLOADFLAG` writes), if present.
 fn dependent_load_flags(exe: &[u8]) -> Option<usize> {
     let pe = u32_at(exe, 0x3C);
     assert_eq!(&exe[pe..pe + 4], b"PE\0\0");
