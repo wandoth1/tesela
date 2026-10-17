@@ -54,8 +54,12 @@ cálculo de espacio). Sin imágenes ni iconos (`Binary` está prohibida). Solo e
 
 - **Ámbito.** «Solo para mí (recomendado)» o «Para todos los usuarios de este equipo». El texto dice, sin adornos: *instalar para
   todos NO da a Tesela más permisos para limpiar; Tesela siempre se ejecuta con permisos normales y se niega a limpiar si se
-  ejecuta como administrador (decisión de seguridad E1)*. Windows pide administrador solo al pulsar Instalar si se eligió «para
-  todos» (no al abrir el MSI: el paquete declara «no hace falta elevar»).
+  ejecuta como administrador (decisión de seguridad E1)*. El paquete es de **doble modo** (`Scope="perUserOrMachine"`: `ALLUSERS=2` y `MSIINSTALLPERUSER=1`) y **no** se
+  declara «compatible con UAC» (bit 8 del contador de palabras del Summary Information, que el validador exige LIMPIO): con ese bit, Windows Installer
+  ignora `MSIINSTALLPERUSER` y «para todos» no pediría credenciales (error 1925). Sin él, abrir el MSI no pide nada, «solo para mí» no eleva nunca y
+  «para todos» pide administrador **después** de la interfaz, al empezar la instalación (el botón Instalar lleva el escudo de UAC cuando se
+  elige «para todos»). Eso último es lo documentado por Microsoft y **no está comprobado en una máquina real** (el CI no tiene escritorio donde
+  mostrar el aviso): lo prueba una persona.
 - **Carpeta.** Cambia con el ámbito, salvo que el usuario ya la haya personalizado. En una actualización la carpeta es la de la
   instalación existente y no se puede cambiar (campo y botón desactivados, con una nota). Si en «solo para mí» se elige una carpeta
   protegida (Archivos de programa, Windows), sale un aviso en el diálogo y Siguiente abre una ventana de «carpeta no válida» en vez de
@@ -68,7 +72,10 @@ cálculo de espacio). Sin imágenes ni iconos (`Binary` está prohibida). Solo e
   interfaz) los sustituye por el español. `TESELA_LANG=es` o `TESELA_LANG=en` en la línea de comandos lo fuerza (sirve para
   probar). `UserLanguageID` es el idioma que Windows da al usuario (formato regional): un Windows con la pantalla en inglés y el
   formato regional en español sale en español. **Lo que no se puede elegir por idioma sin código** son las tablas `ActionText` y
-  `UIText` (los textos de la barra de progreso): van en español e inglés a la vez («Copiando archivos / Copying files»); y los
+  `UIText` (los textos de la barra de progreso): van en español e inglés a la vez («Copiando archivos / Copying files»). **El idioma del
+  instalador sigue el formato regional de Windows, no el idioma de la pantalla** (Windows Installer no expone el idioma de pantalla sin código;
+  Tesela, la aplicación, sí usa el de pantalla): con la pantalla en español y el formato regional en inglés, el instalador sale en inglés y la
+  aplicación en español, y al revés. Se acepta; `TESELA_LANG=es|en` lo fuerza. Los
   mensajes de error genéricos de Windows Installer salen en el idioma de Windows. Los mensajes de las condiciones de lanzamiento
   (modo sin interfaz) también van en los dos idiomas juntos.
 
@@ -79,7 +86,7 @@ Igual que la v0.1.4: **por usuario y sin UAC por defecto**.
 | Propiedad | Efecto |
 |---|---|
 | (ninguna) | Por usuario, `%LOCALAPPDATA%\Programs\Tesela`, sin acceso directo del escritorio. |
-| `ALLUSERS=1` | Para todos (necesita administrador): `C:\Program Files\Tesela` y menú Inicio común. (`ALLUSERS=2 MSIINSTALLPERUSER=""` equivale.) |
+| `ALLUSERS=1` | Para todos (necesita administrador): `C:\Program Files\Tesela` y menú Inicio común. Es la **única** forma documentada de pedirlo. |
 | `INSTALLFOLDER=<carpeta>\` | Otra carpeta (ver más abajo). |
 | `DESKTOPSHORTCUT=1` | Crea el acceso directo del escritorio (`0` lo quita al actualizar; vacío lo mantiene si ya estaba). |
 | `TESELA_LANG=es\|en` | Solo afecta a la interfaz. |
@@ -87,8 +94,10 @@ Igual que la v0.1.4: **por usuario y sin UAC por defecto**.
 ### Ámbito y actualizaciones
 
 Windows Installer **no actualiza entre contextos**: un producto instalado por usuario no se sustituye desde una instalación para
-todos, ni al revés. Se **detecta** la instalación previa (`HKCU\Software\Tesela\InstallFolder`, que ya escribía la v0.1.4, y
-`HKLM\SOFTWARE\Tesela\InstallFolder`) y se **bloquea el cambio de ámbito** con un mensaje que dice que hay que desinstalar antes.
+todos, ni al revés. Se **detecta** la instalación previa (una clave con `InstallFolder` **y** `tesela.exe` en esa carpeta: una clave sin producto no cuenta; `HKCU\Software\Tesela\InstallFolder`, que ya escribía la v0.1.4, y
+`HKLM\SOFTWARE\Tesela\InstallFolder`) y se **bloquea el cambio de ámbito** con un mensaje que dice que hay que desinstalar antes. **Excepción (varias cuentas):** si ESTE usuario tiene
+su propia instalación por usuario, esa gana y puede actualizarla aunque otra cuenta haya instalado para todos (verá dos accesos directos «Tesela»);
+la inversa, pedir «para todos» teniendo la suya por usuario, sigue bloqueada.
 **Decisión y por qué:** se prefiere bloquear a *fijar* el ámbito en silencio. Sin interfaz (`/qn`) no hay a quien explicárselo y fijarlo
 cambiaría lo que pide la línea de comandos; con interfaz, la ventana de ámbito **preelige** el de la instalación existente (actualizar
 es pulsar Siguiente) y, si se elige el otro, muestra el aviso y desactiva Siguiente. Sin interfaz, una actualización de una
@@ -111,7 +120,8 @@ desinstalar e instalar de nuevo. Sin esto, los archivos de una instalación pers
 
 ### Propiedades seguras y `AlwaysInstallElevated` (revierte la decisión R-S3 de la v0.1.4)
 
-`INSTALLFOLDER` y `DESKTOPSHORTCUT` (y `ALLUSERS` y `MSIINSTALLPERUSER`) son ahora **propiedades seguras** (`SecureCustomProperties`). La v0.1.4
+`INSTALLFOLDER` y `DESKTOPSHORTCUT` son ahora **propiedades seguras** (`ALLUSERS` y `MSIINSTALLPERUSER` no hace falta marcarlas: `ALLUSERS` pasa siempre
+al servidor y `MSIINSTALLPERUSER` solo se lee con `ALLUSERS=2`) (`SecureCustomProperties`; `INSTALLFOLDER` y `DESKTOPSHORTCUT` más las dos de MajorUpgrade). La v0.1.4
 no tenía interfaz y era solo por usuario, así que no había nada que traspasar al servidor y se dejó sin `Secure`. Ahora la interfaz fija la
 carpeta y el acceso directo en la fase de interfaz y, en una instalación **para todos** elevada, Windows Installer solo traspasa al
 servidor las propiedades seguras: sin `Secure`, «para todos» ignoraría en silencio lo elegido. **Riesgo con `AlwaysInstallElevated`** (directiva
@@ -151,9 +161,13 @@ de fondo):
   instalación corren en el CI: `scripts/tests/msi-install.tests.ps1`).
 
 Lo que sí hay, **solo para dar un mensaje legible y no como barrera**: en «solo para mí», una carpeta dentro de Archivos de programa o de
-Windows se avisa en el diálogo (y con `/qn`, una condición de lanzamiento con mensaje que sugiere `ALLUSERS=1`), en vez de acabar en un
+Windows (comparación por prefijo y sin barra final, sin distinguir mayúsculas: cubre `Program Files`, `Program Files (x86)` y `Program Files (Arm)` en ARM64,
+y trata también como protegida una carpeta cuyo nombre empiece igual, como `Program Files2`) se avisa en el diálogo (y con `/qn`, una condición de lanzamiento con mensaje que sugiere `ALLUSERS=1`), en vez de acabar en un
 1603 sin explicación. No depende de `Privileged`: según la documentación de Windows Installer vale lo mismo que `AdminUser` (el usuario es
 administrador), no que el proceso esté elevado, y un administrador sin elevar tampoco puede escribir en Archivos de programa.
+Además se rechazan los formatos de ruta que esquivarían el aviso: tiene que ser una ruta completa con unidad (`C:\...`) y sin `/`, `..`, `?` ni
+ruta de red (en el diálogo, la ventana de «carpeta no válida»; con `/qn`, una condición de lanzamiento). **No se detectan** los nombres cortos
+8.3 (`C:\PROGRA~1`) ni un enlace dentro del perfil que apunte fuera: sin código no hay forma; es un aviso, no una barrera.
 
 Qué hacer: instala en la carpeta predeterminada (`%LOCALAPPDATA%\Programs\Tesela`, que es tuya) o en otra **a la que solo tu cuenta (y
 los administradores) pueda escribir**. Para comprobarlo: `icacls "<carpeta>"` no debe mostrar `Users`, `Everyone` ni `Authenticated Users` con
@@ -198,13 +212,12 @@ pwsh -File scripts/build-msi.ps1
 
 Compila los ejecutables (`build-release.ps1`: CRT estático, `--locked`, enlace reproducible, sin rutas de la máquina, imports
 PE), empaqueta el MSI (los dos `.wxs`) y el zip portable, escribe `SHA256SUMS.txt` y **valida** el MSI (`scripts/msi-validate.ps1`):
-ICE (se aceptan ICE61, y ICE57 solo para los componentes de los dos accesos directos: su `KeyPath` es un valor de HKMU, el diseño estándar de
-un paquete de doble propósito), lista **cerrada** de tablas (la de la instalación y las de la interfaz; `Environment`, `ServiceInstall`,
+ICE (se aceptan solo los mensajes exactos de ICE61 y los dos de ICE57 de los componentes de los accesos directos: su `KeyPath` es un valor de HKMU,
+el diseño estándar de un paquete de doble propósito), lista **cerrada** de tablas (la de la instalación y las de la interfaz; `Environment`, `ServiceInstall`,
 `Class`, `Extension`, `ProgId`, `Binary`... son un fallo), la tabla `CustomAction` **fila a fila** (solo tipos 51 y 35), ámbito dual
-(`ALLUSERS=2`, `MSIINSTALLPERUSER=1` y el bit «no hace falta elevar»), el **árbol de carpetas exacto** (`TARGETDIR` > `INSTALLFOLDER`, más
-`ProgramMenuFolder` y `DesktopFolder` bajo `TARGETDIR`), los 8 valores de registro en HKMU, las cuatro búsquedas de instalaciones previas,
-las **dos filas exactas de `Upgrade`**, las **cuatro `LaunchCondition`** (versiones posteriores, cambio de ámbito en las dos direcciones y
-carpeta protegida), las **propiedades seguras** exactas, las secuencias (`FindRelatedProducts` antes de `LaunchConditions`,
+(`ALLUSERS=2`, `MSIINSTALLPERUSER=1` y el bit «no hace falta elevar» LIMPIO), el **árbol de carpetas exacto** (`TARGETDIR` > `INSTALLFOLDER`, más
+`ProgramMenuFolder` y `DesktopFolder` bajo `TARGETDIR`), los 8 valores de registro en HKMU, las seis búsquedas de instalaciones previas (cuatro valores y la comprobación de `tesela.exe`),
+las **dos filas exactas de `Upgrade`**, las **cinco `LaunchCondition`** (versiones posteriores, cambio de ámbito en las dos direcciones, carpeta protegida y formato de la ruta), las **propiedades seguras** exactas, las secuencias (`FindRelatedProducts` antes de `LaunchConditions`,
 `RemoveExistingProducts` entre `InstallValidate` e `InstallInitialize`, las acciones de carpeta/idioma/escritorio con su condición y su número),
 la **interfaz** (ventanas esperadas, solo controles sin imagen, solo eventos nativos, la ventana de ámbito y la de carpeta fila a fila, y cada
 texto en inglés **y** en español), archivos byte a byte los compilados, y ni el MSI ni el zip ni sus contenidos llevan datos de la
@@ -220,10 +233,16 @@ administrador desechable, y el script se niega a correr fuera de un runner de Gi
 `gh attestation verify` y la suma SHA-256, y prueban sin interfaz: instalar por usuario, reparar y desinstalar sin restos; actualizar desde la
 v0.1.4 (carpeta por defecto y personalizada, un solo producto, la bajada sigue bloqueada); para todos (`Program Files`, `HKLM`, menú Inicio
 común, carpeta personalizada, actualización y desinstalación sin restos); el cambio de ámbito bloqueado en las dos direcciones; y
-`DESKTOPSHORTCUT` (por usuario y para todos, recordado al actualizar, quitado al desinstalar). El resumen del job lista cada comprobación.
+`DESKTOPSHORTCUT` (por usuario y para todos, recordado al actualizar, quitado al desinstalar); la carpeta protegida; una clave de registro sin producto; y
+un **usuario estándar** desechable (contraseña aleatoria generada en el job y nunca impresa, borrado al final aunque falle): `ALLUSERS=1 /qn` sin
+privilegios tiene que fallar sin dejar nada, instalar por usuario sin elevar tiene que terminar con 0 en su perfil sin tocar `Program Files` ni
+`HKLM`, y su instalación por usuario se puede actualizar aunque otra cuenta haya instalado para todos (M2). El resumen del job lista cada
+comprobación, lo omitido (que no cuenta como pasado, y hace fallar el job si la versión ya es posterior a la v0.1.4 publicada) y las líneas
+`MSI_LUA` de los registros de msiexec (cómo decidió el motor el ámbito y la elevación).
 **Lo que no prueba ningún agente ni el CI:** la interfaz (ventanas: aspecto, textos, flujo), la petición de administrador (UAC) al pulsar
-Instalar en «para todos», el idioma de la interfaz con un Windows en español, las propiedades seguras con un usuario **sin** privilegios (el
-runner es administrador: todas las propiedades llegan al servidor) y la ventana de carpeta con su aviso de carpeta protegida. Eso lo prueba una persona, con el usuario avisado.
+Instalar en «para todos» (el runner no tiene escritorio interactivo para mostrarla), el idioma de la interfaz con un Windows en español, las
+propiedades seguras con un usuario **sin** privilegios que da credenciales de otro administrador, y la ventana de carpeta con su aviso de carpeta
+protegida. Eso lo prueba una persona, con el usuario avisado.
 
 El icono **no se versiona** (`privacy-check` rechaza las imágenes): `crates/app/build.rs` lo dibuja en cada compilación y lo
 incrusta en `tesela.exe`; `scripts/extract-ico.py` lo saca del ejecutable para el MSI. (Apuntar la tabla `Icon` al `.exe`

@@ -25,10 +25,18 @@
        repetirlo, =0 lo quita y desinstalar lo elimina.
     7. Carpeta protegida (Archivos de programa) en una instalacion por usuario: bloqueada con su mensaje aunque el runner sea
        administrador; para todos, permitida.
+    8. Una clave de registro SIN producto (restos, sin tesela.exe) en HKCU o en HKLM no bloquea nada.
+    9. Usuario ESTANDAR desechable (contrasena aleatoria que no se imprime, borrado al final aunque falle), con
+       scripts/tests/msi-install-standard.tests.ps1 lanzado COMO ese usuario, sin elevar: `ALLUSERS=1 /qn` tiene que fallar y no dejar
+       nada; instalar por usuario tiene que terminar con 0 en su perfil sin tocar Program Files ni HKLM; y, con otra cuenta (el
+       administrador) que instala para todos entre medias, su instalacion por usuario se puede actualizar (la suya gana) y desinstalar.
+    Una prueba omitida NO cuenta como pasada: se lista aparte, hay un minimo de escenarios y de comprobaciones, y con una version
+    posterior a la v0.1.4 publicada no puede quedar ninguna omitida. El resumen del job vuelca las lineas MSI_LUA de los registros de
+    msiexec (como decidio el motor el ambito y la elevacion).
 
-  Lo que NO prueba (no se puede sin una persona o sin un usuario sin privilegios): la interfaz (ventanas), la peticion de
-  administrador (UAC), las propiedades seguras con un usuario NO administrador (el runner es administrador: con el, todas las
-  propiedades llegan al servidor, seguras o no).
+  Lo que NO prueba (no se puede sin una persona): la interfaz (ventanas), la peticion de administrador (UAC) al pulsar Instalar en
+  "para todos" (el runner no tiene escritorio interactivo), y las propiedades seguras con un usuario estandar que da las credenciales de
+  OTRO administrador.
 
 .PARAMETER NewMsi
   El MSI recien construido por scripts/build-msi.ps1.
@@ -71,11 +79,14 @@ $ExpectedFiles = @('tesela.exe', 'tesela-scan.exe', 'LICENSE-MIT', 'LICENSE-APAC
 # --- Comprobaciones ------------------------------------------------------------------------------------------------------------
 $passed = New-Object System.Collections.Generic.List[string]
 $failed = New-Object System.Collections.Generic.List[string]
+# Lo que NO se ejecuto (no cuenta como pasado): se imprime aparte y el job puede exigir que no haya ninguna.
+$skipped = New-Object System.Collections.Generic.List[string]
+$script:stepsRun = 0
 function Check([string]$Case, [bool]$Condition, [string]$Detail = '') {
     if ($Condition) { $script:passed.Add($Case); Write-Host "  ok   $Case" }
     else { $script:failed.Add($(if ($Detail) { "$Case ($Detail)" } else { $Case })); Write-Host "  FALLA $Case $Detail" -ForegroundColor Red }
 }
-function Step([string]$Text) { Write-Host ''; Write-Host "== $Text" }
+function Step([string]$Text) { $script:stepsRun++; Write-Host ''; Write-Host "== $Text" }
 
 # --- Utilidades ---------------------------------------------------------------------------------------------------------------
 $script:logIndex = 0
@@ -180,7 +191,7 @@ function Remove-TestDir([string]$Dir) {
     # Solo carpetas dentro de WorkDir o la carpeta de la prueba para todos, y solo si no hay enlaces.
     if (-not (Test-Path -LiteralPath $Dir)) { return }
     $full = [System.IO.Path]::GetFullPath($Dir).TrimEnd('\')
-    $ok = $full.StartsWith($WorkDir + '\', [System.StringComparison]::OrdinalIgnoreCase) -or $full -ieq $machineCustomRoot
+    $ok = $full.StartsWith($WorkDir + '\', [System.StringComparison]::OrdinalIgnoreCase) -or $full -ieq $machineCustomRoot -or $full -ieq $stdShared
     if (-not $ok) { throw "se niega a borrar fuera de la zona de pruebas: $full" }
     if (-not (Test-ReparseFree $full)) { throw "se niega a borrar ${full}: tiene enlaces (reparse points)" }
     Remove-Item -LiteralPath $full -Recurse -Force
@@ -213,6 +224,87 @@ function Test-TeselaVersion([string]$Exe, [string]$Label) {
 function Show-LogTail([object]$R) {
     Write-Host "  --- ultimas lineas de $($R.Log) ---"
     ($R.Text -split "`n") | Select-Object -Last 25 | ForEach-Object { Write-Host "  | $_" }
+}
+
+# --- Usuario ESTANDAR desechable (escenario 9) --------------------------------------------------------------------------------------
+$stdShared = 'C:\TeselaCiStd'
+$stdName = 'teselacistd'
+$script:stdUser = $null
+function New-RandomPassword {
+    # Contrasena aleatoria generada aqui, que nunca se imprime (y se enmascara en el registro del job por si acaso).
+    $b = New-Object byte[] 24
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    $rng.GetBytes($b)
+    $rng.Dispose()
+    return 'Aa1!' + [Convert]::ToBase64String($b).Replace('=', 'x')
+}
+function New-StandardUser {
+    if (Get-LocalUser -Name $stdName -ErrorAction SilentlyContinue) { throw "ya existe el usuario local ${stdName}: se aborta sin tocarlo" }
+    $pw = New-RandomPassword
+    Write-Host "::add-mask::$pw"
+    $sec = ConvertTo-SecureString $pw -AsPlainText -Force
+    New-LocalUser -Name $stdName -Password $sec -FullName 'Tesela CI standard user' -Description 'Disposable user of the Tesela CI install tests' -AccountNeverExpires -PasswordNeverExpires | Out-Null
+    # Solo el grupo Usuarios (S-1-5-32-545): estandar, sin administrador.
+    Add-LocalGroupMember -SID 'S-1-5-32-545' -Member $stdName
+    $script:stdUser = [pscustomobject]@{ Name = $stdName; Cred = (New-Object System.Management.Automation.PSCredential(".\$stdName", $sec)) }
+    $isAdminMember = @(Get-LocalGroupMember -SID 'S-1-5-32-544' -ErrorAction SilentlyContinue | Where-Object { $_.Name -like "*\$stdName" }).Count -gt 0
+    Check 'el usuario desechable es ESTANDAR (no esta en Administradores)' (-not $isAdminMember)
+}
+function Remove-StandardUser {
+    # Se borra el usuario aunque la prueba falle (la carpeta de su perfil se deja: tiene enlaces propios de Windows y el runner es
+    # desechable).
+    if (Get-LocalUser -Name $stdName -ErrorAction SilentlyContinue) { Remove-LocalUser -Name $stdName }
+    $script:stdUser = $null
+}
+function Invoke-StdPhase([string]$Phase, [string]$MsiPath) {
+    # Lanza msi-install-standard.tests.ps1 COMO el usuario estandar (sin elevar) y vuelca sus lineas de resultado en las comprobaciones.
+    $result = Join-Path $stdShared "result-$Phase.txt"
+    if (Test-Path -LiteralPath $result) { Remove-Item -LiteralPath $result -Force }
+    $stdArgs = @('-NoProfile', '-File', "`"$stdScriptCopy`"", '-Phase', $Phase, '-Shared', "`"$stdShared`"", '-ResultFile', "`"$result`"")
+    if ($MsiPath) { $stdArgs += @('-Msi', "`"$MsiPath`"") }
+    $pwshExe = (Get-Process -Id $PID).Path
+    Write-Host "  (como $stdName) pwsh -File msi-install-standard.tests.ps1 -Phase $Phase"
+    try {
+        $p = Start-Process -FilePath $pwshExe -ArgumentList ($stdArgs -join ' ') -Credential $script:stdUser.Cred -LoadUserProfile -WorkingDirectory $stdShared -PassThru
+    } catch {
+        Check "se puede lanzar un proceso como el usuario estandar (fase $Phase)" $false "Start-Process -Credential fallo: $($_.Exception.Message)"
+        return
+    }
+    Wait-Process -Id $p.Id -Timeout 900 -ErrorAction SilentlyContinue
+    if (Get-Process -Id $p.Id -ErrorAction SilentlyContinue) {
+        Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+        Check "la fase $Phase del usuario estandar termino a tiempo" $false 'tiempo agotado (15 min)'
+        return
+    }
+    if (-not (Test-Path -LiteralPath $result)) {
+        Check "la fase $Phase del usuario estandar produjo resultados" $false 'no hay archivo de resultados: el proceso no llego a escribirlos (perfil, permisos o error al arrancar)'
+        return
+    }
+    $lines = @(Get-Content -LiteralPath $result)
+    $count = 0
+    foreach ($l in $lines) {
+        $parts = $l -split '\|', 3
+        switch ($parts[0]) {
+            'ok' { $count++; Check "(usuario estandar) $($parts[1])" $true }
+            'FAIL' { $count++; Check "(usuario estandar) $($parts[1])" $false $(if ($parts.Count -gt 2) { $parts[2] } else { '' }) }
+            'INFO' { Write-Host "  [estandar] $($parts[1])" }
+        }
+    }
+    Check "la fase $Phase del usuario estandar hizo comprobaciones" ($count -gt 0)
+}
+function Get-LuaEvidence {
+    # Lineas del registro de msiexec que dicen como decidio el motor el ambito y la elevacion (MSI_LUA, dual mode, 1925...).
+    $out = New-Object System.Collections.Generic.List[string]
+    foreach ($dir in $WorkDir, $stdShared) {
+        if (-not (Test-Path -LiteralPath $dir)) { continue }
+        foreach ($log in Get-ChildItem -LiteralPath $dir -Filter '*.log' -ErrorAction SilentlyContinue) {
+            $text = [System.Text.Encoding]::Latin1.GetString(@([System.IO.File]::ReadAllBytes($log.FullName) | Where-Object { $_ -ne 0 }))
+            foreach ($line in ($text -split "`r?`n")) {
+                if ($line -match 'MSI_LUA|dual mode|Elevation required|sufficient privileges|MSIINSTALLPERUSER') { $out.Add("$($log.Name): $($line.Trim())") }
+            }
+        }
+    }
+    return @($out | Select-Object -Unique | Select-Object -First 60)
 }
 
 # --- Rutas ---------------------------------------------------------------------------------------------------------------------
@@ -280,7 +372,7 @@ try {
         Check 'tras la bajada bloqueada sigue instalada la version nueva' ((@(Get-Products)).Count -eq 1 -and @(Get-Products)[0].Version -eq $newVersion)
     } else {
         Write-Host "  (bajada NO aplicable: la version nueva ($newVersion) no es mayor que la publicada ($oldVersion); se probara cuando se suba la version)"
-        $passed.Add('bajada: no aplicable (version igual); se prueba al subir la version')
+        $skipped.Add('bajada: NO ejecutada (la version nueva no es mayor que la publicada); se prueba al subir la version')
     }
     $r = Uninstall-Installed 'upgrade-uninstall'
     Check 'desinstalar tras actualizar termina con 0' ($r.Code -eq 0) "codigo $($r.Code)"
@@ -407,28 +499,115 @@ try {
     $r = Uninstall-Installed 'protected-machine-uninstall'
     Check 'desinstalar termina con 0 y quita la carpeta' ($r.Code -eq 0 -and -not (Test-Path -LiteralPath $protectedFolder)) "codigo $($r.Code)"
     Assert-Clean 'tras la carpeta protegida'
+
+    # ---------------------------------------------------------------------------------------------------------------------------
+    Step '8. Una clave de registro SIN producto (restos) no bloquea nada'
+    # Una clave con InstallFolder pero sin tesela.exe en esa carpeta (restos de una version antigua, un registro limpiado a mano...).
+    New-Item -Path 'HKCU:\Software\Tesela' -Force | Out-Null
+    Set-ItemProperty -LiteralPath 'HKCU:\Software\Tesela' -Name 'InstallFolder' -Value ($WorkDir + '\resto-usuario\')
+    $r = Install-Msi $NewMsi @('ALLUSERS=1') 'stale-user-to-machine'
+    if ($r.Code -ne 0) { Show-LogTail $r }
+    Check 'con una clave de HKCU sin producto, instalar para todos NO se bloquea (codigo 0)' ($r.Code -eq 0) "codigo $($r.Code)"
+    Check 'se instalo en Program Files' (Test-Files $machineDefault)
+    $r = Uninstall-Installed 'stale-user-uninstall'
+    Check 'desinstalar termina con 0' ($r.Code -eq 0) "codigo $($r.Code)"
+    Remove-Item -LiteralPath 'HKCU:\Software\Tesela' -Recurse -Force -ErrorAction SilentlyContinue
+    New-Item -Path 'HKLM:\SOFTWARE\Tesela' -Force | Out-Null
+    Set-ItemProperty -LiteralPath 'HKLM:\SOFTWARE\Tesela' -Name 'InstallFolder' -Value ($WorkDir + '\resto-equipo\')
+    $r = Install-Msi $NewMsi @() 'stale-machine-to-user'
+    if ($r.Code -ne 0) { Show-LogTail $r }
+    Check 'con una clave de HKLM sin producto, instalar por usuario NO se bloquea (codigo 0)' ($r.Code -eq 0) "codigo $($r.Code)"
+    Check 'se instalo en la carpeta por usuario' (Test-Files $userDefault)
+    $r = Uninstall-Installed 'stale-machine-uninstall'
+    Check 'desinstalar termina con 0' ($r.Code -eq 0) "codigo $($r.Code)"
+    Remove-Item -LiteralPath 'HKLM:\SOFTWARE\Tesela' -Recurse -Force -ErrorAction SilentlyContinue
+    Assert-Clean 'tras las claves sin producto'
+
+    # ---------------------------------------------------------------------------------------------------------------------------
+    Step '9. Usuario ESTANDAR (sin privilegios): por usuario sin elevar, "para todos" falla y la suya gana a la de otra cuenta'
+    # Usuario local desechable, sin administrador, con contrasena aleatoria que no se imprime. Todo lo que hace el lo cuenta el mismo
+    # (su HKCU y su perfil no son los del administrador del runner).
+    New-Item -ItemType Directory -Force -Path $stdShared | Out-Null
+    New-StandardUser
+    & icacls.exe $stdShared '/grant' "${stdName}:(OI)(CI)M" | Out-Null
+    Set-Content -LiteralPath (Join-Path $stdShared '.tesela-ci-marker') -Value 'created by msi-install.tests.ps1 in a GitHub-hosted runner' -Encoding ASCII
+    $stdScriptCopy = Join-Path $stdShared 'msi-install-standard.tests.ps1'
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'msi-install-standard.tests.ps1') -Destination $stdScriptCopy
+    $stdNew = Join-Path $stdShared 'new.msi'
+    $stdSibling2 = Join-Path $stdShared 'sibling2.msi'
+    Copy-Item -LiteralPath $NewMsi -Destination $stdNew
+    New-SiblingMsi $NewMsi $stdSibling2
+    # (a) Como estandar, "para todos" tiene que FALLAR y no dejar nada.
+    Invoke-StdPhase 'machine-attempt' $stdNew
+    # (b) Por usuario, sin elevar: instala en su perfil sin tocar Program Files ni HKLM.
+    Invoke-StdPhase 'user-install' $stdNew
+    Check 'el administrador del runner no ve ese producto por usuario (cada cuenta la suya)' ((@(Get-Products)).Count -eq 0)
+    Check 'nada en Program Files tras la instalacion por usuario del estandar' (-not (Test-Path -LiteralPath $machineDefault))
+    Check 'nada en HKLM tras la instalacion por usuario del estandar' ($null -eq (Get-RegValue 'HKLM:\SOFTWARE\Tesela' 'InstallFolder'))
+    # (c) M2: otra cuenta (el administrador) instala para todos con otra compilacion; el estandar sigue pudiendo actualizar la SUYA.
+    $r = Install-Msi $SiblingMsi @('ALLUSERS=1') 'std-machine-by-admin'
+    if ($r.Code -ne 0) { Show-LogTail $r }
+    Check 'otra cuenta (administrador) instala para todos mientras el estandar tiene la suya por usuario (codigo 0)' ($r.Code -eq 0) "codigo $($r.Code)"
+    Check 'la instalacion para todos esta en Program Files' (Test-Files $machineDefault)
+    Invoke-StdPhase 'user-upgrade' $stdSibling2
+    Check 'la instalacion para todos de la otra cuenta sigue intacta tras la actualizacion del estandar' ((Test-Files $machineDefault) -and (@(Get-Products)).Count -eq 1)
+    $r = Uninstall-Installed 'std-machine-uninstall'
+    Check 'desinstalar la instalacion para todos termina con 0' ($r.Code -eq 0) "codigo $($r.Code)"
+    # (d) El estandar desinstala la suya sin restos.
+    Invoke-StdPhase 'user-uninstall' $null
+    Remove-StandardUser
+    Check 'el usuario desechable se borro' (-not (Get-LocalUser -Name $stdName -ErrorAction SilentlyContinue))
+    Assert-Clean 'tras el escenario del usuario estandar'
 } catch {
     $failed.Add("la prueba se interrumpio: $($_.Exception.Message)")
     Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red
 } finally {
     # Limpieza: lo que quede de Tesela (el runner es desechable, pero no se deja basura) y las carpetas de la prueba.
     try { Reset-Machine } catch { Write-Host "limpieza: $($_.Exception.Message)" }
-    foreach ($d in (Join-Path $WorkDir 'custom-user'), $machineCustomRoot) {
+    # Los registros y resultados del usuario estandar se guardan junto a los demas antes de borrar la carpeta compartida.
+    try { if (Test-Path -LiteralPath $stdShared) { Get-ChildItem -LiteralPath $stdShared -File | Where-Object { $_.Extension -in '.log', '.txt' } | Copy-Item -Destination $WorkDir -Force } } catch { Write-Host "copia de registros: $($_.Exception.Message)" }
+    try { Remove-StandardUser } catch { Write-Host "limpieza del usuario estandar: $($_.Exception.Message)" }
+    foreach ($k in 'HKCU:\Software\Tesela', 'HKLM:\SOFTWARE\Tesela') { Remove-Item -LiteralPath $k -Recurse -Force -ErrorAction SilentlyContinue }
+    foreach ($d in (Join-Path $WorkDir 'custom-user'), $machineCustomRoot, $stdShared) {
         try { Remove-TestDir $d } catch { Write-Host "limpieza: $($_.Exception.Message)" }
     }
 }
 
 # --- Resumen -------------------------------------------------------------------------------------------------------------------
+# Una prueba que no se ejecuta no es una prueba pasada: hay un minimo de escenarios y de comprobaciones, y lo omitido se cuenta aparte.
+$ExpectedSteps = 10
+$MinChecks = 220
+if ($script:stepsRun -ne $ExpectedSteps) { $failed.Add("se ejecutaron $($script:stepsRun) escenarios y se esperaban $ExpectedSteps (un escenario no se llego a ejecutar)") }
+if ($passed.Count + $failed.Count -lt $MinChecks) { $failed.Add("solo se ejecutaron $($passed.Count + $failed.Count) comprobaciones y se esperaban al menos $MinChecks") }
+$cargoMajor = [version]$newVersion
+if ($skipped.Count -gt 0 -and $cargoMajor -gt [version]'0.1.4') { $failed.Add("hay pruebas omitidas con la version $newVersion, que ya es posterior a la v0.1.4 publicada: $($skipped -join '; ')") }
+$lua = @(Get-LuaEvidence)
 Write-Host ''
-Write-Host "msi-install.tests: $($passed.Count) comprobaciones bien, $($failed.Count) fallan"
+Write-Host "msi-install.tests: $($passed.Count) comprobaciones bien, $($failed.Count) fallan, $($skipped.Count) omitidas, $($script:stepsRun) escenarios"
+$skipped | ForEach-Object { Write-Host "  OMITIDA: $_" -ForegroundColor Yellow }
+if ($lua.Count -gt 0) { Write-Host '  Evidencia del motor (ambito y elevacion):'; $lua | ForEach-Object { Write-Host "    $_" } }
 if ($env:GITHUB_STEP_SUMMARY) {
     $md = New-Object System.Collections.Generic.List[string]
     $md.Add("### Pruebas de instalacion del MSI (version $newVersion; anterior $oldVersion)")
     $md.Add('')
-    $md.Add("**$($passed.Count) comprobaciones bien, $($failed.Count) fallan.**")
+    $md.Add("**$($passed.Count) comprobaciones bien, $($failed.Count) fallan, $($skipped.Count) omitidas, $($script:stepsRun) escenarios.**")
     $md.Add('')
     foreach ($f in $failed) { $md.Add("- FALLA: $f") }
+    foreach ($s in $skipped) { $md.Add("- OMITIDA (no cuenta como pasada): $s") }
+    if ($lua.Count -gt 0) {
+        $md.Add('')
+        $md.Add('Evidencia del motor de Windows Installer (registros de msiexec: MSI_LUA, ambito y elevacion):')
+        $md.Add('')
+        $md.Add('```')
+        foreach ($l in $lua) { $md.Add($l) }
+        $md.Add('```')
+    }
+    $md.Add('')
+    $md.Add('<details><summary>Comprobaciones que pasaron</summary>')
+    $md.Add('')
     foreach ($ok in $passed) { $md.Add("- ok: $ok") }
+    $md.Add('')
+    $md.Add('</details>')
     [System.IO.File]::AppendAllText($env:GITHUB_STEP_SUMMARY, (($md -join "`n") + "`n"))
 }
 if ($failed.Count -gt 0) {
