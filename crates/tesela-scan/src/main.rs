@@ -59,7 +59,6 @@ const USAGE: &str = "uso: tesela-scan <ruta> [--threads N] [--top N] [--json arc
 
 /// Parse arguments. They arrive as `OsString` (`args_os`): a path containing invalid Unicode characters (for example, a
 /// folder name with an unpaired surrogate) must not panic or be lost; options and their numeric values must be Unicode.
-
 fn parse_args(mut it: impl Iterator<Item = OsString>) -> Result<Args, String> {
     let mut a = Args {
         root: PathBuf::new(),
