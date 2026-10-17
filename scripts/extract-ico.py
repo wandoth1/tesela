@@ -3,12 +3,12 @@
 
 Usage (called by scripts/build-msi.ps1; run with `python -I`):
 
-    python -I scripts/extract-ico.py tesela.exe salida.ico
+    python -I scripts/extract-ico.py tesela.exe output.ico
 
-Why this exists: the MSI needs an icon file for "Installed Applications" and the shortcut. Pointing the table
-Icon del MSI al propio .exe incrustaria una copia ENTERA del ejecutable (el MSI pesaria el doble). El icono se dibuja en
-cada compilacion (crates/app/build.rs) y el repositorio no versiona imagenes, asi que se saca del .exe ya compilado: es
-el mismo icono que lleva el ejecutable, no una copia aparte.
+Why this exists: the MSI needs an icon file for "Installed Applications" and the shortcut. Pointing its Icon table
+directly at the .exe would embed a COMPLETE copy of the executable (doubling the MSI's size). The icon is drawn at each
+build (crates/app/build.rs), and the repository does not version images, so it is extracted from the compiled .exe:
+this is the executable's actual icon, not another copy.
 
 Reads the first RT_GROUP_ICON resource and its referenced RT_ICON resources, then writes the ICO container. Reads the
 executable only and uses the standard library only.
