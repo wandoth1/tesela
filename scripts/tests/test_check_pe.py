@@ -167,6 +167,42 @@ class CheckPe(unittest.TestCase):
             fine = t.write("fine.exe", make_pe(imports=["vcruntime.txt.dll.bak", "myvcruntime140.dll", "api-ms-win-core-file-l1-1-0.dll"]))
             self.assertEqual(check_pe.check(fine, "x64"), [])
 
+    def test_el_unico_modulo_de_red_admitido_es_winhttp(self):
+        with Temp() as t:
+            # winhttp.dll (la comprobacion de actualizaciones) y las DLL normales de la interfaz: bien.
+            ok = t.write("ok.exe", make_pe(imports=["KERNEL32.dll", "winhttp.dll", "WINHTTP.DLL", "dxgi.dll", "user32.dll"]))
+            self.assertEqual(check_pe.check(ok, "x64"), [])
+            for dll in [
+                "ws2_32.dll",
+                "WS2_32.dll",
+                "wsock32.dll",
+                "mswsock.dll",
+                "wininet.dll",
+                "urlmon.dll",
+                "iphlpapi.dll",
+                "dnsapi.dll",
+                "secur32.dll",
+                "crypt32.dll",
+                "httpapi.dll",
+                "netapi32.dll",
+                "wldap32.dll",
+                "rasapi32.dll",
+            ]:
+                # Aunque winhttp.dll este, cualquier OTRO modulo de red se rechaza (import normal o retardado).
+                for kw in ({"imports": ["KERNEL32.dll", "winhttp.dll", dll]}, {"imports": ["KERNEL32.dll"], "delay": [dll]}):
+                    bad = t.write("bad.exe", make_pe(**kw))
+                    problems = check_pe.check(bad, "x64")
+                    self.assertEqual(len(problems), 1, (dll, kw))
+                    self.assertIn("modulo de red", problems[0], dll)
+                    self.assertIn(dll, problems[0])
+            # Nombres parecidos que NO son modulos de red prohibidos.
+            fine = t.write("fine.exe", make_pe(imports=["KERNEL32.dll", "ws2_32.dll.bak", "myws2_32.dll", "api-ms-win-core-file-l1-1-0.dll"]))
+            self.assertEqual(check_pe.check(fine, "x64"), [])
+            # Y el codigo de salida de main.
+            bad = t.write("bad.exe", make_pe(imports=["KERNEL32.dll", "wininet.dll"]))
+            self.assertEqual(check_pe.main(["--machine", "x64", ok]), 0)
+            self.assertEqual(check_pe.main(["--machine", "x64", bad]), 1)
+
     def test_exige_dependentloadflags_system32_y_enlace_reproducible(self):
         with Temp() as t:
             ok = t.write("ok.exe", make_pe(imports=["KERNEL32.dll"]))

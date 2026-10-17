@@ -12,6 +12,10 @@ Falla (codigo 1) si algun ejecutable:
     `MSVCP*.dll`, `api-ms-win-crt-*.dll` (y `UCRTBASE.dll`, que es lo que arrastran). En Windows 10/11 el UCRT es del
     sistema, pero el release se enlaza estatico (.cargo/config.toml) para no depender del runtime de VC++ redistribuible
     (`VCRUNTIME*`, `MSVCP*`), que el instalador por usuario y sin administrador no puede instalar,
+  * importa (tabla normal o de carga retardada) algun modulo de red que no sea `winhttp.dll`: `ws2_32`, `wsock32`, `mswsock`,
+    `wininet`, `urlmon`, `iphlpapi`, `dnsapi`, `secur32`, `crypt32`, `httpapi`, `netapi32`, `wldap32`, `rasapi32`. El unico
+    codigo de Tesela que puede llegar a la red es la comprobacion de actualizaciones opcional (crate `tesela-update`, por
+    WinHTTP); si algun dia una dependencia arrastra otro modulo de red, que sea una decision explicita y no un descuido,
   * no lleva `DependentLoadFlags` = 0x800 (`LOAD_LIBRARY_SEARCH_SYSTEM32`, el de `/DEPENDENTLOADFLAG:0x800`) en el
     directorio de configuracion de carga: sin el, las importaciones estaticas se buscan primero en la carpeta del .exe,
   * no lleva una entrada de depuracion `IMAGE_DEBUG_TYPE_REPRO` (la que escribe `/Brepro`): sin ella el enlace no es
@@ -31,6 +35,23 @@ WANT_LOAD_FLAGS = 0x800
 IMAGE_DEBUG_TYPE_REPRO = 16
 # Patrones (sin distinguir mayusculas) de DLL del runtime de C que no se admiten como import.
 FORBIDDEN = ["vcruntime*.dll", "msvcp*.dll", "api-ms-win-crt-*.dll", "ucrtbase.dll", "msvcr*.dll", "concrt*.dll"]
+# Modulos de red (sin distinguir mayusculas) que no se admiten como import: el unico permitido es `winhttp.dll` (la
+# comprobacion de actualizaciones opcional; ver `crates/update`).
+FORBIDDEN_NETWORK = [
+    "ws2_32.dll",
+    "wsock32.dll",
+    "mswsock.dll",
+    "wininet.dll",
+    "urlmon.dll",
+    "iphlpapi.dll",
+    "dnsapi.dll",
+    "secur32.dll",
+    "crypt32.dll",
+    "httpapi.dll",
+    "netapi32.dll",
+    "wldap32.dll",
+    "rasapi32.dll",
+]
 
 
 class PeError(Exception):
@@ -171,6 +192,11 @@ def forbidden(names):
     return out
 
 
+def network_modules(names):
+    """Los modulos de red de `names` que no se admiten (todos menos `winhttp.dll`), sin distinguir mayusculas."""
+    return [n for n in names if n.lower() in FORBIDDEN_NETWORK]
+
+
 def check(path, machine_name):
     """Lista de problemas de un ejecutable (vacia si esta bien)."""
     try:
@@ -187,6 +213,11 @@ def check(path, machine_name):
     bad = forbidden(imports + delay)
     if bad:
         problems.append(f"{path}: importa el runtime de C: {', '.join(sorted(set(bad), key=str.lower))}")
+    net = network_modules(imports + delay)
+    if net:
+        problems.append(
+            f"{path}: importa un modulo de red que no es winhttp.dll: {', '.join(sorted(set(net), key=str.lower))}"
+        )
     flags = info["load_flags"]
     if flags != WANT_LOAD_FLAGS:
         got = "ausente" if flags is None else f"0x{flags:04X}"
@@ -220,7 +251,7 @@ def main(argv):
         return 1
     print(
         f"check-pe: OK ({len(args.exes)} ejecutables, {args.machine}, sin imports del runtime de C, "
-        "DependentLoadFlags 0x800 y enlace reproducible)"
+        "sin modulos de red salvo winhttp.dll, DependentLoadFlags 0x800 y enlace reproducible)"
     )
     return 0
 
