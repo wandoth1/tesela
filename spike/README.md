@@ -1,142 +1,142 @@
-# Spike de la fase 0 de Tesela
+# Tesela phase 0 spike
 
-Código **desechable de medición** que convierte en datos las hipótesis de `docs/PLAN.md` §6. No es el producto: no
-reutilices nada de aquí sin releerlo. Las conclusiones están en `docs/fase-0-conclusiones.md`. Los datos brutos de
-cada medición **no se versionan** (describen el equipo donde se toman): se quedan en local, en `spike/results/` (en `.gitignore`).
+**Throwaway measurement** code that turns the hypotheses of `docs/PLAN.md` §6 into data. It is not the product: do not
+reuse anything from here without re-reading it. The findings are in `docs/phase-0-findings.md`. The raw data of
+each measurement is **not versioned** (it describes the machine where it is taken): it stays local, in `spike/results/` (in `.gitignore`).
 
-Es un workspace de Cargo **propio** (`spike/Cargo.toml`), independiente del workspace del producto. Requisitos:
-Windows 10/11 x64, Rust estable (edición 2024) y el toolchain `x86_64-pc-windows-msvc`.
-Todas las versiones de dependencias se verificaron con `cargo search` el 2026-10-15 y coinciden con PLAN.md §3.10.
+It is a **separate** Cargo workspace (`spike/Cargo.toml`), independent of the product workspace. Requirements:
+Windows 10/11 x64, stable Rust (2024 edition) and the `x86_64-pc-windows-msvc` toolchain.
+All dependency versions were verified with `cargo search` on 2026-10-15 and match PLAN.md §3.10.
 
 ```text
 spike/
-├─ common/        utilidades: GetProcessMemoryInfo, percentiles, espacio libre del volumen
-├─ enum-bench/    experimento 2: enumeración paralela de C:\ (solo lectura) + sondeo de $MFT / FSCTL
-├─ trash-bench/   experimento 3: Papelera con el crate `trash`
-├─ delete-bench/  experimento 4: borrado POSIX con FileDispositionInfoEx
-├─ ui-treemap/    experimento 1: treemap sintético de ~30k rectángulos en egui (wgpu o glow)
-├─ fonts-mica/    experimento 5: SegUIVar.ttf con ejes variables y Mica sobre eframe
-├─ scripts/       run-enum.sh, run-ui.sh, run-trash.sh: baterías completas; collect-results.sh + redact.py: copian y (lista negra local opcional en spike/.denylist, no versionada)
-│                 redactan los datos a results/; summarize.py: tablas Markdown a partir de los JSON
-└─ results/       (local, no versionado) JSON/CSV/PNG de tus mediciones
+├─ common/        utilities: GetProcessMemoryInfo, percentiles, free space of the volume
+├─ enum-bench/    experiment 2: parallel enumeration of C:\ (read-only) + probe of $MFT / FSCTL
+├─ trash-bench/   experiment 3: Recycle Bin with the `trash` crate
+├─ delete-bench/  experiment 4: POSIX deletion with FileDispositionInfoEx
+├─ ui-treemap/    experiment 1: synthetic treemap of ~30k rectangles in egui (wgpu or glow)
+├─ fonts-mica/    experiment 5: SegUIVar.ttf with variable axes and Mica on eframe
+├─ scripts/       run-enum.sh, run-ui.sh, run-trash.sh: full batteries; collect-results.sh + redact.py: copy and (optional local denylist in spike/.denylist, not versioned)
+│                 redact the data into results/; summarize.py: Markdown tables from the JSON files
+└─ results/       (local, not versioned) JSON/CSV/PNG of your measurements
 ```
 
-## Lista negra local (`spike/.denylist`)
+## Local denylist (`spike/.denylist`)
 
-`scripts/collect-results.sh` copia los resultados de `out/` a `results/` redactando datos personales con
-`scripts/redact.py`. La protección **principal** es la **lista blanca** de `redact.py` (solo pasa lo que reconoce). Como
-comprobación adicional, el script busca en lo ya redactado una **lista negra local**: `spike/.denylist`.
+`scripts/collect-results.sh` copies the results from `out/` to `results/`, redacting personal data with
+`scripts/redact.py`. The **main** protection is the **allowlist** of `redact.py` (only what it recognizes gets through). As
+an additional check, the script searches what has already been redacted for a **local denylist**: `spike/.denylist`.
 
-- **Es un archivo por máquina y NO se versiona** (está en `.gitignore`): contiene justo los nombres privados que no
-  deben publicarse, así que subirlo al repositorio los filtraría.
-- Si no existe, el script avisa (`AVISO: no existe spike/.denylist`) y solo comprueba el nombre de usuario de Windows y los
-  SID.
-- **Cómo recrearlo** en otra máquina o tras clonar: crea `spike/.denylist` con **una expresión regular (`grep -E`) por
-  línea**, sin comentarios (cada línea no vacía es un patrón; las vacías se ignoran). Pon nombres de carpetas personales,
-  de programas instalados que no quieras revelar, el nombre del equipo, etc. Forma del archivo, con valores genéricos:
+- **It is a per-machine file and is NOT versioned** (it is in `.gitignore`): it contains exactly the private names that must
+  not be published, so uploading it to the repository would leak them.
+- If it does not exist, the script warns (`AVISO: no existe spike/.denylist`, that is, "WARNING: spike/.denylist does not exist") and only checks the Windows user name and the
+  SIDs.
+- **How to recreate it** on another machine or after cloning: create `spike/.denylist` with **one regular expression (`grep -E`) per
+  line**, no comments (each non-empty line is a pattern; empty ones are ignored). Put names of personal folders,
+  of installed programs you do not want to reveal, the machine name, etc. Shape of the file, with generic values:
 
   ```text
-  nombre-de-una-carpeta-privada
-  nombre-de-un-programa-instalado
-  nombre-del-equipo
+  name-of-a-private-folder
+  name-of-an-installed-program
+  name-of-the-machine
   ```
 
-- Antes de publicar `results/`, ejecuta `collect-results.sh` con la lista negra creada: aborta si queda alguna coincidencia
-  y no modifica `results/`.
+- Before publishing `results/`, run `collect-results.sh` with the denylist created: it aborts if any match remains
+  and does not modify `results/`.
 
-## Compilar
+## Build
 
-Desde `spike/`:
+From `spike/`:
 
 ```powershell
-# Experimentos de sistema de archivos
+# File system experiments
 cargo build --release -p enum-bench -p trash-bench -p delete-bench
 
-# UI: el backend se elige con una feature y NO se pueden mezclar en el mismo binario.
-cargo build --release -p ui-treemap --no-default-features --features wgpu-all   # wgpu con todos los backends
+# UI: the backend is chosen with a feature and they CANNOT be mixed in the same binary.
+cargo build --release -p ui-treemap --no-default-features --features wgpu-all   # wgpu with all backends
 cargo build --release -p fonts-mica --no-default-features --features wgpu
-$env:CARGO_TARGET_DIR = "target-dx12"      # wgpu SOLO con el backend DX12 (como PLAN.md §1)
+$env:CARGO_TARGET_DIR = "target-dx12"      # wgpu with ONLY the DX12 backend (as PLAN.md §1)
 cargo build --release -p ui-treemap --no-default-features --features wgpu-dx12
 $env:CARGO_TARGET_DIR = "target-glow"
 cargo build --release -p ui-treemap -p fonts-mica --no-default-features --features glow
 Remove-Item Env:CARGO_TARGET_DIR
 ```
 
-Los binarios quedan en `target\release\` (wgpu, todos los backends), `target-dx12\release\` (wgpu solo DX12) y
-`target-glow\release\` (glow). Esos directorios y `out\` están en `.gitignore`. Perfil release: `lto = "fat"`, `codegen-units = 1`, `strip = "symbols"`, como en el plan.
+The binaries end up in `target\release\` (wgpu, all backends), `target-dx12\release\` (wgpu DX12 only) and
+`target-glow\release\` (glow). Those directories and `out\` are in `.gitignore`. Release profile: `lto = "fat"`, `codegen-units = 1`, `strip = "symbols"`, as in the plan.
 
-## Ejecutar cada experimento
+## Run each experiment
 
-Todos escriben sus resultados como JSON en `out/` (local). **No subas esos resultados ni capturas al repositorio**:
-contienen datos de tu equipo. El repositorio solo publica conclusiones (`docs/fase-0-conclusiones.md`).
+All of them write their results as JSON in `out/` (local). **Do not upload those results or screenshots to the repository**:
+they contain data from your machine. The repository only publishes findings (`docs/phase-0-findings.md`).
 
 ### 1. `ui-treemap` (UI: RSS, exe, ms/frame)
 
 ```powershell
-# Interactivo (hover real, FPS en pantalla):
+# Interactive (real hover, FPS on screen):
 target\release\ui-treemap.exe
-# Medición sin interacción: se cierra solo y escribe el JSON (+ CSV de frames):
+# Measurement without interaction: it closes by itself and writes the JSON (+ CSV of frames):
 target\release\ui-treemap.exe --bench --label prueba --out out\ui\prueba.json --frames-csv out\ui\prueba.csv
-# Opciones: --cells 30000  --phase-secs 4  --idle-secs 4  --vsync on|off  --mesh (un Mesh pretesselado)  --topmost
-#           --backend dx12|vulkan|gl  --adapter "Microsoft Basic"   (solo wgpu; "Microsoft Basic" = WARP; forzarlo en un equipo con GPU no sustituye la prueba de RDP/Hyper-V: ver la sección Pendiente de docs/fase-0-conclusiones.md)
-# Batería completa:
+# Options: --cells 30000  --phase-secs 4  --idle-secs 4  --vsync on|off  --mesh (a pre-tessellated Mesh)  --topmost
+#           --backend dx12|vulkan|gl  --adapter "Microsoft Basic"   (wgpu only; "Microsoft Basic" = WARP; forcing it on a machine with a GPU does not replace the RDP/Hyper-V test: see the Pending section of docs/phase-0-findings.md)
+# Full battery:
 bash scripts/run-ui.sh
 ```
 
-Fases del `--bench`: calentamiento (1 s, descartada) → continua (repinta todo cada frame) → hover (puntero sintético que
-recorre el mapa: hit-test + resaltado) → reposo (sin repintado; ahí se mide el RSS "en reposo"). **No toques el ratón ni
-tapes la ventana** durante la medición (una ventana tapada deja de pintar).
+`--bench` phases: warm-up (1 s, discarded) → continuous (repaints everything every frame) → hover (a synthetic pointer that
+sweeps the map: hit-test + highlight) → idle (no repainting; this is where the "idle" RSS is measured). **Do not touch the mouse nor
+cover the window** during the measurement (a covered window stops painting).
 
-### 2. `enum-bench` (enumeración de C:\\, solo lectura)
+### 2. `enum-bench` (enumeration of C:\\, read-only)
 
 ```powershell
 target\release\enum-bench.exe --api extd|find|find-alloc|std --root 'C:\' --threads 32 --runs 3 --json out\x.json
-target\release\enum-bench.exe --probe --json out\probe.json   # $MFT y FSCTL_GET_NTFS_VOLUME_DATA
-bash scripts/run-enum.sh                                       # serie completa (3 rondas intercaladas + escalado de hilos)
+target\release\enum-bench.exe --probe --json out\probe.json   # $MFT and FSCTL_GET_NTFS_VOLUME_DATA
+bash scripts/run-enum.sh                                       # full series (3 interleaved rounds + thread scaling)
 ```
 
-`--api std` es una referencia mono-hilo con `std::fs` para validar recuentos en árboles pequeños
-(p. ej. `--root 'C:\Windows\System32\DriverStore'`). La enumeración nunca escribe nada.
+`--api std` is a single-threaded reference with `std::fs` to validate counts on small trees
+(e.g. `--root 'C:\Windows\System32\DriverStore'`). The enumeration never writes anything.
 
-### 3. `trash-bench` (Papelera)
+### 3. `trash-bench` (Recycle Bin)
 
 ```powershell
 target\release\trash-bench.exe run --n 100000 --loose-mode one --json out\trash.json
-target\release\trash-bench.exe count      # nº de elementos de la Papelera y tiempo de list()
-target\release\trash-bench.exe cleanup        # solo LISTA lo que haría (recuperación tras una ejecución muerta)
-target\release\trash-bench.exe cleanup --yes  # purga y borra de verdad; solo con ninguna otra ejecución viva
+target\release\trash-bench.exe count      # number of Recycle Bin items and time of list()
+target\release\trash-bench.exe cleanup        # only LISTS what it would do (recovery after a dead run)
+target\release\trash-bench.exe cleanup --yes  # really purges and deletes; only with no other run alive
 ```
 
-> **AVISO: `trash-bench run` mete hasta ~100 000 elementos transitorios en la Papelera REAL del usuario durante
-> mucho tiempo** (decenas de minutos con `--n 100000`; con `--n 1000` es rápido). Todos se purgan al final. No lo ejecutes si no quieres
-> eso, y no interrumpas la ejecución con un `kill`: la guarda interna solo cubre pánicos y errores (para el resto está
+> **WARNING: `trash-bench run` puts up to ~100,000 transient items into the user's REAL Recycle Bin for a long
+> time** (tens of minutes with `--n 100000`; with `--n 1000` it is fast). All of them are purged at the end. Do not run it if you do not want
+> that, and do not interrupt the run with a `kill`: the internal guard only covers panics and errors (for the rest there is
 > `cleanup`).
 
-Trabaja en `%TEMP%\tesela-spike-<uuid>`. Solo restaura o purga elementos cuyo origen está **bajo `%TEMP%` y cuyo primer
-componente tras `%TEMP%` empieza por `tesela-spike-<uuid>` completo** (en `cleanup`: por `tesela-spike-`), y al final
-comprueba que el conjunto de ids de la Papelera es idéntico al de antes. Valida todos los argumentos antes de crear
-nada. **Nunca vacía la Papelera.**
-`--loose-mode` admite `one` (una llamada `delete_all` con todo), `batch=1000` (lotes) y `par=8` (hilos en paralelo).
+It works in `%TEMP%\tesela-spike-<uuid>`. It only restores or purges items whose origin is **under `%TEMP%` and whose first
+component after `%TEMP%` starts with the full `tesela-spike-<uuid>`** (in `cleanup`: with `tesela-spike-`), and at the end it
+checks that the set of Recycle Bin ids is identical to the one before. It validates all arguments before creating
+anything. **It never empties the Recycle Bin.**
+`--loose-mode` accepts `one` (a single `delete_all` call with everything), `batch=1000` (batches) and `par=8` (threads in parallel).
 
-### 4. `delete-bench` (borrado POSIX)
+### 4. `delete-bench` (POSIX deletion)
 
 ```powershell
-target\release\delete-bench.exe functional   --json out\a.json   # flags, solo lectura
-target\release\delete-bench.exe share-delete --json out\b.json   # §2.6: archivo abierto por otro handle (escribe 8x512 MiB en %TEMP%)
-target\release\delete-bench.exe reparse      --json out\r.json   # borrar un junction/symlink de directorio: ¿se respeta el destino?
+target\release\delete-bench.exe functional   --json out\a.json   # flags, read-only
+target\release\delete-bench.exe share-delete --json out\b.json   # §2.6: file open by another handle (writes 8x512 MiB in %TEMP%)
+target\release\delete-bench.exe reparse      --json out\r.json   # delete a directory junction/symlink: is the target respected?
 target\release\delete-bench.exe speed --files 50000 --runs 3 --threads 16 --dirs 100 --json out\c.json
 ```
 
-### 5. `fonts-mica` (fuentes variables y Mica)
+### 5. `fonts-mica` (variable fonts and Mica)
 
 ```powershell
 target\release\fonts-mica.exe --mica on --shot-egui out\f-egui.png --shot-desktop out\f-desktop.png --out out\fm.json
-# --mica off (control), --presentation visual|hwnd (DX12), SPIKE_BACKEND=dx12|vulkan|gl (solo wgpu)
+# --mica off (control), --presentation visual|hwnd (DX12), SPIKE_BACKEND=dx12|vulkan|gl (wgpu only)
 ```
 
-La ventana es transparente, siempre encima y se coloca en (120,120): **no la tapes** mientras se hace la captura del
-escritorio (GDI, `BitBlt` del escritorio componido, única forma de ver el backdrop que pinta DWM).
+The window is transparent, always on top and placed at (120,120): **do not cover it** while the desktop screenshot is taken
+(GDI, `BitBlt` of the composed desktop, the only way to see the backdrop that DWM paints).
 
-## Qué NO se puede medir aquí (pendiente para el usuario)
+## What can NOT be measured here (pending for the user)
 
-RDP y Hyper-V sin GPU, y Windows 10 22H2. Las instrucciones están en `docs/fase-0-conclusiones.md` (sección Pendiente).
+RDP and Hyper-V without a GPU, and Windows 10 22H2. The instructions are in `docs/phase-0-findings.md` (Pending section).
