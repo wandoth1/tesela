@@ -172,13 +172,10 @@ pub(crate) fn compute(
             parts.push(RecPart { node, bytes });
         }
         if parts.is_empty() {
-            // Descartada por seguridad (un enlace en su ruta...): no desaparece en silencio. Solo se dice si es de la unidad
-            // que se está viendo.
-            let on_this_drive = |p: &std::path::Path| {
-                let a = p.to_string_lossy().chars().next();
-                let b = tree.name_lossy(tree.root()).chars().next();
-                a.zip(b).is_some_and(|(x, y)| x.eq_ignore_ascii_case(&y))
-            };
+            // Descartada por seguridad (un enlace en su ruta...): no desaparece en silencio. Solo se dice si la raíz descartada
+            // está DENTRO de lo que se analizó (no basta con que sea de la misma unidad: al analizar una carpeta, una raíz
+            // de otra parte de la unidad no se ve en este árbol).
+            let on_this_drive = |p: &std::path::Path| loc.covers(p);
             if let Some((_, why)) = backend
                 .unavailable_roots(id)
                 .into_iter()
@@ -235,6 +232,47 @@ pub(crate) fn compute(
 mod tests {
     use super::*;
     use crate::demo::{self, DEMO_NOW, Variant};
+
+    /// Árbol de una sola carpeta (`name` es la ruta que se "escaneó").
+    fn tree_of(name: &str) -> Tree {
+        use tesela_model::{Batch, EntryData, FinishOptions, TreeBuilder, flags};
+        let mut b = TreeBuilder::new();
+        let mut root = Batch::detached(0);
+        root.push(
+            0,
+            name.as_bytes(),
+            EntryData {
+                flags: flags::DIR,
+                ..EntryData::default()
+            },
+        );
+        b.add_batch(root).unwrap();
+        b.add_batch(Batch::listing(0, 1)).unwrap();
+        b.finish(&FinishOptions::new(DEMO_NOW))
+    }
+
+    /// GM-m7: una raíz descartada solo se enseña si está DENTRO de lo analizado, no por ser de la misma unidad.
+    #[test]
+    fn una_raiz_descartada_solo_se_enseña_si_esta_dentro_de_lo_analizado() {
+        use tesela_cleaner::roots::RootRejection;
+        let be = crate::demo_backend::DemoBackend::new(std::time::Duration::ZERO);
+        be.set_unavailable(
+            CategoryId::EdgeCache,
+            RootRejection::ReparseInChain {
+                component: "User Data".into(),
+            },
+        );
+        let unavailable = |t: &Tree| {
+            let view = View::new(t, None);
+            compute(t, &view, &be, &[], DEMO_NOW).unavailable.len()
+        };
+        // El respaldo de la demostración descarta una raíz suya dentro de la unidad: con la unidad entera, sí.
+        assert_eq!(unavailable(&tree_of("C:\\")), 1);
+        assert_eq!(unavailable(&tree_of("C:\\Users")), 1);
+        // En otra carpeta de la MISMA unidad (letra C), no: no es de lo que se está viendo.
+        assert_eq!(unavailable(&tree_of("C:\\Otra")), 0);
+        assert_eq!(unavailable(&tree_of("C:\\Otra\\Sub")), 0);
+    }
 
     #[test]
     fn la_antiguedad_solo_cuenta_lo_que_cumple() {
