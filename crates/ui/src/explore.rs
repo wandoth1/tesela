@@ -309,7 +309,7 @@ impl Explore {
         if !start.marks.is_empty() {
             let marked = self
                 .shown_children()
-                .into_iter()
+                .iter()
                 .filter(|&id| {
                     start
                         .marks

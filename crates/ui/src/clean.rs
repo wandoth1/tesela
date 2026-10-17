@@ -2030,6 +2030,7 @@ mod responsiveness_tests {
             },
             cloud_synced: false,
             hard_linked: false,
+            diagnostic_path: false,
             volume: None,
         }
     }
@@ -2133,6 +2134,7 @@ mod responsiveness_tests {
                         dry_run: false,
                         history: &[],
                         modal_open: true,
+                        update: crate::update::UpdateView::default(),
                         actions: &mut actions,
                     };
                     let plan = confirm.plan.clone();
