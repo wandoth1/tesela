@@ -1,48 +1,48 @@
-# Política de seguridad
+# Security policy
 
-## Cómo reportar una vulnerabilidad
+## How to report a vulnerability
 
-**No publiques los detalles de una vulnerabilidad en una issue pública.** Hay dos canales:
+**Do not publish the details of a vulnerability in a public issue.** There are two channels:
 
-1. **Aviso privado de GitHub (preferido):** pestaña **Security** del repositorio, botón **Report a vulnerability**
+1. **GitHub private advisory (preferred):** the **Security** tab of the repository, **Report a vulnerability** button
    ([github.com/wandoth1/tesela/security/advisories/new](https://github.com/wandoth1/tesela/security/advisories/new)).
-   Solo lo ven los mantenedores. *Si el botón no aparece, el reporte privado todavía no está activado en el repositorio: usa el
-   canal 2.*
-2. **Canal de respaldo (visible desde hoy):** abre una [issue](https://github.com/wandoth1/tesela/issues/new) **SIN detalles
-   técnicos** (sin pasos, sin capturas, sin datos): solo di que quieres reportar un problema de seguridad y pide un canal
-   privado. Un mantenedor te responderá en la issue con cómo seguir, y la issue se borrará o se dejará sin detalles.
+   Only the maintainers can see it. *If the button does not appear, private reporting is not enabled in the repository yet: use
+   channel 2.*
+2. **Fallback channel (available today):** open an [issue](https://github.com/wandoth1/tesela/issues/new) **WITHOUT technical
+   details** (no steps, no screenshots, no data): just say that you want to report a security problem and ask for a private
+   channel. A maintainer will answer in the issue with how to proceed, and the issue will be deleted or left without details.
 
-Cuando el aviso se confirme, se prepara el arreglo en privado, se publica una versión corregida y después el aviso (con crédito
-a quien lo reportó, si lo quiere).
+Once the advisory is confirmed, the fix is prepared in private, a corrected version is published and then the advisory (crediting
+whoever reported it, if they want).
 
-Para reportar, describe: versión de Tesela, qué ocurre, cómo reproducirlo y qué impacto tiene. **No incluyas datos personales**
-(nombres de carpetas o archivos reales, tu nombre de usuario, capturas de tu disco): para reproducir un fallo basta una carpeta
-de prueba o el modo `--demo`, que usa datos sintéticos.
+When reporting, describe: Tesela version, what happens, how to reproduce it and what impact it has. **Do not include personal data**
+(names of real folders or files, your user name, screenshots of your disk): to reproduce a bug a test folder or `--demo` mode,
+which uses synthetic data, is enough.
 
-## Qué cuenta como vulnerabilidad
+## What counts as a vulnerability
 
-Tesela **borra archivos** y se instala sin administrador, así que interesa sobre todo:
+Tesela **deletes files** and installs without administrator rights, so the cases of most interest are:
 
-- Que Tesela borre o mueva algo que no estaba en la confirmación (fuera del conjunto aprobado, o siguiendo un enlace, junction
-  o carpeta sustituida a mitad de la operación).
-- Que una carpeta protegida (Windows, Archivos de programa, `AppData`, el propio Tesela) se pueda limpiar.
-- Elevación de privilegios, o ejecución de código, a través del instalador MSI, del zip portable o de los ejecutables.
-- Que un paquete publicado no coincida con su `SHA256SUMS.txt` o con su attestation de procedencia, o que lleve datos de la
-  máquina que lo construyó.
-- Que la aplicación envíe información fuera del equipo (no debe: no tiene telemetría ni cuentas).
+- Tesela deletes or moves something that was not in the confirmation (outside the approved set, or by following a link, junction
+  or a folder swapped in the middle of the operation).
+- A protected folder (Windows, Program Files, `AppData`, Tesela itself) can be cleaned.
+- Privilege escalation, or code execution, through the MSI installer, the portable zip or the executables.
+- A published package that does not match its `SHA256SUMS.txt` or its provenance attestation, or that carries data from the
+  machine that built it.
+- The application sends information off the computer (it must not: it has no telemetry or accounts).
 
-## Elevación
+## Elevation
 
-Tesela **no limpia con privilegios elevados** (el análisis y la simulación sí funcionan): si el proceso está elevado, la limpieza
-real y vaciar la Papelera se rechazan antes de tocar nada. Con el control de cuentas (UAC) desactivado, o con la cuenta
-Administrador integrada, todos los procesos cuentan como elevados y Tesela se negará siempre a limpiar: usa una cuenta de usuario
-estándar (o con UAC activado) y ábrelo con un doble clic normal, sin "Ejecutar como administrador".
+Tesela **does not clean with elevated privileges** (scanning and simulation do work): if the process is elevated, real
+cleaning and emptying the Recycle Bin are rejected before anything is touched. With User Account Control (UAC) turned off, or with the built-in
+Administrator account, every process counts as elevated and Tesela will always refuse to clean: use a standard
+user account (or with UAC on) and open it with a normal double-click, not "Run as administrator".
 
-## Versiones con soporte
+## Supported versions
 
-Solo la **última versión publicada** recibe correcciones de seguridad (hoy, la serie 0.x).
+Only the **latest published version** receives security fixes (today, the 0.x series).
 
-## Plazos
+## Timelines
 
-Se intenta acusar recibo en pocos días y dar un primer análisis en dos semanas. Es un proyecto personal sin garantías de
-servicio; si un aviso queda sin respuesta, se puede insistir en el mismo aviso o issue.
+The aim is to acknowledge receipt within a few days and give a first analysis within two weeks. This is a personal project with no service
+guarantees; if a report goes unanswered, you can follow up on the same advisory or issue.

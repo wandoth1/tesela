@@ -1,115 +1,112 @@
 # Code signing policy
 
-*(Política de firma de código de Tesela.)*
-
-> **Estado: la v0.1 se publica SIN firmar.** Este documento es la política que pide
-> [SignPath Foundation](https://signpath.org/) en sus [términos](https://signpath.org/terms) para su programa gratuito para
-> proyectos de código abierto; se enlaza desde el README como **"Code signing policy"** (inicio y sección de descargas) y rige
-> desde que el proyecto sea aceptado (la solicitud la presenta el mantenedor, no el CI). Mientras tanto, la integridad de las
-> descargas se comprueba con `SHA256SUMS.txt` y con la attestation de procedencia de GitHub (README, "Instalación").
+> **Status: v0.1 is published UNSIGNED.** This document is the policy that [SignPath Foundation](https://signpath.org/) asks for
+> in its [terms](https://signpath.org/terms) for its free program for open source projects; it is linked from the README as
+> **"Code signing policy"** (top and downloads section) and applies from the moment the project is accepted (the application is
+> submitted by the maintainer, not by CI). Meanwhile, the integrity of the downloads is checked with `SHA256SUMS.txt` and with
+> GitHub's provenance attestation (README, "Installation").
 >
-> Marcas: **[A COMPLETAR]** y **[A CONFIRMAR]** son decisiones o comprobaciones del mantenedor antes de enviar la solicitud;
-> **[A CONFIGURAR POR EL MANTENEDOR]** son ajustes del repositorio que hoy **NO están hechos** y no se pueden hacer desde el
-> código (los decide el mantenedor). Este texto es una propuesta razonable, no un hecho verificado.
+> Markers: **[TO COMPLETE]** and **[TO CONFIRM]** are decisions or checks for the maintainer before submitting the application;
+> **[TO BE CONFIGURED BY THE MAINTAINER]** are repository settings that are **NOT done** today and cannot be done from the
+> code (the maintainer decides them). This text is a reasonable proposal, not a verified fact.
 
 ## Attribution
 
-Cuando haya firma, se mostrará esta frase (README y página de descargas), tal cual la exige SignPath:
+Once there is signing, this sentence will be shown (README and downloads page), exactly as SignPath requires:
 
 > Free code signing provided by [SignPath.io](https://about.signpath.io/), certificate by
 > [SignPath Foundation](https://signpath.org/).
 
-## Qué se firma
+## What is signed
 
-Solo artefactos **construidos por el flujo de release de este repositorio** a partir del código fuente público, sin firmar
-nada compilado fuera de él:
+Only artifacts **built by this repository's release workflow** from the public source code, without signing
+anything compiled outside it:
 
-| Artefacto | Firma |
+| Artifact | Signature |
 |---|---|
 | `tesela.exe`, `tesela-scan.exe` | Authenticode |
-| `tesela-<versión>-x64.msi` (instalador por usuario) | Authenticode |
-| `tesela-<versión>-x64-portable.zip`, `SHA256SUMS.txt` | No se firman (el zip contiene los mismos `.exe` ya firmados; las sumas y la attestation de GitHub cubren el resto) |
+| `tesela-<version>-x64.msi` (per-user installer) | Authenticode |
+| `tesela-<version>-x64-portable.zip`, `SHA256SUMS.txt` | Not signed (the zip contains the same already signed `.exe` files; the sums and GitHub's attestation cover the rest) |
 
-Los ejecutables llevan los atributos de producto que exige SignPath: producto "Tesela", editor "Tesela contributors" y la
-versión del `Cargo.toml` (recurso `VERSIONINFO`, el mismo en el MSI). **Orden previsto:** firmar primero los dos `.exe`,
-reconstruir el MSI con ellos y firmar después el MSI. Hoy `build-msi.ps1` empaqueta lo que sale de `build-release.ps1`;
-reordenarlo para firmar entre los dos pasos es trabajo pendiente del proceso de alta (el paso está preparado, desactivado, en
-`.github/workflows/release.yml`; ahí se avisa además de que existe una v3 de la acción de SignPath).
+The executables carry the product attributes SignPath requires: product "Tesela", publisher "Tesela contributors" and the
+version from `Cargo.toml` (`VERSIONINFO` resource, the same one in the MSI). **Planned order:** sign the two `.exe` files first,
+rebuild the MSI with them and then sign the MSI. Today `build-msi.ps1` packages what comes out of `build-release.ps1`;
+reordering it to sign between the two steps is pending work of the onboarding process (the step is prepared, disabled, in
+`.github/workflows/release.yml`; there it is also noted that a v3 of the SignPath action exists).
 
-No se firma ninguna dependencia de terceros por separado: se compilan dentro del ejecutable y sus licencias van en
+No third-party dependency is signed separately: they are compiled into the executable and their licenses are in
 `THIRD-PARTY-NOTICES.md`.
 
-## Procedencia del build
+## Build provenance
 
-- Los releases salen **solo** de `.github/workflows/release.yml`, que se dispara al empujar una etiqueta `vX.Y.Z` de un commit
-  de `main`, en un runner alojado por GitHub (`windows-latest`). No se construye ni se firma nada en equipos personales.
-- El build es el de `scripts/build-release.ps1` (sin rutas de la máquina, runtime de C estático, `--locked`, enlace
-  reproducible, conjunto exacto de ejecutables, comprobación de imports) y `scripts/build-msi.ps1` (MSI por usuario validado,
-  byte a byte contra lo compilado). Las acciones de GitHub están fijadas por SHA y WiX por versión y SHA-512.
-- Cada release lleva una **attestation de procedencia** (SLSA, `actions/attest-build-provenance`) que se verifica con
-  `gh attestation verify <archivo> --repo wandoth1/tesela --signer-workflow wandoth1/tesela/.github/workflows/release.yml`;
-  el propio flujo la verifica antes de crear la release.
-- El flujo crea la GitHub Release en **borrador**; nada se publica sin una persona.
+- Releases come **only** from `.github/workflows/release.yml`, which is triggered by pushing a `vX.Y.Z` tag of a commit
+  on `main`, on a GitHub-hosted runner (`windows-latest`). Nothing is built or signed on personal machines.
+- The build is that of `scripts/build-release.ps1` (no machine paths, static C runtime, `--locked`, reproducible linking,
+  exact set of executables, imports check) and `scripts/build-msi.ps1` (validated per-user MSI, byte for byte
+  against what was compiled). GitHub Actions are pinned by SHA and WiX by version and SHA-512.
+- Each release carries a **provenance attestation** (SLSA, `actions/attest-build-provenance`) that is verified with
+  `gh attestation verify <file> --repo wandoth1/tesela --signer-workflow wandoth1/tesela/.github/workflows/release.yml`;
+  the workflow itself verifies it before creating the release.
+- The workflow creates the GitHub Release as a **draft**; nothing is published without a person.
 
-## Roles y aprobación
+## Roles and approval
 
-Los tres roles de SignPath (ver sus [términos](https://signpath.org/terms)):
+The three SignPath roles (see their [terms](https://signpath.org/terms)):
 
-| Rol | Qué significa | Quién |
+| Role | What it means | Who |
 |---|---|---|
-| **Authors** | De confianza para modificar el código sin revisión adicional | `@wandoth1` **[A COMPLETAR: lista de autores con permiso de escritura; hoy solo el propietario]** |
-| **Reviewers** | Revisan todo cambio de quien no es author (pull requests) | **[A COMPLETAR: quién revisa; hoy, el propietario]** |
-| **Approvers** | Aprueban **cada solicitud de firma**: deciden si una release puede firmarse | `@wandoth1` **[A COMPLETAR: nombre y cuenta de SignPath]** |
+| **Authors** | Trusted to modify the code without additional review | `@wandoth1` **[TO COMPLETE: list of authors with write permission; today only the owner]** |
+| **Reviewers** | Review every change from someone who is not an author (pull requests) | **[TO COMPLETE: who reviews; today, the owner]** |
+| **Approvers** | Approve **each signing request**: they decide whether a release can be signed | `@wandoth1` **[TO COMPLETE: name and SignPath account]** |
 
-- **Cada release se aprueba a mano** en SignPath: la política de firma de producción exige aprobación manual, y la solicitud
-  solo la acepta si procede del workflow `release.yml` de este repositorio sobre una etiqueta de `main` (verificación del
-  origen del build que hace SignPath con su conector de GitHub). El mismo approver publica después el borrador de la release.
-- **[A CONFIRMAR con SignPath]** Si el proyecto sigue con una sola persona, esa persona es a la vez author, reviewer y approver
-  (con aprobación manual explícita y MFA); hay que comprobar que SignPath Foundation lo admite para un proyecto unipersonal.
-  Si se suma otro miembro, lo razonable es que revise los cambios y apruebe él las firmas.
-- **MFA obligatoria** para todos los miembros, **tanto en SignPath como en el repositorio de código** (GitHub), como exigen
-  los términos de SignPath. **[A CONFIGURAR POR EL MANTENEDOR: activar y comprobar MFA en la cuenta de GitHub y en la de SignPath
-  antes de la solicitud.]**
-- Los secretos de SignPath (token y organización) vivirán solo en los secretos del repositorio de GitHub y no están en el código.
+- **Each release is approved by hand** in SignPath: the production signing policy requires manual approval, and the request
+  is only accepted if it comes from this repository's `release.yml` workflow on a tag of `main` (verification of the
+  origin of the build that SignPath does with its GitHub connector). The same approver then publishes the release draft.
+- **[TO CONFIRM with SignPath]** If the project stays with a single person, that person is at once author, reviewer and approver
+  (with explicit manual approval and MFA); it must be checked that SignPath Foundation allows this for a one-person project.
+  If another member joins, the reasonable setup is for them to review the changes and approve the signatures.
+- **MFA required** for all members, **both in SignPath and in the code repository** (GitHub), as SignPath's terms
+  require. **[TO BE CONFIGURED BY THE MAINTAINER: enable and check MFA on the GitHub account and the SignPath account
+  before the application.]**
+- The SignPath secrets (token and organization) will live only in the GitHub repository secrets and are not in the code.
 
-### Protección del repositorio: HOY NO ESTÁ CONFIGURADA
+### Repository protection: NOT CONFIGURED TODAY
 
-Hoy **no hay protección de `main`** ni de las etiquetas: cualquiera con permiso de escritura puede empujar a `main` o crear una
-etiqueta `v*`, y eso dispararía el flujo de release. El flujo se ha endurecido por dentro (la etiqueta tiene que ser de `main` y
-coincidir con `Cargo.toml`, permisos mínimos por job, borrador, attestation verificada), pero **eso son comprobaciones DENTRO del propio
-workflow, no controles de seguridad**: quien empuja la etiqueta (y tiene permiso de escritura) puede editar el workflow en esa misma
-etiqueta y saltárselas. Lo que de verdad lo impide es lo que sigue, que es del repositorio, no del código, y **hay que configurarlo antes de la primera release y antes de solicitar la firma**:
+Today there is **no protection of `main`** nor of the tags: anyone with write permission can push to `main` or create a `v*`
+tag, and that would trigger the release workflow. The workflow has been hardened internally (the tag has to be from `main` and
+match `Cargo.toml`, minimal permissions per job, draft, verified attestation), but **those are checks INSIDE the workflow itself, not security
+controls**: whoever pushes the tag (and has write permission) can edit the workflow in that same tag and skip them. What really prevents it is
+what follows, which belongs to the repository, not to the code, and **must be configured before the first release and before requesting signing**:
 
-**[A CONFIGURAR POR EL MANTENEDOR]**
-1. Ruleset de etiquetas `v*`: solo administradores pueden crearlas, sin force-push ni borrado.
-2. Protección de `main`: pull request obligatorio, revisión de los code owners (`.github/CODEOWNERS`) y los checks del CI
-   (`privacy`, `privacy-history`, `build`, `deny`, `msrv`, `aarch64`, `msi`) como requeridos.
-3. Environment `release` con revisor requerido (y usarlo en el job `release`/`attest` cuando exista).
-4. "Require SHA pinning" para las acciones (Settings > Actions).
-5. Immutable releases (una release publicada no se puede modificar ni sustituir).
-6. MFA en todas las cuentas con acceso (arriba).
+**[TO BE CONFIGURED BY THE MAINTAINER]**
+1. Ruleset for `v*` tags: only administrators can create them, no force-push or deletion.
+2. Protection of `main`: mandatory pull request, review by the code owners (`.github/CODEOWNERS`) and the CI checks
+   (`privacy`, `privacy-history`, `build`, `deny`, `msrv`, `aarch64`, `msi`) as required.
+3. `release` environment with a required reviewer (and use it in the `release`/`attest` job when it exists).
+4. "Require SHA pinning" for actions (Settings > Actions).
+5. Immutable releases (a published release cannot be modified or replaced).
+6. MFA on all accounts with access (above).
 
-La misma lista figura en `installer/README.md`, sección "Antes de la primera release".
+The same list appears in `installer/README.md`, section "Antes de la primera release" (before the first release).
 
 ## Privacy policy
 
 This program will not transfer any information to other networked systems unless specifically requested by the user or the
 person installing or operating it.
 
-*(Este programa no transfiere información a ningún otro sistema conectado en red a menos que el usuario o quien lo instala u
-opera lo solicite expresamente.)* Tesela no tiene telemetría ni cuentas; escanea solo la unidad o carpeta que eliges y guarda
-sus ajustes y el registro de limpiezas **únicamente en tu equipo** (`%APPDATA%\Tesela` y `%LOCALAPPDATA%\Tesela`).
-**[A CONFIRMAR: que ninguna dependencia hace peticiones de red en la versión que se firma; si alguna afecta a la privacidad,
-SignPath pide enlazar su política.]**
+Tesela has no telemetry or accounts; it scans only the drive or folder you choose and keeps
+its settings and the cleanup log **only on your computer** (`%APPDATA%\Tesela` and `%LOCALAPPDATA%\Tesela`).
+**[TO CONFIRM: that no dependency makes network requests in the version that gets signed; if any affects privacy,
+SignPath asks to link its policy.]**
 
-## Reputación y contacto
+## Reputation and contact
 
-- Proyecto de código abierto con licencia **MIT o Apache-2.0** (a elección de quien lo use), con historial público en
-  [github.com/wandoth1/tesela](https://github.com/wandoth1/tesela) y CI público.
-- Vulnerabilidades: ver [SECURITY.md](SECURITY.md).
-- **[A COMPLETAR para la solicitud: dirección de contacto del proyecto, nombre legal o seudónimo con el que se solicita la
-  firma, y que la página de inicio y la de descargas muestren esta política y la atribución.]**
-- Requisitos de SignPath Foundation que **aún no se cumplen** y hay que vigilar antes de solicitar: reputación verificable
-  (proyecto con uso y antigüedad suficientes) y que el repositorio no tenga trabajo de ingeniería inversa ni software
-  potencialmente no deseado (Tesela borra archivos del usuario solo tras una confirmación explícita; conviene decirlo así en
-  la solicitud).
+- Open source project with an **MIT or Apache-2.0** license (at the user's choice), with public history at
+  [github.com/wandoth1/tesela](https://github.com/wandoth1/tesela) and public CI.
+- Vulnerabilities: see [SECURITY.md](SECURITY.md).
+- **[TO COMPLETE for the application: the project's contact address, the legal name or pseudonym under which signing is requested,
+  and that the home page and the downloads page show this policy and the attribution.]**
+- SignPath Foundation requirements that are **not yet met** and must be watched before applying: verifiable reputation
+  (a project with enough use and age) and that the repository has no reverse-engineering work or potentially
+  unwanted software (Tesela deletes the user's files only after an explicit confirmation; it is worth saying so in
+  the application).
