@@ -1,6 +1,6 @@
-//! Pruebas del recorrido: borrado por handle, antigüedad, protección, enlaces duros, simulación y carreras con la
-//! operación (sustituir un archivo aprobado, cambiar un ancestro por un junction, abrirlo en exclusiva desde otro hilo).
-//! Todo ocurre en `%TEMP%\tesela-test-<uuid>`.
+//! Traversal tests: deletion by handle, age, protection, hard links, dry runs, and races with the operation (replacing
+//! an approved file, changing an ancestor to a junction, and opening it exclusively from another thread).
+//! Everything runs under `%TEMP%\tesela-test-<uuid>`.
 
 use super::*;
 use crate::protect::ProtectionRoots;
@@ -15,7 +15,7 @@ fn identity_of(path: &Path) -> FileIdentity {
         .identity
 }
 
-/// Protección con las rutas dadas (relativas al sandbox) como denegadas.
+/// Protection with the given paths (relative to the sandbox) denied.
 fn protection(sb: &Sandbox, denied: &[&str], retain: &[&str]) -> Arc<Protection> {
     Arc::new(Protection::new(&ProtectionRoots {
         denied: denied.iter().map(|r| sb.long(r)).collect(),
@@ -147,7 +147,7 @@ fn la_simulacion_no_toca_nada_y_cuenta_lo_mismo_que_el_borrado() {
     let measure = run_contents(&sb, "R", Mode::Measure, 0, no_protection(), 4);
     assert_eq!(sb.count_entries("R"), before);
     assert_eq!(dry.stats(), measure.stats());
-    // Registra la identidad de cada entrada que habría borrado.
+    // Records the identity of each entry that would have been deleted.
     let would = dry
         .events
         .lock()
@@ -167,11 +167,11 @@ fn solo_se_borra_lo_de_mas_de_la_antiguedad_minima() {
     let sb = Sandbox::new();
     sb.write_aged("R/viejo.tmp", 4_000, 72);
     sb.write("R/nuevo.tmp", 4_000);
-    // Carpeta vieja con un archivo viejo: se borra. Carpeta nueva con un archivo viejo: el archivo sí, la carpeta no.
+    // An old folder with an old file is deleted. In a new folder with an old file, only the file is deleted.
     sb.write_aged("R/dir-viejo/x.tmp", 4_000, 72);
     sb.set_age(&sb.path("R/dir-viejo"), 72);
     sb.write_aged("R/dir-nuevo/y.tmp", 4_000, 72);
-    // Una carpeta vieja con un archivo nuevo dentro: el archivo se queda y, con él, la carpeta.
+    // An old folder containing a new file is kept, along with the file.
     sb.write("R/dir-mixto/z.tmp", 4_000);
     sb.set_age(&sb.path("R/dir-mixto"), 72);
     let r = run_contents(&sb, "R", Mode::Delete, 24, no_protection(), 3);
@@ -196,10 +196,10 @@ fn un_archivo_abierto_en_exclusiva_o_con_share_delete_se_salta_y_se_cuenta() {
     sb.write("R/libre.bin", 3_000);
     let en_uso = sb.write("R/uso.bin", 3_000);
     let compartido = sb.write("R/compartido.bin", 3_000);
-    // Abierto "como Chromium": con FILE_SHARE_DELETE (el que `std::fs::File::open` usa). El borrado POSIX parecería
-    // funcionar pero no liberaría nada: la apertura exclusiva lo rechaza.
+    // Opened "like Chromium," with FILE_SHARE_DELETE (used by `std::fs::File::open`). POSIX deletion would appear to
+    // work but would free nothing, so the exclusive open rejects it.
     let _a = fs::File::open(&compartido).unwrap();
-    // Abierto desde otro hilo en exclusiva (sin compartir nada).
+    // Opened exclusively from another thread (without sharing).
     let (tx, rx) = std::sync::mpsc::channel::<()>();
     let (done_tx, done_rx) = std::sync::mpsc::channel::<()>();
     let p = en_uso.clone();
@@ -230,7 +230,7 @@ fn un_archivo_abierto_en_exclusiva_o_con_share_delete_se_salta_y_se_cuenta() {
     assert_eq!(s.in_use, 2, "{s:?}");
     assert_eq!(s.files, 1);
     assert_eq!(r.outcomes(Outcome::InUse), 2);
-    // La medición (aperturas compartidas) no ve conflicto, la simulación (apertura exclusiva) sí.
+    // Measurement (shared opens) sees no conflict, but the dry run (exclusive open) does.
     let _a2 = fs::File::open(sb.path("R/compartido.bin")).unwrap();
     assert_eq!(
         run_contents(&sb, "R", Mode::Measure, 0, no_protection(), 2)
@@ -307,7 +307,7 @@ fn una_raiz_que_es_un_junction_se_rechaza() {
     let mut sb = Sandbox::new();
     sb.write("destino/importante.bin", 9_000);
     sb.junction("R", "destino");
-    // La identidad aprobada es la del enlace; aun así no se entra en él.
+    // The approved identity belongs to the link; traversal still does not follow it.
     let r = run_contents(&sb, "R", Mode::Delete, 0, no_protection(), 1);
     assert_eq!(r.unit.status(), Some(RootStatus::Changed));
     assert!(sb.path("destino/importante.bin").exists());
@@ -329,7 +329,7 @@ fn lo_protegido_se_respeta_y_lo_demas_se_borra() {
     assert!(!sb.path("R/borrar.bin").exists());
     assert!(!sb.path("R/ok/borrar2.bin").exists());
     assert!(!sb.path("R/ok/mixta/tambien.bin").exists());
-    // Los ancestros de lo protegido se quedan (no pueden quedar vacíos).
+    // Ancestors of protected entries are kept (they cannot be left empty).
     assert!(sb.path("R/ok/mixta").exists() && sb.path("R/ok").exists());
     assert_eq!(r.stats().protected, 2);
     assert_eq!(r.outcomes(Outcome::Protected), 2);
@@ -381,14 +381,14 @@ fn una_entrada_se_borra_con_su_identidad_aprobada() {
     assert_eq!(r.stats().files, 2);
 }
 
-// ---- Carreras con la operación -----------------------------------------------------------------------------------
+// ---- Races with the operation -----------------------------------------------------------------------------------
 
 #[test]
 fn sustituir_un_archivo_aprobado_por_otro_del_mismo_tamano_se_rechaza() {
     let sb = Sandbox::new();
     let f = sb.write("u/aprobado.bin", 8_192);
     let approved = identity_of(&f);
-    // Entre la aprobación y la ejecución se borra y se vuelve a crear otro archivo del mismo tamaño y nombre.
+    // Between approval and execution, the file is deleted and another file with the same name and size is created.
     fs::remove_file(&f).unwrap();
     sb.write("u/aprobado.bin", 8_192);
     let r = run_entry(
@@ -419,7 +419,7 @@ fn sustituir_un_hijo_entre_el_listado_y_la_apertura_se_rechaza() {
     let d2 = done.clone();
     let _g = test_hooks::install(sb.long_root(), move |p| {
         if p.file_name().is_some_and(|n| n == "victima.bin") && !d2.swap(true, Ordering::SeqCst) {
-            // Justo antes de abrirlo: borrar y crear otro archivo del mismo tamaño y nombre (otro FileId).
+            // Right before opening it: delete and create another file with the same name and size (a different FileId).
             fs::remove_file(p).unwrap();
             fs::write(p, vec![9u8; 4_096]).unwrap();
         }
@@ -442,7 +442,7 @@ fn cambiar_un_hijo_directorio_por_un_junction_antes_de_abrirlo_no_borra_nada_fue
     let d2 = done.clone();
     let _g = test_hooks::install(sb.long_root(), move |p| {
         if p.file_name().is_some_and(|n| n == "sub") && !d2.swap(true, Ordering::SeqCst) {
-            // El directorio listado se sustituye por un junction a otra carpeta del sandbox.
+            // Replace the listed directory with a junction to another sandbox folder.
             fs::remove_dir_all(&sbp_sub).unwrap();
             let out = std::process::Command::new("cmd")
                 .args(["/C", "mklink", "/J"])
@@ -467,7 +467,7 @@ fn cambiar_un_hijo_directorio_por_un_junction_antes_de_abrirlo_no_borra_nada_fue
 #[test]
 fn cambiar_un_ancestro_por_un_junction_a_otra_carpeta_no_borra_lo_que_no_se_aprobo() {
     let mut sb = Sandbox::new();
-    // Aprobado: `a/b` (con su identidad). Después `a` se cambia por un junction a `otra`, que tiene su propio `b`.
+    // Approved: `a/b` (with its identity). Then `a` is replaced with a junction to `other`, which has its own `b`.
     sb.write("a/b/aprobado.bin", 7_000);
     sb.write("otra/b/ajeno.bin", 7_000);
     let approved = identity_of(&sb.path("a/b"));
@@ -485,8 +485,8 @@ fn cambiar_un_ancestro_por_un_junction_a_otra_carpeta_no_borra_lo_que_no_se_apro
 
 #[test]
 fn con_un_ancestro_cambiado_a_otra_ruta_con_el_mismo_objeto_la_ruta_resuelta_no_coincide() {
-    // El mismo objeto, alcanzado por otra ruta (un junction al ancestro): la identidad coincide pero la ruta resuelta
-    // por el handle no es la aprobada, así que se rechaza.
+    // The same object reached through another path (a junction at an ancestor): identity matches, but the resolved path
+    // The handle resolves to a different identity than the approved one, so it is rejected.
     let mut sb = Sandbox::new();
     sb.write("real/b/x.bin", 3_000);
     let approved = identity_of(&sb.path("real/b"));
@@ -517,7 +517,7 @@ fn la_raiz_cambiada_por_otro_directorio_se_rechaza() {
     let events = Arc::new(Mutex::new(Vec::new()));
     let env = mk_env(Mode::Delete, no_protection(), 0, events);
     let approved = identity_of(&sb.path("R"));
-    // La raíz se borra y se recrea (otro FileId) con contenido.
+    // The root is deleted and recreated (with a different FileId) and populated.
     fs::remove_dir_all(sb.path("R")).unwrap();
     sb.write("R/b.bin", 1_000);
     let unit = Unit::new(
@@ -557,7 +557,7 @@ fn una_raiz_inexistente_se_cuenta_como_desaparecida() {
     assert_eq!(unit.status(), Some(RootStatus::Missing));
 }
 
-// ---- Cancelación, tamaño y nombres raros ---------------------------------------------------------------------------
+// ---- Cancellation, size, and unusual names ---------------------------------------------------------------------------
 
 #[test]
 fn cancelar_antes_de_empezar_no_borra_nada() {
@@ -608,7 +608,7 @@ fn cancelar_a_mitad_deja_de_empezar_entradas_y_no_deja_nada_a_medias_roto() {
     let left = sb.count_entries("R");
     assert!(left > 0, "se canceló antes de terminar");
     assert!(left < 220, "algo se borró antes de cancelar");
-    // El estado que queda es coherente: lo que sigue ahí se puede volver a limpiar entero.
+    // The remaining state is consistent: everything still present can be cleaned up again.
     drop(_g);
     let r = run_contents(&sb, "R", Mode::Delete, 0, no_protection(), 2);
     assert_eq!(sb.count_entries("R"), 0);
@@ -636,7 +636,7 @@ fn un_arbol_grande_y_profundo_se_borra_con_varios_hilos() {
 #[test]
 fn nombres_largos_con_puntos_y_espacios_finales_y_unicode_fuera_del_bmp() {
     let sb = Sandbox::new();
-    // Ruta total mayor que MAX_PATH: solo la recorrido relativo a handles la borra sin traducir rutas.
+    // Total path exceeds MAX_PATH: only handle-relative traversal can delete it without rewriting paths.
     let long_name = "x".repeat(120);
     let mut rel = String::from("R");
     for _ in 0..4 {
@@ -648,7 +648,7 @@ fn nombres_largos_con_puntos_y_espacios_finales_y_unicode_fuera_del_bmp() {
     fs::create_dir_all(&verbatim).unwrap();
     fs::write(verbatim.join("hoja.bin"), vec![1u8; 100]).unwrap();
     assert!(p.to_string_lossy().len() > 480);
-    // Nombres con punto o espacio final solo se pueden crear con `\\?\`.
+    // Names ending with a dot or space can only be created with the `\\?\` prefix.
     let weird = std::path::PathBuf::from(format!(r"\\?\{}\R\fin.", sb.long_root().display()));
     fs::write(&weird, b"x").unwrap();
     let weird2 = std::path::PathBuf::from(format!(r"\\?\{}\R\fin ", sb.long_root().display()));
@@ -676,8 +676,8 @@ fn los_eventos_llevan_ruta_identidad_y_tamano() {
     assert_eq!(ids.len(), 1);
 }
 
-/// Dos nombres que solo se diferencian en una unidad UTF-16 suelta (válida en NTFS) no se confunden: con `U+FFFD` por
-/// medio la protección de uno alcanzaría al otro (o al revés).
+/// Two names that differ only by a lone UTF-16 code unit (valid on NTFS) are not confused: replacing it with `U+FFFD`
+/// would cause protection for one to cover the other (or vice versa).
 #[test]
 fn los_nombres_con_unidades_sueltas_se_protegen_y_se_borran_por_separado() {
     use std::os::windows::ffi::OsStringExt;
@@ -687,7 +687,7 @@ fn los_nombres_con_unidades_sueltas_se_protegen_y_se_borran_por_separado() {
     let (a, b) = (name(0xD800), name(0xD801));
     fs::write(sb.path("R").join(&a), vec![1u8; 2_000]).unwrap();
     fs::write(sb.path("R").join(&b), vec![2u8; 2_000]).unwrap();
-    // Se protege solo el primero (su ruta canónica larga, con la unidad suelta).
+    // Protect only the first one (its canonical long path, including the lone code unit).
     let prot = Arc::new(Protection::new(&ProtectionRoots {
         denied: vec![sb.long("R").join(&a)],
         ..ProtectionRoots::default()
@@ -698,10 +698,10 @@ fn los_nombres_con_unidades_sueltas_se_protegen_y_se_borran_por_separado() {
     assert_eq!(r.stats().protected, 1);
 }
 
-// ---- A-M1: la huella del contenido ----------------------------------------------------------------------------------
+// ---- A-M1: content fingerprint ----------------------------------------------------------------------------------
 
-/// La huella no depende del ORDEN ni del número de hilos (la suma y el XOR son conmutativos), y es la misma entre dos
-/// recorridos del mismo árbol.
+/// The fingerprint does not depend on ORDER or thread count (sum and XOR are commutative), and is identical across two
+/// traversals of the same tree.
 #[test]
 fn la_huella_no_depende_del_orden_ni_de_los_hilos() {
     let sb = Sandbox::new();
@@ -720,8 +720,8 @@ fn la_huella_no_depende_del_orden_ni_de_los_hilos() {
     }
 }
 
-/// Quitar un hijo y poner otro del MISMO nombre y tamaño deja los totales iguales y cambia la huella (otro `FileId`); también
-/// la cambia el número de enlaces de un archivo y que una entrada pase a estar protegida.
+/// Removing a child and adding another with the SAME name and size leaves totals unchanged but changes the fingerprint
+/// (a different `FileId`). The fingerprint also changes when a file's link count changes or an entry becomes protected.
 #[test]
 fn la_huella_cambia_si_se_sustituye_un_hijo_por_otro_del_mismo_tamano() {
     let sb = Sandbox::new();
@@ -738,7 +738,7 @@ fn la_huella_cambia_si_se_sustituye_un_hijo_por_otro_del_mismo_tamano() {
         "los totales no lo delatan"
     );
     assert_ne!((before.fp_sum, before.fp_xor), (after.fp_sum, after.fp_xor));
-    // Un enlace duro más al mismo archivo: otros `links`.
+    // One more hard link to the same file: a different `links` count.
     let b0 = measure(no_protection());
     sb.hard_link("R/b.bin", "R/b2.bin");
     let b1 = measure(no_protection());
@@ -752,7 +752,7 @@ fn la_huella_cambia_si_se_sustituye_un_hijo_por_otro_del_mismo_tamano() {
         (b0.fp_sum, b0.fp_xor),
         "vuelta al principio: la misma huella"
     );
-    // La misma entrada tratada de otra forma (aquí, protegida) también cambia la huella.
+    // Treating the same entry differently (protected here) also changes the fingerprint.
     let prot = measure(protection(&sb, &["R/a.bin"], &[]));
     assert_ne!((prot.fp_sum, prot.fp_xor), (b0.fp_sum, b0.fp_xor));
 }
@@ -773,8 +773,8 @@ fn el_hash_de_una_entrada_depende_de_todos_sus_campos() {
     }
 }
 
-/// A-M3: MEDICIÓN (no es una prueba: `cargo test -p tesela-cleaner medicion_a_m3 -- --ignored --nocapture`). El borrado por
-/// handle de 100 000 archivos propios (vacíos, en una carpeta temporal `tesela-test-<uuid>`) con el registro local como receptor.
+/// A-M3: BENCHMARK (not a test: `cargo test -p tesela-cleaner medicion_a_m3 -- --ignored --nocapture`). Delete 100,000
+/// owned files by handle (empty files in a temporary `tesela-test-<uuid>` folder), using the local log as the receiver.
 #[test]
 #[ignore = "medición A-M3"]
 fn medicion_a_m3_borrado_de_100000_archivos_con_registro() {
@@ -787,7 +787,7 @@ fn medicion_a_m3_borrado_de_100000_archivos_con_registro() {
     }
     for threads in [1usize, 4] {
         if threads == 4 {
-            // Un segundo árbol (el primero ya se borró).
+            // A second tree (the first one has already been deleted).
             for d in 0..100 {
                 sb.mkdir(&format!("R/d{d:03}"));
                 for f in 0..1_000 {
@@ -831,8 +831,8 @@ fn medicion_a_m3_borrado_de_100000_archivos_con_registro() {
     }
 }
 
-/// m-1: una medida solo es COMPLETA con cero errores: cada campo de error a 1 (y todos los demás a 0) la invalida, y lo que
-/// no es un error (reciente, protegido, reparse, nube, compartidos, tamaños, huella) no. Sin tocar el sistema de archivos.
+/// m-1: a measurement is COMPLETE only with zero errors: setting any error field to 1 (and all others to 0) invalidates
+/// it, while non-errors (recent, protected, reparse, cloud, shared, sizes, fingerprint) do not. No filesystem access.
 #[test]
 fn una_medida_solo_es_completa_con_cero_errores() {
     assert!(StatsSnapshot::default().is_complete());
@@ -868,8 +868,8 @@ fn una_medida_solo_es_completa_con_cero_errores() {
     }
 }
 
-/// s-3: sustituir una entrada por otra del mismo tamaño cambia `fp_sum` Y `fp_xor`, cada uno POR SEPARADO (con que solo
-/// cambiara una de las dos mitades de la huella, un mutante que anulara la otra pasaría desapercibido).
+/// s-3: replacing an entry with another of the same size changes both `fp_sum` AND `fp_xor`, each SEPARATELY (if only
+/// one half of the fingerprint changed, a mutant that canceled the other half would go undetected).
 #[test]
 fn la_suma_y_el_xor_de_la_huella_cambian_cada_uno_por_separado() {
     let sb = Sandbox::new();
@@ -886,13 +886,13 @@ fn la_suma_y_el_xor_de_la_huella_cambian_cada_uno_por_separado() {
     assert_ne!(before.fp_xor, 0);
 }
 
-/// GM-M3: la medida anota la ruta MÁS LARGA de lo que hay dentro (unidades UTF-16, ruta completa del descendiente) y medir,
-/// simular y borrar cuentan lo mismo. Nombres con acentos y fuera del plano básico: se cuentan unidades, no bytes.
+/// GM-M3: measurement records the LONGEST path in the tree (UTF-16 code units, full descendant path), and measurement,
+/// dry run, and deletion count the same value. Accented and supplementary-plane names count code units, not bytes.
 #[test]
 fn la_medida_anota_la_ruta_mas_larga_en_unidades_utf16() {
     let sb = Sandbox::new();
     build_tree(&sb);
-    // Un nombre con un carácter fuera del plano básico (2 unidades UTF-16, 4 bytes) y un acento (1 unidad, 2 bytes).
+    // A name with one supplementary-plane character (2 UTF-16 code units, 4 bytes) and one accent (1 code unit, 2 bytes).
     sb.write("R/d1/d2/😀é-larguísimo.bin", 10);
     let longest = sb.long("R/d1/d2/😀é-larguísimo.bin");
     let units = crate::plan::path_units(&longest) as u64;
@@ -904,7 +904,7 @@ fn la_medida_anota_la_ruta_mas_larga_en_unidades_utf16() {
     assert_eq!(measure.stats().max_path, units, "{:?}", measure.stats());
     let dry = run_contents(&sb, "R", Mode::DryRun, 0, no_protection(), 4);
     assert_eq!(dry.stats(), measure.stats());
-    // `merge` se queda con el mayor (no suma).
+    // `merge` keeps the maximum (it does not add values).
     let mut a = StatsSnapshot {
         max_path: 10,
         ..StatsSnapshot::default()
@@ -921,8 +921,8 @@ fn la_medida_anota_la_ruta_mas_larga_en_unidades_utf16() {
     assert_eq!(a.max_path, 12);
 }
 
-/// GM-M3: `recycle_charge` SUMA `bytes` (un solo enlace) y `shared_bytes` (varios enlaces): son conjuntos disjuntos que la
-/// shell cuenta los dos. El máximo de los dos (lo anterior) subestimaba una carpeta con las dos clases.
+/// GM-M3: `recycle_charge` ADDS `bytes` (single-link files) and `shared_bytes` (multiply linked files): these are disjoint sets that the
+/// shell must count together. Taking their maximum (the previous behavior) underestimated a folder containing both types.
 #[test]
 fn el_cargo_a_la_papelera_suma_bytes_y_compartidos() {
     let s = StatsSnapshot {
@@ -937,14 +937,14 @@ fn el_cargo_a_la_papelera_suma_bytes_y_compartidos() {
         20_000,
         "la cuenta anterior"
     );
-    // El lógico manda si es mayor (archivo disperso o comprimido).
+    // The logical size wins when it is larger (sparse or compressed file).
     let sparse = StatsSnapshot {
         bytes: 4_096,
         logical: 1 << 40,
         ..StatsSnapshot::default()
     };
     assert_eq!(sparse.recycle_charge(), 1 << 40);
-    // Sin desbordar.
+    // Without overflow.
     let huge = StatsSnapshot {
         bytes: u64::MAX,
         shared_bytes: u64::MAX,

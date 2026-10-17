@@ -1,10 +1,10 @@
-//! Pruebas de punta a punta: cesta -> aprobación (identidades) -> ejecución (definitivo, Papelera, vaciar con alcance
-//! enumerado, simulación) sobre árboles en `%TEMP%\tesela-test-<uuid>`.
+//! End-to-end tests: basket -> approval (identities) -> execution (permanent deletion, Recycle Bin, scoped purge,
+//! dry run) over trees in `%TEMP%\tesela-test-<uuid>`.
 //!
-//! SEGURIDAD: las categorías se inyectan con raíces del sandbox, así que NUNCA se toca el `%TEMP%`, las cachés ni la
-//! Papelera reales. Las pruebas que envían a la Papelera usan SOLO elementos propios (filtrados por el uuid de la
-//! prueba), con una guarda RAII que los purga, y comprueban que el conjunto de ids de la Papelera es el de antes. NINGUNA
-//! prueba vacía la Papelera real: el alcance de "vaciar" se limita con `with_bin_filter` a los elementos propios.
+//! SAFETY: categories are injected with sandbox roots, so the real `%TEMP%`, caches, and Recycle Bin are NEVER touched.
+//! Tests that send items to the Recycle Bin use ONLY owned items (filtered by the test UUID), protected by an RAII guard
+//! that purges them, and verify that the Recycle Bin ID set is unchanged. NO test purges the real Recycle Bin: the scope
+//! of `purge` is limited to owned items by `with_bin_filter`.
 
 use super::*;
 use crate::basket::Basket;
@@ -50,8 +50,8 @@ fn cancel() -> Arc<AtomicBool> {
     Arc::new(AtomicBool::new(false))
 }
 
-/// Un registro de prueba para `c`: en su carpeta de datos (dentro del sandbox) o, si no tiene, en una carpeta propia de
-/// la prueba que `exec` borra al terminar.
+/// A test log for `c`: stored in its data folder (inside the sandbox), or in a test-owned folder that `exec` deletes when
+/// finished if no data folder is configured.
 fn log_for(c: &Cleaner) -> (Arc<LogWriter>, Option<PathBuf>) {
     match c.data_dir.clone() {
         Some(d) => (Arc::new(LogWriter::create(&d, false).unwrap()), None),
@@ -62,8 +62,8 @@ fn log_for(c: &Cleaner) -> (Arc<LogWriter>, Option<PathBuf>) {
     }
 }
 
-/// Ejecuta el plan. Sin registro explícito, una ejecución REAL usa uno de prueba (M4: sin registro no se limpia; la
-/// simulación sí puede ir sin él).
+/// Executes the plan. Without an explicit log, a REAL execution uses a test log (M4: cleaning requires a log; a dry run
+/// may proceed without one).
 fn exec(
     c: &Cleaner,
     plan: &Plan,
@@ -102,10 +102,10 @@ fn approve(c: &Cleaner, b: &Basket) -> Plan {
 fn las_categorias_borran_sus_raices_con_su_regla_y_respetan_el_perfil() {
     let sb = Sandbox::new();
     let c = cleaner_for(&sb);
-    // Temporales: solo lo de más de 7 días (las fechas de la prueba son de hace 10 días).
+    // Temporary files: only those older than 7 days (the test dates are 10 days old).
     sb.write_aged("Temp/viejo.tmp", 30_000, 240);
     sb.write("Temp/nuevo.tmp", 30_000);
-    // Caché de Chrome: sin límite de antigüedad. El perfil (historial, cookies...) NO es caché.
+    // Chrome cache: no age limit. The profile (history, cookies, etc.) is NOT cache.
     sb.write(
         "Local/Google/Chrome/User Data/Default/Cache/f_000001",
         50_000,
@@ -129,7 +129,7 @@ fn las_categorias_borran_sus_raices_con_su_regla_y_respetan_el_perfil() {
             .all(|i| i.destination == Destination::Permanent && i.risk == Risk::Safe)
     );
     assert!(plan.permanent_bytes() >= 100_000);
-    // La estimación solo cuenta lo que se va a tocar (los temporales recientes no).
+    // The estimate counts only what will be touched (not recent temporary files).
     let temp = plan
         .items
         .iter()
@@ -179,8 +179,8 @@ fn las_categorias_borran_sus_raices_con_su_regla_y_respetan_el_perfil() {
     );
 }
 
-/// E2: los temporales se limpian a partir de los 7 días (la referencia de `cleanmgr`: "no modificados en la última
-/// semana"), no a las 24 h: uno de hace 6 días se deja y se cuenta como reciente; uno de hace 8, se borra.
+/// E2: temporary files are cleaned after 7 days (matching `cleanmgr`: "not modified in the last week"), not after 24
+/// hours: a 6-day-old file is kept and counted as recent, while an 8-day-old file is deleted.
 #[test]
 fn los_temporales_de_menos_de_7_dias_se_dejan() {
     let sb = Sandbox::new();
@@ -213,8 +213,8 @@ fn dry_run_no_toca_nada_y_registra_las_identidades_aprobadas() {
     let logdir = sb.path("logs");
     let log = Arc::new(LogWriter::create(&logdir, true).unwrap());
     let before = (sb.count_entries("Temp"), sb.count_entries("Docs"));
-    // Lo único que depende de la Papelera real es "ni la Papelera": va detrás de TESELA_REAL_RECYCLE_TESTS=1. Todo lo
-    // demás de la prueba corre siempre.
+    // Only the "not even the Recycle Bin" case depends on the real Recycle Bin and runs behind
+    // TESELA_REAL_RECYCLE_TESTS=1. The rest of this test always runs.
     let ids_before = real_recycle_enabled().then(ids);
     let rep = exec(&c, &plan, true, false, Some(log.clone())).unwrap();
     assert!(rep.dry_run);
@@ -309,7 +309,7 @@ fn un_elemento_del_usuario_va_a_la_papelera_por_su_ruta_original_y_se_verifica()
         ),
         (0, 0, 0, 0)
     );
-    // Están en la Papelera con su NOMBRE ORIGINAL (no hay lápidas: nada que el usuario vea o restaure con un nombre raro).
+    // They are in the Recycle Bin under their ORIGINAL NAMES (no tombstones or strange names for users to see or restore).
     let mine: Vec<BinItem> = recycle::list_bin()
         .unwrap()
         .into_iter()
@@ -330,9 +330,9 @@ fn un_elemento_del_usuario_va_a_la_papelera_por_su_ruta_original_y_se_verifica()
     assert_eq!(ids(), before, "la Papelera queda exactamente como estaba");
 }
 
-/// M3a (con la shell REAL, solo con `TESELA_REAL_RECYCLE_TESTS=1`): una carpeta de TRES niveles se envía a la Papelera y queda
-/// `Recycled`. Es el caso que comprueba que la vigilancia de cambios no da un falso positivo con lo que hace la shell real
-/// entre arrancar la operación y `PreDeleteItem`. Solo elementos propios (`tesela-test-<uuid>`).
+/// M3a (with the REAL shell, only under `TESELA_REAL_RECYCLE_TESTS=1`): a THREE-level folder is sent to the Recycle Bin and
+/// becomes `Recycled`. This checks that change monitoring does not produce a false positive for the real shell's work
+/// between operation start and `PreDeleteItem`. Owned items only (`tesela-test-<uuid>`).
 #[test]
 fn con_la_shell_real_una_carpeta_de_tres_niveles_se_envia_y_queda_recycled() {
     let _lock = bin_lock();
@@ -378,8 +378,8 @@ fn con_la_shell_real_una_carpeta_de_tres_niveles_se_envia_y_queda_recycled() {
     assert_eq!(ids(), before, "la Papelera queda exactamente como estaba");
 }
 
-/// M3b (con la shell REAL, gateada): una carpeta que cambia JUSTO ANTES de `PreDeleteItem` (gancho de pruebas en el receptor) se
-/// veta: "cambió desde la confirmación", el envío se detiene y la carpeta sigue en su sitio sin llegar a la Papelera.
+/// M3b (with the REAL shell, gated): a folder that changes RIGHT BEFORE `PreDeleteItem` (test hook in the receiver) is
+/// is vetoed as "changed since confirmation." The send stops, and the folder remains in place without reaching the Recycle Bin.
 #[test]
 fn con_la_shell_real_un_cambio_justo_antes_de_pre_delete_item_veta_la_carpeta() {
     let _lock = bin_lock();
@@ -419,15 +419,15 @@ fn con_la_shell_real_un_cambio_justo_antes_de_pre_delete_item_veta_la_carpeta() 
     assert_eq!(ids(), before);
 }
 
-/// M3c (con la shell REAL, gateada): un `$R` PROPIO con un junction dentro (hacia otra carpeta propia del sandbox en `%TEMP%`,
-/// nunca hacia una raíz) queda EXCLUIDO ("con enlaces") y el resto del lote se purga: el destino del junction no se toca. El
-/// junction se quita como enlace antes de limpiar.
+/// M3c (with the REAL shell, gated): an OWN `$R` containing a junction (to another sandbox-owned folder under `%TEMP%`,
+/// never toward a root) is EXCLUDED ("with links"), and the rest of the batch is purged: the junction target is untouched.
+/// Remove the junction as a link before cleanup.
 #[test]
 fn con_la_shell_real_un_r_propio_con_un_junction_dentro_se_excluye_y_el_resto_se_purga() {
     struct RemoveLink(PathBuf);
     impl Drop for RemoveLink {
         fn drop(&mut self) {
-            // Solo el enlace (`remove_dir` sobre un junction no entra en él).
+            // Only the link (`remove_dir` on a junction does not traverse it).
             let _ = fs::remove_dir(&self.0);
         }
     }
@@ -466,7 +466,7 @@ fn con_la_shell_real_un_r_propio_con_un_junction_dentro_se_excluye_y_el_resto_se
         .find(|i| i.name == "carpeta")
         .expect("la carpeta propia")
         .clone();
-    // Un junction DENTRO del `$R` de la carpeta, hacia otra carpeta propia del sandbox.
+    // A junction INSIDE the folder's `$R`, pointing to another sandbox-owned folder.
     let link = PathBuf::from(&carpeta.id).join("enlace");
     let out = std::process::Command::new("cmd")
         .args(["/C", "mklink", "/J"])
@@ -476,7 +476,7 @@ fn con_la_shell_real_un_r_propio_con_un_junction_dentro_se_excluye_y_el_resto_se
         .expect("lanza cmd");
     assert!(out.status.success(), "mklink /J falló");
     let _link_guard = RemoveLink(link.clone());
-    // Vaciar (solo lo propio): la carpeta con el junction se excluye, el resto se purga.
+    // Purge (owned items only): exclude the folder containing the junction and purge the rest.
     let mut empty = Basket::new();
     empty.set_empty_bin(true);
     let plan = approve(&c, &empty);
@@ -494,7 +494,7 @@ fn con_la_shell_real_un_r_propio_con_un_junction_dentro_se_excluye_y_el_resto_se
         PathBuf::from(&carpeta.id).exists(),
         "el excluido sigue en la Papelera"
     );
-    // Limpieza: el enlace se quita como enlace y después se purga lo que queda.
+    // Cleanup: remove the link as a link, then purge what remains.
     fs::remove_dir(&link).unwrap();
     assert!(fs::symlink_metadata(&link).is_err());
     let rest: Vec<BinItem> = recycle::list_bin()
@@ -517,7 +517,7 @@ fn vaciar_la_papelera_purga_solo_la_lista_capturada() {
     let sb = Sandbox::new();
     let _guard = BinGuard { uuid: sb.uuid() };
     let c = cleaner_for(&sb);
-    // Dos elementos propios en la Papelera...
+    // Two owned items in the Recycle Bin...
     for n in ["uno.txt", "dos.txt"] {
         sb.write(&format!("Docs/{n}"), 2_000);
     }
@@ -533,7 +533,7 @@ fn vaciar_la_papelera_purga_solo_la_lista_capturada() {
             .count(),
         2
     );
-    // ...se confirma "Vaciar" (se captura la lista: solo esos dos, por el filtro de la prueba)...
+    // ...confirm "Purge" (capture the list: only those two items, due to the test filter)...
     let mut v = Basket::new();
     v.set_empty_bin(true);
     let plan = c.approve(
@@ -546,8 +546,8 @@ fn vaciar_la_papelera_purga_solo_la_lista_capturada() {
     );
     assert_eq!(plan.bin.as_ref().unwrap().items.len(), 2);
     assert!(plan.items.is_empty());
-    // El tamaño que se enseña es el de la lista enumerada (con el filtro de la prueba, solo lo propio), no el de toda la
-    // Papelera ni lo que sugirió quien llama.
+    // The displayed size is for the enumerated list (with the test filter, owned items only), not the entire Recycle Bin
+    // or the value suggested by the caller.
     let listed: u64 = plan
         .bin
         .as_ref()
@@ -558,7 +558,7 @@ fn vaciar_la_papelera_purga_solo_la_lista_capturada() {
         .sum();
     assert_eq!(plan.bin.as_ref().unwrap().bytes_hint, listed);
     assert!(listed >= 4_000, "{listed}");
-    // ...y después entra otro elemento propio en la Papelera, que NO está en la lista capturada.
+    // ...then another owned item enters the Recycle Bin, which is NOT in the captured list.
     sb.write("Docs/tres.txt", 2_000);
     let mut b3 = Basket::new();
     b3.add_path(sb.long("Docs/tres.txt"), c.protection());
@@ -576,7 +576,7 @@ fn vaciar_la_papelera_purga_solo_la_lista_capturada() {
     let bin = rep.bin.unwrap();
     assert_eq!((bin.requested, bin.purged, bin.still_there), (2, 2, 0));
     assert!(!bin.failed);
-    // M4: cada elemento purgado consta POR SEPARADO en el registro, tras la intención del trozo; el que entró después no.
+    // M4: each purged item gets its own log entry after the chunk intent; the later item does not.
     let text = fs::read_to_string(log.path()).unwrap();
     let lines: Vec<serde_json::Value> = text
         .lines()
@@ -614,7 +614,7 @@ fn vaciar_la_papelera_purga_solo_la_lista_capturada() {
         "lo que entró después de confirmar no se toca: {left:?}"
     );
     assert_eq!(left[0].name.to_string_lossy(), "tres.txt");
-    // Y los ajenos siguen exactamente como estaban.
+    // Unowned items remain exactly as they were.
     let foreign: HashSet<OsString> = recycle::list_bin()
         .unwrap()
         .into_iter()
@@ -624,9 +624,9 @@ fn vaciar_la_papelera_purga_solo_la_lista_capturada() {
     assert_eq!(foreign, before);
 }
 
-/// M3 + M4 con la Papelera real (solo elementos propios): si la identidad capturada al confirmar de un elemento ya no
-/// cuadra (aquí, falseada en el plan), se SALTA al vaciar: la shell no lo ve, consta como cambiado en el informe y en el
-/// registro, y los demás se purgan.
+/// M3 + M4 with the real Recycle Bin (owned items only): if an item's identity captured at confirmation no longer
+/// does not match (forged in the plan here), it is SKIPPED during purge: the shell never sees it, it is reported and logged
+/// as changed, and the remaining items are purged.
 #[test]
 fn vaciar_salta_el_elemento_cuya_identidad_cambio_y_lo_deja_en_el_registro() {
     let _lock = bin_lock();
@@ -649,7 +649,7 @@ fn vaciar_salta_el_elemento_cuya_identidad_cambio_y_lo_deja_en_el_registro() {
     let mut plan = c.approve(&v, &ApproveOptions::default(), &cancel());
     let bp = plan.bin.as_mut().unwrap();
     assert_eq!(bp.items.len(), 2);
-    // Falsear la identidad del `$R` del primero: ya no es lo que se aprobó.
+    // Forge the first `$R` identity: it is no longer the approved item.
     bp.items[0].data_id = Some(FileIdentity {
         volume_serial: 1,
         file_id: 2,
@@ -680,10 +680,10 @@ fn vaciar_salta_el_elemento_cuya_identidad_cambio_y_lo_deja_en_el_registro() {
     assert_eq!(ids(), before);
 }
 
-/// A-M4 con la Papelera real (solo elementos propios): si el `$R` del PRIMER elemento se sustituye justo antes de que la shell
-/// lo borre (la ventana entre la verificación y el borrado), el receptor lo veta. El informe lo cuenta como "cambiado desde
-/// la confirmación" (no se purgó nada: la shell no sigue con el resto del lote tras el veto), el registro lleva una línea
-/// `vetoed` y una `not-processed` por cada uno de los demás, y el sustituto sigue ahí.
+/// A-M4 with the real Recycle Bin (owned items only): if the first item's `$R` is replaced just before the shell
+/// deletes it (the window between verification and deletion), the receiver vetoes it. The report marks it "changed since
+/// confirmation" (nothing else is purged: the shell stops processing the batch after a veto), the log contains one
+/// `vetoed` line and one `not-processed` line for each remaining item, and the replacement remains in place.
 #[test]
 fn vaciar_con_un_r_sustituido_al_final_consta_como_vetado_y_no_se_purga_nada_mas() {
     let _lock = bin_lock();
@@ -707,7 +707,7 @@ fn vaciar_con_un_r_sustituido_al_final_consta_como_vetado_y_no_se_purga_nada_mas
     let plan = c.approve(&v, &ApproveOptions::default(), &cancel());
     let items = plan.bin.as_ref().unwrap().items.clone();
     assert_eq!(items.len(), 3);
-    // El primero en el orden en que la shell los procesa.
+    // The first item in the shell's processing order.
     let victim = PathBuf::from(&items[0].id);
     let _apartado = RemoveOnDrop(victim.with_extension("apartado"));
     let hook = crate::engine::test_hooks::install_before_shell(victim.clone(), {
@@ -750,11 +750,11 @@ fn vaciar_con_un_r_sustituido_al_final_consta_como_vetado_y_no_se_purga_nada_mas
     assert_eq!(ids(), before);
 }
 
-/// M-2 con la Papelera real (solo elementos propios): el veto de una CARPETA de la Papelera sustituida (la shell consulta
-/// primero la carpeta y luego sus hijos) consta como "cambiado desde la confirmación" y el registro lleva `vetoed` de ESE
-/// elemento, no `error-0x...`/`not-processed`. (Que un veto sobre un HIJO se atribuya a su carpeta lo prueba la prueba sin COM
-/// `el_veto_de_un_hijo_se_atribuye_al_r_de_su_carpeta`: con la shell real no se puede forzar el cambio entre la consulta de
-/// la carpeta y la de sus hijos.)
+/// M-2 with the real Recycle Bin (owned items only): veto a replaced Recycle Bin FOLDER (the shell queries
+/// the folder before its children) is recorded as "changed since confirmation," and the log contains a `vetoed` entry for THAT
+/// the item), not `error-0x...`/`not-processed`. (The COM-free test `el_veto_de_un_hijo_se_atribuye_al_r_de_su_carpeta`
+/// verifies that a child veto is attributed to its folder; with the real shell, the change cannot be forced between the
+/// folder query and its children.)
 #[test]
 fn vaciar_con_un_hijo_vetado_de_una_carpeta_consta_como_cambiado_y_vetado() {
     let _lock = bin_lock();
@@ -782,7 +782,7 @@ fn vaciar_con_un_hijo_vetado_de_una_carpeta_consta_como_cambiado_y_vetado() {
     let hook = crate::engine::test_hooks::install_before_shell(victim.clone(), {
         let victim = victim.clone();
         move |_| {
-            // Con la guarda abierta (comparte `DELETE`) la carpeta se aparta y se pone otra con su nombre y un hijo.
+            // With the guard open (sharing `DELETE`), move the folder aside and put another folder with its name and a child in its place.
             fs::rename(&victim, victim.with_extension("apartado")).unwrap();
             fs::create_dir_all(victim.join("sub")).unwrap();
             fs::write(victim.join("sub/hijo.txt"), b"sustituto").unwrap();
@@ -819,8 +819,8 @@ fn vaciar_con_un_hijo_vetado_de_una_carpeta_consta_como_cambiado_y_vetado() {
     assert_eq!(ids(), before);
 }
 
-/// M4 con la Papelera real (solo un elemento propio): si no se puede escribir la intención `bin-begin` del trozo, la shell NO
-/// llega a ver ese trozo: nada se purga (`purged = 0`), el elemento sigue en la Papelera y el informe dice `log_failed`.
+/// M4 with the real Recycle Bin (one owned item only): if the chunk's `bin-begin` intent cannot be written, the shell is NOT
+/// sees that chunk: nothing is purged (`purged = 0`), the item remains in the Recycle Bin, and the report says `log_failed`.
 #[test]
 fn un_error_de_escritura_en_bin_begin_impide_que_la_shell_vea_el_trozo() {
     let _lock = bin_lock();
@@ -839,7 +839,7 @@ fn un_error_de_escritura_en_bin_begin_impide_que_la_shell_vea_el_trozo() {
     v.set_empty_bin(true);
     let plan = c.approve(&v, &ApproveOptions::default(), &cancel());
     assert_eq!(plan.bin.as_ref().unwrap().items.len(), 1);
-    // El presupuesto cubre la línea de arranque pero no la intención `bin-begin`.
+    // The budget covers the startup line but not the `bin-begin` intent.
     let log = Arc::new(LogWriter::create_failing_after(&sb.path("L"), false, 80).unwrap());
     let rep = exec(&c, &plan, false, false, Some(log.clone())).unwrap();
     let bin = rep.bin.unwrap();
@@ -871,7 +871,7 @@ fn el_orden_primero_vaciar_y_despues_mover() {
     let mut b = Basket::new();
     b.add_path(sb.long("Docs/viejo.txt"), c.protection());
     exec(&c, &approve(&c, &b), false, false, None).unwrap();
-    // Vaciar (lista: el viejo) y mover uno nuevo en la MISMA cesta.
+    // Capture the purge list (the old item), then move a new item into the SAME bin.
     sb.write("Docs/nuevo.txt", 2_000);
     let mut b2 = Basket::new();
     b2.set_empty_bin(true);
@@ -885,7 +885,7 @@ fn el_orden_primero_vaciar_y_despues_mover() {
         .into_iter()
         .filter(|i| is_mine(i, &sb.uuid()))
         .collect();
-    // El nuevo (movido DESPUÉS de vaciar) sigue recuperable en la Papelera.
+    // The new item (moved AFTER the purge) remains recoverable in the Recycle Bin.
     assert_eq!(mine.len(), 1);
     assert_eq!(mine[0].name.to_string_lossy(), "nuevo.txt");
     recycle::purge_items(&mine, &AtomicBool::new(false)).unwrap();
@@ -896,7 +896,7 @@ fn el_orden_primero_vaciar_y_despues_mover() {
 fn lo_que_no_cabe_en_la_papelera_exige_la_casilla() {
     let sb = Sandbox::new();
     let c = cleaner_for(&sb);
-    // Una ruta demasiado larga para la Papelera (más de 258 caracteres).
+    // A path too long for the Recycle Bin (more than 258 characters).
     let seg = "x".repeat(80);
     let rel = format!("Docs/{seg}/{seg}/{seg}/{seg}");
     let verbatim = PathBuf::from(format!(
@@ -916,7 +916,7 @@ fn lo_que_no_cabe_en_la_papelera_exige_la_casilla() {
     assert_eq!(plan.unfit_items().count(), 1);
     assert_eq!(plan.recycle_items().count(), 0);
     assert!(plan.unfit_bytes() >= 10_000);
-    // Sin la casilla: no se toca.
+    // Without the checkbox, it remains untouched.
     let rep = exec(&c, &plan, false, false, None).unwrap();
     assert_eq!(rep.skipped_unfit, 1);
     assert_eq!(rep.items[0].status, ItemStatus::SkippedUnfit);
@@ -924,7 +924,7 @@ fn lo_que_no_cabe_en_la_papelera_exige_la_casilla() {
         file.exists(),
         "nunca se convierte en definitivo en silencio"
     );
-    // Con la casilla: se elimina definitivamente (sin pasar por la Papelera).
+    // With the checkbox enabled, permanently delete it (without using the Recycle Bin).
     let rep = exec(&c, &plan, false, true, None).unwrap();
     assert_eq!(rep.items[0].destination, Destination::Permanent);
     assert_eq!(rep.items[0].status, ItemStatus::Done);
@@ -941,7 +941,7 @@ fn si_cambia_lo_que_cabe_se_pide_confirmar_otra_vez_antes_de_tocar_nada() {
     b.add_path(sb.long("Docs/a.txt"), c.protection());
     let mut plan = approve(&c, &b);
     assert_eq!(plan.items[0].fit, Fit::Fits);
-    // Lo aprobado decía "no cabe" pero ahora cabe (o al revés): hay que volver a confirmar.
+    // Approval said "does not fit," but it fits now (or vice versa): confirmation is required again.
     plan.items[0].fit = Fit::Unfit(UnfitReason::TooBig);
     let r = exec(&c, &plan, false, true, None);
     assert_eq!(
@@ -951,7 +951,7 @@ fn si_cambia_lo_que_cabe_se_pide_confirmar_otra_vez_antes_de_tocar_nada() {
     assert!(sb.path("Docs/a.txt").exists());
 }
 
-// ---- Carreras con la operación, a nivel de plan ------------------------------------------------------------------------
+// ---- Operation races at the plan level ------------------------------------------------------------------------
 
 #[test]
 fn sustituir_un_elemento_aprobado_por_otro_igual_se_rechaza_en_la_ejecucion() {
@@ -967,7 +967,7 @@ fn sustituir_un_elemento_aprobado_por_otro_igual_se_rechaza_en_la_ejecucion() {
     let mut b = Basket::new();
     b.add_path(sb.long("Docs/foto.jpg"), c.protection());
     let plan = approve(&c, &b);
-    // Después de confirmar: se borra y se crea otro archivo del mismo tamaño y nombre.
+    // After confirmation: delete the file and create another with the same name and size.
     fs::remove_file(&f).unwrap();
     sb.write("Docs/foto.jpg", 12_288);
     let rep = exec(&c, &plan, false, false, None).unwrap();
@@ -1025,7 +1025,7 @@ fn un_archivo_abierto_en_exclusiva_no_se_envia_y_una_carpeta_con_algo_abierto_de
         b.add_path(sb.long(p), c.protection());
     }
     let plan = approve(&c, &b);
-    // Uno abierto en exclusiva y otro archivo abierto dentro de la carpeta.
+    // One file opened exclusively, and another open inside the folder.
     use std::os::windows::fs::OpenOptionsExt;
     let _a = fs::OpenOptions::new()
         .read(true)
@@ -1055,7 +1055,7 @@ fn un_archivo_abierto_en_exclusiva_no_se_envia_y_una_carpeta_con_algo_abierto_de
         ItemStatus::NotRecycled(RecycleFail::Denied),
         "una carpeta con algo abierto dentro falla en seguro (mover es renombrar): la shell dice acceso denegado"
     );
-    // No se renombró nada: siguen con su nombre.
+    // Nothing was renamed: the original names remain.
     assert!(sb.path("Docs/en-uso.bin").exists() && sb.path("Docs/carpeta/dentro.bin").exists());
     assert_eq!(
         sb.count_entries("Docs"),
@@ -1077,7 +1077,7 @@ fn un_archivo_abierto_en_exclusiva_no_se_envia_y_una_carpeta_con_algo_abierto_de
     assert_eq!(ids(), before);
 }
 
-// ---- Protección, enlaces duros, rechazos ----------------------------------------------------------------------------
+// ---- Protection, hard links, and rejections ----------------------------------------------------------------------------
 
 #[test]
 fn una_carpeta_con_una_carpeta_conocida_dentro_se_expande_y_esa_se_respeta() {
@@ -1088,7 +1088,7 @@ fn una_carpeta_con_una_carpeta_conocida_dentro_se_expande_y_esa_se_respeta() {
     let before = ids();
     let sb = Sandbox::new();
     let _guard = BinGuard { uuid: sb.uuid() };
-    // `Docs/Mezcla/Protegida` es una raíz conocida (solo "Contenido de"); lo demás es borrable.
+    // `Docs/Mezcla/Protegida` is a known root ("Contents of" only); everything else can be deleted.
     let mut c = cleaner_for(&sb);
     c.protection = Arc::new(crate::protect::Protection::new(&ProtectionRoots {
         content_roots: vec![sb.long("Docs/Mezcla/Protegida")],
@@ -1185,7 +1185,7 @@ fn las_entradas_que_no_se_pueden_aprobar_se_rechazan_con_su_motivo() {
     sb.junction("Docs/enlace", "Docs/destino");
     sb.write("Docs/ok.bin", 1_000);
     let mut b = Basket::new();
-    // El propio add_path ya rebota lo denegado/intocable; aquí se fuerzan entradas que solo la aprobación puede rechazar.
+    // add_path already rejects denied/untouchable paths; force entries here that only approval can reject.
     b.add_path(sb.long("Docs/enlace"), c.protection());
     b.add_path(sb.long("Docs/no-existe.bin"), c.protection());
     b.add_path(sb.long("Docs/ok.bin"), c.protection());
@@ -1205,7 +1205,7 @@ fn las_entradas_que_no_se_pueden_aprobar_se_rechazan_con_su_motivo() {
         "{:?}",
         plan.rejected
     );
-    // Una carpeta que pasó a estar protegida entre añadirla y aprobar.
+    // A folder that became protected between being added and approval.
     let mut c2 = cleaner_for(&sb);
     c2.protection = Arc::new(crate::protect::Protection::new(&ProtectionRoots {
         denied: vec![sb.long("Docs/ok.bin")],
@@ -1292,9 +1292,9 @@ fn cancelar_antes_de_empezar_no_toca_nada() {
     assert!(sb.path("Temp/a.tmp").exists() && sb.path("Docs/b.txt").exists());
 }
 
-// ---- Solo unidades locales (B2) y la propia aplicación dentro del temporal (B3) ---------------------------------------
+// ---- Local volumes only (B2) and the application itself under the temp directory (B3) ---------------------------------------
 
-/// La misma carpeta del sandbox por una ruta de red a la compartición administrativa.
+/// The same sandbox folder accessed through a network path to the administrative share.
 fn via_share(host: &str, p: &Path) -> PathBuf {
     let s = p.to_string_lossy().into_owned();
     let letter = s.chars().next().unwrap();
@@ -1303,9 +1303,9 @@ fn via_share(host: &str, p: &Path) -> PathBuf {
     PathBuf::from(format!("{sep}{sep}{host}{sep}{letter}${sep}{rest}"))
 }
 
-/// B2: una ruta de red a la compartición administrativa de un disco local (con `localhost` o `127.0.0.1` como equipo)
-/// esquivaba la protección (que se escribe sobre rutas de unidad). Se rechazan
-/// al aprobar, aunque la ruta de red sea accesible; y si alguien las cuela en un plan, la ejecución también las rechaza.
+/// B2: a network path to a local disk's administrative share (using `localhost` or `127.0.0.1` as the host) bypassed
+/// protection (which is defined over drive paths). Reject these paths during approval, even if the network path is
+/// accessible; execution also rejects them if someone inserts them into a plan.
 #[test]
 fn las_rutas_de_red_a_un_disco_local_no_esquivan_la_proteccion() {
     let _lock = bin_lock();
@@ -1314,7 +1314,7 @@ fn las_rutas_de_red_a_un_disco_local_no_esquivan_la_proteccion() {
     let f = sb.write("Docs/privado.txt", 2_000);
     sb.write_aged("Temp/viejo.tmp", 3_000, 240);
     for host in ["localhost", "127.0.0.1"] {
-        // Ya al AÑADIR a la cesta: rechazada con su motivo (no solo al aprobar).
+        // Rejected with its reason when ADDED to the basket (not only during approval).
         let net = via_share(host, &sb.long("Docs/privado.txt"));
         let mut b = Basket::new();
         assert_eq!(
@@ -1323,7 +1323,7 @@ fn las_rutas_de_red_a_un_disco_local_no_esquivan_la_proteccion() {
         );
         assert!(b.is_empty());
         assert!(approve(&c, &b).items.is_empty());
-        // En la ejecución: se toma un plan legítimo y se le cambia la ruta por la de red (misma identidad).
+        // During execution: take a valid plan and replace its path with the network path (same identity).
         let mut b2 = Basket::new();
         b2.add_path(sb.long("Docs/privado.txt"), c.protection());
         let mut plan2 = approve(&c, &b2);
@@ -1334,15 +1334,15 @@ fn las_rutas_de_red_a_un_disco_local_no_esquivan_la_proteccion() {
         if let UnitSpec::Entry { path, .. } = &mut it.spec {
             *path = net.clone();
         }
-        // Una ruta de red nunca "cabe" en la Papelera: sin la casilla se salta...
+        // A network path never "fits" in the Recycle Bin: without the checkbox, it is skipped...
         let rep = exec(&c, &plan2, false, false, None).unwrap();
         assert_eq!(rep.items[0].status, ItemStatus::SkippedUnfit);
-        // ...y con la casilla (borrado definitivo por el recorrido por handle) la raíz se rechaza por no ser local.
+        // ...and with the checkbox enabled (permanent deletion via handle traversal), reject the root because it is not local.
         let rep = exec(&c, &plan2, false, true, None).unwrap();
         eprintln!("{host}: estado en la ejecución = {:?}", rep.items[0].status);
         assert_eq!(rep.items[0].status, ItemStatus::Root(RootStatus::NotLocal));
         assert!(f.exists(), "{host}: no se tocó nada");
-        // La raíz de una categoría por la ruta de red (borrado definitivo del contenido).
+        // A category root through the network path (permanent deletion of its contents).
         let mut b3 = Basket::new();
         b3.set_category(CategoryId::UserTemp, true);
         let mut plan3 = approve(&c, &b3);
@@ -1362,8 +1362,8 @@ fn las_rutas_de_red_a_un_disco_local_no_esquivan_la_proteccion() {
     }
 }
 
-/// B3: la carpeta de la propia aplicación DENTRO del temporal (una raíz exenta) nunca se borra, ni su contenido: la
-/// exención levanta lo que hay por encima de la raíz exenta, no una denegación que está dentro de ella.
+/// B3: the application's own folder UNDER the temp directory (an exempt root) is never deleted, nor are its contents.
+/// The exemption lifts protection above the exempt root, not a denial inside it.
 #[test]
 fn la_propia_aplicacion_dentro_del_temporal_nunca_se_borra() {
     let sb = Sandbox::new();
@@ -1398,14 +1398,14 @@ fn la_propia_aplicacion_dentro_del_temporal_nunca_se_borra() {
     assert!(!sb.path("Temp/viejo.tmp").exists());
     assert!(!sb.path("Temp/otra").exists());
     assert!(rep.totals.protected >= 1);
-    // Y como destino suelto tampoco se puede añadir ni aprobar.
+    // It also cannot be added or approved as a standalone destination.
     let mut b2 = Basket::new();
     b2.add_path(sb.long("Temp/app"), c.protection());
     assert!(approve(&c, &b2).items.is_empty());
 }
 
-/// Roots de prueba con una carpeta "protegida" (`Prot`), SIN canonicalizar `Local`/`Temp` (un junction en sus ancestros
-/// se verá en la cadena tal como se escribió).
+/// Test roots with a "protected" folder (`Prot`), WITHOUT canonicalizing `Local`/`Temp` (a junction in their ancestors
+/// (the chain is checked exactly as written).
 fn roots_with_raw(sb: &Sandbox, local: PathBuf, user_temp: Option<PathBuf>) -> Roots {
     sb.mkdir("Roaming");
     Roots {
@@ -1426,9 +1426,9 @@ fn roots_with_raw(sb: &Sandbox, local: PathBuf, user_temp: Option<PathBuf>) -> R
     }
 }
 
-/// B1 (v0.1.1): un junction ANCESTRO de la raíz de una categoría (`User Data` -> una carpeta protegida con un
-/// `ShaderCache`) no convierte lo protegido en caché borrable: la raíz se descarta (capa 1) y, aunque se aceptara, la
-/// exención solo levanta su zona declarada (capa 2). Nada de lo protegido se toca ni en simulación ni de verdad.
+/// B1 (v0.1.1): a junction ANCESTOR of a category root (`User Data` -> a protected folder containing a `ShaderCache`)
+/// does not turn protected content into deletable cache: the root is discarded (layer 1), and even if it were accepted,
+/// the exemption would lift only its declared zone (layer 2). Protected content remains untouched in dry runs and execution.
 #[test]
 fn un_junction_por_encima_de_user_data_no_vuelve_borrable_lo_protegido() {
     let mut sb = Sandbox::new();
@@ -1440,7 +1440,7 @@ fn un_junction_por_encima_de_user_data_no_vuelve_borrable_lo_protegido() {
     sb.junction("Local/Google/Chrome/User Data", "Prot/UD");
     let roots = roots_with_raw(&sb, sb.path("Local"), None);
     let c = Cleaner::new(roots);
-    // El escáner ve las cachés a través del enlace, pero ninguna pasa la cadena.
+    // The scanner sees caches through the link, but none pass the path check.
     let checks = c.roots().category_root_checks(CategoryId::ChromeCache);
     assert!(
         !checks.is_empty(),
@@ -1458,7 +1458,7 @@ fn un_junction_por_encima_de_user_data_no_vuelve_borrable_lo_protegido() {
         );
     }
     assert!(c.roots().category_roots(CategoryId::ChromeCache).is_empty());
-    // Lo protegido, por su ruta real, sigue denegado.
+    // Protected content remains denied through its real path.
     for rel in [
         "Prot/UD/ShaderCache",
         "Prot/UD/ShaderCache/s.bin",
@@ -1471,7 +1471,7 @@ fn un_junction_por_encima_de_user_data_no_vuelve_borrable_lo_protegido() {
             "{rel}"
         );
     }
-    // Aprobar y ejecutar (simulación y real): no hay elementos, todo queda en su sitio.
+    // Approve and execute (dry run and real): there are no items, and everything remains in place.
     let mut b = Basket::new();
     b.set_category(CategoryId::ChromeCache, true);
     let plan = approve(&c, &b);
@@ -1496,9 +1496,9 @@ fn un_junction_por_encima_de_user_data_no_vuelve_borrable_lo_protegido() {
     }
 }
 
-/// H4: una raíz descartada por un enlace en su ruta no desaparece en silencio: `unavailable_roots` da el motivo (lo que la
-/// interfaz enseña como "no disponible"), las raíces descartadas al arrancar también se devuelven, y el registro de la
-/// ejecución anota lo rechazado con su motivo.
+/// H4: a root discarded because its path contains a link does not disappear silently: `unavailable_roots` gives the reason
+/// (shown as "unavailable" in the UI), roots discarded at startup are also returned, and the execution log records each
+/// rejection with its reason.
 #[test]
 fn una_raiz_descartada_deja_su_motivo_visible_y_en_el_registro() {
     let mut sb = Sandbox::new();
@@ -1506,7 +1506,7 @@ fn una_raiz_descartada_deja_su_motivo_visible_y_en_el_registro() {
     sb.mkdir("Local/Google/Chrome");
     sb.junction("Local/Google/Chrome/User Data", "Prot/UD");
     let mut roots = roots_with_raw(&sb, sb.path("Local"), None);
-    // Y una raíz que `from_system` descartó al arrancar (p. ej. un %TEMP% redirigido).
+    // Also a root discarded by `from_system` at startup (e.g. redirected `%TEMP%`).
     roots.startup_rejections.push((
         CategoryId::UserTemp,
         sb.path("Redirigida"),
@@ -1522,18 +1522,18 @@ fn una_raiz_descartada_deja_su_motivo_visible_y_en_el_registro() {
     let temp = c.roots().unavailable_roots(CategoryId::UserTemp);
     assert_eq!(temp.len(), 1);
     assert_eq!(temp[0].1, crate::roots::RootRejection::OutsideLocalAppData);
-    // Lo que no es de seguridad (no existe, sin permiso) no se enseña como "no disponible".
+    // Non-security issues (nonexistent, access denied) are not shown as "unavailable."
     assert!(
         !crate::roots::RootRejection::Os(5).is_user_visible()
             && crate::roots::RootRejection::NotCanonical.is_user_visible()
     );
-    // La aprobación lo rechaza y el registro lo anota.
+    // Approval rejects it, and the log records it.
     let mut b = Basket::new();
     b.set_category(CategoryId::ChromeCache, true);
     b.set_category(CategoryId::UserTemp, true);
     let plan = approve(&c, &b);
     assert!(plan.items.is_empty());
-    // Chrome: un enlace en su ruta; el %TEMP% redirigido: su propio motivo (R5), no "un enlace".
+    // Chrome: a link in its path; redirected `%TEMP%`: its own reason (R5), not "a link."
     assert!(
         plan.rejected
             .iter()
@@ -1559,8 +1559,8 @@ fn una_raiz_descartada_deja_su_motivo_visible_y_en_el_registro() {
     );
 }
 
-/// B1 (capa 2, aislada): aunque una raíz "canónica" llegue a `Prot\UD\ShaderCache` por el camino que sea (aquí la capa 1
-/// no se ejecuta: se inyecta la ruta resuelta), la exención de Chrome declara SU zona (`...\User Data`), no `Prot`.
+/// B1 (layer 2, isolated): even if a "canonical" root reaches `Prot\UD\ShaderCache` by any path (layer 1 is skipped here;
+/// the resolved path is injected), Chrome's exemption declares ITS zone (`...\User Data`), not `Prot`.
 #[test]
 fn la_exencion_de_una_cache_no_levanta_una_denegacion_ajena() {
     let sb = Sandbox::new();
@@ -1584,16 +1584,16 @@ fn la_exencion_de_una_cache_no_levanta_una_denegacion_ajena() {
     );
 }
 
-/// B1 (v0.1.1), mismo agujero con `%TEMP%`: un ancestro de la raíz del temporal es un junction hacia una carpeta
-/// protegida. Con la ruta tal como se escribió se descarta (capa 1); con la ruta ya resuelta (lo que daba `canon`) la
-/// exención de `%TEMP%` no declara zona y la denegación de `Prot` sigue en pie (capa 2).
+/// B1 (v0.1.1), same gap for `%TEMP%`: an ancestor of the temp root is a junction to a protected folder. The written path
+/// is discarded (layer 1); with the resolved path (as returned by `canon`), `%TEMP%`'s exemption declares no zone and the
+/// `Prot` denial still applies (layer 2).
 #[test]
 fn un_junction_por_encima_de_temp_no_vuelve_borrable_lo_protegido() {
     let mut sb = Sandbox::new();
     sb.write_aged("Prot/T/Temp/x.tmp", 3_000, 240);
     sb.write_aged("Prot/T/Temp/sub/y.tmp", 3_000, 240);
     sb.junction("Enlace", "Prot/T");
-    // (1) La ruta como la daría `GetTempPath`: pasa por el junction.
+    // (1) The path returned by `GetTempPath`: it passes through the junction.
     let c = Cleaner::new(roots_with_raw(
         &sb,
         sb.long("Local"),
@@ -1608,7 +1608,7 @@ fn un_junction_por_encima_de_temp_no_vuelve_borrable_lo_protegido() {
     assert_eq!(plan.rejected[0].reason, RejectReason::ReparseAncestor);
     exec(&c, &plan, false, false, None).unwrap();
     assert!(sb.path("Prot/T/Temp/x.tmp").exists());
-    // (2) Ya resuelta: la cadena está limpia, pero la raíz cae dentro de `Prot` (denegada) y nada la levanta.
+    // (2) Already resolved: the path is clean, but the root falls under denied `Prot`, with no exemption.
     let c2 = Cleaner::new(roots_with_raw(
         &sb,
         sb.long("Local"),
@@ -1625,9 +1625,9 @@ fn un_junction_por_encima_de_temp_no_vuelve_borrable_lo_protegido() {
     assert!(sb.path("Prot/T/Temp/sub/y.tmp").exists());
 }
 
-/// H1: la aprobación abre la raíz para listarla DESPUÉS de comprobar la cadena. Si en esa ventana un ancestro se cambia
-/// por un junction hacia otra carpeta del usuario (no denegada), lo que se abriría sería otro objeto, y la identidad
-/// capturada ya sería la equivocada. Se compara con la identidad que vio el recorrido y con la ruta resuelta: se rechaza.
+/// H1: approval opens the root for listing AFTER checking the path. If an ancestor becomes a junction to another
+/// (non-denied) user folder during that window, a different object would be opened and the captured identity would be
+/// wrong. Compare it with the identity observed during traversal and the resolved path; reject it.
 #[test]
 fn un_ancestro_cambiado_entre_la_cadena_y_la_apertura_se_rechaza() {
     let mut sb = Sandbox::new();
@@ -1635,7 +1635,7 @@ fn un_ancestro_cambiado_entre_la_cadena_y_la_apertura_se_rechaza() {
     sb.write_aged("Otra/Temp/ajeno.tmp", 1_000, 240);
     let roots = roots_with_raw(&sb, sb.long("Local"), Some(sb.path("Anc/Temp")));
     let c = Cleaner::new(roots);
-    // Justo antes de que la aprobación abra la raíz: `Anc` pasa a ser un junction hacia `Otra`.
+    // Right before approval opens the root: `Anc` becomes a junction to `Other`.
     let (anc, anc_real, otra) = (sb.path("Anc"), sb.path("Anc-real"), sb.path("Otra"));
     let _hook = crate::engine::test_hooks::install(sb.long("Anc/Temp"), move |_| {
         if !anc_real.exists() {
@@ -1663,7 +1663,7 @@ fn un_ancestro_cambiado_entre_la_cadena_y_la_apertura_se_rechaza() {
     assert!(sb.path("Otra/Temp/ajeno.tmp").exists());
 }
 
-/// H1 (pura): misma identidad y misma ruta resuelta, o no es lo que vio la cadena.
+/// H1 (direct): same identity and same resolved path, or it is not what the path check observed.
 #[test]
 fn chain_matches_exige_la_misma_identidad_y_la_misma_ruta() {
     use crate::paths::PathKey;
@@ -1677,7 +1677,7 @@ fn chain_matches_exige_la_misma_identidad_y_la_misma_ruta() {
     assert!(!crate::plan::chain_matches(id(1), root, id(2), &key));
     let otra = PathKey::new(Path::new(r"C:\Otra\Temp"));
     assert!(!crate::plan::chain_matches(id(1), root, id(1), &otra));
-    // El volumen también cuenta.
+    // The volume counts too.
     let otro_vol = FileIdentity {
         volume_serial: 8,
         file_id: 1,
@@ -1685,7 +1685,7 @@ fn chain_matches_exige_la_misma_identidad_y_la_misma_ruta() {
     assert!(!crate::plan::chain_matches(id(1), root, otro_vol, &key));
 }
 
-/// B1: el caso benigno: raíces reales, sin reparse points, siguen funcionando y llevan la zona declarada.
+/// B1: benign case: real roots without reparse points still work and carry their declared zone.
 #[test]
 fn las_raices_sin_reparse_points_siguen_siendo_categorias() {
     let sb = Sandbox::new();
@@ -1731,16 +1731,16 @@ fn las_raices_sin_reparse_points_siguen_siendo_categorias() {
     assert!(plan.rejected.is_empty());
 }
 
-/// Informes de errores de WER y volcados de bloqueo (v0.1.5): «Revisar», a la Papelera, por elementos y solo lo de más de 7
-/// días. `WER` está denegada entera y solo `ReportArchive` y `ReportQueue` levantan esa zona; nada de lo demás (`ERC`, `Temp`,
-/// la configuración) se aprueba. Una carpeta de informe con un archivo de hoy se queda entera, un enlace dentro de la raíz se
-/// rechaza y un enlace EN la ruta descarta la raíz. Todo con una shell simulada y carpetas sintéticas del sandbox.
+/// WER error reports and crash dumps (v0.1.5): "Review," send to the Recycle Bin by item, and only for items older than 7
+/// days. The entire `WER` tree is denied; only `ReportArchive` and `ReportQueue` exempt their zones. Nothing else (`ERC`,
+/// `Temp`, configuration) is approved. A report folder containing a file from today is kept whole, a link inside a root
+/// is rejected, and a link in the path discards the root. Uses a fake shell and synthetic sandbox folders throughout.
 #[test]
 fn informes_de_wer_y_volcados_van_a_la_papelera_por_elementos_y_solo_los_de_mas_de_7_dias() {
     use crate::paths::PathKey;
     let mut sb = Sandbox::new();
     let wer = "Local/Microsoft/Windows/WER";
-    // Informes: uno viejo entero, uno con un archivo de hoy dentro, uno reciente y uno viejo en la cola.
+    // Reports: one old and intact, one containing a file from today, one recent, and one old in the queue.
     sb.write_aged(
         &format!("{wer}/ReportArchive/Informe_viejo/Report.wer"),
         3_000,
@@ -1769,17 +1769,17 @@ fn informes_de_wer_y_volcados_van_a_la_papelera_por_elementos_y_solo_los_de_mas_
         2_000,
         240,
     );
-    // Lo que NO es un informe: nunca se toca.
+    // Anything that is NOT a report is never touched.
     sb.write_aged(&format!("{wer}/ERC/ajustes.dat"), 500, 240);
     sb.write_aged(&format!("{wer}/Temp/t.tmp"), 500, 240);
     sb.write_aged(&format!("{wer}/config.ini"), 100, 240);
-    // Volcados: uno viejo y uno de hoy.
+    // Dumps: one old and one from today.
     sb.write_aged("Local/CrashDumps/app.1111.dmp", 6_000, 240);
     sb.write("Local/CrashDumps/app.2222.dmp", 6_000);
-    // Un enlace dentro de la raíz hacia una carpeta ajena.
+    // A link inside the root pointing to an unrelated folder.
     sb.write_aged("Prot/ajeno/secreto.dat", 4_000, 240);
     sb.junction(&format!("{wer}/ReportArchive/enlace"), "Prot/ajeno");
-    // Las fechas de las carpetas se fijan al final (escribir dentro las cambia).
+    // Set folder timestamps last (writing inside changes them).
     for d in [
         "ReportArchive/Informe_viejo",
         "ReportArchive/Informe_mixto",
@@ -1792,7 +1792,7 @@ fn informes_de_wer_y_volcados_van_a_la_papelera_por_elementos_y_solo_los_de_mas_
     let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
     let c = Cleaner::new(roots).with_threads(4).with_shell(fake.clone());
 
-    // Las raíces: exactamente las dos carpetas de informes (con la zona `WER`) y la de volcados (sin zona).
+    // Roots: exactly the two report folders (with the `WER` zone) and the dump folder (without a zone).
     let wer_checks = c.roots().category_root_checks(CategoryId::WerReports);
     let paths: Vec<PathBuf> = wer_checks
         .iter()
@@ -1817,7 +1817,7 @@ fn informes_de_wer_y_volcados_van_a_la_papelera_por_elementos_y_solo_los_de_mas_
     assert_eq!(v.path, sb.long("Local/CrashDumps"));
     assert_eq!(v.zone, None);
 
-    // La protección: `WER` y todo lo que no es una de las dos carpetas, denegado; ellas y lo que cuelga, permitido.
+    // Protection: deny `WER` and everything outside the two folders; allow those folders and their contents.
     let prot = c.protection();
     let verdict = |rel: &str| prot.target_verdict(&PathKey::new(&sb.long(rel)));
     for denied in [
@@ -1840,11 +1840,11 @@ fn informes_de_wer_y_volcados_van_a_la_papelera_por_elementos_y_solo_los_de_mas_
     ] {
         assert_eq!(verdict(&allowed), Verdict::Allowed, "{allowed}");
     }
-    // Los ancestros de lo denegado no se pueden borrar como tal.
+    // Denied ancestors cannot themselves be deleted.
     assert_eq!(verdict("Local/Microsoft/Windows"), Verdict::Untouchable);
 
-    // Aprobar: tres elementos sueltos (el informe viejo, el de la cola y el volcado viejo), todos «Revisar» a la Papelera,
-    // con su categoría. Quedan fuera lo reciente, la carpeta con un archivo de hoy y el enlace.
+    // Approve: three standalone items (old report, queued report, and old dump), all "Review" to the Recycle Bin,
+    // with its category. Recent items, the folder containing a file from today, and the link are excluded.
     let mut b = Basket::new();
     b.set_category(CategoryId::WerReports, true);
     b.set_category(CategoryId::CrashDumps, true);
@@ -1877,7 +1877,7 @@ fn informes_de_wer_y_volcados_van_a_la_papelera_por_elementos_y_solo_los_de_mas_
         assert_eq!(it.fit, Fit::Fits);
         assert!(!it.min_age.is_zero());
     }
-    // Los rechazos: el enlace de dentro de la raíz y lo que se deja por reciente (consta, no desaparece en silencio).
+    // Rejections: the link inside the root and items kept because they are recent (recorded, not silently omitted).
     let young: Vec<String> = plan
         .rejected
         .iter()
@@ -1899,7 +1899,7 @@ fn informes_de_wer_y_volcados_van_a_la_papelera_por_elementos_y_solo_los_de_mas_
         assert!(young.iter().any(|y| y == n), "{n}: {young:?}");
     }
 
-    // Simulación y ejecución real (shell simulada): lo aprobado va a su «Papelera» y TODO lo demás queda donde estaba.
+    // Dry run and real execution (using a fake shell): approved items go to the fake Recycle Bin; EVERYTHING else stays put.
     exec(&c, &plan, true, false, None).unwrap();
     let rep = exec(&c, &plan, false, false, None).unwrap();
     assert_eq!(rep.items.len(), 3);
@@ -1931,7 +1931,7 @@ fn informes_de_wer_y_volcados_van_a_la_papelera_por_elementos_y_solo_los_de_mas_
         assert!(sb.path(&kept).exists(), "{kept}");
     }
 
-    // Un enlace EN la ruta de una raíz la descarta (capa 1): `ReportQueue` -> carpeta ajena.
+    // A link IN a root's path discards it (layer 1): `ReportQueue` -> unrelated folder.
     let mut sb2 = Sandbox::new();
     sb2.mkdir(&format!("{wer}/ReportArchive"));
     sb2.write_aged("Prot/q/ajeno.dat", 1_000, 240);
@@ -1959,14 +1959,14 @@ fn informes_de_wer_y_volcados_van_a_la_papelera_por_elementos_y_solo_los_de_mas_
 
 const WER_REL: &str = "Local/Microsoft/Windows/WER";
 
-/// Un `Cleaner` sobre el sandbox con la denegación de `WER` (como `from_system`) y la shell dada.
+/// A `Cleaner` over the sandbox with `WER` denied (as in `from_system`) and the given shell.
 fn diag_cleaner(sb: &Sandbox, shell: Arc<dyn RecycleShell>) -> Cleaner {
     let mut roots = roots_with_raw(sb, sb.long("Local"), None);
     roots.protection.denied.push(sb.long(WER_REL));
     Cleaner::new(roots).with_threads(4).with_shell(shell)
 }
 
-/// Una shell sin `MaxCapacity` (como una Papelera sin tamaño máximo configurado): nada "cabe" (`CapacityUnknown`).
+/// A shell without `MaxCapacity` (like a Recycle Bin without a configured maximum size): nothing "fits" (`CapacityUnknown`).
 struct NoCapacityShell(Arc<FakeShell>);
 
 impl RecycleShell for NoCapacityShell {
@@ -1995,9 +1995,9 @@ fn status_of(rep: &Report, name: &str) -> ItemStatus {
         .status
 }
 
-/// M-1: un volcado, una carpeta de informe o un archivo de dentro que se "tocan" DESPUÉS de aprobar (misma identidad y mismo
-/// tamaño, fechas de ahora) no se envían: la antigüedad mínima se vuelve a comprobar por handle al ejecutar. El control, sin
-/// tocar, sí llega a la Papelera.
+/// M-1: a dump, report folder, or file inside it that is modified AFTER approval (same identity and size, current timestamps)
+/// is not sent: the minimum age is checked again through the handle during execution. The untouched control does reach the
+/// Recycle Bin.
 #[test]
 fn lo_que_se_toca_tras_aprobar_deja_de_cumplir_los_7_dias_y_no_se_envia() {
     let sb = Sandbox::new();
@@ -2020,7 +2020,7 @@ fn lo_que_se_toca_tras_aprobar_deja_de_cumplir_los_7_dias_y_no_se_envia() {
     let plan = approve(&c, &b);
     assert_eq!(plan.items.len(), 4, "{:?}", plan.rejected);
     assert!(plan.rejected.is_empty(), "{:?}", plan.rejected);
-    // Después de aprobar: el volcado y la fecha de la carpeta A, y el archivo de dentro de la B.
+    // After approval, update the dump and folder A timestamps, and the file inside folder B.
     sb.set_age(&sb.path("Local/CrashDumps/app.1111.dmp"), 0);
     sb.set_age(&sb.path(&format!("{WER_REL}/ReportArchive/Informe_a")), 0);
     sb.set_age(
@@ -2036,8 +2036,8 @@ fn lo_que_se_toca_tras_aprobar_deja_de_cumplir_los_7_dias_y_no_se_envia() {
         );
     }
     assert_eq!(status_of(&rep, "Informe_c"), ItemStatus::Recycled);
-    // S-7: lo que se rechaza por reciente al ejecutar consta en el registro como "demasiado reciente" (el volcado y la fecha de
-    // la propia carpeta A), no como un cambio cualquiera; lo de dentro de la B (la huella) sigue siendo un cambio.
+    // S-7: items rejected as recent during execution are logged as "too recent" (the dump and folder A timestamp), not as
+    // arbitrary changes; the item inside folder B (the fingerprint) remains a change.
     let log = std::fs::read_to_string(rep.log_path.as_ref().expect("registro")).unwrap();
     let young = log.matches("too-recent").count();
     assert!((2..=3).contains(&young), "{young}: {log}");
@@ -2054,8 +2054,9 @@ fn lo_que_se_toca_tras_aprobar_deja_de_cumplir_los_7_dias_y_no_se_envia() {
     );
 }
 
-/// Residuo 1: lo que cuelga de una raíz de diagnóstico y se añade a mano como "Tu archivo" tampoco se borra definitivamente: si
-/// no cabe en la Papelera, no entra en el grupo ámbar y ni con la casilla se toca. Un archivo cualquiera sí sigue yendo al ámbar.
+/// Residual case 1: items manually added as "Your file" under a diagnostic root are not permanently deleted either. If
+/// they do not fit in the Recycle Bin, they are excluded from the amber group and remain untouched even with the checkbox
+/// enabled. An ordinary file still goes to the amber group.
 #[test]
 fn una_carpeta_de_informe_anadida_a_mano_que_no_cabe_no_va_al_grupo_ambar() {
     let sb = Sandbox::new();
@@ -2078,7 +2079,7 @@ fn una_carpeta_de_informe_anadida_a_mano_que_no_cabe_no_va_al_grupo_ambar() {
     let plan = approve(&c, &b);
     assert_eq!(plan.items.len(), 3, "{:?}", plan.rejected);
     for it in &plan.items {
-        // Añadidos a mano: sin categoría y sin antigüedad mínima; solo la ruta los distingue.
+        // Manually added: no category and no minimum age; only the path distinguishes them.
         assert_eq!(it.category, None);
         assert!(it.min_age.is_zero());
         assert_eq!(it.fit, Fit::Unfit(UnfitReason::TooBig), "{:?}", it.path);
@@ -2099,9 +2100,9 @@ fn una_carpeta_de_informe_anadida_a_mano_que_no_cabe_no_va_al_grupo_ambar() {
     assert!(!sb.path("Docs/mio.txt").exists());
 }
 
-/// M-2: los informes y los volcados NUNCA se borran definitivamente. Si no caben en la Papelera (sin `MaxCapacity` o por
-/// tamaño) no pasan al grupo ámbar (el de borrado definitivo con casilla): quedan aparte, con su motivo, y ni siquiera
-/// con la casilla marcada se tocan. Un archivo del usuario con el mismo problema sí sigue yendo al grupo ámbar.
+/// M-2: reports and dumps are NEVER permanently deleted. If they do not fit in the Recycle Bin (unknown `MaxCapacity`
+/// or size), they are excluded from the amber group (permanent deletion with the checkbox); they remain separate with
+/// their reason and stay untouched even when the checkbox is enabled. A user file with the same issue still goes amber.
 #[test]
 fn lo_que_no_cabe_en_la_papelera_no_se_borra_definitivamente_ni_con_la_casilla() {
     for (shell_kind, reason) in [
@@ -2133,7 +2134,7 @@ fn lo_que_no_cabe_en_la_papelera_no_se_borra_definitivamente_ni_con_la_casilla()
         for it in &plan.items {
             assert_eq!(it.fit, Fit::Unfit(reason), "{shell_kind}: {:?}", it.path);
         }
-        // Informe y volcado: aparte (no se tocan); el archivo del usuario: grupo ámbar.
+        // Report and dump: kept separate (untouched); user file: amber group.
         assert_eq!(plan.kept_unfit_items().count(), 2, "{shell_kind}");
         assert!(
             plan.kept_unfit_items()
@@ -2143,7 +2144,7 @@ fn lo_que_no_cabe_en_la_papelera_no_se_borra_definitivamente_ni_con_la_casilla()
         let amber: Vec<_> = plan.unfit_items().collect();
         assert_eq!(amber.len(), 1, "{shell_kind}");
         assert!(amber[0].path.ends_with("mio.txt"), "{shell_kind}");
-        // Con la casilla marcada: el archivo del usuario se borra definitivamente; lo de diagnóstico se queda.
+        // With the checkbox enabled, the user file is permanently deleted; diagnostic items are kept.
         exec(&c, &plan, true, true, None).unwrap();
         let rep = exec(&c, &plan, false, true, None).unwrap();
         assert_eq!(status_of(&rep, "app.1111.dmp"), ItemStatus::SkippedUnfit);
@@ -2159,11 +2160,11 @@ fn lo_que_no_cabe_en_la_papelera_no_se_borra_definitivamente_ni_con_la_casilla()
     }
 }
 
-/// Defensa general: una unidad suelta (`Entry`) con antigüedad mínima nunca llega a la rama definitiva, aunque se cambie su
-/// destino o su categoría y se marque la casilla (falla cerrado): el recorrido definitivo no es todo-o-nada.
+/// General safeguard: a standalone `Entry` with a minimum age never reaches permanent deletion, even if its destination
+/// or category is changed and the checkbox is enabled (fail closed). The permanent-deletion traversal is not all-or-nothing.
 #[test]
 fn una_unidad_suelta_con_antiguedad_minima_nunca_llega_a_la_rama_definitiva() {
-    // 1. Con destino definitivo (un plan manipulado).
+    // 1. Permanent destination (a tampered plan).
     let sb = Sandbox::new();
     sb.write_aged("Local/CrashDumps/app.1111.dmp", 6_000, 240);
     let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
@@ -2178,7 +2179,7 @@ fn una_unidad_suelta_con_antiguedad_minima_nunca_llega_a_la_rama_definitiva() {
     let rep = exec(&c, &plan, false, true, None).unwrap();
     assert_eq!(status_of(&rep, "app.1111.dmp"), ItemStatus::SkippedUnfit);
     assert!(sb.path("Local/CrashDumps/app.1111.dmp").exists());
-    // 2. Papelera que no la admite, sin categoría de diagnóstico y con la casilla: tampoco.
+    // 2. It also stays skipped when the Recycle Bin rejects it, its diagnostic category is removed, and the checkbox is enabled.
     let sb = Sandbox::new();
     sb.write_aged("Local/CrashDumps/app.1111.dmp", 6_000, 240);
     let fake = FakeShell::new(&sb, Some(1_000), 0, "nunca");
@@ -2193,9 +2194,9 @@ fn una_unidad_suelta_con_antiguedad_minima_nunca_llega_a_la_rama_definitiva() {
     let rep = exec(&c, &plan, false, true, None).unwrap();
     assert_eq!(status_of(&rep, "app.1111.dmp"), ItemStatus::SkippedUnfit);
     assert!(sb.path("Local/CrashDumps/app.1111.dmp").exists());
-    // 3. Control: lo mismo con antigüedad cero (un archivo "Tu archivo") sí puede ir a la rama definitiva.
+    // 3. Control: with zero minimum age (a "Your file" item), the same entry can reach permanent deletion.
     plan.items[0].min_age = Duration::ZERO;
-    // (El volcado cuelga de `CrashDumps`: sin la marca de ruta tampoco, para aislar la regla de la antigüedad.)
+    // The dump is under `CrashDumps`; clear the path marker too, isolating the minimum-age rule.
     plan.items[0].diagnostic_path = false;
     assert!(!plan.items[0].never_permanent());
     assert_eq!(plan.unfit_items().count(), 1);
@@ -2204,11 +2205,11 @@ fn una_unidad_suelta_con_antiguedad_minima_nunca_llega_a_la_rama_definitiva() {
     assert_eq!(status_of(&rep, "app.1111.dmp"), ItemStatus::SkippedUnfit);
 }
 
-/// m-2: lo que se deja por reciente consta como rechazado (`Young`) en el plan y en el registro. m-3: una raíz que no existe no
-/// es un rechazo ni lleva aviso. m-1: con más de 200 elementos de diagnóstico, el plan lo dice (la confirmación avisa).
+/// m-2: items kept because they are recent are recorded as rejected (`Young`) in the plan and log. m-3: a nonexistent root
+/// is not a rejection and produces no warning. m-1: the plan records more than 200 diagnostic items (and confirmation warns).
 #[test]
 fn lo_reciente_consta_una_raiz_inexistente_no_avisa_y_muchos_elementos_se_cuentan() {
-    // Sin `ReportQueue` ni `CrashDumps`; un informe viejo, uno reciente y uno viejo con un archivo de hoy dentro.
+    // No `ReportQueue` or `CrashDumps`: one old report, one recent report, and one old report containing a file from today.
     let sb = Sandbox::new();
     sb.write_aged(
         &format!("{WER_REL}/ReportArchive/Informe_viejo/Report.wer"),
@@ -2239,7 +2240,7 @@ fn lo_reciente_consta_una_raiz_inexistente_no_avisa_y_muchos_elementos_se_cuenta
     let plan = approve(&c, &b);
     assert_eq!(plan.items.len(), 1, "{:?}", plan.rejected);
     assert!(plan.items[0].path.ends_with("Informe_viejo"));
-    // Solo los dos "recientes" constan; las raíces que no existen no añaden nada.
+    // Only the two recent items are recorded; nonexistent roots add nothing.
     assert_eq!(plan.rejected.len(), 2, "{:?}", plan.rejected);
     assert!(
         plan.rejected
@@ -2257,7 +2258,7 @@ fn lo_reciente_consta_una_raiz_inexistente_no_avisa_y_muchos_elementos_se_cuenta
     names.sort();
     assert_eq!(names, ["Informe_mixto", "Informe_reciente"]);
     assert_eq!(plan.many_diagnostic_items(), None);
-    // En el registro de la ejecución.
+    // In the execution log.
     let rep = exec(&c, &plan, false, false, None).unwrap();
     let log = std::fs::read_to_string(rep.log_path.as_ref().expect("registro")).unwrap();
     assert_eq!(log.matches("\"t\":\"rejected\"").count(), 2, "{log}");
@@ -2278,15 +2279,15 @@ fn lo_reciente_consta_una_raiz_inexistente_no_avisa_y_muchos_elementos_se_cuenta
     let mut plan = approve(&c, &b);
     assert_eq!(plan.items.len(), 201, "{:?}", plan.rejected);
     assert_eq!(plan.many_diagnostic_items(), Some(201));
-    // El umbral es "más de 200".
+    // The threshold is "more than 200."
     plan.items.pop();
     assert_eq!(plan.many_diagnostic_items(), None);
 }
 
-// ---- El receptor de eventos: identidad (no nombre), carreras tras soltar el handle, y el juicio por elemento ----------
+// ---- Event receiver: identity (not name), races after releasing the handle, and per-item judgment ----------
 
-/// B1: `.lnk`, `.url` y extensiones conocidas (`.txt`, `.jpg`...): el elemento se reconoce en la Papelera por su
-/// IDENTIDAD, no por nombre, así que ni la extensión ni "ocultar extensiones" lo despistan.
+/// B1: `.lnk`, `.url`, and known extensions (`.txt`, `.jpg`, etc.): identify the Recycle Bin item by its
+/// IDENTITY, not name, so neither the extension nor "hide extensions" can fool it.
 #[test]
 fn lnk_url_y_extensiones_conocidas_se_verifican_por_identidad() {
     let _lock = bin_lock();
@@ -2345,11 +2346,11 @@ fn lnk_url_y_extensiones_conocidas_se_verifican_por_identidad() {
     assert_eq!(ids(), before);
 }
 
-/// Carrera (M1): tras SOLTAR el handle y antes de que la shell abra el elemento, el mismo usuario lo sustituye por otro
-/// objeto del mismo nombre y tamaño. `PreDeleteItem` compara la IDENTIDAD con la aprobada, ve otra y devuelve `E_ABORT`:
-/// el sustituto NO se envía (queda en su sitio), el original aprobado tampoco se toca, el elemento consta como "cambió
-/// desde la confirmación" y el lote se corta (lo que venía detrás no se procesa). Antes de M1 el sustituto llegaba a la
-/// Papelera (`RecycledOther`, recuperable).
+/// Race (M1): after the handle is RELEASED and before the shell opens the item, the same user replaces it with another
+/// object with the same name and size. `PreDeleteItem` compares its IDENTITY with the approved one, detects the mismatch,
+/// and returns `E_ABORT`: the replacement is NOT sent (it remains in place), the approved original is untouched, the item
+/// is recorded as "changed since confirmation," and the batch stops (later items are not processed). Before M1, the replacement reached the
+/// Recycle Bin (`RecycledOther`, recoverable).
 #[test]
 fn sustituir_tras_soltar_el_handle_no_envia_el_sustituto_y_corta_el_lote() {
     let _lock = bin_lock();
@@ -2407,8 +2408,8 @@ fn sustituir_tras_soltar_el_handle_no_envia_el_sustituto_y_corta_el_lote() {
     assert_eq!(ids(), before);
 }
 
-/// M1 con la shell SIMULADA (no toca la Papelera real): lo mismo que la prueba anterior, con la comprobación de identidad
-/// del receptor emulada por la shell simulada.
+/// M1 with the FAKE shell (does not touch the real Recycle Bin): same as the previous test, with the identity check
+/// receiver check emulated by the fake shell.
 #[test]
 fn con_la_shell_simulada_el_sustituto_se_veta_y_el_resto_del_lote_no_se_procesa() {
     let sb = Sandbox::new();
@@ -2441,7 +2442,7 @@ fn con_la_shell_simulada_el_sustituto_se_veta_y_el_resto_del_lote_no_se_procesa(
             .unwrap()
             .status
     };
-    // `a` se procesó antes del veto; `b` (sustituido) cambió; `c`, detrás en el lote, no se procesó.
+    // `a` was processed before the veto; `b` (replaced) changed; `c`, later in the batch, was not processed.
     assert_eq!(st("a.txt"), ItemStatus::Recycled);
     assert_eq!(
         st("b.txt"),
@@ -2455,16 +2456,16 @@ fn con_la_shell_simulada_el_sustituto_se_veta_y_el_resto_del_lote_no_se_procesa(
     assert_eq!(rep.shell_error, None);
 }
 
-/// M-A: con el handle de GUARDA abierto, cambiar el padre o el abuelo del elemento (para poner un junction hacia otra
-/// carpeta, incluso una PROTEGIDA) falla con "acceso denegado" y la shell recicla el aprobado. Medido en esta prueba: si
-/// el renombrado llegara a funcionar, el ataque sigue (se crea el junction) y las comprobaciones de abajo lo cantan.
+/// M-A: with the GUARD handle open, renaming the item's parent or grandparent (to place a junction to another folder,
+/// even a PROTECTED one) fails with "access denied," and the shell recycles the approved item. If renaming did succeed,
+/// the attack would continue (the junction would be created), and the checks below would detect it.
 fn ataque_de_ancestro(
     sb: &mut Sandbox,
     victima: &'static str,
     destino: &'static str,
 ) -> (Report, Vec<Option<i32>>) {
     let c = cleaner_for(sb);
-    // `victima` es `Docs/a/b/c/aprobado.txt`; el padre es `Docs/a/b/c`, el abuelo `Docs/a/b`, el bisabuelo `Docs/a`.
+    // `victima` is `Docs/a/b/c/aprobado.txt`; its parent is `Docs/a/b/c`, grandparent `Docs/a/b`, and great-grandparent `Docs/a`.
     sb.write(victima, 4_000);
     let ajeno = format!("{destino}/b/c/aprobado.txt");
     sb.write(&ajeno, 4_000);
@@ -2482,7 +2483,7 @@ fn ataque_de_ancestro(
     let _hook = {
         let codes = codes.clone();
         crate::engine::test_hooks::install_before_shell(sb.long("Docs"), move |_| {
-            // El padre y el abuelo: no se pueden renombrar mientras el elemento esté abierto.
+            // The parent and grandparent cannot be renamed while the item is open.
             for (from, to) in [
                 (&padre, sb_sibling(&padre, "c-movido")),
                 (&abuelo, sb_sibling(&abuelo, "b-movido")),
@@ -2496,7 +2497,7 @@ fn ataque_de_ancestro(
                     fs::rename(&to, from).unwrap();
                 }
             }
-            // El ataque entero: cambiar el ancestro por un junction hacia `destino`.
+            // Full attack: replace the ancestor with a junction to `destino`.
             if fs::rename(&a, &a_orig).is_ok() {
                 let out = std::process::Command::new("cmd")
                     .args(["/C", "mklink", "/J"])
@@ -2535,7 +2536,7 @@ fn con_el_handle_de_guarda_no_se_puede_cambiar_un_ancestro_por_un_junction_a_otr
         "renombrados durante la operación: {codes:?}; estado: {:?}",
         rep.items[0].status
     );
-    // Padre, abuelo y bisabuelo: error 5 (acceso denegado), nada se movió.
+    // Parent, grandparent, and great-grandparent: error 5 (access denied); nothing was moved.
     assert_eq!(codes, vec![Some(5), Some(5), Some(-1)], "{codes:?}");
     assert_eq!(rep.items[0].status, ItemStatus::Recycled);
     assert_eq!((rep.recycled_other, rep.unverified), (0, 0));
@@ -2566,7 +2567,7 @@ fn con_el_handle_de_guarda_un_junction_hacia_una_carpeta_protegida_tampoco_se_cu
     let before = ids();
     let mut sb = Sandbox::new();
     let _guard = BinGuard { uuid: sb.uuid() };
-    // `Prot` es una carpeta PROTEGIDA (denegada) con un archivo del mismo nombre en la misma estructura.
+    // `Prot` is a PROTECTED (denied) folder containing a file with the same name in the same tree.
     let (rep, codes) = ataque_de_ancestro(&mut sb, "Docs/a/b/c/aprobado.txt", "Prot");
     sb.register_junction("Docs/a");
     assert_eq!(codes, vec![Some(5), Some(5), Some(-1)], "{codes:?}");
@@ -2586,9 +2587,9 @@ fn con_el_handle_de_guarda_un_junction_hacia_una_carpeta_protegida_tampoco_se_cu
     assert_eq!(ids(), before);
 }
 
-/// M-A: un enlace duro. Tras soltar la comprobación se cambia el nombre del archivo y en su sitio se pone otro nombre
-/// del MISMO objeto: la shell recicla ese nombre y la identidad coincide. Antes daba un `Recycled` falso (el archivo
-/// sigue vivo con su otro nombre y no se ha liberado nada). Ahora el objeto de la guarda no está en la Papelera.
+/// M-A: a hard link. After releasing the check, rename the file and put another name in its place
+/// for the SAME object: the shell recycles that name, and identity matches. Previously, this falsely reported `Recycled` (the file
+/// (the original remains alive under its other name, so nothing was freed). The guarded object is not in the Recycle Bin.
 #[test]
 fn un_enlace_duro_sustituto_ya_no_da_un_recycled_falso() {
     let _lock = bin_lock();
@@ -2629,10 +2630,10 @@ fn un_enlace_duro_sustituto_ya_no_da_un_recycled_falso() {
     assert_eq!(ids(), before);
 }
 
-// ---- M4: el registro es condición de la limpieza ------------------------------------------------------------------------
+// ---- M4: the log is required for cleaning ------------------------------------------------------------------------
 
-/// M4: sin registro NO hay ninguna acción destructiva (ni definitiva ni a la Papelera ni vaciar): la ejecución real sin
-/// registro, o con uno que ya falló, devuelve `LogRequired` y no toca nada. La simulación sí puede ir sin registro.
+/// M4: without a log, NO destructive action is allowed (permanent deletion, sending to the Recycle Bin, or purging): a real
+/// execution without a log, or with a failed log, returns `LogRequired` and touches nothing. A dry run may omit the log.
 #[test]
 fn sin_registro_no_hay_ninguna_accion_destructiva() {
     let sb = Sandbox::new();
@@ -2645,7 +2646,7 @@ fn sin_registro_no_hay_ninguna_accion_destructiva() {
     b.add_path(sb.long("Docs/b.txt"), c.protection());
     let plan = approve(&c, &b);
     assert_eq!(plan.items.len(), 2, "{:?}", plan.rejected);
-    // Sin registro: nada.
+    // Without a log: nothing.
     let opts = ExecOptions::default();
     assert_eq!(
         c.execute(&plan, &opts, &Progress::new()).err(),
@@ -2653,7 +2654,7 @@ fn sin_registro_no_hay_ninguna_accion_destructiva() {
     );
     assert!(sb.path("Temp/viejo.tmp").exists() && sb.path("Docs/b.txt").exists());
     assert!(fake.names().is_empty());
-    // Con un registro que ya falló: tampoco.
+    // A log that has already failed is also rejected.
     let failed = Arc::new(
         LogWriter::create_failing_after(&sb.path("LogMalo"), false, 400).expect("arranca"),
     );
@@ -2678,21 +2679,21 @@ fn sin_registro_no_hay_ninguna_accion_destructiva() {
         Some(ExecError::LogRequired)
     );
     assert!(sb.path("Temp/viejo.tmp").exists() && sb.path("Docs/b.txt").exists());
-    // La simulación va sin registro.
+    // The dry run proceeds without a log.
     let dry = exec(&c, &plan, true, false, None).unwrap();
     assert!(dry.dry_run && !dry.log_failed);
     assert!(sb.path("Temp/viejo.tmp").exists() && sb.path("Docs/b.txt").exists());
 }
 
-/// H6.8: una ejecución rechazada antes de tocar nada (`NeedsReconfirm`, `LogRequired`) no deja un registro con solo la línea
-/// de arranque ocupando una plaza de la retención.
+/// H6.8: execution rejected before touching anything (`NeedsReconfirm`, `LogRequired`) must not leave a log containing only
+/// its startup line and occupying a retention slot.
 #[test]
 fn una_ejecucion_rechazada_no_deja_registro() {
     let sb = Sandbox::new();
     let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
     let c = cleaner_for(&sb).with_shell(fake.clone());
     let mut plan = plan_de(&sb, &c, &[("a.txt", 100, 100)]);
-    // El encaje cambió desde la confirmación: lo aprobado dice "no cabe" y ahora cabe.
+    // Fit changed since confirmation: approval said "does not fit," but it fits now.
     plan.items[0].fit = Fit::Unfit(UnfitReason::TooBig);
     let log = Arc::new(LogWriter::create(&sb.path("Tesela"), false).unwrap());
     let path = log.path().to_path_buf();
@@ -2704,7 +2705,7 @@ fn una_ejecucion_rechazada_no_deja_registro() {
         "el registro de una ejecución que no se hizo se borra"
     );
     assert!(sb.path("Docs/a.txt").exists());
-    // Con un registro ya fallido tampoco queda.
+    // A previously failed log is also discarded.
     let plan2 = plan_de(&sb, &c, &[("b.txt", 100, 100)]);
     let bad = Arc::new(LogWriter::create_failing_after(&sb.path("Tesela2"), false, 400).unwrap());
     for i in 0..60 {
@@ -2721,7 +2722,7 @@ fn una_ejecucion_rechazada_no_deja_registro() {
     assert!(!bad_path.exists());
 }
 
-/// H5: si el registro llega a su tope y deja de anotar, la limpieza sigue pero el informe lo dice (`log_truncated`).
+/// H5: if the log reaches its cap and stops recording, cleaning continues but the report says so (`log_truncated`).
 #[test]
 fn un_registro_truncado_se_propaga_al_informe() {
     let sb = Sandbox::new();
@@ -2745,7 +2746,7 @@ fn un_registro_truncado_se_propaga_al_informe() {
         0,
         "la limpieza siguió hasta el final"
     );
-    // Un registro normal no se marca.
+    // A normal log is not marked.
     let sb2 = Sandbox::new();
     let c2 = cleaner_for(&sb2);
     sb2.write_aged("Temp/a.tmp", 100, 240);
@@ -2754,8 +2755,8 @@ fn un_registro_truncado_se_propaga_al_informe() {
     assert!(!rep2.log_truncated);
 }
 
-/// H6.5: la cancelación del usuario y el fallo del registro se informan por separado; ya no se oculta una cancelación real
-/// porque además falló el registro.
+/// H6.5: user cancellation and log failure are reported separately; a real cancellation is no longer hidden when the log
+/// also fails.
 #[test]
 fn la_cancelacion_del_usuario_no_se_oculta_si_ademas_falla_el_registro() {
     let sb = Sandbox::new();
@@ -2764,7 +2765,7 @@ fn la_cancelacion_del_usuario_no_se_oculta_si_ademas_falla_el_registro() {
     let mut b = Basket::new();
     b.set_category(CategoryId::UserTemp, true);
     let plan = approve(&c, &b);
-    // Cancela el usuario Y el registro falla (la intención no cabe).
+    // The user cancels AND the log fails (the intent does not fit).
     let log = Arc::new(LogWriter::create_failing_after(&sb.path("L1"), false, 80).unwrap());
     let progress = Progress::new();
     progress.cancel();
@@ -2780,7 +2781,7 @@ fn la_cancelacion_del_usuario_no_se_oculta_si_ademas_falla_el_registro() {
         .unwrap();
     assert!(rep.cancelled, "la cancelación real consta");
     assert!(sb.path("Temp/a.tmp").exists());
-    // Solo falla el registro: no es una cancelación del usuario.
+    // Only the log fails; this is not a user cancellation.
     let sb2 = Sandbox::new();
     let c2 = cleaner_for(&sb2);
     sb2.write_aged("Temp/a.tmp", 10_000, 240);
@@ -2790,8 +2791,8 @@ fn la_cancelacion_del_usuario_no_se_oculta_si_ademas_falla_el_registro() {
     assert!(rep2.log_failed && !rep2.cancelled);
 }
 
-/// R3: la bandera de cancelación ya no es pública: `cancel()` es la única forma de cancelar desde fuera y siempre anota que lo
-/// pidió el usuario.
+/// R3: the cancellation flag is no longer public: `cancel()` is the only way to cancel externally and always records that
+/// the user requested it.
 #[test]
 fn cancelar_siempre_anota_que_lo_pidio_el_usuario() {
     let p = Progress::new();
@@ -2800,7 +2801,7 @@ fn cancelar_siempre_anota_que_lo_pidio_el_usuario() {
     assert!(p.is_cancelled() && p.user_cancelled());
 }
 
-/// R4: un plan con muchos rechazados no infla el registro (tope de notas con una línea final con el resto).
+/// R4: a plan with many rejected items does not inflate the log (notes are capped, with a final line for the remainder).
 #[test]
 fn los_rechazados_del_plan_se_anotan_con_tope() {
     let sb = Sandbox::new();
@@ -2823,19 +2824,19 @@ fn los_rechazados_del_plan_se_anotan_con_tope() {
     assert!(text.contains("300 más sin anotar"));
 }
 
-/// M4: un registro que no se puede crear es un error (la interfaz no ejecuta nada): aquí, la carpeta de datos es un archivo.
+/// M4: failure to create a log is an error (the UI executes nothing); here, the data directory is a file.
 #[test]
 fn un_registro_que_no_se_puede_crear_es_un_error() {
     let sb = Sandbox::new();
     sb.write("Tesela", 10); // un archivo donde debería ir la carpeta
     assert!(LogWriter::create(&sb.path("Tesela"), false).is_err());
     assert!(LogWriter::create(&sb.path("Tesela/sub"), false).is_err());
-    // Y uno que falla ya en la línea de arranque.
+    // Also test one that fails on the startup line.
     assert!(LogWriter::create_failing_after(&sb.path("L0"), false, 0).is_err());
 }
 
-/// M4: la INTENCIÓN antes del resultado, para cada operación: el lote que se entrega a la shell lista sus elementos, y el
-/// lote definitivo, sus raíces, ANTES de cualquier resultado.
+/// M4: record INTENT before the result for each operation: list the items in a batch sent to the shell, and the roots in a
+/// permanent-deletion batch, BEFORE any result is recorded.
 #[test]
 fn el_registro_lleva_la_intencion_de_cada_operacion_antes_de_sus_resultados() {
     let sb = Sandbox::new();
@@ -2843,7 +2844,7 @@ fn el_registro_lleva_la_intencion_de_cada_operacion_antes_de_sus_resultados() {
     let c = cleaner_for(&sb).with_shell(fake.clone());
     sb.write_aged("Temp/viejo.tmp", 10_000, 240);
     let mut plan = plan_de(&sb, &c, &[("a.txt", 100, 100), ("b.txt", 100, 100)]);
-    // Más un elemento definitivo (la categoría de temporales).
+    // Plus one permanent-deletion item (the temporary-files category).
     let mut b = Basket::new();
     b.set_category(CategoryId::UserTemp, true);
     let perm = approve(&c, &b);
@@ -2863,13 +2864,13 @@ fn el_registro_lleva_la_intencion_de_cada_operacion_antes_de_sus_resultados() {
         pos("delete-begin").expect("falta la intención del lote definitivo"),
         pos("recycle-begin").expect("falta la intención del lote de la Papelera"),
     );
-    // La intención del lote definitivo, antes de cualquier resultado de sus entradas.
+    // The permanent-deletion batch intent precedes any result for its entries.
     let first_entry = pos("entry").expect("hay entradas");
     assert!(del_begin < first_entry, "{del_begin} < {first_entry}");
-    // La del envío, antes de los resultados `recycle`.
+    // The send intent precedes the `recycle` results.
     let first_recycle = pos("recycle").expect("hay resultados de la Papelera");
     assert!(rec_begin < first_recycle);
-    // Lista los elementos del lote.
+    // List the batch items.
     let paths = lines[rec_begin]["paths"].as_array().unwrap();
     let names: Vec<&str> = paths.iter().map(|p| p.as_str().unwrap()).collect();
     assert!(
@@ -2881,12 +2882,12 @@ fn el_registro_lleva_la_intencion_de_cada_operacion_antes_de_sus_resultados() {
     assert!(log.ok());
 }
 
-/// M4: un error de escritura del registro DETIENE la limpieza en el siguiente punto seguro: si falla la intención del
-/// lote definitivo, no se borra nada; si falla a mitad, el resto no se procesa. El informe lo dice (`log_failed`) y no se
-/// presenta como una cancelación del usuario.
+/// M4: a log write error STOPS cleaning at the next safe point: if writing the intent fails,
+/// permanent-deletion batch, nothing is deleted; if it fails midway, the rest is not processed. The report indicates this (`log_failed`) and it is not
+/// it is not reported as a user cancellation.
 #[test]
 fn un_error_de_escritura_del_registro_detiene_la_limpieza() {
-    // (1) Falla ya en la intención: no se borra NADA.
+    // (1) It fails while writing the intent: NOTHING is deleted.
     let sb = Sandbox::new();
     let c = cleaner_for(&sb);
     for i in 0..30 {
@@ -2895,7 +2896,7 @@ fn un_error_de_escritura_del_registro_detiene_la_limpieza() {
     let mut b = Basket::new();
     b.set_category(CategoryId::UserTemp, true);
     let plan = approve(&c, &b);
-    // El presupuesto alcanza para la línea de arranque (≈ 50 bytes) pero no para la intención.
+    // The budget fits the startup line (about 50 bytes) but not the intent.
     let log = Arc::new(LogWriter::create_failing_after(&sb.path("L1"), false, 80).unwrap());
     let rep = exec(&c, &plan, false, false, Some(log.clone())).unwrap();
     assert!(rep.log_failed && !rep.cancelled, "{rep:?}");
@@ -2906,8 +2907,8 @@ fn un_error_de_escritura_del_registro_detiene_la_limpieza() {
         ItemStatus::Root(crate::engine::RootStatus::Cancelled)
     ));
 
-    // (2) Falla a mitad (la intención cabe, los resultados por entrada no): se detiene en el siguiente punto seguro, con
-    // trabajo sin hacer.
+    // (2) It fails midway (the intent fits, but per-item results do not): execution stops at the next safe point, with
+    // work not completed.
     let sb2 = Sandbox::new();
     let c2 = cleaner_for(&sb2).with_threads(2);
     for i in 0..400 {
@@ -2924,7 +2925,7 @@ fn un_error_de_escritura_del_registro_detiene_la_limpieza() {
     assert!(left < 400, "algo se había hecho antes del fallo: {left}");
     assert!(log2.error().is_some());
 
-    // (3) Falla la intención del lote de la Papelera: la shell NO ve nada.
+    // (3) Writing the Recycle Bin batch intent fails: the shell sees NOTHING.
     let sb3 = Sandbox::new();
     let fake = FakeShell::new(&sb3, Some(1 << 40), 0, "nunca");
     let c3 = cleaner_for(&sb3).with_shell(fake.clone());
@@ -2942,11 +2943,11 @@ fn un_error_de_escritura_del_registro_detiene_la_limpieza() {
     }
 }
 
-// ---- m1: el número de enlaces aprobado es EXACTO ------------------------------------------------------------------------
+// ---- m1: the approved link count is EXACT ------------------------------------------------------------------------
 
-/// m1: se aprueba un archivo con 1 enlace y, antes de ejecutar, alguien le añade un segundo nombre (mismo objeto, otra
-/// ruta). Con la misma identidad, antes pasaba; ahora el número de enlaces aprobado es exacto y se rechaza ("cambió desde la
-/// confirmación"), tanto con destino Papelera como definitivo. Ningún nombre se toca.
+/// m1: approve a file with one link, then add a second name (same object, different path) before execution. The identity
+/// is unchanged, so this used to pass; now the exact approved link count is enforced and it is rejected as "changed since
+/// confirmation," for both Recycle Bin and permanent destinations. Neither name is touched.
 #[test]
 fn un_enlace_duro_anadido_tras_la_aprobacion_se_rechaza() {
     for destination in [Destination::Recycle, Destination::Permanent] {
@@ -2960,7 +2961,7 @@ fn un_enlace_duro_anadido_tras_la_aprobacion_se_rechaza() {
         assert_eq!(plan.items.len(), 1, "{:?}", plan.rejected);
         assert!(!plan.items[0].hard_linked);
         plan.items[0].destination = destination;
-        // Después de aprobar: un segundo nombre para el mismo objeto.
+        // After approval: add a second name for the same object.
         sb.hard_link("Docs/x.bin", "Docs/x-otro-nombre.bin");
         let rep = exec(&c, &plan, false, false, None).unwrap();
         assert_eq!(
@@ -2975,8 +2976,8 @@ fn un_enlace_duro_anadido_tras_la_aprobacion_se_rechaza() {
     }
 }
 
-/// m1: lo mismo al revés (se aprueba con 2 enlaces y se quita uno) se rechaza; sin cambios, el elemento con 2 enlaces se
-/// envía con normalidad.
+/// m1: the reverse case (approved with two links, then one removed) is also rejected; with no changes, the two-link item
+/// is sent normally.
 #[test]
 fn quitar_un_enlace_duro_tras_la_aprobacion_tambien_se_rechaza() {
     let sb = Sandbox::new();
@@ -2989,10 +2990,10 @@ fn quitar_un_enlace_duro_tras_la_aprobacion_tambien_se_rechaza() {
     let plan = approve(&c, &b);
     assert_eq!(plan.items.len(), 1);
     assert!(plan.items[0].hard_linked);
-    // Sin cambios: se envía.
+    // With no changes, it is sent.
     let rep_ok = exec(&c, &plan, true, false, None).unwrap();
     assert_eq!(rep_ok.items[0].status, ItemStatus::WouldRecycle);
-    // Se quita el otro nombre: el número de enlaces ya no es el aprobado.
+    // Remove the other name: the link count no longer matches approval.
     fs::remove_file(sb.path("Docs/y.bin")).unwrap();
     let rep = exec(&c, &plan, false, false, None).unwrap();
     assert_eq!(
@@ -3003,12 +3004,12 @@ fn quitar_un_enlace_duro_tras_la_aprobacion_tambien_se_rechaza() {
     assert!(fake.names().is_empty());
 }
 
-// ---- Reparto en operaciones y corte de seguridad (M-C), con una shell SIMULADA ----------------------------------------
+// ---- Operation batching and safety cutoff (M-C), using a FAKE shell ----------------------------------------
 
-/// Una shell simulada: "recicla" moviendo a una carpeta del sandbox y, si en la operación hay un elemento cuyo nombre
-/// contiene `nuke`, la shell decide por operación que no cabe: ELIMINA el primer elemento (`PostDeleteItem` con
-/// `psiNewlyCreated` nulo) y el receptor de eventos CORTA el lote (M2): los demás no se procesan ni tienen evento. Un
-/// elemento cuyo nombre contiene `unknown` se recicla pero la shell "no dice dónde": también corta el lote. Anota las
+/// A fake shell: it "recycles" by moving items into a sandbox folder. If an operation contains an item whose name
+/// includes `nuke`, the shell decides the operation does not fit: it DELETES the first item (`PostDeleteItem` with null
+/// `psiNewlyCreated`), and the event receiver STOPS the batch (M2); remaining items are neither processed nor reported. An
+/// item whose name includes `unknown` is recycled, but the shell "does not say where"; this also stops the batch. It records
 /// operaciones.
 struct FakeShell {
     bin: PathBuf,
@@ -3016,7 +3017,7 @@ struct FakeShell {
     used: Mutex<u64>,
     nuke: &'static str,
     ops: Mutex<Vec<Vec<PathBuf>>>,
-    /// Si es `Some`, la shell "falla": sin eventos y con este error (como un fallo de COM o de `PerformOperations`).
+    /// If `Some`, the shell "fails": no events are reported, and this error is returned (as with a COM or `PerformOperations` failure).
     fail: Option<i32>,
 }
 
@@ -3057,9 +3058,9 @@ impl FakeShell {
     }
 }
 
-/// A3-m1: lo que cuenta la shell simulada de un elemento: su tamaño lógico, o, en un directorio, la SUMA de todos sus
-/// descendientes (sin seguir enlaces). Antes usaba `metadata(directorio).len()` (0 en NTFS) y la ocupación simulada no
-/// crecía con el contenido: las aserciones del tipo "no supera el 90 %" no medían nada.
+/// A3-m1: the fake shell's size for an item is its logical size, or, for a directory, the SUM of all descendants (without
+/// following links). It previously used `metadata(directory).len()` (0 on NTFS), so simulated occupancy did not grow with
+/// contents and assertions such as "does not exceed 90%" measured nothing.
 fn tree_len(p: &Path) -> u64 {
     let Ok(md) = fs::symlink_metadata(p) else {
         return 0;
@@ -3091,16 +3092,16 @@ impl RecycleShell for FakeShell {
             p.file_name()
                 .is_some_and(|n| n.to_string_lossy().contains(self.nuke))
         });
-        // El receptor de eventos REAL (`SinkCore`): la shell simulada le pasa `PreDeleteItem` y `PostDeleteItem` igual que
-        // la de verdad, así que las pruebas ejercitan la misma lógica de veto y de corte (identidad, tamaño, fallos) y no una
-        // copia que pudiera divergir.
+        // The REAL event receiver (`SinkCore`): the fake shell calls `PreDeleteItem` and `PostDeleteItem` just like the real
+        // shell, so tests exercise the same veto and stop logic (identity, size, failures) rather than a separate copy that
+        // could diverge.
         let core = recycle::SinkCore::for_send(items);
         for (i, p) in paths.iter().enumerate() {
-            // `PreDeleteItem`: lo que hay ahora en la ruta debe ser el objeto aprobado (y un archivo no puede haber crecido);
-            // si no, veto y se corta el lote.
+            // `PreDeleteItem`: the current path must refer to the approved object (and a file must not have grown); otherwise,
+            // veto it and stop the batch.
             if !core.pre_delete(p.clone().into_os_string()) {
-                // Como la shell REAL (medido): del elemento vetado avisa con `PostDeleteItem(E_ABORT)` y sin elemento nuevo.
-                // El ejecutor no puede tomar ese `E_ABORT` del propio receptor por un error de Windows.
+                // As measured with the REAL shell: report the vetoed item with `PostDeleteItem(E_ABORT)` and no new item.
+                // The executor must not mistake the receiver's own `E_ABORT` for a Windows error.
                 let _ = core.post_delete(
                     p.clone().into_os_string(),
                     windows::Win32::Foundation::E_ABORT.0,
@@ -3108,7 +3109,7 @@ impl RecycleShell for FakeShell {
                 );
                 break;
             }
-            // A3-m1: lo que ocupa en la Papelera un directorio es TODO su contenido, no el tamaño de su entrada.
+            // A3-m1: a directory occupies the size of ALL its contents in the Recycle Bin, not the size of its directory entry.
             let len = tree_len(p);
             let unknown = p
                 .file_name()
@@ -3118,15 +3119,15 @@ impl RecycleShell for FakeShell {
                 .is_some_and(|n| n.to_string_lossy().contains("intacto"));
             let mut hr = 0;
             let state = if nuke {
-                // La shell borra con la semántica clásica: con el handle de guarda abierto, el nombre queda "pendiente de
-                // borrar" hasta soltarlo (R1). `fs::remove_file` usa semántica POSIX y no lo reproduciría.
+                // The shell uses classic deletion semantics: with the guard handle open, the name remains "pending deletion"
+                // until the handle is released (R1). `fs::remove_file` uses POSIX semantics and would not reproduce this.
                 sys::delete_legacy_for_test(p).unwrap();
                 BinState::Deleted
             } else if p.is_dir()
                 && p.file_name()
                     .is_some_and(|n| n.to_string_lossy().contains("parcial"))
             {
-                // R6: la shell elimina definitivamente UN hijo y notifica "eliminado" de la carpeta, que sigue en su sitio.
+                // R6: the shell permanently deletes ONE child and reports the folder as "deleted," though it remains in place.
                 let child = fs::read_dir(p).unwrap().flatten().next().unwrap().path();
                 sys::delete_legacy_for_test(&child).unwrap();
                 BinState::Deleted
@@ -3134,8 +3135,8 @@ impl RecycleShell for FakeShell {
                 && p.file_name()
                     .is_some_and(|n| n.to_string_lossy().contains("falla"))
             {
-                // A-M1 (caso 1): la shell elimina definitivamente UN hijo y DESPUÉS falla con acceso denegado: el resultado es
-                // un error, pero la carpeta ya perdió algo. Con un fallo el receptor no corta el lote (solo corta con éxito).
+                // A-M1 (case 1): the shell permanently deletes ONE child and THEN fails with access denied: the result is
+                // an error, but the folder has already lost an item. On failure, the receiver does not stop the batch (only on success).
                 let child = fs::read_dir(p).unwrap().flatten().next().unwrap().path();
                 sys::delete_legacy_for_test(&child).unwrap();
                 hr = 0x8007_0005u32 as i32;
@@ -3144,24 +3145,24 @@ impl RecycleShell for FakeShell {
                 && p.file_name()
                     .is_some_and(|n| n.to_string_lossy().contains("sustituye"))
             {
-                // A-M1 (caso 2): la shell elimina un hijo y deja otro NUEVO del mismo nombre y tamaño (otro objeto): totales
-                // idénticos, contenido distinto. Notifica "eliminado" con éxito sin enviar nada.
+                // A-M1 (case 2): the shell deletes one child and leaves a NEW object with the same name and size: totals are
+                // identical, contents differ. It reports successful deletion without sending anything.
                 let child = fs::read_dir(p).unwrap().flatten().next().unwrap().path();
                 let len = fs::metadata(&child).unwrap().len() as usize;
                 sys::delete_legacy_for_test(&child).unwrap();
-                // Mismo nombre, mismo tamaño, OTRO objeto (otro `FileId`).
+                // Same name and size, but a DIFFERENT object (different `FileId`).
                 fs::write(&child, vec![9u8; len]).unwrap();
                 BinState::Deleted
             } else if p
                 .file_name()
                 .is_some_and(|n| n.to_string_lossy().contains("deniega"))
             {
-                // La shell falla con acceso denegado SIN tocar nada (archivo o carpeta): el resultado es un FALLO, sin
-                // elemento nuevo.
+                // The shell fails with access denied WITHOUT touching anything (file or folder): report a FAILURE and no
+                // new item.
                 hr = 0x8007_0005u32 as i32;
                 BinState::Deleted
             } else if intact {
-                // La shell notifica "eliminado" (nulo, con éxito) SIN haber tocado nada (medido con un archivo disperso).
+                // The shell reports "deleted" (null, success) WITHOUT touching anything (verified with a sparse file).
                 BinState::Deleted
             } else {
                 let dest = self.bin.join(format!(
@@ -3177,8 +3178,8 @@ impl RecycleShell for FakeShell {
                     BinState::InBin(dest)
                 }
             };
-            // El receptor registra el evento y DESPUÉS decide si devuelve E_ABORT (`post_delete_aborts`): la shell no procesa
-            // el resto.
+            // The receiver records the event and THEN decides whether to return E_ABORT (`post_delete_aborts`): the shell does not process
+            // the rest.
             if core.post_delete(p.clone().into_os_string(), hr, state) {
                 break;
             }
@@ -3195,8 +3196,8 @@ impl RecycleShell for FakeShell {
             ..recycle::BatchOutcome::default()
         }
     }
-    /// M2: la purga simulada comprueba antes de entregar si el `$R` lleva enlaces dentro y los excluye (`linked`) SIN cortar el
-    /// lote; el resto se "purga" (se borran su `$R` y su `$I`). Es lo que hace la shell real en `purge_items_flags`.
+    /// M2: before delivery, the fake purge checks whether `$R` contains links and excludes it (`linked`) WITHOUT stopping
+    /// the batch; the rest is "purged" (its `$R` and `$I` are deleted). This matches the real shell's `purge_items_flags`.
     fn purge(
         &self,
         items: &[recycle::BinItem],
@@ -3247,7 +3248,7 @@ impl RecycleShell for FakeShell {
     fn is_bin_path(&self, p: &Path) -> bool {
         crate::paths::PathKey::new(p).is_same_or_under(&crate::paths::PathKey::new(&self.bin))
     }
-    /// El encaje no depende del equipo (registro, directivas): cabe salvo que pase del 90 % de la capacidad simulada.
+    /// Fit does not depend on the machine (registry or policies): items fit unless they exceed 90% of simulated capacity.
     fn fit(&self, _path: &Path, bytes: u64) -> Fit {
         match self.max {
             Some(max) if (bytes as u128) * 100 > (max as u128) * 90 => {
@@ -3258,9 +3259,9 @@ impl RecycleShell for FakeShell {
     }
 }
 
-/// A3-m1: la ocupación de la Papelera simulada crece con el CONTENIDO de lo que recibe (suma de todos sus descendientes) y no
-/// con el tamaño de la entrada del directorio. Control negativo: con el cálculo anterior (`metadata(dir).len()`), una carpeta
-/// con 95 000 bytes dentro no sumaba nada y una aserción "no supera 90 000" pasaba sin medir lo que se había enviado.
+/// A3-m1: fake Recycle Bin occupancy grows with the CONTENTS it receives (the sum of all descendants), not the directory
+/// entry size. Negative control: with the old calculation (`metadata(dir).len()`), a folder containing 95,000 bytes added
+/// nothing, and an assertion that it "does not exceed 90,000" passed without measuring the sent contents.
 #[test]
 fn la_shell_simulada_cuenta_el_contenido_de_los_directorios_en_su_ocupacion() {
     let sb = Sandbox::new();
@@ -3272,19 +3273,19 @@ fn la_shell_simulada_cuenta_el_contenido_de_los_directorios_en_su_ocupacion() {
     sb.write("Docs/grande/y.bin", 35_000);
     assert_eq!(tree_len(&sb.path("Docs/pequena")), 6_000);
     assert_eq!(tree_len(&sb.path("Docs/grande")), 95_000);
-    // El cálculo antiguo daba el tamaño de la entrada del directorio, no el de su contenido.
+    // The old calculation returned the directory entry size, not its contents.
     assert!(fs::metadata(sb.path("Docs/grande")).unwrap().len() < 95_000);
     let send = |rel: &str| recycle::SendItem::capture(&sb.long(rel));
     fake.recycle(&[send("Docs/pequena")]);
     assert_eq!(*fake.used.lock().unwrap(), 6_000);
-    // Una carpeta cuyo contenido pasa del 90 % de la capacidad SÍ lo refleja la ocupación (control negativo): la aserción
-    // de las pruebas "no supera el 90 %" ya puede fallar.
+    // Occupancy DOES reflect a folder whose contents exceed 90% of capacity (negative control): the assertion
+    // the tests' "does not exceed 90%" assertion can now fail.
     fake.recycle(&[send("Docs/grande")]);
     assert_eq!(*fake.used.lock().unwrap(), 101_000);
     assert!(*fake.used.lock().unwrap() > 90_000);
 }
 
-/// Un `BinItem` propio del sandbox: `$R<token>` (archivo o carpeta, ya creado) y su `$I`, con las identidades capturadas.
+/// A sandbox-owned `BinItem`: `$R<token>` (an existing file or folder) and its `$I`, with captured identities.
 fn bin_item_at(sb: &Sandbox, token: &str, is_dir: bool) -> recycle::BinItem {
     let dir = sb.long("FakeBin/S");
     let r = dir.join(format!("$R{token}"));
@@ -3312,9 +3313,9 @@ fn bin_item_at(sb: &Sandbox, token: &str, is_dir: bool) -> recycle::BinItem {
     }
 }
 
-/// M2 (auditoría): un `$R` de la Papelera con enlaces dentro (junction, archivo con reparse point) se EXCLUYE antes de
-/// entregarlo, con su motivo en el informe y en el registro, y NO corta el lote: los demás elementos se purgan. Antes el
-/// receptor vetaba el hijo-enlace y el veto cortaba la purga entera ("vaciar" se paraba ahí cada vez).
+/// M2 (audit): a Recycle Bin `$R` containing links (junctions or files with reparse points) is EXCLUDED before delivery,
+/// with the reason recorded in the report and log. It does NOT stop the batch; remaining items are purged. Previously the
+/// receiver vetoed the linked child, and that veto stopped the entire purge (every `purge` stopped there).
 #[test]
 fn un_r_con_enlaces_dentro_se_excluye_y_el_resto_del_lote_se_purga() {
     let mut sb = Sandbox::new();
@@ -3363,7 +3364,7 @@ fn un_r_con_enlaces_dentro_se_excluye_y_el_resto_del_lote_se_purga() {
     let esperados_con_enlaces = if tiene_reparse { 2 } else { 1 };
     assert_eq!(bin.requested, 5);
     assert_eq!(bin.with_links, esperados_con_enlaces, "{bin:?}");
-    // Se purgan los limpios: el archivo, la carpeta anidada y el último; el corte NO se produjo.
+    // Clean items are purged: the file, nested folder, and last item; the batch was NOT stopped.
     let limpios = 5 - esperados_con_enlaces;
     assert_eq!(bin.purged, limpios, "{bin:?}");
     assert_eq!(bin.still_there, esperados_con_enlaces);
@@ -3374,10 +3375,10 @@ fn un_r_con_enlaces_dentro_se_excluye_y_el_resto_del_lote_se_purga() {
         !PathBuf::from(&f.id).exists(),
         "lo que va DESPUÉS del excluido también se purga"
     );
-    // El excluido se queda tal cual (con su junction y su destino intactos).
+    // The excluded item remains unchanged, including its junction and target.
     assert!(PathBuf::from(&con_junction.id).join("normal.txt").exists());
     assert!(sb.path("fuera/secreto.txt").exists());
-    // Consta en el registro con su motivo.
+    // Recorded in the log with its reason.
     log.flush();
     let text = fs::read_to_string(log.path()).unwrap();
     assert!(text.contains("\"out\":\"linked\""), "{text}");
@@ -3388,8 +3389,8 @@ fn un_r_con_enlaces_dentro_se_excluye_y_el_resto_del_lote_se_purga() {
     sb.remove_junction("FakeBin/S/$RCCCC01/enlace");
 }
 
-/// m1 (auditoría): los elementos de la Papelera que no se pudieron listar (metadatos ilegibles) constan en el registro y en el
-/// informe (`BinReport::unlisted`); lo listado se purga igual.
+/// m1 (audit): Recycle Bin items that could not be listed (unreadable metadata) are recorded in the log and in the
+/// report (`BinReport::unlisted`); listed items are still purged.
 #[test]
 fn los_elementos_sin_listar_constan_en_el_registro_y_en_el_informe() {
     let sb = Sandbox::new();
@@ -3436,10 +3437,10 @@ fn los_elementos_sin_listar_constan_en_el_registro_y_en_el_informe() {
     }
 }
 
-/// Un plan de elementos de `Docs/<nombre>` con el tamaño dado: el archivo real mide `len` bytes y la ESTIMACIÓN aprobada es
-/// `est` (nunca por debajo de lo que de verdad ocupa). Desde A-B1 lo que se reparte es lo que mide el handle de guarda justo
-/// antes de la operación, no la estimación: `est` debe corresponderse con lo que ocupa el archivo (sin archivos enormes: los
-/// umbrales se escalan con la capacidad simulada).
+/// A plan containing items under `Docs/<name>` with the given size: the actual file is `len` bytes, and the approved ESTIMATE is
+/// `est` (never below its actual size). Since A-B1, batching uses the size measured by the guard handle immediately
+/// used before the operation, not the estimate: `est` must match the file's size (no huge files: the
+/// thresholds scale with simulated capacity).
 fn plan_de(sb: &Sandbox, c: &Cleaner, items: &[(&str, usize, u64)]) -> Plan {
     let mut b = Basket::new();
     for (name, len, _) in items {
@@ -3449,7 +3450,7 @@ fn plan_de(sb: &Sandbox, c: &Cleaner, items: &[(&str, usize, u64)]) -> Plan {
     let mut plan = approve(c, &b);
     assert_eq!(plan.items.len(), items.len(), "{:?}", plan.rejected);
     for (it, (_, _, est)) in plan.items.iter_mut().zip(items) {
-        // Nunca por debajo de lo que de verdad ocupa el archivo (A-B1: lo que crece frente a lo aprobado no se envía).
+        // Never below the file's actual size (A-B1: an item that grows beyond approval is not sent).
         it.estimate.bytes = (*est).max(it.estimate.bytes);
         it.estimate.logical = (*est).max(it.estimate.logical);
         let size = it.estimate.bytes.max(it.estimate.logical);
@@ -3464,7 +3465,7 @@ fn un_elemento_que_no_cabe_entre_otros_pequenos_nunca_arrastra_a_los_demas_y_cor
     let sb = Sandbox::new();
     let fake = FakeShell::new(&sb, Some(10_000), 0, "enorme");
     let c = cleaner_for(&sb).with_shell(fake.clone());
-    // `enorme` pesa 5 000 (más del 10 % de la capacidad de 10 000): va SOLO. Los pequeños, por separado.
+    // `huge` is 5,000 bytes (over 10% of the 10,000 capacity): it goes ALONE. The small items are separate.
     let plan = plan_de(
         &sb,
         &c,
@@ -3485,23 +3486,23 @@ fn un_elemento_que_no_cabe_entre_otros_pequenos_nunca_arrastra_a_los_demas_y_cor
     };
     assert_eq!(st("a.txt"), ItemStatus::Recycled);
     assert_eq!(st("enorme.bin"), ItemStatus::DeletedUnexpectedly);
-    // CORTE: lo que venía detrás NO se envió (ni se elimina): sigue en su sitio.
+    // STOP: later items were NOT sent (or deleted); they remain in place.
     assert_eq!(st("c.txt"), ItemStatus::NotRecycled(RecycleFail::Stopped));
     assert_eq!(st("d.txt"), ItemStatus::NotRecycled(RecycleFail::Stopped));
     assert!(sb.path("Docs/c.txt").exists() && sb.path("Docs/d.txt").exists());
     assert!(rep.recycle_stopped);
     assert_eq!((rep.deleted_unexpectedly, rep.stopped_items), (1, 2));
-    // El primero fue en su propia operación (no con el enorme) y el enorme en la suya, y no hubo más.
+    // The first item had its own operation (not grouped with the huge one), which also had its own; there were no others.
     assert_eq!(fake.names(), vec![vec!["a.txt"], vec!["enorme.bin"]]);
 }
 
-/// M2: el primer borrado definitivo inesperado de una operación CORTA el lote en curso (el receptor devuelve `E_ABORT`
-/// tras registrar el evento): lo que venía detrás en la MISMA operación no se procesa y sigue en su sitio, y no se envía
-/// nada más. El `E_ABORT` propio no se cuenta como error de la shell.
+/// M2: the first unexpected permanent deletion in an operation STOPS the current batch (the receiver returns `E_ABORT`
+/// after logging the event): later items in the SAME operation are not processed and remain in place, and nothing else is
+/// sent. The receiver's own `E_ABORT` is not counted as a shell error.
 #[test]
 fn el_primer_borrado_inesperado_corta_el_lote_en_curso() {
     let sb = Sandbox::new();
-    // Todos pequeños (van juntos en UNA operación) y uno con nombre `enorme`: la shell decide que la operación no cabe.
+    // All items are small (grouped in ONE operation), with one named `huge`: the shell decides the operation does not fit.
     let fake = FakeShell::new(&sb, Some(10_000), 0, "enorme");
     let c = cleaner_for(&sb).with_shell(fake.clone());
     let plan = plan_de(
@@ -3522,7 +3523,7 @@ fn el_primer_borrado_inesperado_corta_el_lote_en_curso() {
             .status
     };
     assert_eq!(fake.names().len(), 1, "una sola operación");
-    // El primero se eliminó (evento registrado); el resto de la operación NO se procesó y sigue ahí.
+    // The first item was deleted (event logged); the rest of the operation was NOT processed and remains in place.
     assert_eq!(st("a.txt"), ItemStatus::DeletedUnexpectedly);
     assert_eq!(
         st("enorme.bin"),
@@ -3539,9 +3540,9 @@ fn el_primer_borrado_inesperado_corta_el_lote_en_curso() {
     );
 }
 
-/// R1 (pura, sin la variable): la shell elimina el archivo con semántica CLÁSICA mientras el handle de guarda sigue abierto;
-/// el nombre queda visible como "pendiente de borrar" (abrirlo da acceso denegado). `judge` decide por OBJETO: es un borrado
-/// definitivo, no "la shell no tocó nada". Un mutante que decida por nombre (`symlink_metadata`) falla aquí.
+/// R1 (direct, without environment variables): the shell deletes the file with CLASSIC semantics while the guard handle remains open;
+/// the name remains visible as "pending deletion" (opening it is denied). `judge` decides by OBJECT: it is a deletion
+/// this is permanent deletion, not "the shell touched nothing." An implementation that checks by name (`symlink_metadata`) fails here.
 #[test]
 fn un_borrado_con_la_guarda_abierta_sigue_siendo_un_borrado_definitivo() {
     let sb = Sandbox::new();
@@ -3553,12 +3554,12 @@ fn un_borrado_con_la_guarda_abierta_sigue_siendo_un_borrado_definitivo() {
         sys::meta(&h).unwrap().identity
     };
     let p = pending(id, &f, &f);
-    // Antes de borrar: intacto.
+    // Before deletion: intact.
     assert!(untouched_by_shell(&p));
-    // La shell lo borra (semántica clásica) con la guarda aún abierta.
+    // The shell deletes it (classic semantics) while the guard is still open.
     sys::delete_legacy_for_test(&f).unwrap();
-    // El NOMBRE sigue visible (esto es lo que engañaba a `symlink_metadata`), abrirlo da acceso denegado y la guarda
-    // dice que está pendiente de borrar.
+    // The NAME remains visible (which fooled `symlink_metadata`); opening it is denied, and the guard
+    // reports it as pending deletion.
     assert!(fs::symlink_metadata(&f).is_ok(), "el nombre sigue visible");
     assert_eq!(sys::open_for_query(&f).err(), Some(sys::ACCESS_DENIED));
     assert!(sys::meta(&p.held).unwrap().delete_pending);
@@ -3572,10 +3573,10 @@ fn un_borrado_con_la_guarda_abierta_sigue_siendo_un_borrado_definitivo() {
         judge(&p, Some(&ev), shell, false, false).0,
         ItemStatus::DeletedUnexpectedly
     );
-    // Al soltar la guarda, el archivo desaparece de verdad.
+    // Once the guard is released, the file really disappears.
     drop(p);
     assert!(!f.exists());
-    // Lo mismo con una carpeta vacía borrada con semántica clásica.
+    // Same for an empty folder deleted with classic semantics.
     let d = sb.mkdir("r/carpeta");
     let did = sys::meta(&sys::open_for_query(&d).unwrap())
         .unwrap()
@@ -3593,7 +3594,7 @@ fn un_borrado_con_la_guarda_abierta_sigue_siendo_un_borrado_definitivo() {
         judge(&pd, Some(&evd), shell, false, false).0,
         ItemStatus::DeletedUnexpectedly
     );
-    // Y un elemento sustituido por otro objeto en el mismo nombre (identidad distinta) tampoco es "intacto".
+    // An item replaced by a different object under the same name (different identity) is not "intact" either.
     let g = sb.write("r/sustituido.bin", 10);
     let gid = sys::meta(&sys::open_for_query(&g).unwrap())
         .unwrap()
@@ -3604,15 +3605,15 @@ fn un_borrado_con_la_guarda_abierta_sigue_siendo_un_borrado_definitivo() {
     assert!(!untouched_by_shell(&pg));
 }
 
-/// R6 (sin la Papelera real): la shell elimina definitivamente UN hijo de una carpeta y notifica "eliminado" de la carpeta, que
-/// sigue en su sitio. El objeto carpeta está intacto, pero lo que contiene no: NO es `ShellDeclined`, es un borrado definitivo
-/// (parcial) y el corte se mantiene. Con la carpeta realmente intacta, sigue siendo `ShellDeclined`.
+/// R6 (without the real Recycle Bin): the shell permanently deletes ONE child of a folder and reports the folder as "deleted," though it
+/// remains in place. The folder object is intact, but its contents are not: this is NOT `ShellDeclined`, but a permanent deletion
+/// remains in place. Report partial deletion and keep the stop. If the folder is truly intact, it remains `ShellDeclined`.
 #[test]
 fn una_carpeta_que_pierde_hijos_no_es_shell_declined() {
     let sb = Sandbox::new();
     let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
     let c = cleaner_for(&sb).with_shell(fake.clone());
-    // Una carpeta cuyo nombre hace que la shell simulada borre un hijo, y otra que deja intacta.
+    // One folder whose name makes the fake shell delete a child, and another left intact.
     sb.write("Docs/parcial/a.bin", 3_000);
     sb.write("Docs/parcial/b.bin", 3_000);
     sb.write("Docs/intacto/a.bin", 3_000);
@@ -3641,10 +3642,10 @@ fn una_carpeta_que_pierde_hijos_no_es_shell_declined() {
     }
 }
 
-/// A-M1 (caso 1): la shell pierde un hijo de una carpeta y DESPUÉS falla con `E_ACCESSDENIED`. Antes, un resultado de fallo
-/// se devolvía tal cual (`NotRecycled`), sin mirar los efectos: `deleted_unexpectedly` quedaba a 0 y el elemento siguiente se
-/// enviaba igualmente. Ahora un fallo se juzga como un borrado (objeto intacto y, en una carpeta, contenido intacto): consta
-/// la pérdida parcial y el envío se detiene.
+/// A-M1 (case 1): the shell deletes a folder child and THEN fails with `E_ACCESSDENIED`. Previously, the failure result
+/// was returned as-is (`NotRecycled`) without checking effects: `deleted_unexpectedly` stayed at 0 and the next item
+/// was sent anyway. Now a failure is judged by whether the object (and, for a folder, its contents) remained intact; it is recorded
+/// Partial deletion is now detected, and sending stops.
 #[test]
 fn un_fallo_de_la_shell_tras_perder_un_hijo_es_un_borrado_parcial_y_corta_el_envio() {
     let sb = Sandbox::new();
@@ -3683,9 +3684,9 @@ fn un_fallo_de_la_shell_tras_perder_un_hijo_es_un_borrado_parcial_y_corta_el_env
     assert_eq!(sb.count_entries("Docs/pierde-y-falla"), 1, "perdió un hijo");
 }
 
-/// A-M1 (caso 2): la shell elimina un hijo y deja otro del mismo nombre y del mismo tamaño. Los totales (tamaño y número de
-/// entradas) son idénticos, así que antes se daba por "la shell no tocó nada" (`ShellDeclined`). Ahora la HUELLA del contenido
-/// (identidad, tamaño y enlaces de cada entrada) lo distingue: es un borrado parcial.
+/// A-M1 (case 2): the shell deletes one child and leaves another with the same name and size. Totals (size and entry count)
+/// are identical, so previously this looked like "the shell touched nothing" (`ShellDeclined`). The content FINGERPRINT
+/// (identity, size, and links for each entry) now distinguishes it as a partial deletion.
 #[test]
 fn quitar_un_hijo_y_poner_otro_del_mismo_tamano_no_pasa_por_intacto() {
     let sb = Sandbox::new();
@@ -3702,7 +3703,7 @@ fn quitar_un_hijo_y_poner_otro_del_mismo_tamano_no_pasa_por_intacto() {
     assert_eq!(rep.items[0].status, ItemStatus::DeletedUnexpectedly);
     assert_eq!(rep.stop_reason, Some(StopReason::DeletedUnexpectedly));
     assert_eq!(rep.deleted_unexpectedly, 1);
-    // Y de verdad los totales no habrían delatado nada: misma cantidad, mismos bytes.
+    // The totals really would not reveal anything: same count, same bytes.
     let after = {
         let it = &plan.items[0];
         let Remeasure::Now(s) = c.remeasure(it, &cancel()) else {
@@ -3721,10 +3722,10 @@ fn quitar_un_hijo_y_poner_otro_del_mismo_tamano_no_pasa_por_intacto() {
     );
 }
 
-/// A2-M1 (la repetición de Astra, a nivel de la operación de la shell): DOS carpetas pequeñas en la misma operación, la
-/// shell pierde un hijo de cada una y devuelve un error. Antes el receptor devolvía éxito tras un fallo, el siguiente
-/// `PreDeleteItem` pasaba y acababan en DOS pérdidas inesperadas. Ahora el fallo de la primera corta el lote: la segunda no
-/// se procesa y conserva todos sus hijos. (La shell simulada usa el receptor real, `SinkCore`.)
+/// A2-M1 (Astra repeat at the shell-operation level): TWO small folders in one operation; the shell deletes a child from each
+/// and returns an error. Previously the receiver reported success after a failure, the next `PreDeleteItem` passed, and both
+/// suffered unexpected loss. Now the first failure stops the batch; the second folder is not processed and retains all its
+/// children. (The fake shell uses the real receiver, `SinkCore`.)
 #[test]
 fn con_dos_carpetas_en_la_misma_operacion_un_fallo_con_perdida_parcial_corta_antes_de_la_segunda() {
     let sb = Sandbox::new();
@@ -3747,15 +3748,15 @@ fn con_dos_carpetas_en_la_misma_operacion_un_fallo_con_perdida_parcial_corta_ant
     );
     assert_eq!(out.events[0].hr, 0x8007_0005u32 as i32);
     assert!(out.vetoed.is_empty(), "no es un veto");
-    // La primera perdió un hijo; la segunda, intacta.
+    // The first folder lost a child; the second remains intact.
     assert_eq!(sb.count_entries("Docs/falla1"), 1);
     assert_eq!(sb.count_entries("Docs/falla2"), 2);
 }
 
-/// A2-M1 en el ejecutor: tres archivos pequeños en UNA operación y la shell falla con el segundo (acceso denegado, sin tocar
-/// nada). El receptor corta el lote: el segundo se juzga por lo que es (`Denied`, intacto), el tercero queda sin procesar
-/// (`Stopped`, en su sitio) y el envío se detiene con el motivo "Windows no pudo enviar un elemento y lo dejó intacto". El
-/// error de la shell consta aunque el `E_ABORT` sea del receptor.
+/// A2-M1 in the executor: three small files in ONE operation; the shell fails on the second (access denied, without touching
+/// nothing). The receiver stops the batch: the second item is judged correctly (`Denied`, intact); the third remains unprocessed
+/// it); later items are `Stopped` and remain in place, and sending stops with "Windows could not send an item and left it intact." The
+/// shell error is recorded even though the `E_ABORT` came from the receiver.
 #[test]
 fn un_fallo_a_mitad_de_un_lote_de_archivos_cancela_lo_pendiente_y_detiene_el_envio() {
     let sb = Sandbox::new();
@@ -3796,9 +3797,9 @@ fn un_fallo_a_mitad_de_un_lote_de_archivos_cancela_lo_pendiente_y_detiene_el_env
     );
 }
 
-/// A2-M1: lo contrario. Si el fallo es lo ÚLTIMO de su operación (siempre para una carpeta, que va sola) el corte no cancela
-/// nada pendiente y las operaciones siguientes siguen: una carpeta con acceso denegado (intacta, comprobada) no impide enviar
-/// la que viene después.
+/// A2-M1: the reverse. If the failure is the LAST item in its operation (always true for a folder, which goes alone), stopping does not cancel
+/// nothing pending, and subsequent operations continue: a folder with access denied (verified intact) does not prevent sending
+/// the next operation.
 #[test]
 fn un_fallo_de_una_carpeta_que_va_sola_no_detiene_las_operaciones_siguientes() {
     let sb = Sandbox::new();
@@ -3830,9 +3831,9 @@ fn un_fallo_de_una_carpeta_que_va_sola_no_detiene_las_operaciones_siguientes() {
     assert_eq!(sb.count_entries("Docs/deniega-d1"), 1, "intacta");
 }
 
-/// R6 con la shell REAL (solo cosas propias, tras `TESELA_REAL_RECYCLE_TESTS=1`): una carpeta con un disperso enorme (que no
-/// cabe) y archivos pequeños. Se registra qué hace de verdad la shell y se exige el invariante: si el resultado es "la shell
-/// no tocó nada" (`NotRecycled`), todos los hijos siguen; si falta alguno, es `DeletedUnexpectedly`.
+/// R6 with the REAL shell (owned items only, after `TESELA_REAL_RECYCLE_TESTS=1`): a folder containing a huge sparse file (which does not
+/// and small files. Record what the shell actually does and enforce the invariant: if the result is "the shell touched
+/// nothing" (`NotRecycled`), all children remain; if any are missing, the result is `DeletedUnexpectedly`.
 #[test]
 fn con_la_shell_real_una_carpeta_con_un_disperso_enorme_no_pierde_hijos_sin_decirlo() {
     use crate::exec::{BinRoom, RealShell};
@@ -3884,9 +3885,9 @@ fn con_la_shell_real_una_carpeta_con_un_disperso_enorme_no_pierde_hijos_sin_deci
         rep.items[0].status, rep.recycle_stopped
     );
     match rep.items[0].status {
-        // La shell dice que no tocó nada: entonces los 3 hijos siguen.
+        // The shell says it touched nothing: all three children must remain.
         ItemStatus::NotRecycled(_) => assert_eq!(left, 3, "faltan hijos sin decirlo"),
-        // Eliminado (entera o parcialmente) o movido a la Papelera: cualquiera es coherente con lo que quedó.
+        // Deleted (fully or partially) or moved to the Recycle Bin: each result is consistent with what remains.
         ItemStatus::DeletedUnexpectedly | ItemStatus::Recycled | ItemStatus::RecycledOther => {}
         other => panic!("estado inesperado: {other:?}"),
     }
@@ -3899,9 +3900,9 @@ fn con_la_shell_real_una_carpeta_con_un_disperso_enorme_no_pierde_hijos_sin_deci
     assert_eq!(ids(), before);
 }
 
-/// R1 con la shell REAL (solo un archivo propio, tras `TESELA_REAL_RECYCLE_TESTS=1`): un archivo disperso del doble del
-/// volumen, que la shell elimina de verdad, llega al `judge` con la guarda abierta y consta como `DeletedUnexpectedly` (no
-/// como "no tocó nada"). La shell real recibe el elemento (una shell envoltorio salta el reparto, que lo habría frenado).
+/// R1 with the REAL shell (one owned file only, after `TESELA_REAL_RECYCLE_TESTS=1`): a sparse file twice the volume size,
+/// which the shell really deletes, reaches `judge` with the guard open and is recorded as `DeletedUnexpectedly` (not
+/// as "untouched"). The real shell receives the item (a wrapper shell skips the batching logic that would have stopped it).
 #[test]
 fn con_la_shell_real_un_disperso_enorme_eliminado_consta_como_borrado_definitivo() {
     use crate::exec::{BinRoom, RealShell};
@@ -3909,7 +3910,7 @@ fn con_la_shell_real_un_disperso_enorme_eliminado_consta_como_borrado_definitivo
     if !bin_usable() {
         return;
     }
-    /// La shell real, pero con un reparto que siempre deja pasar y un encaje siempre bueno.
+    /// The real shell, but with batching that always accepts and a fit check that always succeeds.
     struct PassShell;
     impl RecycleShell for PassShell {
         fn recycle(&self, items: &[recycle::SendItem]) -> recycle::BatchOutcome {
@@ -3955,9 +3956,9 @@ fn con_la_shell_real_un_disperso_enorme_eliminado_consta_como_borrado_definitivo
     assert_eq!(ids(), before);
 }
 
-/// H2: la shell notifica `psiNewlyCreated` nulo con éxito pero NO tocó el elemento (medido con una carpeta que contiene un
-/// archivo disperso enorme: `hr = 0x00270003` y la carpeta sigue en el disco). No se afirma que se eliminó nada
-/// (`DeletedUnexpectedly` solo si el nombre ya no está), pero el corte de seguridad se mantiene.
+/// H2: the shell reports success with null `psiNewlyCreated` but did NOT touch the item (tested with a folder containing a
+/// huge sparse file: `hr = 0x00270003`, and the folder remains on disk). Do not claim anything was deleted
+/// (`DeletedUnexpectedly` applies only if the name is gone), but keep the safety stop.
 #[test]
 fn una_eliminacion_notificada_sin_tocar_nada_no_se_cuenta_como_borrado_y_sigue_cortando() {
     let sb = Sandbox::new();
@@ -3993,7 +3994,7 @@ fn una_eliminacion_notificada_sin_tocar_nada_no_se_cuenta_como_borrado_y_sigue_c
     assert_eq!(rep.stopped_items, 2);
 }
 
-/// M2: una ruta sin verificar (`InBinUnknownPath` con éxito) también corta el lote, y `Unverified` provoca
+/// M2: an unverified path (`InBinUnknownPath` with success) also stops the batch, and `Unverified` causes
 /// `recycle_stopped`.
 #[test]
 fn una_ruta_sin_verificar_tambien_corta_el_lote_y_marca_recycle_stopped() {
@@ -4029,7 +4030,7 @@ fn una_ruta_sin_verificar_tambien_corta_el_lote_y_marca_recycle_stopped() {
 #[test]
 fn los_pequenos_se_agrupan_hasta_el_presupuesto_y_nunca_pasan_del_90_por_ciento_menos_lo_ocupado() {
     let sb = Sandbox::new();
-    // Capacidad 10 000: un elemento "grande" (> 1 000) va solo; el presupuesto es 9 000 menos lo ocupado.
+    // Capacity 10,000: a "large" item (> 1,000) goes alone; the budget is 9,000 minus occupancy.
     let fake = FakeShell::new(&sb, Some(10_000), 0, "nunca");
     let c = cleaner_for(&sb).with_shell(fake.clone());
     let plan = plan_de(
@@ -4049,14 +4050,14 @@ fn los_pequenos_se_agrupan_hasta_el_presupuesto_y_nunca_pasan_del_90_por_ciento_
         "{:?}",
         rep.items
     );
-    // a, b y c juntos; el grande solo; d solo (lo que queda de la cola).
+    // a, b, and c together; the large item alone; d alone (the rest of the queue).
     assert_eq!(
         fake.names(),
         vec![vec!["a", "b", "c"], vec!["grande"], vec!["d"]]
     );
     assert!(!rep.recycle_stopped);
 
-    // Con la Papelera casi llena el presupuesto se agota: lo que no cabe NO se envía.
+    // With the Recycle Bin nearly full, the budget runs out: items that do not fit are NOT sent.
     let sb2 = Sandbox::new();
     let fake2 = FakeShell::new(&sb2, Some(10_000), 8_500, "nunca");
     let c2 = cleaner_for(&sb2).with_shell(fake2.clone());
@@ -4078,7 +4079,7 @@ fn los_pequenos_se_agrupan_hasta_el_presupuesto_y_nunca_pasan_del_90_por_ciento_
             .unwrap()
             .status
     };
-    // Presupuesto = 9 000 - 8 500 = 500: cabe uno (400); después, 100: ninguno más.
+    // Budget = 9,000 - 8,500 = 500: one item fits (400); 100 remain afterward, so no more fit.
     assert_eq!(st("f1"), ItemStatus::Recycled);
     for n in ["f2", "f3", "f4"] {
         assert_eq!(st(n), ItemStatus::NotRecycled(RecycleFail::NoRoom), "{n}");
@@ -4089,8 +4090,8 @@ fn los_pequenos_se_agrupan_hasta_el_presupuesto_y_nunca_pasan_del_90_por_ciento_
     assert!(!rep2.recycle_stopped);
 }
 
-/// B2: sin capacidad conocida de la Papelera no se puede garantizar que quepa (y la shell, si no cabe, elimina de verdad):
-/// NINGÚN elemento se envía (`NoRoom`), ni siquiera los pequeños. Antes iba cada uno solo.
+/// B2: without known Recycle Bin capacity, there is no guarantee that an item fits (and the shell really deletes items that do not):
+/// NO items are sent (`NoRoom`), including the small ones. Previously each went alone.
 #[test]
 fn sin_capacidad_conocida_no_se_envia_nada_a_la_papelera() {
     let sb = Sandbox::new();
@@ -4118,9 +4119,9 @@ fn sin_capacidad_conocida_no_se_envia_nada_a_la_papelera() {
     assert!(!rep.recycle_stopped);
 }
 
-/// B2: la capacidad del reparto es SOLO la configurada (`MaxCapacity`); sin ella (`Unknown`) y en cualquier otro caso
-/// (sin Papelera, desactivada, indeterminada) no hay capacidad: `max = None` y el reparto falla cerrado. Ya no se asume un
-/// porcentaje del volumen.
+/// B2: batching capacity is ONLY the configured value (`MaxCapacity`); without it (`Unknown`) or in any other case
+/// (no Recycle Bin, disabled, indeterminate), capacity is unknown: `max = None` and batching fails closed. Do not assume an
+/// percentage of the volume.
 #[test]
 fn la_capacidad_del_reparto_es_solo_la_configurada() {
     use crate::volume::BinLimit;
@@ -4135,17 +4136,17 @@ fn la_capacidad_del_reparto_es_solo_la_configurada() {
         assert_eq!(room_from(l, Some(0)).max, None, "{l:?}");
         assert_eq!(take_op(&[1], room_from(l, Some(0))), Take::NoRoom, "{l:?}");
     }
-    // Capacidad configurada pero ocupación desconocida: tampoco se envía.
+    // Capacity is configured but occupancy is unknown: nothing is sent.
     assert_eq!(
         take_op(&[1], room_from(BinLimit::Max(10_000), None)),
         Take::NoRoom
     );
-    // Con una capacidad configurada, la shell simulada reparte y rechaza como siempre.
+    // With configured capacity, the fake shell batches and rejects as usual.
     let sb = Sandbox::new();
     let room = room_from(BinLimit::Max(10_000), Some(0));
     let fake = FakeShell::new(&sb, room.max, 0, "enorme");
     let c = cleaner_for(&sb).with_shell(fake.clone());
-    // Capacidad 10 000: lo que pase de 9 000 no cabe ni solo; un "grande" (> 1 000) va solo; los pequeños, juntos.
+    // Capacity 10,000: items over 9,000 do not fit even alone; a "large" item (> 1,000) goes alone; small ones are grouped.
     let plan = plan_de(
         &sb,
         &c,
@@ -4166,7 +4167,7 @@ fn la_capacidad_del_reparto_es_solo_la_configurada() {
     );
 }
 
-/// Un directorio de `Docs/<nombre>` con un archivo de `len` bytes, aprobado con su medida real.
+/// A directory under `Docs/<name>` containing a `len`-byte file, approved with its actual size.
 fn plan_dir(sb: &Sandbox, c: &Cleaner, name: &str, len: usize) -> Plan {
     sb.write(&format!("Docs/{name}/f0.bin"), len);
     let mut b = Basket::new();
@@ -4177,15 +4178,15 @@ fn plan_dir(sb: &Sandbox, c: &Cleaner, name: &str, len: usize) -> Plan {
     plan
 }
 
-/// B2: un directorio que CRECIÓ 1 MiB después de aprobarlo no se envía: el reparto se basaba en un tamaño que ya no es
-/// cierto. Queda en su sitio con el estado "cambió desde la confirmación" (contador `changed` del resumen).
+/// B2: a directory that GREW by 1 MiB after approval is not sent: batching used a size that is no longer accurate. It
+/// remains in place with status "changed since confirmation" (the summary's `changed` count).
 #[test]
 fn un_directorio_que_crecio_tras_la_aprobacion_no_se_envia() {
     let sb = Sandbox::new();
     let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
     let c = cleaner_for(&sb).with_shell(fake.clone());
     let plan = plan_dir(&sb, &c, "crece", 5_000);
-    // Después de aprobar: 1 MiB más dentro.
+    // After approval: add 1 MiB inside.
     sb.write("Docs/crece/nuevo.bin", 1 << 20);
     let rep = exec(&c, &plan, false, false, None).unwrap();
     assert_eq!(
@@ -4199,7 +4200,7 @@ fn un_directorio_que_crecio_tras_la_aprobacion_no_se_envia() {
         rep.totals.changed >= 1,
         "consta como cambiado en el resumen"
     );
-    // Sin cambios, el mismo directorio sí se envía (control).
+    // With no changes, the same directory is sent (control).
     let sb2 = Sandbox::new();
     let fake2 = FakeShell::new(&sb2, Some(1 << 40), 0, "nunca");
     let c2 = cleaner_for(&sb2).with_shell(fake2.clone());
@@ -4208,12 +4209,12 @@ fn un_directorio_que_crecio_tras_la_aprobacion_no_se_envia() {
     assert_eq!(rep2.items[0].status, ItemStatus::Recycled);
 }
 
-/// H6.2: el directorio se mide JUSTO ANTES de la operación que lo incluye, no al preparar el trozo entero: aquí crece
-/// durante el envío de la operación anterior (un archivo grande que va solo) y, al llegar su turno, no se envía.
+/// H6.2: measure a directory RIGHT BEFORE its operation, not when preparing the whole chunk. Here it grows during the
+/// previous operation (a large file sent alone), so it is not sent when its turn arrives.
 #[test]
 fn el_directorio_se_mide_justo_antes_de_su_operacion_no_al_preparar_el_trozo() {
     let sb = Sandbox::new();
-    // Capacidad 10 000: lo que pasa de 1 000 va SOLO en su operación (así hay dos operaciones, una por elemento).
+    // Capacity 10,000: anything over 1,000 goes ALONE in its operation (two items means two operations).
     let fake = FakeShell::new(&sb, Some(10_000), 0, "nunca");
     let c = cleaner_for(&sb).with_shell(fake.clone());
     sb.write("Docs/a.bin", 6_000);
@@ -4223,12 +4224,12 @@ fn el_directorio_se_mide_justo_antes_de_su_operacion_no_al_preparar_el_trozo() {
     b.add_path(sb.long("Docs/crece"), c.protection());
     let plan = approve(&c, &b);
     assert_eq!(plan.items.len(), 2);
-    // Las estimaciones son las reales (~8 KiB cada uno: más del 10 % de 10 000 y caben).
+    // Estimates match actual sizes (~8 KiB each: over 10% of 10,000, and they fit).
     for it in &plan.items {
         assert!(it.estimate.bytes > 1_000 && it.fit == Fit::Fits);
     }
-    // El directorio crece cuando se va a entregar `a.bin` (después de preparar el trozo, antes de su propia operación).
-    // Con una medida hecha al preparar, el directorio se habría repartido con el tamaño viejo.
+    // The directory grows as `a.bin` is about to be sent (after chunk preparation, before its own operation).
+    // If measured during preparation, the directory would have been batched using its old size.
     let grow = sb.path("Docs/crece/nuevo.bin");
     let _hook = crate::engine::test_hooks::install_before_shell(sb.long("Docs"), move |p| {
         if p.ends_with("a.bin") {
@@ -4256,9 +4257,9 @@ fn el_directorio_se_mide_justo_antes_de_su_operacion_no_al_preparar_el_trozo() {
     );
 }
 
-/// A-B1 / M-1: un SEGUNDO directorio que crece mientras se mide el primero no se envía. (Antes de esta prueba, que los
-/// candidatos no primeros no se volvieran a medir —`let skip = true`— sobrevivía a todas las demás. Desde A2-B1 cada
-/// directorio va solo en su operación: el segundo se mide después, cuando le toca.)
+/// A-B1 / M-1: a SECOND directory that grows while the first is measured is not sent. (Before this test, skipping
+/// remeasurement of non-first candidates—`let skip = true`—survived all other tests. Since A2-B1, each directory has its
+/// own operation, so the second is measured later when its turn arrives.)
 #[test]
 fn un_segundo_directorio_de_la_misma_operacion_que_crece_no_se_envia() {
     let sb = Sandbox::new();
@@ -4272,7 +4273,7 @@ fn un_segundo_directorio_de_la_misma_operacion_que_crece_no_se_envia() {
     let plan = approve(&c, &b);
     assert_eq!(plan.items.len(), 2, "{:?}", plan.rejected);
     let grow = sb.path("Docs/d2/crece.bin");
-    // Mientras se mide d1 (el primero), d2 crece.
+    // While d1 (the first directory) is being measured, d2 grows.
     let _hook = crate::engine::test_hooks::install(sb.long("Docs"), move |q| {
         if q.ends_with("x1.bin") {
             fs::write(&grow, vec![1u8; 1 << 20]).unwrap();
@@ -4294,11 +4295,11 @@ fn un_segundo_directorio_de_la_misma_operacion_que_crece_no_se_envia() {
     assert_eq!(fake.names(), vec![vec!["d1"]]);
 }
 
-/// A2-B1 (blocker de la auditoría externa), la repetición de Astra: una Papelera simulada de 100 000 y dos carpetas pequeñas.
-/// Antes iban en la MISMA operación: se medían una tras otra (la primera, la última) y, mientras la primera recibía su medida
-/// final, la segunda ya medida crecía 1 MiB; `PreDeleteItem` solo comprobaba identidades, así que las dos llegaban a la shell
-/// y volvían `Recycled`. Ahora cada directorio va SOLO en su operación y se mide justo antes de entregarlo: lo que crece
-/// mientras el anterior estaba en la shell no se envía (se mide después, con su tamaño de entonces).
+/// A2-B1 (external audit blocker), Astra repeat: a simulated Recycle Bin with capacity 100,000 and two small folders.
+/// Previously they shared the SAME operation and were measured one after another; while the first received its final
+/// measurement, the already-measured second folder grew by 1 MiB. `PreDeleteItem` checked only identities, so both reached
+/// the shell and became `Recycled`. Now each directory has its own operation and is measured just before delivery, so a
+/// folder that grows while the previous one is in the shell is measured afterward and not sent.
 #[test]
 fn dos_directorios_pequenos_de_astra_no_comparten_operacion_y_el_que_crece_no_se_envia() {
     let sb = Sandbox::new();
@@ -4314,7 +4315,7 @@ fn dos_directorios_pequenos_de_astra_no_comparten_operacion_y_el_que_crece_no_se
     for it in &plan.items {
         assert_eq!(it.fit, Fit::Fits);
     }
-    // El crecimiento llega JUSTO cuando d1 se entrega a la shell: con los dos en la misma operación, d2 ya estaba medido.
+    // Growth happens RIGHT as d1 is sent to the shell: in a shared operation, d2 would already have been measured.
     let grow = sb.path("Docs/d2/crece.bin");
     let _hook = crate::engine::test_hooks::install_before_shell(sb.long("Docs"), move |q| {
         if q.ends_with("d1") {
@@ -4342,15 +4343,15 @@ fn dos_directorios_pequenos_de_astra_no_comparten_operacion_y_el_que_crece_no_se
     );
     assert!(sb.path("Docs/d2/crece.bin").exists() && sb.path("Docs/d2/y1.bin").exists());
     assert!(rep.totals.changed >= 1);
-    // Y lo que sí se envió no pasa del 90 % de la capacidad simulada. A3-m1: la ocupación simulada suma el CONTENIDO de la
-    // carpeta enviada (d1: 1 000 bytes; d2 no llegó), así que la aserción mide algo (antes `metadata(dir).len()` daba 0).
+    // The sent items also stay within 90% of simulated capacity. A3-m1: simulated occupancy sums the CONTENTS of the
+    // sent folder (d1: 1,000 bytes; d2 was not sent), so this assertion measures something (previously `metadata(dir).len()` was 0).
     assert_eq!(*fake.used.lock().unwrap(), 1_000);
     assert!(*fake.used.lock().unwrap() <= 90_000);
 }
 
-/// H1 (auditoría): la recomprobación del presupuesto justo antes de entregar un DIRECTORIO. Papelera simulada de 10 000 con 8 950
-/// ya ocupados (presupuesto 9 000 - 8 950 = 50): la carpeta de 200 bytes (unos 4 KiB en disco) ya no cabe cuando se la va a
-/// entregar. No llega a la shell: `NoRoom` (con la real, la shell la habría eliminado o expulsado lo que hay en la Papelera).
+/// H1 (audit): recheck the budget immediately before sending a DIRECTORY. Simulated Recycle Bin capacity 10,000, occupancy 8,950
+/// already occupied (budget 9,000 - 8,950 = 50): a 200-byte folder (about 4 KiB on disk) no longer fits when it is about to be
+/// sent. It never reaches the shell: `NoRoom` (the real shell would have deleted it or evicted existing Recycle Bin contents).
 #[test]
 fn un_directorio_que_ya_no_cabe_al_entregarlo_no_llega_a_la_shell() {
     let sb = Sandbox::new();
@@ -4370,8 +4371,8 @@ fn un_directorio_que_ya_no_cabe_al_entregarlo_no_llega_a_la_shell() {
     assert_eq!(rep.no_room, 1);
 }
 
-/// A2-B1: un directorio NUNCA comparte operación con nada (ni con otros directorios ni con archivos); los archivos pequeños
-/// contiguos sí se agrupan. Cola: archivo, directorio, directorio, archivo, archivo => [a], [d1], [d2], [b, c].
+/// A2-B1: a directory NEVER shares an operation with anything (other directories or files); consecutive small files are
+/// grouped. Queue: file, directory, directory, file, file => [a], [d1], [d2], [b, c].
 #[test]
 fn un_directorio_va_siempre_solo_y_los_archivos_contiguos_se_agrupan() {
     let sb = Sandbox::new();
@@ -4401,14 +4402,13 @@ fn un_directorio_va_siempre_solo_y_los_archivos_contiguos_se_agrupan() {
     );
 }
 
-/// GM-B3 (sustituye a la prueba B2 "un directorio que encogió se reparte con su tamaño nuevo"): una carpeta solo se envía con
-/// el MISMO contenido que se aprobó. Antes de esta comprobación, `fresh_size` solo miraba que no hubiese crecido, así que
-/// una carpeta que había PERDIDO un archivo, o a la que se cambió un archivo por otro (más pequeño o incluso del mismo
-/// tamaño, con otro `FileId`) se enviaba con contenido que nadie aprobó. Ahora cualquier cambio de contenido (también si
-/// encogió) vuelve a la confirmación ("cambió desde la confirmación") y no llega a la shell.
+/// GM-B3 (replaces B2, "a directory that shrank is batched using its new size"): a folder is sent only with the SAME
+/// contents that were approved. Previously, `fresh_size` only checked that it had not grown, so a folder that LOST a file
+/// or had a file replaced (with a smaller or same-size file with a different `FileId`) was sent with unapproved contents.
+/// Now any content change, including shrinking, requires reconfirmation ("changed since confirmation") and is not sent.
 #[test]
 fn un_directorio_cuyo_contenido_cambio_en_cualquier_sentido_no_se_envia() {
-    // Control: sin tocar nada, el mismo directorio se envía.
+    // Control: with no changes, the same directory is sent.
     let sb = Sandbox::new();
     let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
     let c = cleaner_for(&sb).with_shell(fake.clone());
@@ -4420,7 +4420,7 @@ fn un_directorio_cuyo_contenido_cambio_en_cualquier_sentido_no_se_envia() {
     let rep = exec(&c, &plan, false, false, None).unwrap();
     assert_eq!(rep.items[0].status, ItemStatus::Recycled);
 
-    // Tres cambios posteriores a la aprobación, cada uno con su propio árbol.
+    // Three post-approval changes, each with its own tree.
     for (name, change) in [
         ("pierde", "quita"),
         ("cambia-por-menor", "menor"),
@@ -4443,7 +4443,7 @@ fn un_directorio_cuyo_contenido_cambio_en_cualquier_sentido_no_se_envia() {
                 sb.write(&format!("Docs/{name}/c.bin"), 100);
             }
             _ => {
-                // Otro objeto (otro `FileId`) con el mismo nombre y el mismo tamaño: los totales no cambian.
+                // A different object (different `FileId`) with the same name and size: totals remain unchanged.
                 sb.write(&format!("Docs/{name}/a.bin"), 5_000);
             }
         }
@@ -4462,10 +4462,10 @@ fn un_directorio_cuyo_contenido_cambio_en_cualquier_sentido_no_se_envia() {
     }
 }
 
-/// A-B1 (blocker): un ARCHIVO también se vuelve a medir justo antes de la operación que lo incluye. Dos archivos de unos 20 KB
-/// con una Papelera simulada de 100 000 (cada uno pasa del 10 % y va en su propia operación): mientras la shell trabaja con el
-/// primero, el segundo crece a 1 MiB. Antes se entregaba a la shell con el tamaño de cuando se preparó el trozo
-/// (`measured: true` y `fresh_size` no lo miraba). Ahora no se envía: "cambió desde la confirmación".
+/// A-B1 (blocker): a FILE is also remeasured immediately before its operation. Two ~20 KB files in a simulated Recycle Bin
+/// with capacity 100,000 (each exceeds 10% and gets its own operation): while the shell handles the first, the second grows
+/// to 1 MiB. Previously it was sent using its size at chunk preparation (`measured: true`, and `fresh_size` was not checked).
+/// Now it is not sent: "changed since confirmation."
 #[test]
 fn un_archivo_que_crece_mientras_espera_su_turno_no_se_envia() {
     let sb = Sandbox::new();
@@ -4505,9 +4505,9 @@ fn un_archivo_que_crece_mientras_espera_su_turno_no_se_envia() {
     assert!(!rep.recycle_stopped, "es un cambio, no un corte");
 }
 
-/// A2-B1: dos archivos pequeños viajan en la MISMA operación (cada uno, menos del 10 % de la capacidad). Entre preparar el
-/// lote y el `PreDeleteItem` del segundo, este crece 1 MiB. El receptor lo vuelve a medir por su handle de guarda (sin reabrir
-/// la ruta) y lo veta: no llega a la shell, consta "cambió desde la confirmación" y el envío se detiene.
+/// A2-B1: two small files share the SAME operation (each is under 10% of capacity). Between preparing the batch and
+/// batch and the second item's `PreDeleteItem`, it grows by 1 MiB. The receiver remeasures it through its guard handle (without reopening
+/// sending, one grows (same identity and path) and is vetoed: it never reaches the shell, is recorded as "changed since confirmation," and sending stops.
 #[test]
 fn un_archivo_que_crece_entre_preparar_el_lote_y_su_pre_delete_item_se_veta() {
     let sb = Sandbox::new();
@@ -4522,7 +4522,7 @@ fn un_archivo_que_crece_entre_preparar_el_lote_y_su_pre_delete_item_se_veta() {
             ("c.bin", 5_000, 8_192),
         ],
     );
-    // El gancho `before_shell` corre DESPUÉS de medir y preparar el lote y justo antes de entregarlo.
+    // The `before_shell` hook runs AFTER measurement and batch preparation, immediately before delivery.
     let grow = sb.path("Docs/b.bin");
     let _hook = crate::engine::test_hooks::install_before_shell(sb.long("Docs"), move |p| {
         if p.ends_with("a.bin") {
@@ -4568,9 +4568,9 @@ fn un_archivo_que_crece_entre_preparar_el_lote_y_su_pre_delete_item_se_veta() {
     );
 }
 
-/// A2-B1: el mismo caso con la shell REAL (solo cosas propias, tras `TESELA_REAL_RECYCLE_TESTS=1`): el receptor de verdad
-/// vuelve a medir por la guarda en `PreDeleteItem` y veta con `E_ABORT` al archivo que creció; el anterior llega a la Papelera
-/// y el siguiente no se procesa.
+/// A2-B1: the same case with the REAL shell (owned items only, after `TESELA_REAL_RECYCLE_TESTS=1`): the real receiver
+/// remeasures through the guard in `PreDeleteItem` and vetoes the grown file with `E_ABORT`; the earlier file reaches the Recycle Bin
+/// and the next item is not processed.
 #[test]
 fn con_la_shell_real_un_archivo_que_crece_en_el_lote_se_veta() {
     let _lock = bin_lock();
@@ -4587,7 +4587,7 @@ fn con_la_shell_real_un_archivo_que_crece_en_el_lote_se_veta() {
         eprintln!("la Papelera de este volumen no tiene capacidad configurada: la prueba se salta");
         return;
     };
-    // Con la capacidad real: tres archivos de 1 000 bytes caben juntos (la ocupación real puede dejar poco sitio: se salta).
+    // With real capacity, three 1,000-byte files fit together (actual occupancy may leave too little room, so this is skipped).
     if room
         .used
         .is_none_or(|u| max / 10 * 9 < u.saturating_add(1 << 20))
@@ -4626,8 +4626,8 @@ fn con_la_shell_real_un_archivo_que_crece_en_el_lote_se_veta() {
     assert_eq!(st("c.txt"), ItemStatus::NotRecycled(RecycleFail::Stopped));
     assert!(sb.path("Docs/b.txt").exists() && sb.path("Docs/c.txt").exists());
     assert_eq!(rep.stop_reason, Some(StopReason::Changed));
-    // Un veto del receptor no es un error de Windows: la shell avisa del vetado con `E_ABORT` (el del propio receptor) y eso no
-    // debe aparecer como "la Papelera devolvió un error".
+    // A receiver veto is not a Windows error: the shell reports it with `E_ABORT` (from the receiver itself), and this must not
+    // must appear as "the Recycle Bin returned an error."
     assert_eq!(rep.shell_error, None, "{rep:?}");
     let mine: Vec<BinItem> = recycle::list_bin()
         .unwrap()
@@ -4639,9 +4639,9 @@ fn con_la_shell_real_un_archivo_que_crece_en_el_lote_se_veta() {
     assert_eq!(ids(), before);
 }
 
-/// A-B1: lo contrario. Si lo que se mide ahora es MENOS que lo medido antes, manda el tamaño nuevo y se actualiza la última
-/// medida. (NTFS no libera la asignación de un archivo truncado mientras haya handles abiertos —la guarda lo está—, así que
-/// con la guarda abierta solo se ve encoger el tamaño lógico: la comprobación se hace sobre `fresh_size` directamente.)
+/// A-B1: the reverse. If the current size is LESS than the previous measurement, use the new size and update the latest
+/// measurement. (NTFS does not release allocation for a truncated file while handles remain open—the guard does—so with
+/// the guard open, only the logical size shrinks; check `fresh_size` directly.)
 #[test]
 fn un_archivo_que_encoge_se_mide_con_su_tamano_nuevo() {
     let sb = Sandbox::new();
@@ -4655,18 +4655,18 @@ fn un_archivo_que_encoge_se_mide_con_su_tamano_nuevo() {
     };
     let real = p.last.expect("un archivo se mide al preparar");
     assert_eq!(real, 20_480);
-    // Se simula una medida anterior mayor (el archivo era de 50 000 y se truncó).
+    // Simulate a larger previous measurement (the file was 50,000 bytes and was truncated).
     p.size = 50_000;
     p.last = Some(50_000);
     c.fresh_size(it, &mut p, &mut st, &cancel()).unwrap();
     assert_eq!((p.size, p.last), (real, Some(real)));
-    // Si crece por encima de lo APROBADO (aunque no pase de la última medida, que aquí se finge enorme): no se envía.
+    // If it grows beyond the APPROVED size (even if it stays under the latest measurement, simulated as huge here), it is not sent.
     fs::write(sb.path("Docs/a.bin"), vec![1u8; 30_000]).unwrap();
     p.last = Some(u64::MAX);
     let err = c.fresh_size(it, &mut p, &mut st, &cancel()).unwrap_err();
     assert_eq!(err.0, ItemStatus::Root(crate::engine::RootStatus::Changed));
     assert_eq!(st.changed, 1);
-    // Y si pasa de la última medida sin pasar de lo aprobado (se finge una aprobación enorme): tampoco.
+    // It is also not sent if it exceeds the latest measurement but not the approved size (simulated with huge approval).
     let mut big = plan.items[0].clone();
     big.estimate.bytes = 1 << 30;
     p.last = Some(20_480);
@@ -4675,8 +4675,8 @@ fn un_archivo_que_encoge_se_mide_con_su_tamano_nuevo() {
     assert_eq!(st.changed, 2);
 }
 
-/// GM-m6: lo que se INFORMA de un archivo que encogió entre la aprobación y el envío es lo de ahora (su tamaño medido por la
-/// guarda), no la estimación aprobada: `stats.bytes`, `removed` y el contador `recycled_bytes`.
+/// GM-m6: report the current size of a file that shrank between approval and sending (measured by the guard), not its
+/// approved estimate: `stats.bytes`, `removed`, and the `recycled_bytes` counter.
 #[test]
 fn un_archivo_que_encogio_se_informa_con_su_tamano_de_ahora() {
     let sb = Sandbox::new();
@@ -4688,7 +4688,7 @@ fn un_archivo_que_encogio_se_informa_con_su_tamano_de_ahora() {
     let plan = approve(&c, &b);
     let approved = plan.items[0].estimate;
     assert!(approved.bytes >= 20_000 && approved.logical == 20_000);
-    // Encoge tras aprobar: de 20 000 a 5 000 bytes.
+    // Shrinks after approval: from 20,000 to 5,000 bytes.
     let f = fs::OpenOptions::new()
         .write(true)
         .open(sb.path("Docs/e.bin"))
@@ -4709,14 +4709,14 @@ fn un_archivo_que_encogio_se_informa_con_su_tamano_de_ahora() {
     assert_eq!((r.bytes, r.logical), (now.bytes, 5_000));
 }
 
-/// GM-B1: lo que ocupan los reparse points de DENTRO de una carpeta cuenta contra la Papelera. Antes un archivo de la nube
-/// hidratado (o cualquier reparse point) sumaba 0 a `bytes` y `logical`: la shell mueve la carpeta ENTERA y cuenta esos
-/// archivos contra `MaxCapacity`, así que una carpeta que parecía pequeña no cabía y la shell la eliminaba. Aquí el reparse
-/// point es un archivo de un tercero con un tamaño lógico enorme (disperso: no ocupa disco).
+/// GM-B1: space used by reparse points INSIDE a folder counts against Recycle Bin capacity. Previously, a hydrated cloud file
+/// (or any reparse point) added 0 to `bytes` and `logical`: the shell moves the WHOLE folder and counts those
+/// files against `MaxCapacity`, so a folder that appeared small did not fit and the shell deleted it. Here, the reparse
+/// point is a third-party file with a huge logical size (sparse, so it occupies no disk space).
 #[test]
 fn una_carpeta_con_un_reparse_point_grande_dentro_no_cabe_en_la_papelera() {
     let sb = Sandbox::new();
-    // Capacidad 100 000: el 90 % son 90 000 bytes.
+    // Capacity 100,000: 90% is 90,000 bytes.
     let fake = FakeShell::new(&sb, Some(100_000), 0, "nunca");
     let c = cleaner_for(&sb).with_shell(fake.clone());
     sb.write("Docs/nube/pequeno.bin", 1_000);
@@ -4731,22 +4731,22 @@ fn una_carpeta_con_un_reparse_point_grande_dentro_no_cabe_en_la_papelera() {
     assert_eq!(plan.items.len(), 1, "{:?}", plan.rejected);
     let it = &plan.items[0];
     let est = it.estimate;
-    // El reparse point está contado aparte (y no en `bytes`/`logical`, que son lo que liberaría borrar).
+    // The reparse point is counted separately (not in `bytes`/`logical`, which represent space freed by deletion).
     assert_eq!(est.reparse, 1, "{est:?}");
     assert_eq!(est.reparse_logical, 5 << 20, "{est:?}");
     assert!(est.logical < 5_000, "{est:?}");
-    // La cuenta anterior (sin reparse points) habría dicho "cabe".
+    // The previous calculation (excluding reparse points) would have said "fits."
     let old = est.bytes.max(est.logical).max(est.shared_bytes);
     assert!(old <= 90_000, "{est:?}");
     assert!(est.recycle_charge() >= 5 << 20);
     assert_eq!(it.fit, Fit::Unfit(UnfitReason::TooBig), "{it:?}");
-    // Sin la casilla, no se toca y nunca llega a la shell.
+    // Without the checkbox, it remains untouched and never reaches the shell.
     let rep = exec(&c, &plan, false, false, None).unwrap();
     assert_eq!(rep.items[0].status, ItemStatus::SkippedUnfit);
     assert!(fake.names().is_empty());
     assert!(sb.path("Docs/nube/pequeno.bin").exists());
 
-    // Control: el mismo árbol con el reparse point pequeño sí cabe y se envía.
+    // Control: the same tree with a small reparse point does fit and is sent.
     let sb2 = Sandbox::new();
     let fake2 = FakeShell::new(&sb2, Some(100_000), 0, "nunca");
     let c2 = cleaner_for(&sb2).with_shell(fake2.clone());
@@ -4763,8 +4763,8 @@ fn una_carpeta_con_un_reparse_point_grande_dentro_no_cabe_en_la_papelera() {
     assert_eq!(rep2.items[0].status, ItemStatus::Recycled);
 }
 
-/// GM-B1: la medida de una carpeta con un reparse point cambia si ese reparse point cambia de tamaño (va en la huella y en la
-/// instantánea): no se envía con otra cosa que lo aprobado.
+/// GM-B1: a folder's measurement changes when the size of a reparse point inside it changes (included in the fingerprint
+/// and snapshot); it is not sent with contents different from what was approved.
 #[test]
 fn un_reparse_point_que_cambia_de_tamano_tras_aprobar_no_se_envia() {
     let sb = Sandbox::new();
@@ -4777,7 +4777,7 @@ fn un_reparse_point_que_cambia_de_tamano_tras_aprobar_no_se_envia() {
     let mut b = Basket::new();
     b.add_path(sb.long("Docs/nube"), c.protection());
     let plan = approve(&c, &b);
-    // Cambia el reparse point por otro de otro tamaño (otro objeto).
+    // Replace the reparse point with a different-sized one (a different object).
     fs::remove_file(sb.path("Docs/nube/r.bin")).unwrap();
     assert!(crate::testutil::make_reparse_file(
         &sb.path("Docs/nube/r.bin"),
@@ -4791,8 +4791,8 @@ fn un_reparse_point_que_cambia_de_tamano_tras_aprobar_no_se_envia() {
     assert!(fake.names().is_empty());
 }
 
-/// Una shell simulada cuya ocupación de la Papelera cambia entre una lectura y la siguiente (otra aplicación llenándola):
-/// la primera lectura decide el grupo, y la comprobación de DESPUÉS de volver a medir (A-B1) ve otra cosa.
+/// A fake shell whose Recycle Bin occupancy changes between reads (another application fills it): the first read decides
+/// the group, and the check AFTER remeasurement (A-B1) sees the change.
 struct FlakyRoom {
     inner: Arc<FakeShell>,
     calls: std::sync::atomic::AtomicUsize,
@@ -4818,10 +4818,10 @@ impl RecycleShell for FlakyRoom {
     }
 }
 
-/// A3-M1 (repetición de Astra): una carpeta con dos archivos de 1 000 bytes y una Papelera simulada de 100 000. Cuando el
-/// recorrido ya contó el primer archivo, ese archivo se agranda a 1 MiB. El recorrido no se entera (ya lo contó) y la huella
-/// que se compara con la aprobada es la de lo que VIO, así que antes la medida se aceptaba y la carpeta llegaba como
-/// `Recycled`. Con la vigilancia de cambios abierta antes del recorrido, la medida no vale: no se envía.
+/// A3-M1 (Astra repeat): a folder with two 1,000-byte files and a simulated Recycle Bin of capacity 100,000. After traversal
+/// counts the first file, it grows to 1 MiB. Traversal does not notice (it already counted it), and the fingerprint compared
+/// with approval reflects what it SAW, so previously measurement passed and the folder became `Recycled`. With change
+/// monitoring started before traversal, the measurement is invalid and the folder is not sent.
 #[test]
 fn una_carpeta_que_crece_durante_su_propio_recorrido_no_se_envia() {
     let sb = Sandbox::new();
@@ -4834,8 +4834,8 @@ fn una_carpeta_que_crece_durante_su_propio_recorrido_no_se_envia() {
     let plan = approve(&c, &b);
     assert_eq!(plan.items.len(), 1, "{:?}", plan.rejected);
     assert_eq!(plan.items[0].fit, Fit::Fits);
-    // Al abrir el SEGUNDO archivo del recorrido de ejecución (el primero ya está contado), el primero crece a 1 MiB. El hook
-    // de la aprobación ya pasó: solo se instala ahora.
+    // When opening the SECOND file during execution traversal (the first is already counted), grow the first to 1 MiB. The
+    // approval hook has already run, so install this hook now.
     let seen: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
     let _hook = {
         let seen = seen.clone();
@@ -4869,8 +4869,8 @@ fn una_carpeta_que_crece_durante_su_propio_recorrido_no_se_envia() {
     );
 }
 
-/// A3-M1: un cambio DESPUÉS del recorrido y ANTES de entregar la carpeta a la shell (la ventana de `before_shell`) no la deja
-/// llegar a la shell: "cambió desde la confirmación".
+/// A3-M1: a change AFTER traversal and BEFORE delivering the folder to the shell (the `before_shell` window) keeps it from
+/// reaching the shell: "changed since confirmation."
 #[test]
 fn un_cambio_entre_el_recorrido_y_la_entrega_no_llega_a_la_shell() {
     let sb = Sandbox::new();
@@ -4896,9 +4896,9 @@ fn un_cambio_entre_el_recorrido_y_la_entrega_no_llega_a_la_shell() {
     assert!(sb.path("Docs/d/f1.bin").exists());
 }
 
-/// A3-M1: un cambio DESPUÉS de entregar la operación y ANTES del `PreDeleteItem` (con la operación ya en marcha) lo veta el
-/// receptor con `E_ABORT`: el estado es el mismo ("cambió desde la confirmación") y el envío se detiene. Dos casos: una
-/// carpeta que gana un archivo nuevo (alta, notificación inmediata) y otra a la que se renombra uno.
+/// A3-M1: a change AFTER submitting the operation and BEFORE `PreDeleteItem` (while the operation is in progress) is vetoed
+/// by the receiver with `E_ABORT`: the status remains "changed since confirmation" and sending stops. Two cases: a folder
+/// gains a new file (creation, immediate notification), or a file in it is renamed.
 #[test]
 fn un_cambio_antes_del_pre_delete_item_veta_la_carpeta() {
     for change in ["alta", "renombrado"] {
@@ -4936,7 +4936,7 @@ fn un_cambio_antes_del_pre_delete_item_veta_la_carpeta() {
             ItemStatus::Root(crate::engine::RootStatus::Changed),
             "{change}"
         );
-        // Llegó a la operación (el veto es del receptor), y el veto detiene lo que queda.
+        // It reached the operation (the receiver vetoed it), and the veto stops the remaining items.
         assert_eq!(fake.names(), vec![vec!["d"]], "{change}");
         assert!(rep.recycle_stopped, "{change}");
         assert_eq!(rep.stop_reason, Some(StopReason::Changed), "{change}");
@@ -4949,8 +4949,8 @@ fn un_cambio_antes_del_pre_delete_item_veta_la_carpeta() {
     }
 }
 
-/// A3-M1: sin vigilancia no se envía (falla cerrado). Si el segundo handle del directorio no se puede abrir, la carpeta NO
-/// llega a la shell y el estado dice por qué (error del sistema); lo demás sigue su camino.
+/// A3-M1: do not send without monitoring (fail closed). If the second directory handle cannot be opened, the folder does
+/// NOT reach the shell and the status gives the reason (system error); other items continue normally.
 #[test]
 fn si_no_se_puede_abrir_la_vigilancia_la_carpeta_no_se_envia() {
     let sb = Sandbox::new();
@@ -4982,7 +4982,7 @@ fn si_no_se_puede_abrir_la_vigilancia_la_carpeta_no_se_envia() {
         "la carpeta no llegó a la shell"
     );
     assert!(sb.path("Docs/d/f1.bin").exists());
-    // Control: sin el fallo forzado, la misma carpeta se envía.
+    // Control: without the forced failure, the same folder is sent.
     drop(_fail);
     let sb2 = Sandbox::new();
     let fake2 = FakeShell::new(&sb2, Some(100_000), 0, "nunca");
@@ -4995,9 +4995,9 @@ fn si_no_se_puede_abrir_la_vigilancia_la_carpeta_no_se_envia() {
     assert_eq!(rep2.items[0].status, ItemStatus::Recycled);
 }
 
-/// A3-M1: una carpeta que nadie toca se envía (la vigilancia no tiene falsos positivos con el propio recorrido, la guarda ni
-/// el receptor), incluso con subcarpetas, y sigue teniendo la vigilancia parada al terminar (la shell mueve la carpeta). En
-/// simulación (`dry_run`) también se mide y se vigila, y no se toca nada.
+/// A3-M1: an untouched folder is sent (monitoring has no false positives from traversal or the guard, and the
+/// the receiver), even with subfolders, and monitoring remains stopped at the end (the shell moves the folder). In
+/// dry run is also measured and monitored, without touching anything.
 #[test]
 fn una_carpeta_que_nadie_toca_se_envia_con_su_vigilancia() {
     let sb = Sandbox::new();
@@ -5023,8 +5023,8 @@ fn una_carpeta_que_nadie_toca_se_envia_con_su_vigilancia() {
     assert!(!sb.path("Docs/d").exists(), "la carpeta se movió");
 }
 
-/// A3-M1 (receptor, sin COM): la vigilancia que lleva un directorio la consulta `PreDeleteItem`: sin cambios pasa (y la para);
-/// con un cambio entre el arranque y el `PreDeleteItem` veta con `VetoKind::Modified`.
+/// A3-M1 (receiver, no COM): `PreDeleteItem` checks a directory's monitor: with no changes, it passes (and stops monitoring);
+/// a change between monitoring startup and `PreDeleteItem` is vetoed with `VetoKind::Modified`.
 #[test]
 fn el_receptor_veta_el_directorio_que_cambio_y_deja_pasar_el_que_no() {
     for cambia in [false, true] {
@@ -5032,7 +5032,7 @@ fn el_receptor_veta_el_directorio_que_cambio_y_deja_pasar_el_que_no() {
         sb.write("Docs/d/f.bin", 1_000);
         let dir = sb.long("Docs/d");
         let mut item = recycle::SendItem::capture(&dir);
-        // Lo que hizo la aprobación antes de que arrancase la vigilancia.
+        // What approval did before monitoring started.
         drop(sys::open_dir_for_listing(&dir).unwrap());
         drop(sys::open_for_query(&dir.join("f.bin")).unwrap());
         let w = Arc::new(sys::DirWatch::start(&dir, item.identity).unwrap());
@@ -5040,7 +5040,7 @@ fn el_receptor_veta_el_directorio_que_cambio_y_deja_pasar_el_que_no() {
         let core = recycle::SinkCore::for_send(std::slice::from_ref(&item));
         if cambia {
             fs::write(dir.join("f.bin"), vec![1u8; 1 << 20]).unwrap();
-            // La notificación llega de forma asíncrona.
+            // The notification arrives asynchronously.
             for _ in 0..40 {
                 if w.changed() {
                     break;
@@ -5059,8 +5059,8 @@ fn el_receptor_veta_el_directorio_que_cambio_y_deja_pasar_el_que_no() {
     }
 }
 
-/// A3-M1 (coste medido): abrir la vigilancia, un recorrido de medida, comprobar y parar sobre 50 carpetas de 4 archivos. Se
-/// imprime con `--nocapture`; no afirma tiempos (dependen del equipo), solo que ninguna da falso positivo.
+/// A3-M1 (measured cost): start monitoring, perform one measurement traversal, check, and stop for 50 folders containing four files. Print the results with
+/// Print with `--nocapture`; do not assert timings (they depend on the machine), only that none produce false positives.
 #[test]
 fn medicion_a3_m1_coste_de_la_vigilancia_por_directorio() {
     let sb = Sandbox::new();
@@ -5072,7 +5072,7 @@ fn medicion_a3_m1_coste_de_la_vigilancia_por_directorio() {
         }
         dirs.push(sb.long(&format!("Docs/m{i}")));
     }
-    // Lo que hizo la aprobación antes de vigilar.
+    // What approval did before monitoring.
     let mut b = Basket::new();
     for d in &dirs {
         b.add_path(d.clone(), c.protection());
@@ -5104,8 +5104,8 @@ fn medicion_a3_m1_coste_de_la_vigilancia_por_directorio() {
     );
 }
 
-/// M1 (auditoría): solo las carpetas de sincronización de la nube se toleran como ancestro reparse. Junction, symlink, punto de
-/// montaje, enlace de WSL, otras etiquetas y un archivo con etiqueta de nube NO. Prueba pura sobre los metadatos.
+/// M1 (audit): only cloud sync folders are tolerated as reparse ancestors. Junctions, symlinks, mount points,
+/// mount point, WSL link, other tags, and a cloud-tagged file are NOT tolerated. A pure metadata test.
 #[test]
 fn solo_la_nube_se_tolera_como_ancestro_reparse() {
     use crate::plan::tolerated_ancestor;
@@ -5123,19 +5123,19 @@ fn solo_la_nube_se_tolera_como_ancestro_reparse() {
         logical: 0,
         newest_filetime: 0,
     };
-    // Las dos etiquetas de OneDrive medidas en una raíz de sincronización y en sus subcarpetas.
+    // The two OneDrive tags measured at a sync root and its child folders.
     assert!(tolerated_ancestor(&meta(0x9000_701A, true)));
     assert!(tolerated_ancestor(&meta(0x9000_601A, true)));
-    // Mount point / junction (0xA0000003), symlink (0xA000000C), enlace de WSL (0xA000001D), una etiqueta de tercero: no.
+    // Mount point / junction (0xA0000003), symlink (0xA000000C), WSL link (0xA000001D), third-party tag: not tolerated.
     for tag in [0xA000_0003u32, 0xA000_000C, 0xA000_001D, 0x0000_0123, 0] {
         assert!(!tolerated_ancestor(&meta(tag, true)), "{tag:#x}");
     }
-    // Un ARCHIVO con etiqueta de nube no es un ancestro posible.
+    // A cloud-tagged FILE cannot be an ancestor.
     assert!(!tolerated_ancestor(&meta(0x9000_601A, false)));
 }
 
-/// M1: la cadena de ancestros sigue rechazando por defecto cualquier reparse point y solo lo acepta si quien llama lo permite.
-/// Con la política de la aprobación (`tolerated_ancestor`) un reparse point de otra etiqueta se rechaza; un junction, también.
+/// M1: the ancestor check still rejects every reparse point by default and accepts one only if the caller allows it.
+/// Under the approval policy (`tolerated_ancestor`), a reparse point with another tag is rejected; so is a junction.
 #[test]
 fn la_cadena_de_ancestros_solo_acepta_lo_que_la_politica_permite() {
     let mut sb = Sandbox::new();
@@ -5146,19 +5146,19 @@ fn la_cadena_de_ancestros_solo_acepta_lo_que_la_politica_permite() {
         return;
     }
     let long = sb.long("Docs/etiquetada");
-    // Por defecto, rechazada (es un reparse point).
+    // Rejected by default (it is a reparse point).
     assert!(matches!(
         sys::open_reparse_free_dir(&long),
         Err(sys::ChainError::Reparse { .. })
     ));
-    // Con la política de la aprobación, también (su etiqueta no es de la nube).
+    // Rejected by the approval policy too (its tag is not a cloud tag).
     assert!(matches!(
         sys::open_chain_dir(&long, crate::plan::tolerated_ancestor),
         Err(sys::ChainError::Reparse { .. })
     ));
-    // Si quien llama la permite, se acepta (el mecanismo de tolerancia existe y es explícito).
+    // If the caller allows it, it is accepted (the tolerance mechanism is explicit).
     assert!(sys::open_chain_dir(&long, |_| true).is_ok());
-    // Un junction: rechazado con la política de la aprobación.
+    // A junction is rejected by the approval policy.
     sb.mkdir("Docs/real");
     sb.junction("Docs/enlace", "Docs/real");
     assert!(matches!(
@@ -5167,9 +5167,9 @@ fn la_cadena_de_ancestros_solo_acepta_lo_que_la_politica_permite() {
     ));
 }
 
-/// GM-B2: un ANCESTRO que es un junction se rechaza al aprobar (`ReparseAncestor`). Antes `GetFinalPathNameByHandleW` resolvía
-/// en silencio el junction y el plan sustituía la ruta pedida por la resuelta: lo aprobado y enviado a la Papelera era OTRA
-/// carpeta que la que el usuario marcó (`Real\...` en vez de `Enlace\...`).
+/// GM-B2: reject a junction ANCESTOR during approval (`ReparseAncestor`). Previously, `GetFinalPathNameByHandleW` silently
+/// resolved the junction and the plan replaced the requested path with the resolved one: a DIFFERENT folder from the one
+/// selected by the user was approved and sent to the Recycle Bin (`Real\...` instead of `Link\...`).
 #[test]
 fn un_ancestro_que_es_un_junction_se_rechaza_al_aprobar() {
     let mut sb = Sandbox::new();
@@ -5193,7 +5193,7 @@ fn un_ancestro_que_es_un_junction_se_rechaza_al_aprobar() {
             "{rel}"
         );
     }
-    // Control: la misma carpeta por su ruta real sí se aprueba, y con la ruta que se pidió.
+    // Control: approving the same folder through its real path succeeds and retains the requested path.
     let mut b = Basket::new();
     b.add_path(sb.long("Docs/real/dir"), c.protection());
     let plan = approve(&c, &b);
@@ -5201,8 +5201,8 @@ fn un_ancestro_que_es_un_junction_se_rechaza_al_aprobar() {
     assert_eq!(plan.items[0].path, sb.long("Docs/real/dir"));
 }
 
-/// GM-B2: las rutas que se pasan en forma 8.3 (el CI de GitHub tiene `%TEMP%` así) NO son enlaces: se aprueban. La comprobación
-/// recorre la cadena real, no compara textos.
+/// GM-B2: paths supplied in 8.3 form (GitHub CI has `%TEMP%` this way) are NOT links and are approved. The check
+/// traverses the actual path chain; it does not compare strings.
 #[test]
 fn una_ruta_en_forma_8_3_no_se_rechaza_como_ancestro_enlazado() {
     let sb = Sandbox::new();
@@ -5217,25 +5217,25 @@ fn una_ruta_en_forma_8_3_no_se_rechaza_como_ancestro_enlazado() {
     b.add_path(short.clone(), c.protection());
     let plan = approve(&c, &b);
     assert_eq!(plan.items.len(), 1, "{short:?}: {:?}", plan.rejected);
-    // El plan guarda la forma larga canónica.
+    // The plan stores the canonical long form.
     assert_eq!(plan.items[0].path, long);
 }
 
-/// GM-B2: un hijo que se cambia ENTRE el listado y la apertura (`Contenido de X`) se rechaza: se abre RELATIVO al handle de la
-/// carpeta y se compara con el `FileId` del listado. Antes se volvía a abrir por ruta y se capturaba la identidad del que
-/// hubiera ahora.
+/// GM-B2: reject a child replaced BETWEEN listing and opening (`Contents of X`): open it RELATIVE to the root handle and compare with the
+/// folder and compares it with the listing's `FileId`. Previously, it reopened by path and captured the identity of the
+/// is present now.
 #[test]
 fn un_hijo_cambiado_entre_el_listado_y_la_apertura_no_se_aprueba() {
     let sb = Sandbox::new();
     let c = cleaner_for(&sb);
     sb.write("Docs/a.txt", 1_000);
     sb.write("Docs/b.txt", 1_000);
-    // Control: sin carrera, los dos hijos se aprueban.
+    // Control: without a race, both children are approved.
     let mut b = Basket::new();
     b.add_contents_of(sb.long("Docs"), c.protection());
     let plan = approve(&c, &b);
     assert_eq!(plan.items.len(), 2, "{:?}", plan.rejected);
-    // Con carrera: justo antes de abrir `b.txt` se cambia por otro archivo (otro `FileId`).
+    // Race case: just before opening `b.txt`, replace it with another file (a different `FileId`).
     let swapped = Arc::new(AtomicBool::new(false));
     let target = sb.path("Docs/b.txt");
     let _hook = {
@@ -5262,10 +5262,10 @@ fn un_hijo_cambiado_entre_el_listado_y_la_apertura_no_se_aprueba() {
     );
 }
 
-/// S2 (auditoría): el chequeo posterior al recorrido de `fresh_size`, FIJADO EN SOLITARIO. Se llama a `fresh_size` directamente
-/// (sin la comprobación previa al envío ni el receptor): si el primer archivo contado crece durante el recorrido, la propia
-/// `fresh_size` devuelve "cambió desde la confirmación". Con el chequeo quitado devolvería `Ok` (la huella vista es la de lo
-/// que contó antes de crecer, igual a la aprobada). Control: sin cambio, `Ok` y la vigilancia queda en el elemento.
+/// S2 (audit): isolate and test the post-traversal `fresh_size` check. Call `fresh_size` directly (without the pre-send
+/// check or receiver): if the first counted file grows during traversal, `fresh_size` itself returns "changed since
+/// confirmation." Without the check it would return `Ok` (the observed fingerprint matches approval because it reflects
+/// the pre-growth size). Control: no change returns `Ok`, and monitoring remains on the item.
 #[test]
 fn fresh_size_por_si_sola_ve_lo_que_crecio_durante_el_recorrido() {
     for crece in [false, true] {
@@ -5317,7 +5317,7 @@ fn fresh_size_por_si_sola_ve_lo_que_crecio_durante_el_recorrido() {
     }
 }
 
-/// S1 (auditoría): una carpeta que ya cambió ANTES de escribir la línea de intención no deja un `recycle-begin` sin entrega.
+/// S1 (audit): a folder that changed BEFORE the intent line is written must not leave a `recycle-begin` without delivery.
 #[test]
 fn una_carpeta_cambiada_antes_de_la_intencion_no_deja_recycle_begin() {
     let sb = Sandbox::new();
@@ -5351,19 +5351,19 @@ fn una_carpeta_cambiada_antes_de_la_intencion_no_deja_recycle_begin() {
     }
 }
 
-/// A3-M2 (repetición de Astra): capacidad 100 000, la Papelera vacía al empezar la medida y con 99 000 ocupados al acabar el
-/// recorrido; una carpeta de 4 000 bytes se enviaba con la lectura vieja (vacía). Ahora la ocupación se lee también DESPUÉS
-/// del recorrido y manda la MAYOR de las dos: `NoRoom`, sin llegar a la shell.
+/// A3-M2 (Astra repeat): capacity 100,000; the Recycle Bin is empty when measurement starts and has 99,000 bytes used when
+/// traversal ends. A 4,000-byte folder was sent using the stale (empty) reading. Occupancy is now also read AFTER
+/// after traversal and use the HIGHER occupancy: `NoRoom`, without reaching the shell.
 #[test]
 fn una_papelera_que_se_llena_durante_la_medida_deja_el_directorio_sin_enviar() {
     for (lecturas, enviado) in [
-        // Antes 0, después 99 000: no cabe (la lectura de después manda).
+        // Before: 0; after: 99,000. It does not fit (the later reading applies).
         (vec![0u64, 99_000], false),
-        // Antes 88 000, después 0: manda la mayor, la de antes (presupuesto 2 000 < 4 096).
+        // Before: 88,000; after: 0. The larger earlier value applies (2,000 budget < 4,096).
         (vec![88_000, 0], false),
-        // Control: las dos vacías, se envía.
+        // Control: both reads are empty; the item is sent.
         (vec![0, 0], true),
-        // Control: ocupación media en las dos, cabe en lo que queda (90 000 - 50 000).
+        // Control: medium occupancy in both reads; it fits in the remaining capacity (90,000 - 50,000).
         (vec![50_000, 50_000], true),
     ] {
         let sb = Sandbox::new();
@@ -5389,12 +5389,12 @@ fn una_papelera_que_se_llena_durante_la_medida_deja_el_directorio_sin_enviar() {
             assert!(sb.path("Docs/d/f0.bin").exists());
             assert_eq!(rep.no_room, 1);
         }
-        // Dos lecturas por directorio: antes y después del recorrido.
+        // Two reads per directory: before and after traversal.
         assert!(flaky.calls.load(Ordering::SeqCst) >= 2, "{lecturas:?}");
     }
 }
 
-/// A3-M2: `BinRoom::worst` toma la MAYOR ocupación y la MENOR capacidad, y falla cerrado si falta un dato en cualquiera.
+/// A3-M2: `BinRoom::worst` takes the HIGHEST occupancy and LOWEST capacity, failing closed if either value is missing.
 #[test]
 fn la_peor_de_dos_lecturas_de_la_papelera() {
     let a = BinRoom {
@@ -5413,7 +5413,7 @@ fn la_peor_de_dos_lecturas_de_la_papelera() {
         }
     );
     assert_eq!(a.worst(b), b.worst(a));
-    // Sin ocupación en una de las dos: `None`, y `take_op` da `NoRoom`.
+    // If either occupancy is missing, the result is `None` and `take_op` returns `NoRoom`.
     let sin_uso = BinRoom {
         max: Some(100),
         used: None,
@@ -5423,12 +5423,12 @@ fn la_peor_de_dos_lecturas_de_la_papelera() {
     assert_eq!(a.worst(BinRoom::UNKNOWN), BinRoom::UNKNOWN);
 }
 
-/// A-B1: tras volver a medir se comprueba otra vez el presupuesto con la ocupación de AHORA. Si ya no cabe todo el grupo, lo que
-/// sobra vuelve al principio de la cola (y se envía en la operación siguiente); si ya no cabe ni el primero, no se envía.
+/// A-B1: after remeasurement, recheck the budget against CURRENT occupancy. If the whole group no longer fits, return the
+/// remaining items to the front of the queue (and send them in the next operation); if even the first item does not fit, send nothing.
 #[test]
 fn tras_volver_a_medir_se_vuelve_a_comprobar_el_presupuesto() {
-    // Capacidad 10 000 (presupuesto 9 000). Lecturas de la ocupación: 1.ª = 0 (decide un grupo de 3), 2.ª = 8 790 (solo caben
-    // 210 de presupuesto: caben dos de ~104) y las demás, 0.
+    // Capacity 10,000 (budget 9,000). Occupancy reads: first = 0 (forms a group of 3), second = 8,790 (210 budget remains,
+    // enough for two items of about 104); subsequent reads are 0.
     let sb = Sandbox::new();
     let fake = FakeShell::new(&sb, Some(10_000), 0, "nunca");
     let flaky = Arc::new(FlakyRoom {
@@ -5448,8 +5448,8 @@ fn tras_volver_a_medir_se_vuelve_a_comprobar_el_presupuesto() {
     }
     assert_eq!(fake.names(), vec![vec!["a", "b"], vec!["c"]]);
 
-    // Si la 2.ª lectura ya no deja sitio ni para el primero (presupuesto 50 < 104): ese no se envía (`NoRoom`) y los demás
-    // siguen su camino en la operación siguiente.
+    // If the second read leaves no room even for the first item (budget 50 < 104), it is not sent (`NoRoom`); the others
+    // continue in the next operation.
     let sb2 = Sandbox::new();
     let fake2 = FakeShell::new(&sb2, Some(10_000), 0, "nunca");
     let flaky2 = Arc::new(FlakyRoom {
@@ -5479,8 +5479,8 @@ fn tras_volver_a_medir_se_vuelve_a_comprobar_el_presupuesto() {
     assert_eq!(rep2.no_room, 1);
 }
 
-/// Abre `dir` con `dwShareMode = 0`: mientras viva, abrirla para listarla falla (`ERROR_SHARING_VIOLATION`). Es la forma de
-/// tener una subcarpeta que no se puede listar sin tocar permisos (nada que limpiar después).
+/// Open `dir` with `dwShareMode = 0`: while the handle is open, opening it for listing fails (`ERROR_SHARING_VIOLATION`). This lets us
+/// contain a subfolder that cannot be listed without changing permissions (nothing to clean afterward).
 fn lock_dir(dir: &Path) -> fs::File {
     use std::os::windows::fs::OpenOptionsExt;
     const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
@@ -5492,9 +5492,9 @@ fn lock_dir(dir: &Path) -> fs::File {
         .expect("abre la carpeta en exclusiva")
 }
 
-/// A-B2 (blocker): una medida INCOMPLETA no vale. Una subcarpeta que no se puede listar durante la nueva medida deja su
-/// contenido sin contar; antes `remeasure` aceptaba `Done` sin más y la carpeta se entregaba a la shell con un tamaño que no era
-/// el real. Ahora no se envía: "cambió desde la confirmación". Sin el bloqueo (control), se envía.
+/// A-B2 (blocker): an INCOMPLETE measurement is invalid. A subfolder that cannot be listed during remeasurement leaves its
+/// contents without counting it; previously, `remeasure` accepted `Done` and the folder was sent to the shell with an
+/// incorrect size. Now it is not sent: "changed since confirmation." Without the lock (control), it is sent.
 #[test]
 fn una_subcarpeta_que_no_se_puede_listar_al_volver_a_medir_impide_el_envio() {
     let sb = Sandbox::new();
@@ -5516,21 +5516,21 @@ fn una_subcarpeta_que_no_se_puede_listar_al_volver_a_medir_impide_el_envio() {
     assert!(fake.names().is_empty(), "no llegó a la shell");
     assert!(sb.path("Docs/carpeta/sub/dentro.bin").exists());
     assert!(rep.totals.changed >= 1);
-    // También en simulación (que mide lo mismo que el envío real).
+    // Also in a dry run (which measures the same way as a real send).
     let dry = exec(&c, &plan, true, false, None).unwrap();
     assert_eq!(
         dry.items[0].status,
         ItemStatus::Root(crate::engine::RootStatus::Changed)
     );
-    // Control: sin el bloqueo, el mismo plan se envía.
+    // Control: without the lock, the same plan is sent.
     drop(lock);
     let rep2 = exec(&c, &plan, false, false, None).unwrap();
     assert_eq!(rep2.items[0].status, ItemStatus::Recycled);
     assert_eq!(fake.names(), vec![vec!["carpeta"]]);
 }
 
-/// m-2: una cancelación a MITAD de la nueva medida (no solo ya activa al empezar) no es una medida: `remeasure` devuelve
-/// `Cancelled` aunque el recorrido terminara con la raíz abierta y sin errores contados.
+/// m-2: cancellation MIDWAY through a new measurement (not only cancellation already active at the start) invalidates the
+/// measurement: `remeasure` returns `Cancelled` even if traversal finished with the root open and no counted errors.
 #[test]
 fn una_cancelacion_a_mitad_de_la_nueva_medida_no_es_una_medida() {
     let sb = Sandbox::new();
@@ -5554,9 +5554,9 @@ fn una_cancelacion_a_mitad_de_la_nueva_medida_no_es_una_medida() {
     assert!(flag.load(Ordering::SeqCst));
 }
 
-/// m-4: una carpeta de la que ya al APROBAR no se puede leer algo (una subcarpeta bloqueada) con destino Papelera se rechaza
-/// con su propio motivo ("no se pudo leer entera"), en vez de aprobarse con una estimación corta y fallar SIEMPRE al
-/// ejecutar con "cambió desde la confirmación". Lo que va a borrado definitivo por reglas no se ve afectado.
+/// m-4: reject a folder destined for the Recycle Bin if it already contains unreadable content DURING APPROVAL (a locked subfolder)
+/// with its own reason ("could not be fully read"), rather than being approved with an underestimated size and ALWAYS
+/// failing during execution as "changed since confirmation." Items permanently deleted by rules are unaffected.
 #[test]
 fn una_carpeta_que_no_se_puede_leer_entera_no_se_aprueba_para_la_papelera() {
     let sb = Sandbox::new();
@@ -5578,7 +5578,7 @@ fn una_carpeta_que_no_se_puede_leer_entera_no_se_aprueba_para_la_papelera() {
         RejectReason::Incomplete(n) if n >= 1
     ));
     assert!(plan.rejected[0].path.ends_with("carpeta"));
-    // Sin el bloqueo, se aprueba y se envía con normalidad.
+    // Without the lock, it is approved and sent normally.
     drop(lock);
     let plan = approve(&c, &basket());
     assert_eq!(plan.items.len(), 1, "{:?}", plan.rejected);
@@ -5588,9 +5588,9 @@ fn una_carpeta_que_no_se_puede_leer_entera_no_se_aprueba_para_la_papelera() {
     );
 }
 
-/// R-4: `BinReport.changed` cuenta los elementos a los que se atribuye un veto por su DUEÑO (el `$R` de su carpeta), no por
-/// la ruta vetada, que con la shell real puede ser la de un hijo; un elemento con varios vetos cuenta una vez, y lo que no es
-/// de la lista no cuenta.
+/// R-4: `BinReport.changed` counts items whose veto is attributed to their OWNER (the folder's `$R`), not by
+/// the vetoed path, which may be a child path with the real shell. Count an item with multiple vetoes once; do not count items outside
+/// the list.
 #[test]
 fn los_cambiados_de_la_papelera_cuentan_el_dueno_del_veto_y_no_la_ruta() {
     let id = |n: &str| OsString::from(format!("C:\\$Recycle.Bin\\S-x\\{n}"));
@@ -5606,12 +5606,12 @@ fn los_cambiados_de_la_papelera_cuentan_el_dueno_del_veto_y_no_la_ruta() {
         p.push("\\sub\\hijo.txt");
         p
     };
-    // Un veto de un HIJO de `a`: cuenta `a` (con la ruta del hijo no estaría en la lista).
+    // A veto for a CHILD of `a` counts `a` (the child's path would not appear in the list).
     assert_eq!(
         bin_changed(0, &[veto(child(&a), Some(a.clone()))], &wanted),
         1
     );
-    // Dos vetos del mismo elemento y uno de otro: 2; sumados a los que no cuadraban al enumerar.
+    // Two vetoes for one item and one for another: count 2, plus enumeration mismatches.
     let vetoes = [
         veto(child(&a), Some(a.clone())),
         veto(a.clone(), Some(a.clone())),
@@ -5619,13 +5619,13 @@ fn los_cambiados_de_la_papelera_cuentan_el_dueno_del_veto_y_no_la_ruta() {
     ];
     assert_eq!(bin_changed(0, &vetoes, &wanted), 2);
     assert_eq!(bin_changed(3, &vetoes, &wanted), 5);
-    // Un veto de algo que no es de la lista no cuenta.
+    // A veto for an item outside the list does not count.
     assert_eq!(bin_changed(0, &[veto(ajeno.clone(), None)], &wanted), 0);
     assert_eq!(bin_changed(1, &[], &wanted), 1);
 }
 
-/// Las pruebas no dependen de si el proceso que las lanza está elevado (los ejecutores de CI lo están): un `Cleaner` de pruebas
-/// no está elevado por defecto, y la elevación solo se inyecta donde se prueba E1.
+/// Tests do not depend on whether their process is elevated (some CI runners are): a test `Cleaner` is not elevated by
+/// default, and elevation is injected only in tests for E1.
 #[test]
 fn un_cleaner_de_pruebas_no_esta_elevado_por_defecto() {
     let sb = Sandbox::new();
@@ -5638,7 +5638,7 @@ fn un_cleaner_de_pruebas_no_esta_elevado_por_defecto() {
     );
 }
 
-/// E1: una elevación inyectada para probar las dos ramas (el CI no se puede elevar).
+/// E1: inject elevation to test both branches (CI cannot elevate itself).
 struct FakeElevation(bool);
 
 impl Elevation for FakeElevation {
@@ -5647,8 +5647,8 @@ impl Elevation for FakeElevation {
     }
 }
 
-/// E1: ELEVADO no se limpia. La limpieza real (definitivo y Papelera) devuelve `ExecError::Elevated` sin tocar nada y sin
-/// dejar registro; el análisis (aprobar) y la simulación siguen permitidos. Sin elevar, el mismo plan se ejecuta.
+/// E1: do not clean while ELEVATED. Real cleaning (permanent deletion or Recycle Bin) returns `ExecError::Elevated`, touching nothing and
+/// logging; analysis (approval) and dry runs remain allowed. Without elevation, the same plan executes.
 #[test]
 fn elevado_no_se_limpia_pero_si_se_analiza_y_se_simula() {
     let sb = Sandbox::new();
@@ -5662,13 +5662,13 @@ fn elevado_no_se_limpia_pero_si_se_analiza_y_se_simula() {
     let mut b = Basket::new();
     b.set_category(CategoryId::UserTemp, true);
     b.add_path(sb.long("Docs/b.txt"), c.protection());
-    // El análisis (aprobar) se permite elevado.
+    // Analysis (approval) is allowed while elevated.
     let plan = approve(&c, &b);
     assert_eq!(plan.items.len(), 2, "{:?}", plan.rejected);
-    // La simulación también.
+    // Dry run is allowed too.
     let dry = exec(&c, &plan, true, false, None).unwrap();
     assert!(dry.dry_run);
-    // La limpieza real, no: error tipado, nada tocado, el registro de la ejecución descartado.
+    // Real cleaning is not: typed error, nothing touched, and the execution log discarded.
     let log = Arc::new(LogWriter::create(&sb.path("Tesela"), false).unwrap());
     let log_path = log.path().to_path_buf();
     let r = c.execute(
@@ -5686,13 +5686,13 @@ fn elevado_no_se_limpia_pero_si_se_analiza_y_se_simula() {
         !log_path.exists(),
         "una ejecución rechazada no deja registro"
     );
-    // También con el helper de las pruebas (que añade su propio registro).
+    // Also with the test helper (which adds its own log).
     assert_eq!(
         exec(&c, &plan, false, false, None).err(),
         Some(ExecError::Elevated)
     );
     assert!(sb.path("Docs/b.txt").exists());
-    // Sin elevar, el mismo plan se ejecuta.
+    // Without elevation, the same plan executes.
     let c2 = cleaner_for(&sb)
         .with_shell(fake.clone())
         .with_elevation(Arc::new(FakeElevation(false)));
@@ -5708,8 +5708,8 @@ fn elevado_no_se_limpia_pero_si_se_analiza_y_se_simula() {
     assert!(!sb.path("Temp/viejo.tmp").exists() && !sb.path("Docs/b.txt").exists());
 }
 
-/// E1: vaciar la Papelera tampoco se hace elevado, ni por `execute` (rechazo completo) ni llamando directamente a `empty_bin`
-/// (segunda línea de defensa): no se purga nada y consta como fallo.
+/// E1: do not purge the Recycle Bin while elevated, either through `execute` (full rejection) or direct calls to `empty_bin`
+/// (second line of defense): nothing is purged, and the failure is recorded.
 #[test]
 fn elevado_no_se_vacia_la_papelera() {
     let sb = Sandbox::new();
@@ -5728,10 +5728,10 @@ fn elevado_no_se_vacia_la_papelera() {
     let rep = c.empty_bin(std::slice::from_ref(&item), 1, false, &cancel, None, None);
     assert_eq!((rep.requested, rep.purged, rep.still_there), (1, 0, 1));
     assert!(rep.failed, "elevado: no se pudo vaciar");
-    // La simulación (dry) sigue contando lo que se purgaría.
+    // Dry run still counts what would be purged.
     let dry = c.empty_bin(std::slice::from_ref(&item), 1, true, &cancel, None, None);
     assert_eq!((dry.purged, dry.failed), (1, false));
-    // Y `execute` con un plan que SOLO vacía la Papelera: rechazado entero.
+    // `execute` with a plan that ONLY purges the Recycle Bin is also rejected entirely.
     let mut plan = Plan::default();
     plan.bin = Some(crate::plan::BinPlan {
         items: vec![item],
@@ -5743,8 +5743,8 @@ fn elevado_no_se_vacia_la_papelera() {
     );
 }
 
-/// E1: la consulta REAL del token da `false` en un proceso normal (el CI y esta máquina no están elevados); si lo estuviera,
-/// la prueba se salta con un mensaje (no se puede asegurar nada). Nunca es `None` en un proceso normal.
+/// E1: a REAL token query returns `false` in a normal process (CI and this machine are not elevated); if it were elevated,
+/// the test is skipped with a message (nothing can be guaranteed). It is never `None` in a normal process.
 #[test]
 fn el_proceso_de_pruebas_no_esta_elevado_segun_el_token() {
     let state = crate::sys::process_elevation();
@@ -5754,11 +5754,11 @@ fn el_proceso_de_pruebas_no_esta_elevado_segun_el_token() {
         return;
     }
     assert_eq!(state, Some(false));
-    // Falla cerrado: sin poder consultar el token, elevado.
+    // Fail closed: inability to query the token is treated as elevated.
     assert!(elevated_from(None));
     assert!(elevated_from(Some(true)) && !elevated_from(Some(false)));
     assert!(!RealElevation.is_elevated());
-    // `Cleaner::new` usa "no elevado" en las pruebas (ver `NotElevated`); con la consulta real inyectada, también `false`.
+    // `Cleaner::new` uses "not elevated" in tests (see `NotElevated`); injecting the real query also returns `false`.
     assert!(!Cleaner::new(Roots::default()).is_elevated());
     assert!(
         !Cleaner::new(Roots::default())
@@ -5767,10 +5767,10 @@ fn el_proceso_de_pruebas_no_esta_elevado_segun_el_token() {
     );
 }
 
-/// A-B2 + A2-m1: una medida incompleta no demuestra NADA en el juicio R6 (`dir_check`: ni intacto ni cambiado, `Unknown`), y
-/// `remeasure` la distingue de una
-/// completa por cualquiera de sus causas: una subcarpeta que no se puede listar, un hijo que desaparece entre el listado y la
-/// apertura, o la cancelación a mitad del recorrido.
+/// A-B2 + A2-m1: an incomplete measurement proves NOTHING for R6 judgment (`dir_check`: neither intact nor changed, `Unknown`), and
+/// `remeasure` distinguishes it from a
+/// is incomplete for any of these reasons: an unlistable subfolder, a child disappearing between listing and opening,
+/// opening, or cancellation midway through traversal.
 #[test]
 fn una_medida_incompleta_nunca_demuestra_que_nada_cambio() {
     let sb = Sandbox::new();
@@ -5794,7 +5794,7 @@ fn una_medida_incompleta_nunca_demuestra_que_nada_cambio() {
         DirCheck::Intact,
         "sin cambios: intacto"
     );
-    // (1) Una subcarpeta que no se puede listar.
+    // (1) A subfolder cannot be listed.
     {
         let _lock = lock_dir(&sb.path("Docs/carpeta/sub"));
         assert!(matches!(c.remeasure(it, &cancel()), Remeasure::Incomplete));
@@ -5809,7 +5809,7 @@ fn una_medida_incompleta_nunca_demuestra_que_nada_cambio() {
         DirCheck::Intact,
         "soltada, vuelve a valer"
     );
-    // (2) Un hijo que desaparece justo antes de abrirlo (ya listado).
+    // (2) A child disappears just before opening (after listing).
     {
         let victim = sb.path("Docs/carpeta/f1.bin");
         let _hook = crate::engine::test_hooks::install(sb.long("Docs"), move |q| {
@@ -5819,22 +5819,22 @@ fn una_medida_incompleta_nunca_demuestra_que_nada_cambio() {
         });
         assert!(matches!(c.remeasure(it, &cancel()), Remeasure::Incomplete));
     }
-    // (3) Cancelada a mitad: no se acepta como medida.
+    // (3) Cancelled midway: not accepted as a measurement.
     let cancelled = Arc::new(AtomicBool::new(true));
     assert!(matches!(c.remeasure(it, &cancelled), Remeasure::Cancelled));
     assert_eq!(c.dir_check(it, &p, &cancelled), DirCheck::Unknown);
-    // (4) Una medida COMPLETA que difiere: eso sí es un cambio (se perdió un hijo).
+    // (4) A COMPLETE measurement that differs: that is a change (a child was lost).
     fs::remove_file(sb.path("Docs/carpeta/f1.bin")).ok();
     assert_eq!(c.dir_check(it, &p, &cancel()), DirCheck::Changed);
-    // (5) Sin medida anterior con la que comparar, tampoco se afirma nada.
+    // (5) Without a previous measurement for comparison, make no claim either.
     p.snapshot = None;
     assert_eq!(c.dir_check(it, &p, &cancel()), DirCheck::Unknown);
 }
 
-/// A2-m1 (repetición de Astra): la shell simulada devuelve acceso denegado SIN tocar nada y un bloqueo exclusivo impide volver a
-/// leer una subcarpeta al comprobar el contenido. Antes ese "no se pudo comprobar" se contaba como pérdida confirmada
-/// (`DeletedUnexpectedly`, "se eliminó definitivamente"); ahora es `Unverified` ("no se pudo comprobar qué pasó"): no se afirma
-/// ninguna pérdida, y el envío se detiene igualmente (lo siguiente no se toca).
+/// A2-m1 (Astra repeat): the fake shell returns access denied WITHOUT touching anything, and an exclusive lock prevents
+/// rereading a subfolder during the content check. Previously, "could not verify" was counted as confirmed loss
+/// (`DeletedUnexpectedly`, "permanently deleted"); now it is `Unverified` ("could not determine what happened"): no loss
+/// is claimed, and sending still stops (later items remain untouched).
 #[test]
 fn una_comprobacion_que_no_se_pudo_hacer_no_se_cuenta_como_perdida_y_detiene_el_envio() {
     let sb = Sandbox::new();
@@ -5848,8 +5848,8 @@ fn una_comprobacion_que_no_se_pudo_hacer_no_se_cuenta_como_perdida_y_detiene_el_
     b.add_path(sb.long("Docs/d2"), c.protection());
     let plan = approve(&c, &b);
     assert_eq!(plan.items.len(), 2, "{:?}", plan.rejected);
-    // El bloqueo llega JUSTO antes de entregar la carpeta a la shell: después de medirla entera (si no, `fresh_size` ya no
-    // la enviaría) y antes de la comprobación posterior.
+    // The lock arrives RIGHT before sending the folder to the shell: after measuring it completely (otherwise `fresh_size`
+    // would already reject it) and before the post-send check.
     let sub = sb.path("Docs/deniega-d1/sub");
     let lock: Arc<Mutex<Option<fs::File>>> = Arc::new(Mutex::new(None));
     let l2 = lock.clone();
@@ -5886,8 +5886,8 @@ fn una_comprobacion_que_no_se_pudo_hacer_no_se_cuenta_como_perdida_y_detiene_el_
     drop(lock.lock().unwrap().take());
 }
 
-/// Un error de la shell o de COM al enviar consta en el registro local (con su HRESULT) y en el informe (para el resumen);
-/// los elementos quedan sin tocar.
+/// A shell or COM send error is recorded in the local log (with its HRESULT) and in the report (for the summary);
+/// items remain untouched.
 #[test]
 fn un_error_de_la_shell_consta_en_el_registro_y_en_el_informe() {
     let sb = Sandbox::new();
@@ -5897,7 +5897,7 @@ fn un_error_de_la_shell_consta_en_el_registro_y_en_el_informe() {
     let log = Arc::new(LogWriter::create(&sb.path("Tesela"), false).unwrap());
     let rep = exec(&c, &plan, false, false, Some(log.clone())).unwrap();
     assert_eq!(rep.shell_error, Some(0x8000_4005u32 as i32));
-    // Sin eventos: nada se movió y los elementos siguen en su sitio, como no procesados.
+    // No events: nothing moved, and items remain in place as unprocessed.
     for n in ["a.txt", "b.txt"] {
         let it = rep.items.iter().find(|i| i.path.ends_with(n)).unwrap();
         assert_eq!(
@@ -5915,7 +5915,7 @@ fn un_error_de_la_shell_consta_en_el_registro_y_en_el_informe() {
         line.contains("80004005") && line.contains("fallo simulado"),
         "{line}"
     );
-    // Un envío sin errores no deja `shell_error`.
+    // A send without errors leaves `shell_error` unset.
     let sb2 = Sandbox::new();
     let ok = FakeShell::new(&sb2, Some(10_000), 0, "nunca");
     let c2 = cleaner_for(&sb2).with_shell(ok);
@@ -5932,27 +5932,27 @@ fn take_op_es_una_funcion_pura_con_las_reglas_del_reparto() {
         max: Some(max),
         used: Some(used),
     };
-    // Sin capacidad ni ocupación conocidas: nunca se envía (B2).
+    // Without known capacity or occupancy, nothing is sent (B2).
     assert_eq!(take_op(&[10, 10], BinRoom::UNKNOWN), Take::NoRoom);
     let sin_max = BinRoom {
         max: None,
         used: Some(0),
     };
     assert_eq!(take_op(&[1], sin_max), Take::NoRoom);
-    // Todo lo pequeño junto mientras quepa en el presupuesto (90 % de 10 000 menos lo ocupado).
+    // Group all small items while they fit in the budget (90% of 10,000 minus current occupancy).
     assert_eq!(take_op(&[300, 300, 300], room(10_000, 0)), Take::Send(3));
     assert_eq!(
         take_op(&[300, 300, 300], room(10_000, 8_400)),
         Take::Send(2)
     );
-    // Un elemento que pasa del 10 % va solo, sea el primero o el que cortaría el grupo.
+    // An item over 10% goes alone, whether it is first or would otherwise split the group.
     assert_eq!(take_op(&[1_500, 10], room(10_000, 0)), Take::Send(1));
     assert_eq!(take_op(&[100, 1_500, 100], room(10_000, 0)), Take::Send(1));
-    // El primero no cabe en lo que queda: no se envía; con la capacidad justa (un 90 %), sí.
+    // If the first item does not fit in the remaining space, it is not sent; with exactly enough capacity (90%), it is.
     assert_eq!(take_op(&[600, 10], room(10_000, 8_700)), Take::NoRoom);
     assert_eq!(take_op(&[9_000], room(10_000, 0)), Take::Send(1));
     assert_eq!(take_op(&[9_001], room(10_000, 0)), Take::NoRoom);
-    // Sin ocupación conocida: no se envía (antes iba solo si cabía en una Papelera vacía).
+    // Unknown occupancy means nothing is sent (previously, an item was sent alone if it fit in an empty Recycle Bin).
     let sin_uso = BinRoom {
         max: Some(10_000),
         used: None,
@@ -5960,14 +5960,14 @@ fn take_op_es_una_funcion_pura_con_las_reglas_del_reparto() {
     assert_eq!(take_op(&[800, 800], sin_uso), Take::NoRoom);
     assert_eq!(take_op(&[1], sin_uso), Take::NoRoom);
     assert_eq!(take_op(&[9_500], sin_uso), Take::NoRoom);
-    // Una lista vacía no envía nada.
+    // An empty list sends nothing.
     assert_eq!(take_op(&[], BinRoom::UNKNOWN), Take::Send(0));
 }
 
-/// GM-m6: el encaje al aprobar (`fit_decide`) y el reparto al ejecutar (`take_op`) usan la MISMA cuenta del 90 % y del 10 %
-/// (`bin_cap`, `bin_big`). Antes uno hacía `bytes * 100 > max * 90` y el otro `max / 10 * 9`: con una capacidad que no es
-/// múltiplo de 10 discrepaban en el borde y un elemento podía "encajar" al aprobar y quedar `NoRoom` al ejecutar (o al
-/// revés). Se barre el borde con capacidades de todas las formas, incluida una enorme sin desbordar.
+/// GM-m6: approval fit (`fit_decide`) and execution batching (`take_op`) use the SAME 90% and 10% calculations
+/// (`bin_cap`, `bin_big`). Previously one used `bytes * 100 > max * 90` and the other `max / 10 * 9`: for capacities not
+/// divisible by 10, they disagreed at the boundary, so an item could "fit" during approval and get `NoRoom` during
+/// execution (or vice versa). Test the boundary across many capacity values, including a huge one without overflow.
 #[test]
 fn el_encaje_y_el_reparto_usan_la_misma_cuenta_del_90_por_ciento() {
     use crate::plan::{BinFacts, bin_big, bin_cap, fit_decide};
@@ -6002,7 +6002,7 @@ fn el_encaje_y_el_reparto_usan_la_misma_cuenta_del_90_por_ciento() {
             assert_eq!(fits, sent, "max {max} bytes {bytes}");
             assert_eq!(fits, bytes <= cap, "max {max} bytes {bytes}");
         }
-        // Lo "grande" (más del 10 %) va solo; lo que no pasa de ahí se agrupa si cabe.
+        // "Large" items (over 10%) go alone; smaller ones are grouped if they fit.
         let big = bin_big(max);
         assert_eq!(big as u128, (max as u128) * 10 / 100, "{max}");
         if big > 0 && big < u64::MAX / 4 {
@@ -6016,9 +6016,9 @@ fn el_encaje_y_el_reparto_usan_la_misma_cuenta_del_90_por_ciento() {
     }
 }
 
-/// GM-M3: una carpeta con archivos de un solo enlace Y archivos con varios enlaces cuenta los dos conjuntos (son disjuntos)
-/// contra la Papelera. Con el máximo de los dos (lo anterior) una Papelera simulada cuyo 90 % cae entre las dos cuentas
-/// encajaba la carpeta y la shell la habría contado entera y eliminado.
+/// GM-M3: a folder containing single-link files AND multiply linked files counts both sets (they are disjoint)
+/// against the Recycle Bin. Using the larger of the two (previous behavior), a simulated Recycle Bin whose 90% threshold
+/// fell between the two calculations accepted the folder, and the shell would have counted and deleted it.
 #[test]
 fn una_carpeta_con_enlaces_duros_cuenta_bytes_y_compartidos_para_encajar() {
     let sb = Sandbox::new();
@@ -6026,7 +6026,7 @@ fn una_carpeta_con_enlaces_duros_cuenta_bytes_y_compartidos_para_encajar() {
     let c = cleaner_for(&sb).with_shell(big);
     sb.write("Docs/hl/a.bin", 10_000);
     sb.write("Docs/hl/b.bin", 10_000);
-    // `b.bin` tiene otro nombre fuera de la carpeta: su espacio es de la clase "compartido".
+    // `b.bin` has another name outside the folder, so its space is in the "shared" class.
     sb.hard_link("Docs/hl/b.bin", "Docs/otro-nombre.bin");
     let mut b = Basket::new();
     b.add_path(sb.long("Docs/hl"), c.protection());
@@ -6038,7 +6038,7 @@ fn una_carpeta_con_enlaces_duros_cuenta_bytes_y_compartidos_para_encajar() {
     let new = est.recycle_charge();
     assert_eq!(new, (est.bytes + est.shared_bytes).max(est.logical));
     assert!(new > old, "la suma supera al máximo: {est:?}");
-    // Una capacidad cuyo 90 % cae entre las dos cuentas: con la anterior encajaba; con la correcta, no.
+    // Capacity whose 90% threshold falls between the two calculations: it fit before, but correctly does not now.
     let max = (old + new) / 2 * 100 / 90 + 1;
     assert!(old <= crate::plan::bin_cap(max) && crate::plan::bin_cap(max) < new);
     let tight = FakeShell::new(&sb, Some(max), 0, "nunca");
@@ -6052,9 +6052,9 @@ fn una_carpeta_con_enlaces_duros_cuenta_bytes_y_compartidos_para_encajar() {
     assert!(tight.names().is_empty());
 }
 
-/// GM-M3 (de punta a punta, con el encaje REAL): una carpeta con un descendiente cuya ruta pasa de los 258 caracteres no se
-/// ofrece para la Papelera aunque la ruta de la propia carpeta sea corta. Los nombres con caracteres fuera del plano básico
-/// pesan más en bytes que en unidades UTF-16: el recuento es en unidades (antes `as_os_str().len()`, bytes).
+/// GM-M3 (end to end, with the REAL fit check): a folder with a descendant path longer than 258 characters is not
+/// presented to the Recycle Bin even when the folder's own path is short. Names with supplementary-plane characters take
+/// more bytes than UTF-16 code units: count code units (previously `as_os_str().len()` counted bytes).
 #[test]
 fn un_descendiente_de_ruta_demasiado_larga_deja_la_carpeta_sin_papelera() {
     let sb = Sandbox::new();
@@ -6067,8 +6067,8 @@ fn un_descendiente_de_ruta_demasiado_larga_deja_la_carpeta_sin_papelera() {
     let plan = approve(&c, &b);
     assert_eq!(plan.items.len(), 1, "{:?}", plan.rejected);
     let it = &plan.items[0];
-    // La propia carpeta es más corta que su descendiente más profundo en 4 segmentos de 60 y sus barras, sea cual sea la
-    // longitud de `%TEMP%`: lo que pasa de 258 es el DESCENDIENTE, no la carpeta aprobada.
+    // The folder itself is shorter than its deepest descendant, which has four 60-character segments and separators, regardless of the
+    // `%TEMP%` length: the DESCENDANT, not the approved folder, exceeds 258 characters.
     assert!(
         it.estimate.max_path as usize >= crate::plan::path_units(&it.path) + 4 * 61,
         "{:?}",
@@ -6076,16 +6076,16 @@ fn un_descendiente_de_ruta_demasiado_larga_deja_la_carpeta_sin_papelera() {
     );
     assert!(it.estimate.max_path > 258, "{:?}", it.estimate);
     assert_eq!(it.fit, Fit::Unfit(UnfitReason::PathTooLong), "{it:?}");
-    // Y `path_units` cuenta unidades UTF-16, no bytes.
+    // `path_units` counts UTF-16 code units, not bytes.
     let p = Path::new("C:\\😀é");
     assert_eq!(crate::plan::path_units(p), 6);
     assert_eq!(p.as_os_str().len(), 9);
 }
 
-/// M-C con la shell REAL, de forma segura: un archivo disperso de miles de GiB lógicos (no ocupa nada) entre dos pequeños.
-/// Lo que ocupa de verdad (su tamaño lógico) manda sobre la estimación: como pasa de lo aprobado no se envía ("cambió desde la
-/// confirmación", A-B1; antes `NoRoom`: ambas lo dejan sin tocar) y los pequeños llegan bien a la Papelera, cada uno en su
-/// operación. La shell real nunca ve el enorme, así que no puede eliminarlo ni expulsar nada ajeno.
+/// M-C with the REAL shell, safely: a sparse file with thousands of GiB of logical size (occupying no disk space) between
+/// two small files. Actual size (logical size) overrides the estimate; because it exceeds approval, it is not sent
+/// ("changed since confirmation," A-B1; previously `NoRoom`, both leaving it untouched). The small files reach the Recycle
+/// Bin in separate operations. The real shell never sees the huge file and cannot delete it or evict unrelated items.
 #[test]
 fn con_la_shell_real_un_disperso_enorme_no_se_envia_y_los_pequenos_llegan_bien() {
     let _lock = bin_lock();
@@ -6096,7 +6096,7 @@ fn con_la_shell_real_un_disperso_enorme_no_se_envia_y_los_pequenos_llegan_bien()
     let sb = Sandbox::new();
     let _guard = BinGuard { uuid: sb.uuid() };
     let c = cleaner_for(&sb);
-    // Hace falta una capacidad conocida: sin ella el reparto no se puede probar (cada uno iría solo).
+    // Capacity must be known; otherwise batching cannot be tested (each item would go alone).
     let room =
         crate::exec::RealShell.bin_room(&crate::volume::volume_root(&sb.long_root()).unwrap());
     if room.max.is_none() {
@@ -6116,8 +6116,8 @@ fn con_la_shell_real_un_disperso_enorme_no_se_envia_y_los_pequenos_llegan_bien()
     }
     let mut plan = approve(&c, &b);
     assert_eq!(plan.items.len(), 3);
-    // En el plan honrado el enorme ya sale como "no cabe" (grupo ámbar). Se FALSEA su estimación para que el plan lo dé
-    // por bueno: es justo el caso de una estimación que se queda corta, que el tamaño real corrige.
+    // With an honest plan, the huge item is already "too large" (amber group). FORGE its estimate so the plan accepts it:
+    // this simulates an underestimated size, which the actual size must correct.
     for it in &mut plan.items {
         if it.path.ends_with("enorme.bin") {
             assert!(it.is_unfit());
@@ -6154,8 +6154,8 @@ fn con_la_shell_real_un_disperso_enorme_no_se_envia_y_los_pequenos_llegan_bien()
     assert_eq!(ids(), before);
 }
 
-/// Un `Pending` de prueba: la guarda está abierta sobre `held_path` (su ruta final es la que cuenta para "está en la
-/// Papelera"); `path` es el nombre aprobado.
+/// A test `Pending`: the guard is open on `held_path` (its final path determines whether it is "in the
+/// Recycle Bin"); `path` is the approved name.
 fn pending(identity: FileIdentity, path: &Path, held_path: &Path) -> Pending {
     Pending {
         path: path.to_path_buf(),
@@ -6178,8 +6178,8 @@ fn ident(n: u128) -> FileIdentity {
     }
 }
 
-/// El juicio por elemento sale de lo que dijo la shell: identidad igual / distinta, eliminado, error, sin aviso. Y
-/// `Recycled` exige además que el nombre aprobado ya no exista y que el objeto de la guarda esté en una Papelera.
+/// Per-item judgment comes from the shell result: identity same/different, deleted, error, or no notification. And
+/// `Recycled` also requires that the approved name no longer exists and that the guarded object is in a Recycle Bin.
 #[test]
 fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
     use crate::recycle::{BinState, DeleteEvent};
@@ -6187,7 +6187,7 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
     let bin_file = sb.write("bin/R1.txt", 10);
     let shell = FakeShell::new(&sb, None, 0, "nunca");
     let shell: &dyn RecycleShell = shell.as_ref();
-    // `bin/` hace de Papelera; el nombre aprobado (relativo, inexistente) "ya no está".
+    // `bin/` serves as the Recycle Bin; the approved name (relative and nonexistent) is "gone."
     let fake_bin = sb.long("bin");
     let shell_bin = {
         struct B(PathBuf);
@@ -6219,34 +6219,34 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
         hr,
         state,
     };
-    // Misma identidad, el nombre aprobado ya no existe y el objeto de la guarda está en la Papelera -> enviado.
+    // Same identity, approved name is gone, and guarded object is in the Recycle Bin -> sent.
     let p = pending(id, gone, &bin_file);
     let e = ev(0, BinState::InBin(bin_file.clone()));
     assert_eq!(
         judge(&p, Some(&e), shell, false, false).0,
         ItemStatus::Recycled
     );
-    // ...pero si el nombre aprobado SIGUE existiendo (otro nombre del mismo objeto llegó a la Papelera), no.
+    // ...but not if the approved name STILL exists (another name for the same object was sent to the Recycle Bin).
     let p_name = pending(id, &bin_file, &bin_file);
     assert_eq!(
         judge(&p_name, Some(&e), shell, false, false).0,
         ItemStatus::RecycledOther
     );
-    // ...ni si el objeto de la guarda NO está en la Papelera (sigue en su sitio con otro nombre).
+    // ...nor if the guarded object is NOT in the Recycle Bin (it remains in place under another name).
     let fuera = sb.write("Docs/vivo.txt", 10);
     let p_fuera = pending(id, gone, &fuera);
     assert_eq!(
         judge(&p_fuera, Some(&e), shell, false, false).0,
         ItemStatus::RecycledOther
     );
-    // ...ni si el número de enlaces del objeto cambió respecto a lo comprobado (se le añadió otro nombre).
+    // ...nor if the object's link count changed since verification (another name was added).
     let mut p_links = pending(id, gone, &bin_file);
     p_links.links = 3;
     assert_eq!(
         judge(&p_links, Some(&e), shell, false, false).0,
         ItemStatus::RecycledOther
     );
-    // Otra identidad -> se movió a la Papelera un objeto distinto del aprobado.
+    // Different identity -> a different object from the approved one was moved to the Recycle Bin.
     let p2 = pending(ident(id.file_id ^ 1), gone, &bin_file);
     assert_eq!(
         judge(&p2, Some(&e), shell, false, false).0,
@@ -6264,12 +6264,12 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
         judge(&p3, Some(&e), shell, false, false).0,
         ItemStatus::RecycledOther
     );
-    // La shell lo eliminó definitivamente (`psiNewlyCreated` nulo) y el nombre ya no está.
+    // The shell permanently deleted it (`psiNewlyCreated` is null), and the name is gone.
     assert_eq!(
         judge(&p, Some(&ev(0, BinState::Deleted)), shell, false, false).0,
         ItemStatus::DeletedUnexpectedly
     );
-    // H2: nulo con éxito pero el elemento SIGUE en su sitio: la shell no tocó nada (no se dice que se eliminó).
+    // H2: null with success, but the item STILL remains in place: the shell touched nothing (do not report deletion).
     let here_ev = DeleteEvent {
         item: OsString::from(bin_file.as_os_str()),
         hr: 0x0027_0003,
@@ -6280,7 +6280,7 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
         judge(&p_here, Some(&here_ev), shell, false, false).0,
         ItemStatus::NotRecycled(RecycleFail::Shell(0x0027_0003))
     );
-    // No dio ruta, o la ruta no se puede abrir -> no verificado.
+    // No path was given, or it cannot be opened -> unverified.
     assert_eq!(
         judge(
             &p,
@@ -6297,8 +6297,8 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
         judge(&p, Some(&nada), shell, false, false).0,
         ItemStatus::Unverified
     );
-    // Errores: en uso, sin permiso y otros, con su HRESULT. A-M1: un fallo solo es "no se envió" si el objeto aprobado sigue
-    // intacto en su sitio (aquí lo está: la guarda y el nombre son el mismo archivo).
+    // Errors: in use, access denied, and other HRESULTs. A-M1: a failure means "not sent" only if the approved object is
+    // still intact in place (it is here: the guard and name refer to the same file).
     let fallo = pending(id, &bin_file, &bin_file);
     let hr_win32 = |c: u32| (0x8007_0000u32 | c) as i32;
     assert_eq!(
@@ -6334,8 +6334,8 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
         .0,
         ItemStatus::NotRecycled(RecycleFail::Shell(0x8000_4005u32 as i32))
     );
-    // Códigos del motor de copia de la shell: acceso denegado (medido con una carpeta con algo abierto dentro) y violación
-    // de uso compartido.
+    // Shell copy-engine codes: access denied (measured with a folder containing an open item) and sharing violation
+    // sharing violation.
     assert_eq!(
         judge(
             &fallo,
@@ -6358,8 +6358,8 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
         .0,
         ItemStatus::NotRecycled(RecycleFail::InUse)
     );
-    // A-M1: un fallo con el objeto YA eliminado (guarda pendiente de borrar) no es "no se envió": es un borrado. Y si ni
-    // siquiera se puede decir dónde está el objeto, no se afirma nada.
+    // A-M1: a failure when the object is ALREADY deleted (guard pending deletion) does not mean "not sent"; it is a deletion.
+    // If the object's location cannot be determined, make no claim.
     let borrado_con_fallo = {
         let f = sb.write("Docs/borrado-con-fallo.bin", 100);
         let fid = sys::meta(&sys::open_for_query(&f).unwrap())
@@ -6408,7 +6408,7 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
         ItemStatus::Unverified,
         "el nombre aprobado no existe y la guarda no está pendiente: no se puede afirmar nada"
     );
-    // Sin aviso: sigue en su sitio -> no procesado (o abortado, si la shell dijo que abortó); ya no está -> no verificado.
+    // No event: still in place -> unprocessed (or aborted if the shell reported abort); gone -> unverified.
     let here = pending(id, &bin_file, &bin_file);
     assert_eq!(
         judge(&here, None, shell, false, false).0,
@@ -6418,7 +6418,7 @@ fn el_juicio_distingue_enviado_otro_objeto_eliminado_error_y_sin_aviso() {
         judge(&here, None, shell, true, false).0,
         ItemStatus::NotRecycled(RecycleFail::Aborted)
     );
-    // El receptor cortó el lote (M2): sin aviso y en su sitio = detenido por el corte de seguridad.
+    // The receiver stopped the batch (M2): no event and still in place means stopped by the safety cutoff.
     assert_eq!(
         judge(&here, None, shell, false, true).0,
         ItemStatus::NotRecycled(RecycleFail::Stopped)
@@ -6436,7 +6436,7 @@ fn el_informe_dice_que_desaparecio_de_verdad_para_actualizar_el_arbol() {
     sb.write_aged("Temp/viejo.tmp", 20_000, 240);
     sb.write_aged("Temp/dir-entero/a.tmp", 10_000, 240);
     sb.set_age(&sb.path("Temp/dir-entero"), 240);
-    // Una carpeta vieja con un archivo viejo y otro nuevo: se queda y solo encoge.
+    // An old folder with one old and one new file remains, and only shrinks.
     sb.write_aged("Temp/dir-parcial/viejo.tmp", 30_000, 240);
     sb.write("Temp/dir-parcial/nuevo.tmp", 5_000);
     sb.set_age(&sb.path("Temp/dir-parcial"), 240);
@@ -6458,7 +6458,7 @@ fn el_informe_dice_que_desaparecio_de_verdad_para_actualizar_el_arbol() {
     let p = get("dir-parcial");
     assert!(!p.removed && p.is_dir, "{p:?}");
     assert!(p.bytes >= 30_000 && p.files == 1);
-    // Y en simulación no se anota nada (no desapareció nada).
+    // A dry run also records nothing (nothing disappeared).
     let sb2 = Sandbox::new();
     let c2 = cleaner_for(&sb2);
     sb2.write_aged("Temp/x.tmp", 1_000, 240);
@@ -6469,21 +6469,21 @@ fn el_informe_dice_que_desaparecio_de_verdad_para_actualizar_el_arbol() {
     assert!(sb2.path("Temp/x.tmp").exists());
 }
 
-// ---- El flujo REAL de la Papelera con el endurecimiento de DLL del ejecutable --------------------------------------------
+// ---- Real Recycle Bin flow with executable DLL hardening --------------------------------------------
 
-/// PROCESO HIJO de `con_la_shell_real_el_flujo_funciona_con_el_endurecimiento_de_dlls_activo` (solo actúa con su variable;
-/// el resto del tiempo es una prueba ignorada que no hace nada). Hace, con el endurecimiento ACTIVO desde antes de tocar COM:
-/// enviar a la Papelera un archivo y una carpeta con hijos (propios, uuid en el nombre) por el camino de producción
-/// (`Cleaner::execute`: guarda, receptor, verificación por identidad), comprobar `Recycled`, y vaciarlos por el camino real de
-/// "vaciar" (con el alcance limitado a lo propio), comprobando que ya no están. Cualquier fallo es un pánico: código de salida
-/// distinto de 0.
+/// CHILD PROCESS for `con_la_shell_real_el_flujo_funciona_con_el_endurecimiento_de_dlls_activo` (runs only when its environment variable is set;
+/// otherwise, this ignored test does nothing). With hardening ACTIVE before touching COM, it:
+/// send a file and a folder with children (owned, UUID in the name) through the production path
+/// (`Cleaner::execute`: guard, receiver, identity verification), check `Recycled`, then purge them through the real purge
+/// path (scoped to owned items) and verify they are gone. Any failure panics: the exit code
+/// is nonzero.
 #[test]
 #[ignore = "proceso hijo de la prueba del endurecimiento de DLL"]
 fn hijo_endurecimiento_dll() {
     let Ok(uuid) = std::env::var("TESELA_HARDEN_CHILD_UUID") else {
         return;
     };
-    // 1. El endurecimiento, ANTES de tocar COM.
+    // 1. Enable hardening BEFORE touching COM.
     assert!(
         crate::testutil::restrict_dll_search_to_system32(),
         "SetDefaultDllDirectories falló"
@@ -6495,7 +6495,7 @@ fn hijo_endurecimiento_dll() {
     sb.write("Docs/archivo.txt", 5_000);
     sb.write("Docs/carpeta/a.txt", 3_000);
     sb.write("Docs/carpeta/sub/b.txt", 3_000);
-    // 2. A la Papelera, por el camino de producción.
+    // 2. Send to the Recycle Bin through the production path.
     let mut b = Basket::new();
     b.add_path(sb.long("Docs/archivo.txt"), c.protection());
     b.add_path(sb.long("Docs/carpeta"), c.protection());
@@ -6529,7 +6529,7 @@ fn hijo_endurecimiento_dll() {
             .collect()
     };
     assert_eq!(mine().len(), 2, "llegaron a la Papelera: {:?}", mine());
-    // 3. Vaciar (solo lo propio), por el camino real.
+    // 3. Purge through the real path (owned items only).
     let mut v = Basket::new();
     v.set_empty_bin(true);
     let plan = c.approve(&v, &ApproveOptions::default(), &cancel());
@@ -6544,11 +6544,11 @@ fn hijo_endurecimiento_dll() {
     eprintln!("ENDURECIDO: todo coincide");
 }
 
-/// El flujo REAL de la Papelera (COM, `IFileOperation`, el receptor, la guarda y la purga con su receptor) funciona con
-/// `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)` activo, que es lo que hace `tesela.exe` al arrancar: se lanza un
-/// proceso hijo (el patrón de la prueba de `FOF_WANTNUKEWARNING`) que lo activa antes de tocar COM y hace el recorrido con
-/// elementos propios. El padre comprueba el código de salida (con plazo) y que la Papelera del usuario es la de antes; su
-/// `BinGuard` limpia lo del hijo si algo falla.
+/// The REAL Recycle Bin flow (COM, `IFileOperation`, receiver, guard, and purge receiver) works with
+/// `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)` active, as `tesela.exe` does at startup: launch a
+/// child process (following the `FOF_WANTNUKEWARNING` test pattern) activates it before touching COM and runs the flow with
+/// owned items. The parent checks the exit code (with a timeout) and verifies that the user's Recycle Bin is unchanged; its
+/// `BinGuard` cleans up the child process's items if anything fails.
 #[test]
 fn con_la_shell_real_el_flujo_funciona_con_el_endurecimiento_de_dlls_activo() {
     use std::io::Read;
