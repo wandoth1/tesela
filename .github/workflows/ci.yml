@@ -32,24 +32,24 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: privacy-check (todo el árbol)
+      - name: privacy-check (entire tree)
         shell: pwsh
         run: ./scripts/privacy-check.ps1 -All -GenericOnly
       # The .exe import validation in build-release.ps1 uses scripts/check-pe.py; test it with synthetic PEs.
-      - name: pruebas de check-pe.py
+      - name: check-pe.py tests
         shell: pwsh
         run: python -I -m unittest discover -s scripts/tests -p "test_*.py"
-      - name: pruebas de leak-scan (valores locales en los binarios)
+      - name: leak-scan tests (local values in binaries)
         shell: pwsh
         run: ./scripts/tests/leak-scan.tests.ps1
       # The WiX version must match in build-msi.ps1, ci.yml, and release.yml; the UpgradeCode must match in the .wxs and script.
-      - name: pruebas de la version de WiX y del UpgradeCode
+      - name: WiX version and UpgradeCode tests
         shell: pwsh
         run: ./scripts/tests/wix-version.tests.ps1
-      - name: pruebas de privacy-check (pwsh)
+      - name: privacy-check tests (pwsh)
         shell: pwsh
         run: ./scripts/tests/privacy-check.tests.ps1
-      - name: pruebas de privacy-check (Windows PowerShell 5.1)
+      - name: privacy-check tests (Windows PowerShell 5.1)
         shell: powershell
         run: ./scripts/tests/privacy-check.tests.ps1 -Shell powershell
 
@@ -71,7 +71,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: privacy-check (mensajes y blobs del rango)
+      - name: privacy-check (messages and blobs in range)
         shell: pwsh
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -88,8 +88,8 @@ jobs:
             $to = $env:PUSH_AFTER
           }
           $to = (git rev-parse "$($to)^{commit}").Trim()
-          if ($LASTEXITCODE -ne 0) { throw "no se pudo resolver $env:PUSH_AFTER a un commit" }
-          Write-Host "rango: $from .. $to"
+          if ($LASTEXITCODE -ne 0) { throw "could not resolve $env:PUSH_AFTER to a commit" }
+          Write-Host "range: $from .. $to"
           ./scripts/privacy-check.ps1 -GenericOnly -From $from -To $to
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -102,11 +102,11 @@ jobs:
         with:
           persist-credentials: false
       # With no arguments, installs the toolchain from rust-toolchain.toml (does not rely on cargo's first-run auto-install).
-      - name: Instalar el toolchain de rust-toolchain.toml
+      - name: Install toolchain from rust-toolchain.toml
         run: rustup toolchain install
       # The Rust version comes from rust-toolchain.toml (installed automatically on the first cargo invocation).
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - name: Formato
+      - name: Formatting
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
@@ -118,7 +118,7 @@ jobs:
         env:
           RUSTFLAGS: -D warnings -C target-feature=+crt-static
       # `--screenshot` exits with code 1 if it cannot save the screenshot; this test runs BEFORE opening any window.
-      - name: Tests (feature capture, código de salida de --screenshot)
+      - name: Tests (capture feature, --screenshot exit code)
         run: cargo test -p tesela-app --features capture --locked --test screenshot
         env:
           RUSTFLAGS: -D warnings -C target-feature=+crt-static
@@ -143,7 +143,7 @@ jobs:
       # the size budget. PLAN.md §4 sets a target of ≲ 16 MB (about 15.3 MiB); CI fails only above 18 MiB (about 18.9 MB),
       # leaving room for compiler or dependency variation while still reporting the size. A large increase still fails.
       # The UI is not launched: the runner has no GPU (wgpu would use WARP), so this adds no value.
-      - name: Humo de los ejecutables
+      - name: Executable smoke tests
         shell: pwsh
         run: |
           $dir = Join-Path (cargo metadata --format-version 1 --no-deps | ConvertFrom-Json).target_directory 'release'
@@ -151,20 +151,20 @@ jobs:
           $exe = Join-Path $dir 'tesela.exe'
           $err = Join-Path $env:RUNNER_TEMP 'tesela-version.txt'
           $p = Start-Process -FilePath $exe -ArgumentList '--version' -Wait -PassThru -RedirectStandardError $err
-          if ($p.ExitCode -ne 0) { throw "tesela --version terminó con $($p.ExitCode)" }
+          if ($p.ExitCode -ne 0) { throw "tesela --version exited with $($p.ExitCode)" }
           $out = Get-Content -LiteralPath $err -Raw
           Write-Host $out
-          if ($out -notmatch '^tesela \d+\.\d+\.\d+') { throw 'tesela --version no imprime la versión' }
+          if ($out -notmatch '^tesela \d+\.\d+\.\d+') { throw 'tesela --version did not print the version' }
           $mib = (Get-Item $exe).Length / 1MB
           Write-Host ('tesela.exe: {0:N1} MiB' -f $mib)
-          if ($mib -gt 18) { throw 'tesela.exe supera el presupuesto de tamaño (18 MiB)' }
+          if ($mib -gt 18) { throw 'tesela.exe exceeds the size budget (18 MiB)' }
           # tesela-scan.exe uses the console subsystem, so it writes --version to STDOUT.
           $scanOut = Join-Path $env:RUNNER_TEMP 'tesela-scan-version.txt'
           $p = Start-Process -FilePath (Join-Path $dir 'tesela-scan.exe') -ArgumentList '--version' -Wait -PassThru -RedirectStandardOutput $scanOut
-          if ($p.ExitCode -ne 0) { throw "tesela-scan --version terminó con $($p.ExitCode)" }
+          if ($p.ExitCode -ne 0) { throw "tesela-scan --version exited with $($p.ExitCode)" }
           $out = Get-Content -LiteralPath $scanOut -Raw
           Write-Host $out
-          if ($out -notmatch '^tesela-scan \d+\.\d+\.\d+') { throw 'tesela-scan --version no imprime la versión' }
+          if ($out -notmatch '^tesela-scan \d+\.\d+\.\d+') { throw 'tesela-scan --version did not print the version' }
       # CI does not scan C:; tests use synthetic trees under %TEMP% only.
 
   # License and security advisory checks. Also runs weekly (schedule).
@@ -176,7 +176,7 @@ jobs:
         with:
           persist-credentials: false
       # With no arguments, installs the toolchain from rust-toolchain.toml (does not rely on cargo's first-run auto-install).
-      - name: Instalar el toolchain de rust-toolchain.toml
+      - name: Install toolchain from rust-toolchain.toml
         run: rustup toolchain install
       - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
@@ -195,9 +195,9 @@ jobs:
         with:
           persist-credentials: false
       # With no arguments, installs the toolchain from rust-toolchain.toml (does not rely on cargo's first-run auto-install).
-      - name: Instalar el toolchain de rust-toolchain.toml
+      - name: Install toolchain from rust-toolchain.toml
         run: rustup toolchain install
-      - name: Instalar Rust 1.95.0
+      - name: Install Rust 1.95.0
         run: rustup toolchain install 1.95.0 --profile minimal
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: cargo +1.95.0 check
@@ -213,9 +213,9 @@ jobs:
         with:
           persist-credentials: false
       # With no arguments, installs the toolchain from rust-toolchain.toml (does not rely on cargo's first-run auto-install).
-      - name: Instalar el toolchain de rust-toolchain.toml
+      - name: Install toolchain from rust-toolchain.toml
         run: rustup toolchain install
-      - name: Instalar el target ARM64
+      - name: Install ARM64 target
         run: rustup target add aarch64-pc-windows-msvc
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: cargo check (aarch64-pc-windows-msvc)
@@ -231,42 +231,42 @@ jobs:
     timeout-minutes: 60
     permissions:
       contents: read
-      attestations: read # `gh attestation verify` de la v0.1.4 que se baja para probar la actualizacion
+      attestations: read # Verify the downloaded v0.1.4 attestation before testing upgrades.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # With no arguments, installs the toolchain from rust-toolchain.toml (does not rely on cargo's first-run auto-install).
-      - name: Instalar el toolchain de rust-toolchain.toml
+      - name: Install toolchain from rust-toolchain.toml
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # With the pinned version, use nuget.org only (installer/nuget.config) and verify the package SHA-512.
-      - name: Instalar WiX
+      - name: Install WiX
         shell: pwsh
         run: ./scripts/install-wix.ps1 -Version $env:WIX_VERSION
-      - name: MSI y zip portable
+      - name: MSI and portable zip
         shell: pwsh
         run: ./scripts/build-msi.ps1 -OutDir "$env:RUNNER_TEMP/dist"
       # Test the MSI validator with modified copies (%TEMP%; nothing is installed).
-      - name: Pruebas del validador del MSI
+      - name: MSI validator tests
         shell: pwsh
         run: |
           $msi = @(Get-ChildItem -LiteralPath "$env:RUNNER_TEMP/dist" -Filter '*.msi')
-          if ($msi.Count -ne 1) { throw 'se esperaba exactamente un MSI' }
+          if ($msi.Count -ne 1) { throw 'expected exactly one MSI' }
           ./scripts/tests/msi-validate.tests.ps1 -Msi $msi[0].FullName
       # Test MSI LOGIC (launch conditions, directory, scope, language, desktop shortcut, and scope/directory dialog
       # buttons) using a Windows Installer SESSION without installing anything (OpenPackage, synthetic properties).
-      - name: Pruebas de la logica del MSI (sesion sin instalar)
+      - name: MSI logic tests (session without installation)
         shell: pwsh
         run: |
           $msi = @(Get-ChildItem -LiteralPath "$env:RUNNER_TEMP/dist" -Filter '*.msi')
-          if ($msi.Count -ne 1) { throw 'se esperaba exactamente un MSI' }
+          if ($msi.Count -ne 1) { throw 'expected exactly one MSI' }
           ./scripts/tests/msi-logic.tests.ps1 -Msi $msi[0].FullName
       # INSTALLATION TESTS. Only here: the runner is a disposable administrator with an elevated session, and the test refuses to
       # run outside a GitHub Actions hosted runner. Nothing is installed locally by an agent.
       # 1) Download the published v0.1.4 from the release and VERIFY it (provenance with `gh attestation verify`, as in the
       #    `verify` job in release.yml, plus SHA-256) before installing it: this is what users have and upgrade from.
-      - name: Bajar y verificar la v0.1.4 publicada
+      - name: Download and verify the published v0.1.4
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -279,28 +279,28 @@ jobs:
           gh release download v0.1.4 --repo $env:REPO --pattern 'tesela-0.1.4-x64.msi' --pattern 'SHA256SUMS.txt'
           if ($LASTEXITCODE -ne 0) { throw "gh release download failed ($LASTEXITCODE)" }
           foreach ($f in 'tesela-0.1.4-x64.msi', 'SHA256SUMS.txt') {
-            Write-Host "verificando $f"
+            Write-Host "verifying $f"
             gh attestation verify $f --repo $env:REPO --signer-workflow "$env:REPO/.github/workflows/release.yml" --source-ref refs/tags/v0.1.4
             if ($LASTEXITCODE -ne 0) { throw "gh attestation verify failed for $f ($LASTEXITCODE)" }
           }
           $line = @(Get-Content -LiteralPath SHA256SUMS.txt | Where-Object { $_ -match '^[0-9a-f]{64}\s+tesela-0\.1\.4-x64\.msi$' })
-          if ($line.Count -ne 1) { throw 'SHA256SUMS.txt no tiene exactamente una linea para el MSI' }
+          if ($line.Count -ne 1) { throw 'SHA256SUMS.txt does not contain exactly one MSI line' }
           $expected = ($line[0] -split '\s+')[0]
           $actual = (Get-FileHash -LiteralPath tesela-0.1.4-x64.msi -Algorithm SHA256).Hash.ToLowerInvariant()
-          if ($actual -ne $expected) { throw "la suma SHA-256 del MSI no coincide ($actual frente a $expected)" }
-          Write-Host "SHA-256 correcta: $actual"
+          if ($actual -ne $expected) { throw "MSI SHA-256 mismatch ($actual versus $expected)" }
+          Write-Host "SHA-256 verified: $actual"
       # 2) Install, repair, upgrade, downgrade (blocked), per-machine install, scope change (blocked), desktop shortcut,
       #    and clean uninstall, always without UI (/qn). Write the checks performed to the job summary. This does NOT
       #    test the UI (dialogs), administrator prompt, or secure properties with an unprivileged user
       #    (the runner is an administrator); a person tests those (installer README).
-      - name: Pruebas de instalacion del MSI (por usuario, para todos, actualizacion, cambio de ambito, escritorio)
+      - name: MSI installation tests (per-user, per-machine, upgrade, scope change, desktop)
         shell: pwsh
         run: |
           $msi = @(Get-ChildItem -LiteralPath "$env:RUNNER_TEMP/dist" -Filter '*.msi')
-          if ($msi.Count -ne 1) { throw 'se esperaba exactamente un MSI' }
+          if ($msi.Count -ne 1) { throw 'expected exactly one MSI' }
           ./scripts/tests/msi-install.tests.ps1 -NewMsi $msi[0].FullName -OldMsi "$env:RUNNER_TEMP/tesela-v014/tesela-0.1.4-x64.msi"
       # If anything fails, msiexec logs (no personal data: this is a disposable runner) help explain why.
-      - name: Registros de las pruebas de instalacion (solo si fallan)
+      - name: MSI installation logs (only on failure)
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
