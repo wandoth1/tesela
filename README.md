@@ -5,7 +5,7 @@ A visual disk space analyzer for Windows, written in Rust: fast, light and clear
 
 [Installation](#installation) · [Code signing policy](CODE_SIGNING.md) · [Security](SECURITY.md) · [Changelog](CHANGELOG.md)
 
-> 🚧 **Status: MVP v0.1.5 beta in preparation.** Done: the model, the scanner, the interface (map, list, details, scan with real progress, Spanish/English, light/dark) and **the cleaner**: Recommendations, basket, confirmation and summary, with safe handle-based deletion and sending to the Recycle Bin. **This version really deletes** (only what you approve in the confirmation): try it first with `--dry-run` or `--demo`. The MSI installer is in [Releases](https://github.com/wandoth1/tesela/releases) (see [Installation](#installation)). Phase 0 findings are in [docs/phase-0-findings.md](docs/phase-0-findings.md); the full plan is in [docs/PLAN.md](docs/PLAN.md).
+> 🚧 **Status: MVP v0.1.6 beta hotfix.** Done: the model, the scanner, the interface (map, list, details, scan with real progress, Spanish/English, light/dark) and **the cleaner**: Recommendations, basket, confirmation and summary, with safe handle-based deletion and sending to the Recycle Bin. **This version really deletes** (only what you approve in the confirmation): try it first with `--dry-run` or `--demo`. The MSI installer is in [Releases](https://github.com/wandoth1/tesela/releases) (see [Installation](#installation)). Phase 0 findings are in [docs/phase-0-findings.md](docs/phase-0-findings.md); the full plan is in [docs/PLAN.md](docs/PLAN.md).
 
 ## What Tesela is
 
@@ -14,13 +14,13 @@ A visual disk space analyzer for Windows, written in Rust: fast, light and clear
 - **A cleanup assistant with visible risk.** Each suggestion is marked 🟢 Safe, 🟠 Review or 🔺 Info only, and explains in one sentence why.
 - **Nothing is deleted blindly.** Everything goes through a review basket. What can be regenerated (temporary files, caches) is deleted; your own files go to the Recycle Bin. System folders are protected.
 - **Honest with the numbers.** What gets freed is measured (the real change in free space) and counted separately from what was deleted and what was sent to the Recycle Bin, and it shows which part of the disk it could not measure.
-- **Light.** A single binary, no Electron or WebView, no telemetry, no accounts. An optional update check, off by default, only asks GitHub for the latest version (see [Privacy and network](#privacy-and-network)). It works without administrator rights. A fast mode that reads the NTFS file table (MFT) directly is planned for v0.3.
+- **Light.** A single binary, no Electron or WebView, no telemetry, no accounts. An optional update check, off by default, only asks GitHub for the latest non-prerelease version (see [Privacy and network](#privacy-and-network)). It works without administrator rights. A fast mode that reads the NTFS file table (MFT) directly is planned for v0.3.
 
 ## Installation
 
 Windows 10 22H2 or Windows 11, x64. **No administrator needed for a personal installation.** Download the files from
-[github.com/wandoth1/tesela/releases](https://github.com/wandoth1/tesela/releases). The v0.1.5 beta remains a prerelease;
-the latest stable listing may still point to v0.1.4.
+[github.com/wandoth1/tesela/releases](https://github.com/wandoth1/tesela/releases). The v0.1.6 beta hotfix is a prerelease;
+the automatic update check and the latest stable listing will still point to v0.1.4.
 
 **Code signing policy:** v0.1 is not signed yet; the [Code signing policy](CODE_SIGNING.md) describes what will be signed, who approves each release and how it is built.
 
@@ -88,7 +88,7 @@ a per-user install or `HKLM` for an all-users install.
 
 **Your data is not deleted** (the installer does not know about it; it is yours):
 
-- `%APPDATA%\Tesela\config.toml`: your settings (theme and language) and, only if you turn the update check on, whether it is on, the date of the last check and the last version number it learnt (for example `v0.1.5`).
+- `%APPDATA%\Tesela\config.toml`: your settings (theme and language) and, only if you turn the update check on, whether it is on, the date of the last check and the last version number it learnt (for example `v0.1.4`).
 - `%LOCALAPPDATA%\Tesela`: `history.jsonl` (cleanup summaries) and the logs `limpieza-<date>-<time>-<n>.jsonl` (the path and identity
   of every item cleaned; `limpieza` is Spanish for "cleanup").
 
@@ -139,7 +139,7 @@ tesela --help
 
 Tesela does not connect to anything by default: no telemetry, no accounts, no ads. The only network request it can ever make is the **optional update check** (*Settings > Check for updates when Tesela opens*), which is **off by default**:
 
-- **What it asks:** the latest published release of this repository, with one `GET https://api.github.com/repos/wandoth1/tesela/releases/latest`. The first one happens when you tick the box (the setting would otherwise seem to do nothing) and then when Tesela opens, at most once every 24 hours; a failed attempt counts too. It never runs in `--demo` or in the measuring tools (`--idle-memory`, `--bench-hover`, `--screenshot`), turned on or not.
+- **What it asks:** the latest non-prerelease published release of this repository, with one `GET https://api.github.com/repos/wandoth1/tesela/releases/latest`. It will not announce beta prereleases such as v0.1.5 or v0.1.6; check the Releases page manually for those. The first request happens when you tick the box (the setting would otherwise seem to do nothing) and then when Tesela opens, at most once every 24 hours; a failed attempt counts too. It never runs in `--demo` or in the measuring tools (`--idle-memory`, `--bench-hover`, `--screenshot`), turned on or not.
 - **What it sends:** nothing of yours. The only header it sets is the fixed name `Tesela` as the `User-Agent` (GitHub's API requires one): no version, no operating system, no identifier, no cookies, no credentials. GitHub sees your IP address, as any website does.
 - **How:** through WinHTTP, the Windows HTTP stack, so the system proxy applies. On networks that enable it, WinHTTP may also look for the network's proxy configuration automatically (WPAD), which can mean name lookups and a configuration script fetched from your local network before it talks to GitHub.
 - **What it does with the answer:** it downloads the answer (a few KB of JSON) and reads only the version number. If it is newer than yours, a small notice offers "See what's new", which opens that release's page in your browser (the address is built by Tesela from the validated version, never taken from the answer). The notice can be dismissed, and a version lower than or equal to the one you dismissed does not come back. Tesela never downloads or installs an update.
@@ -152,9 +152,10 @@ Tesela does not connect to anything by default: no telemetry, no accounts, no ad
 |---|---|---|
 | Phase 0 | ✅ Done | Measurement tests: graphical interface, folder-reading API, Recycle Bin ([findings](docs/phase-0-findings.md)) |
 | v0.1.0 – v0.1.4 | ✅ Released | Scan, map + list, basket, cleaning of temporary files, caches and the Recycle Bin, per-user MSI installer. Four rounds of fixes after independent security audits; v0.1.4 adds the Home button and change monitoring when sending folders to the Recycle Bin |
-| v0.1.5 | 🧪 Beta in progress | Dual-scope installer with a setup UI, folder and optional desktop shortcut; multiple selection; *Review* error reports and crash dumps; optional update check; clearer cleanup progress and Outlook warnings |
-| v0.1.6 | Planned | New home screen with three entries: **Quick clean** (temporary files and caches without scanning the whole disk, including developer tool caches), **Optimize** and **Explore the disk** |
-| v0.1.7 | Planned | **Optimize**, honest version: memory explained, the programs using the most, startup apps. No "free RAM" button (it usually makes things slower) |
+| v0.1.5 | 🧪 Beta released | Dual-scope installer with a setup UI, folder and optional desktop shortcut; multiple selection; *Review* error reports and crash dumps; optional update check; clearer cleanup progress and Outlook warnings |
+| v0.1.6 | 🧪 Beta hotfix | Revokes hidden local-mail deletion consent and excludes kept diagnostics from that consent prompt |
+| v0.1.7 | Planned | New home screen with three entries: **Quick clean** (temporary files and caches without scanning the whole disk, including developer tool caches), **Optimize** and **Explore the disk** |
+| v0.1.8 | Planned | **Optimize**, honest version: memory explained, the programs using the most, startup apps. No "free RAM" button (it usually makes things slower) |
 | v0.2 | Planned | Full assistant (project folders, old downloads, large files), undo, and a limited administrator helper for some Windows areas (only in the all-users install, after an external audit) |
 | v0.3 | Planned | Fast mode reading the MFT (administrator) |
 | v1.0 | Planned | Duplicates, incremental rescan, signed installer, winget, ARM64 |

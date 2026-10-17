@@ -58,7 +58,7 @@ that deleting it is harmless.
    - go to Installed apps;
    - use Windows' official methods.
 6. **No telemetry**, not even "anonymous". The only connection Tesela may make is the optional update check
-   (decided on 2026-10-17): off by default, it only asks GitHub for the latest published version, sends no identifier,
+   (decided on 2026-10-17): off by default, it only asks GitHub for the latest non-prerelease published version, sends no identifier,
    only reads a version number (never downloads or installs an update) and never runs in demo mode or in the measuring
    tools. Any other network use needs a new decision.
 7. **The application never cleans elevated.** It keeps refusing to clean when it runs as administrator. The only
@@ -149,8 +149,9 @@ goes through the same safe engine (`PLAN.md` §3.7) and its audits.
 | Version | Content |
 |---|---|
 | v0.1.5 (beta) | Installer with a setup UI: only for me or for all users, install folder, optional desktop shortcut (the taskbar cannot be pinned by an installer). Select several items before the basket. *Review* categories for Windows error reports and crash dumps (Recycle Bin only, never permanent). Released as a beta after the owner's local test and an external audit |
-| v0.1.6 | New home screen with three entries: **Quick clean**, **Optimize**, **Explore the disk**. Quick clean measures only the catalog locations (no full scan), shows categories with sizes and checkboxes (*Safe* preselected) and reuses the basket, confirmation and engine. Developer caches: *Safe* when documented and regenerable (npm, pip, NuGet HTTP/plugin caches, Electron caches of closed apps); *Info only* with the official command for the rest (uv, pnpm, Cargo, Gradle, Go, Maven, Docker, WSL). Claude Code and Codex history is the user's data: shown with its size and how to prune it, never deleted |
-| v0.1.7 | **Optimize, honest version:** read-only. Memory explained in plain words, the programs using the most (with "Go to window"; Tesela never kills processes), startup apps (`ms-settings:startupapps`), pending restart. No "free RAM" button: emptying working sets or the standby list usually makes the system slower, and the screen says why |
+| v0.1.6 (beta hotfix) | Revokes hidden local-mail permanent-deletion consent and excludes diagnostic mail files that cannot be permanently deleted from the consent count; no new cleaning categories |
+| v0.1.7 | New home screen with three entries: **Quick clean**, **Optimize**, **Explore the disk**. Quick clean measures only the catalog locations (no full scan), shows categories with sizes and checkboxes (*Safe* preselected) and reuses the basket, confirmation and engine. Developer caches: *Safe* when documented and regenerable (npm, pip, NuGet HTTP/plugin caches, Electron caches of closed apps); *Info only* with the official command for the rest (uv, pnpm, Cargo, Gradle, Go, Maven, Docker, WSL). Claude Code and Codex history is the user's data: shown with its size and how to prune it, never deleted |
+| v0.1.8 | **Optimize, honest version:** read-only. Memory explained in plain words, the programs using the most (with "Go to window"; Tesela never kills processes), startup apps (`ms-settings:startupapps`), pending restart. No "free RAM" button: emptying working sets or the standby list usually makes the system slower, and the screen says why |
 | v0.2 | Everything in §6 that validation supports, plus the **limited administrator helper**: Windows error reports of the machine, `Minidump`, `MEMORY.DMP`, `LiveKernelReports`, old CBS logs, and `C:\Windows\Temp` only for entries owned by SYSTEM, Administrators or TrustedInstaller that non-administrators cannot modify. Out of scope: `SoftwareDistribution`, Delivery Optimization and `Windows.old` (Tesela opens the Settings page), and `WinSxS`, `C:\Windows\Installer`, `hiberfil.sys` and restore points (never) |
 
 ## 6. After validation (only if the metric comes out well)
@@ -169,7 +170,7 @@ goes through the same safe engine (`PLAN.md` §3.7) and its audits.
   - what was done by Windows, OneDrive or other tools is out of scope and it says so.
 - **Seeing the inaccessible:** an elevated read-only helper that names what the user cannot read, without offering to
   delete it. It comes sooner or later depending on what is measured in month 2.
-- **Technical segment** (partly brought forward to v0.1.6, §5b): development caches through their official command, with its exact scope (for
+- **Technical segment** (partly brought forward to v0.1.7, §5b): development caches through their official command, with its exact scope (for
   example, `docker builder prune` instead of `docker system prune` if only the build cache is wanted; `uv cache
   clean` or `prune` as appropriate) and project folders with abstention conditions (uncommitted changes,
   links, no lockfile).

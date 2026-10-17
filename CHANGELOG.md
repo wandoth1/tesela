@@ -4,6 +4,19 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versio
 (`major.minor.patch`, no suffixes: an MSI does not allow `-rc1`). `release.yml` copies the section of the tag's version to the
 notes of the GitHub Release, so each version needs its section here.
 
+## [0.1.6] - 2026-10-18
+
+Security hotfix for the v0.1.5 beta. Cleaning changes files: review the confirmation, especially any permanent-deletion
+warning. The binaries remain unsigned, so Windows SmartScreen may warn.
+
+### Fixed
+
+- Deselecting the option to permanently delete items that do not fit in the Recycle Bin now revokes the separate local-mail
+  acknowledgment when its checkbox disappears. The final execution permission is also checked against the visible,
+  actionable plan, so an acknowledgment from an earlier selection cannot authorize a `.pst` found later inside a folder.
+- A diagnostic `.pst` that must stay in place because it cannot fit in the Recycle Bin no longer triggers a misleading
+  permanent-deletion acknowledgment. Diagnostics remain Recycle Bin only.
+
 ## [0.1.5] - 2026-10-17
 
 Beta release with a setup interface, multiple selection and clearer cleanup decisions. **Cleaning still changes files**: review
