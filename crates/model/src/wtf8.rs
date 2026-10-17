@@ -1,10 +1,10 @@
-//! Conversión entre UTF-16 y WTF-8 (los nombres de Windows pueden contener sustitutos desparejados).
+//! Conversion between UTF-16 and WTF-8 (Windows names may contain unpaired surrogates).
 //!
-//! Es el WTF-8 estándar y produce los mismos bytes que `OsString::from_wide(..).as_encoded_bytes()` en Windows (lo
-//! comprueba un test), pero no necesita `unsafe` para volver: [`decode_to_utf16`] es total y tolera bytes inválidos
-//! (los sustituye por U+FFFD), de modo que ninguna entrada puede provocar comportamiento indefinido.
+//! This is standard WTF-8 and produces the same bytes as `OsString::from_wide(..).as_encoded_bytes()` on Windows (checked
+//! by a test), but decoding needs no `unsafe`: [`decode_to_utf16`] is total and tolerates invalid bytes (replacing them
+//! with U+FFFD), so no input can cause undefined behavior.
 
-/// Añade a `out` la codificación WTF-8 de `units` (UTF-16, con sustitutos desparejados permitidos).
+/// Append the WTF-8 encoding of `units` (UTF-16, with unpaired surrogates allowed) to `out`.
 pub fn encode_utf16(units: &[u16], out: &mut Vec<u8>) {
     let mut i = 0;
     while i < units.len() {
@@ -25,7 +25,7 @@ pub fn encode_utf16(units: &[u16], out: &mut Vec<u8>) {
                 out.push(0x80 | ((cp >> 6) & 0x3F) as u8);
                 out.push(0x80 | (cp & 0x3F) as u8);
             }
-            // Resto del plano básico, incluidos los sustitutos desparejados (3 bytes, como pide WTF-8).
+            // Rest of the basic plane, including unpaired surrogates (3 bytes, as WTF-8 requires).
             _ => {
                 out.push(0xE0 | (u >> 12) as u8);
                 out.push(0x80 | ((u >> 6) & 0x3F) as u8);
@@ -35,7 +35,7 @@ pub fn encode_utf16(units: &[u16], out: &mut Vec<u8>) {
     }
 }
 
-/// Añade a `out` los códigos UTF-16 de unos bytes WTF-8. Total: los bytes inválidos dan U+FFFD.
+/// Append the UTF-16 code units decoded from WTF-8 bytes to `out`. Total: invalid bytes become U+FFFD.
 pub fn decode_to_utf16(bytes: &[u8], out: &mut Vec<u16>) {
     let mut i = 0;
     while i < bytes.len() {
@@ -61,8 +61,8 @@ pub fn decode_to_utf16(bytes: &[u8], out: &mut Vec<u16>) {
             .fold(init, |acc, c| (acc << 6) | (c & 0x3F) as u32);
         i += len;
         match len {
-            // Una secuencia de 3 bytes que codifica menos de U+0800 es "sobrelarga" (p. ej. `E0 80 80` = U+0000): no es WTF-8
-            // válido y no puede colarse como otro carácter (un NUL o un `\`).
+            // A 3-byte sequence encoding less than U+0800 is overlong (e.g. `E0 80 80` = U+0000): it is not valid WTF-8
+            // and cannot sneak through as another character (a NUL or `\`).
             3 if cp < 0x800 => out.push(0xFFFD),
             1..=3 => out.push(cp as u16), // incluye sustitutos desparejados codificados en 3 bytes
             _ if (0x10000..=0x10FFFF).contains(&cp) => {
@@ -79,7 +79,7 @@ pub fn decode_to_utf16(bytes: &[u8], out: &mut Vec<u16>) {
 mod tests {
     use super::*;
 
-    /// Generador pseudoaleatorio mínimo (SplitMix64) para no depender de `rand`.
+    /// Minimal pseudorandom generator (SplitMix64), avoiding a dependency on `rand`.
     fn next(state: &mut u64) -> u64 {
         *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
         let mut z = *state;
@@ -137,20 +137,20 @@ mod tests {
         }
     }
 
-    /// GM-m10: las secuencias de 3 bytes sobrelargas (menos de U+0800) se rechazan; las válidas límite se aceptan.
+    /// GM-m10: overlong 3-byte sequences (less than U+0800) are rejected; valid boundary values are accepted.
     #[test]
     fn la_secuencia_de_3_bytes_sobrelarga_se_rechaza() {
         for bytes in [
             &[0xE0, 0x80, 0x80][..], // U+0000 sobrelargo
             &[0xE0, 0x80, 0xAF],     // U+002F ('/')
             &[0xE0, 0x81, 0x9C],     // U+005C ('\')
-            &[0xE0, 0x9F, 0xBF],     // U+07FF sobrelargo (el máximo)
+            &[0xE0, 0x9F, 0xBF],     // U+07FF overlong (the maximum)
         ] {
             let mut out = Vec::new();
             decode_to_utf16(bytes, &mut out);
             assert_eq!(out, [0xFFFD], "{bytes:02X?}");
         }
-        // El primer valor que SÍ necesita 3 bytes (U+0800) y los sustitutos desparejados siguen siendo válidos.
+        // The first value that DOES require 3 bytes (U+0800) and unpaired surrogates remain valid.
         for (bytes, unit) in [
             (&[0xE0, 0xA0, 0x80][..], 0x0800u16),
             (&[0xED, 0xA0, 0x80], 0xD800),

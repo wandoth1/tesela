@@ -1,16 +1,16 @@
-//! Una DLL con el nombre de una importación estática dejada junto al `.exe` no se carga: se comprueba con archivos VACÍOS (no
-//! son DLL y no ejecutan nada) con los nombres de las DLL que `tesela-scan.exe` importa y de las que `wgpu` carga por nombre.
+//! A DLL named after a static import and placed beside the `.exe` is not loaded: verify this with EMPTY files (not DLLs and
+//! they execute nothing) named after DLLs imported by `tesela-scan.exe` and those loaded by `wgpu` by name.
 //!
-//! Sin `/DEPENDENTLOADFLAG:0x800` (build.rs) el cargador de Windows resuelve las importaciones estáticas con el orden
-//! predeterminado, que mira la carpeta del `.exe` ANTES que `System32`: un `dxgi.dll` vacío al lado hace que el proceso ni
-//! arranque (código de salida distinto de 0 antes de llegar a `main`). Con la bandera arranca y sale con 0.
+//! Without `/DEPENDENTLOADFLAG:0x800` (build.rs), the Windows loader resolves static imports using the default order,
+//! which checks the `.exe` directory BEFORE `System32`: an empty `dxgi.dll` beside it prevents the process from starting
+//! (nonzero exit before reaching `main`). With the flag, it starts and exits with 0.
 
 mod common;
 
 use std::path::PathBuf;
 use std::process::Command;
 
-/// Nombres de las DLL que `tesela-scan.exe` importa de forma estática (y no son `KnownDLLs`) o que se cargan por nombre.
+/// Names of DLLs statically imported by `tesela-scan.exe` (and not `KnownDLLs`) or loaded by name.
 const PLANTED: [&str; 11] = [
     "dxgi",
     "dwmapi",
@@ -65,7 +65,7 @@ fn u32_at(b: &[u8], o: usize) -> usize {
     u32::from_le_bytes(b[o..o + 4].try_into().unwrap()) as usize
 }
 
-/// `DependentLoadFlags` del directorio de configuración de carga del PE (lo que escribe `/DEPENDENTLOADFLAG`), si lo lleva.
+/// PE load configuration directory's `DependentLoadFlags` (written by `/DEPENDENTLOADFLAG`), if present.
 fn dependent_load_flags(exe: &[u8]) -> Option<usize> {
     let pe = u32_at(exe, 0x3C);
     assert_eq!(&exe[pe..pe + 4], b"PE\0\0");

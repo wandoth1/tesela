@@ -1,6 +1,6 @@
-//! Memoria del propio proceso: *private working set* (la columna "Memoria" del Administrador de tareas).
-//! Windows no lleva cuenta del pico del private working set (`PeakWorkingSetSize` es del working set total, que
-//! incluye DLL compartidas), así que el pico se estima muestreando.
+//! Process memory: *private working set* (the Task Manager "Memory" column).
+//! Windows does not track the private working set peak (`PeakWorkingSetSize` is for the total working set, which
+//! includes shared DLLs), so the peak is estimated by sampling.
 #![allow(unsafe_code)]
 
 use std::sync::Arc;
@@ -12,18 +12,18 @@ use windows_sys::Win32::System::ProcessStatus::{
 };
 use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
-/// Private working set actual del proceso, en bytes.
+/// Current process private working set, in bytes.
 pub fn private_working_set() -> Option<u64> {
-    // SAFETY: PROCESS_MEMORY_COUNTERS_EX2 es una estructura POD (enteros): todo-ceros es un valor válido.
+    // SAFETY: PROCESS_MEMORY_COUNTERS_EX2 is a POD structure (integers): all-zero is a valid value.
     let mut c: PROCESS_MEMORY_COUNTERS_EX2 = unsafe { std::mem::zeroed() };
     c.cb = size_of::<PROCESS_MEMORY_COUNTERS_EX2>() as u32;
-    // SAFETY: el pseudo-handle del proceso actual es siempre válido; `c` es escribible y `cb` es su tamaño. La API
-    // acepta el puntero como PROCESS_MEMORY_COUNTERS porque EX2 empieza con esa misma estructura.
+    // SAFETY: the current process pseudo-handle is always valid; `c` is writable and `cb` is its size. The API accepts
+    // the pointer as PROCESS_MEMORY_COUNTERS because EX2 starts with that same structure.
     let ok = unsafe { GetProcessMemoryInfo(GetCurrentProcess(), &mut c as *mut _ as *mut _, c.cb) };
     (ok != 0).then_some(c.PrivateWorkingSetSize as u64)
 }
 
-/// Muestrea el private working set cada pocos milisegundos y recuerda el máximo.
+/// Sample the private working set every few milliseconds and retain the maximum.
 pub struct PeakSampler {
     peak: Arc<AtomicU64>,
     stop: Arc<AtomicBool>,
@@ -50,7 +50,7 @@ impl PeakSampler {
         }
     }
 
-    /// Detiene el muestreo y devuelve el máximo observado.
+    /// Stop sampling and return the observed maximum.
     pub fn finish(mut self) -> u64 {
         self.stop.store(true, Ordering::Relaxed);
         if let Some(t) = self.thread.take() {

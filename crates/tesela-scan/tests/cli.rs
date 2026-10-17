@@ -1,4 +1,4 @@
-//! Prueba de la CLI `tesela-scan` sobre un árbol sintético en `%TEMP%\tesela-test-<uuid>` (nunca sobre un disco real).
+//! Test the `tesela-scan` CLI on a synthetic tree in `%TEMP%\tesela-test-<uuid>` (never on a real disk).
 
 mod common;
 
@@ -6,8 +6,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Árbol temporal con guarda RAII: solo se borra algo si es `%TEMP%\tesela-test-*` creado aquí; sus junctions se quitan
-/// antes como enlaces.
+/// Temporary tree with an RAII guard: only delete `%TEMP%\tesela-test-*` paths created here; remove its junctions as
+/// links first.
 struct TempTree(PathBuf, Vec<PathBuf>);
 
 impl TempTree {
@@ -16,7 +16,7 @@ impl TempTree {
         fs::create_dir(&p).unwrap();
         TempTree(p, Vec::new())
     }
-    /// `mklink /J` hacia una carpeta de ESTE mismo árbol (nunca una unidad ni un volumen).
+    /// `mklink /J` to a directory in THIS tree (never a drive or volume).
     fn junction(&mut self, link: &str, target: &str) -> PathBuf {
         let (l, t) = (self.0.join(link), self.0.join(target));
         let out = Command::new("cmd")
@@ -45,7 +45,7 @@ impl Drop for TempTree {
                 .is_some_and(|n| n.to_string_lossy().starts_with("tesela-test-"));
         if ok {
             for j in &self.1 {
-                // Los junctions se quitan ANTES, como enlaces: `remove_dir` sobre un junction borra solo el enlace.
+                // Remove junctions FIRST, as links: `remove_dir` on a junction removes only the link.
                 let _ = fs::remove_dir(j);
             }
             let _ = fs::remove_dir_all(&self.0);
@@ -146,7 +146,7 @@ fn errores_de_uso_y_de_ruta_dan_codigos_de_salida() {
     let (code, _, err) = run(&[]);
     assert_eq!(code, 2);
     assert!(err.contains("falta la ruta"));
-    // El uso documenta `--overwrite` y `--json -`.
+    // Usage documents `--overwrite` and `--json -`.
     assert!(
         err.contains("--overwrite") && err.contains("--json -"),
         "{err}"
@@ -176,11 +176,11 @@ fn parar_y_ver_a_los_cero_segundos_da_un_arbol_valido() {
         Path::new("0"),
     ]);
     assert_eq!(code, 0);
-    // Con 0 s la cancelación llega casi siempre antes del final; en cualquier caso el resultado es coherente.
+    // With 0 seconds, cancellation usually arrives before completion; either way, the result is consistent.
     assert!(out.contains("Archivos: "), "{out}");
 }
 
-/// Un archivo de salida preexistente que NO debe pisarse sin `--overwrite`.
+/// An existing output file that must NOT be overwritten without `--overwrite`.
 const PREVIO: &str = "contenido previo que no debe perderse";
 
 #[test]
@@ -216,7 +216,7 @@ fn json_con_overwrite_reemplaza_y_sin_el_crea_el_archivo_nuevo() {
     let t = TempTree::new();
     t.write("x/a.bin", 10_000);
     let salida = t.0.join("salida.json");
-    // Archivo nuevo: se crea sin --overwrite.
+    // New file: created without --overwrite.
     let (code, _, err) = run(&[
         &t.0.join("x"),
         Path::new("--top"),
@@ -228,7 +228,7 @@ fn json_con_overwrite_reemplaza_y_sin_el_crea_el_archivo_nuevo() {
     let doc: serde_json::Value =
         serde_json::from_str(&fs::read_to_string(&salida).unwrap()).unwrap();
     assert_eq!(doc["totals"]["files"], 1);
-    // Con --overwrite se reemplaza.
+    // With --overwrite, it is replaced.
     fs::write(&salida, PREVIO).unwrap();
     let (code, out, err) = run(&[
         &t.0.join("x"),
@@ -261,12 +261,12 @@ fn json_menos_escribe_el_json_por_la_salida_estandar_y_el_informe_por_la_de_erro
         Path::new("-"),
     ]);
     assert_eq!(code, 0, "{err}");
-    // La salida estándar es SOLO el JSON.
+    // Standard output contains ONLY the JSON.
     let doc: serde_json::Value =
         serde_json::from_str(&out).unwrap_or_else(|e| panic!("{e}: {out}"));
     assert_eq!(doc["totals"]["files"], 2);
     assert!(err.contains("Archivos: 2"), "el informe va a stderr: {err}");
-    // No se creó ningún archivo llamado `-`.
+    // No file named `-` was created.
     assert!(!t.0.join("x").join("-").exists());
 }
 
@@ -317,7 +317,7 @@ fn una_raiz_que_es_un_junction_da_error_claro_y_salida_1() {
     assert!(err.starts_with("error:"), "{err}");
     assert!(err.contains("es un enlace"), "{err}");
     assert!(out.is_empty(), "no escanea nada: {out}");
-    // El destino, escaneado directamente, funciona.
+    // The target works when scanned directly.
     let (code, out, _) = run(&[&t.0.join("destino")]);
     assert_eq!(code, 0);
     assert!(out.contains("Archivos: "), "{out}");

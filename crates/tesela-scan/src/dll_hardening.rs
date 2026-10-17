@@ -1,38 +1,36 @@
-//! Endurecimiento de la carga de DLL del proceso (se llama lo PRIMERO de `main`).
+//! Process DLL load hardening (called FIRST in `main`).
 //!
-//! En `tesela-app`, `wgpu` carga `d3d12.dll`, `dxgi.dll`, `dcomp.dll` y `d3dcompiler_47.dll` POR NOMBRE con `LoadLibraryExW(nombre, NULL, 0)`
-//! (`libloading`): el orden de búsqueda predeterminado de Windows mira la carpeta del `.exe` antes que `System32`, y ninguna
-//! de ellas está en `KnownDLLs`. Una DLL con ese nombre dejada junto al `.exe` (una carpeta de instalación o de un zip
-//! escribible por otros) se cargaría en vez de la del sistema. `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)`
-//! limita la búsqueda de TODAS las cargas posteriores sin ruta ni indicadores (las de wgpu, winit, accesskit...) a
-//! `System32`. No toca las cargas con ruta absoluta (los controladores de la GPU que carga DXGI por la suya) ni las que ya
-//! hizo el cargador del sistema antes de `main` (las importaciones del propio `.exe`).
+//! In `tesela-app`, `wgpu` loads `d3d12.dll`, `dxgi.dll`, `dcomp.dll`, and `d3dcompiler_47.dll` BY NAME with
+//! `LoadLibraryExW(name, NULL, 0)` (`libloading`): Windows' default search order checks the `.exe` folder before
+//! `System32`, and none are `KnownDLLs`. A DLL with one of these names placed beside the `.exe` (in an installation folder
+//! or zip writable by others) would load instead of the system DLL. `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)`
+//! limits all later loads without an explicit path or flags (from wgpu, winit, accesskit, etc.) to `System32`. It does not
+//! affect loads with absolute paths (such as GPU drivers loaded by DXGI) or loads already performed by the system loader
+//! before `main` (the executable's own imports).
 //!
-//! (Copia del módulo del mismo nombre de `tesela-app`: `tesela-scan` no carga DLL por nombre a propósito, pero la biblioteca
-//! estándar de Rust puede cargar `dbghelp.dll` al generar un *backtrace*. Las importaciones estáticas las cubre
-//! `/DEPENDENTLOADFLAG:0x800` en `build.rs`.)
+//! (Copy of the same-named module in `tesela-app`: `tesela-scan` deliberately does not load DLLs by name, but Rust's
+//! standard library may load `dbghelp.dll` when generating a *backtrace*. Static imports are covered by
+//! `/DEPENDENTLOADFLAG:0x800` in `build.rs`.)
 #![allow(unsafe_code)]
 
 use windows_sys::Win32::System::LibraryLoader::{
     LOAD_LIBRARY_SEARCH_SYSTEM32, SetDefaultDllDirectories, SetDllDirectoryW,
 };
 
-/// Cadena vacía terminada en NUL (UTF-16) para `SetDllDirectoryW`.
+/// Empty NUL-terminated UTF-16 string for `SetDllDirectoryW`.
 const EMPTY: [u16; 1] = [0];
 
-/// Limita la búsqueda de DLL del proceso a `System32`. Devuelve `false` si Windows rechaza alguna de las dos llamadas (el
-/// proceso sigue con el orden predeterminado en esa parte: no es un error fatal, pero se pierde el endurecimiento).
+/// Limit the process DLL search path to `System32`. Returns `false` if Windows rejects either call (the process keeps the
+/// default search order for that part: this is not fatal, but hardening is lost).
 ///
-/// 1. `SetDllDirectoryW("")` quita el directorio de trabajo actual del orden de búsqueda clásico (el de las cargas que no
-///    usan los indicadores `LOAD_LIBRARY_SEARCH_*`), por si alguna carga no respetase el valor predeterminado del paso 2.
-/// 2. `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)` fija el valor predeterminado de todas las cargas
-///    posteriores sin ruta ni indicadores.
+/// 1. `SetDllDirectoryW("")` removes the current working directory from the classic search order (used by loads that do
+///    not use `LOAD_LIBRARY_SEARCH_*` flags), in case any load does not honor step 2's default.
+/// 2. `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)` sets the default for all later loads without a path or flags.
 pub fn restrict_dll_search() -> bool {
-    // SAFETY: `EMPTY` es una cadena UTF-16 terminada en NUL que vive durante toda la llamada. Llamarla más de una vez es
-    // inofensivo.
+    // SAFETY: `EMPTY` is a NUL-terminated UTF-16 string that remains alive for the call. Calling this more than once is safe.
     let no_cwd = unsafe { SetDllDirectoryW(EMPTY.as_ptr()) != 0 };
-    // SAFETY: `SetDefaultDllDirectories` solo recibe una máscara de indicadores constante; no hay punteros ni estado
-    // compartido. Llamarla más de una vez es inofensivo.
+    // SAFETY: `SetDefaultDllDirectories` receives only a constant flag mask; there are no pointers or shared state. Calling
+    // this more than once is safe.
     let system32 = unsafe { SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32) != 0 };
     no_cwd && system32
 }
@@ -46,13 +44,13 @@ mod tests {
 
     const PROBE: &str = "tesela_probe_dll.dll";
 
-    /// Carga `PROBE` por nombre (sin ruta ni indicadores, como hace wgpu) y dice si el sistema la encontró.
+    /// Load `PROBE` by name (without a path or flags, as wgpu does) and report whether the system found it.
     fn load_probe_by_name() -> bool {
         let wide: Vec<u16> = std::ffi::OsStr::new(PROBE)
             .encode_wide()
             .chain(Some(0))
             .collect();
-        // SAFETY: `wide` termina en NUL y vive durante la llamada; el módulo cargado se libera enseguida.
+        // SAFETY: `wide` is NUL-terminated and remains alive for the call; the loaded module is freed immediately.
         unsafe {
             let h = LoadLibraryW(wide.as_ptr());
             if h.is_null() {
@@ -63,9 +61,9 @@ mod tests {
         }
     }
 
-    /// Hijo de la prueba (una COPIA del ejecutable de pruebas dentro de una carpeta temporal que también contiene `PROBE`: esa
-    /// es "la carpeta de la aplicación"): SIN el endurecimiento la DLL se carga por nombre desde ahí y CON él no. Así se
-    /// distingue `LOAD_LIBRARY_SEARCH_SYSTEM32` de `LOAD_LIBRARY_SEARCH_DEFAULT_DIRS`, que SÍ incluye la carpeta de la aplicación.
+    /// Test child (a COPY of the test executable in a temporary directory that also contains `PROBE`, the "application
+    /// directory"): without hardening the DLL loads by name from there, and with hardening it does not. This distinguishes
+    /// `LOAD_LIBRARY_SEARCH_SYSTEM32` from `LOAD_LIBRARY_SEARCH_DEFAULT_DIRS`, which DOES include the application directory.
     #[test]
     fn hijo_busqueda_restringida() {
         if std::env::var_os("TESELA_DLL_PROBE_CHILD").is_none() {
@@ -91,14 +89,14 @@ mod tests {
         );
     }
 
-    /// La prueba real corre en un proceso hijo: `SetDefaultDllDirectories` es del proceso entero y no debe cambiar las
-    /// cargas de los demás tests. El hijo es una copia de este ejecutable de pruebas en una carpeta temporal, con al lado una
-    /// copia de una DLL legítima del sistema con otro nombre (no ejecuta nada propio); la carpeta se borra al acabar.
+    /// The real test runs in a child process: `SetDefaultDllDirectories` affects the whole process and must not change
+    /// other tests' loads. The child is a copy of this test executable in a temporary directory, beside a renamed copy of
+    /// a legitimate system DLL (it executes no custom code); the directory is deleted afterward.
     #[test]
     fn la_busqueda_de_dll_se_limita_a_system32() {
-        // Lanza un proceso hijo (copia del ejecutable de pruebas): solo con TESELA_PROCESS_TESTS=1 (el CI la define).
+        // Launch a child process (copy of the test executable): only when TESELA_PROCESS_TESTS=1 (CI sets it).
         if !std::env::var("TESELA_PROCESS_TESTS").is_ok_and(|v| v == "1") {
-            // En CI el salto no puede pasar en silencio (una variable perdida del workflow): falla.
+            // In CI, the skip must not happen silently (for example, due to a missing workflow variable): fail.
             assert!(
                 std::env::var_os("CI").is_none(),
                 "CI sin TESELA_PROCESS_TESTS=1: las pruebas con procesos hijo no pueden saltarse en CI (revisa el workflow)"
@@ -140,9 +138,9 @@ mod tests {
         );
     }
 
-    /// GM-S2: el endurecimiento hace las DOS llamadas: quita el directorio de trabajo del orden clásico (`SetDllDirectoryW("")`)
-    /// y fija el valor predeterminado a `System32`. Cambiar el estado del proceso de pruebas afectaría a las demás pruebas
-    /// (por eso el comportamiento real se prueba en un proceso hijo): aquí se vigila que las dos llamadas siguen en el código.
+    /// GM-S2: hardening makes BOTH calls: removes the working directory from the classic search order
+    /// (`SetDllDirectoryW("")`) and sets the default to `System32`. Changing test-process state would affect other tests
+    /// (hence the real behavior is tested in a child process); here we check that both calls remain in the code.
     #[test]
     fn el_endurecimiento_quita_tambien_el_directorio_de_trabajo() {
         let src = include_str!("dll_hardening.rs");
@@ -168,7 +166,7 @@ mod tests {
         );
     }
 
-    /// `main` llama al endurecimiento ANTES que a cualquier otra cosa (antes de analizar argumentos y de escanear).
+    /// `main` calls hardening BEFORE anything else (before parsing arguments or scanning).
     #[test]
     fn main_lo_llama_lo_primero() {
         let main = include_str!("main.rs");

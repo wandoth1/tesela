@@ -1,7 +1,7 @@
-//! Tests del `TreeBuilder` sobre árboles sintéticos con semilla.
+//! `TreeBuilder` tests on seeded synthetic trees.
 //!
-//! Un árbol lógico (`Item`) se emite como lotes con ids provisionales distintos en cada permutación (como haría el
-//! walker según cómo planifique los hilos) y se compara con un cálculo independiente por recursión.
+//! A logical tree (`Item`) is emitted as batches with different provisional ids in each permutation (as the walker
+//! would do depending on thread scheduling) and compared with an independent recursive calculation.
 
 use super::*;
 use crate::flags;
@@ -11,7 +11,7 @@ use crate::tree::NodeId;
 const DAY: u32 = 86_400;
 const NOW: u32 = 4_000_000_000;
 
-/// SplitMix64: generador pseudoaleatorio mínimo y reproducible.
+/// SplitMix64: minimal, reproducible pseudorandom generator.
 struct Rng(u64);
 
 impl Rng {
@@ -84,7 +84,7 @@ impl Item {
     }
 }
 
-/// Árbol sintético con empates de tamaño entre hermanos y enlaces duros repartidos por distintas carpetas.
+/// Synthetic tree with sibling size ties and hard links spread across different directories.
 fn generate(seed: u64) -> Item {
     let mut rng = Rng(seed);
     let mut links: Vec<(u128, u64, u32)> = Vec::new();
@@ -115,7 +115,7 @@ fn generate(seed: u64) -> Item {
                 } else {
                     format!("{label}f{i}.{ext}")
                 };
-                // Pocos tamaños distintos: provoca empates entre hermanos.
+                // Few distinct sizes: creates sibling ties.
                 let alloc = [0u64, 4096, 4096, 8192, 12288][rng.below(5)];
                 let mut f = Item::file(&nm, alloc).with_mtime(rng.below(2000) as u32);
                 if rng.chance(15) && !links.is_empty() {
@@ -138,8 +138,8 @@ fn generate(seed: u64) -> Item {
     build(&mut rng, 0, &mut links, &mut next_id, "ROOT".into())
 }
 
-/// Emite un `Item` como lotes con ids provisionales (y orden de llegada) barajados por `perm_seed`.
-/// Las carpetas de `skip` (rutas con `\`) no entregan lote (se quedarán `INCOMPLETE`).
+/// Emit an `Item` as batches with provisional ids (and arrival order) shuffled by `perm_seed`.
+/// Directories in `skip` (paths with `\`) do not deliver a batch (they remain `INCOMPLETE`).
 fn emit(root: &Item, perm_seed: u64, skip: &[&str]) -> Vec<Batch> {
     let mut rng = Rng(perm_seed);
     let mut root_batch = Batch::detached(0);
@@ -212,9 +212,9 @@ fn build_item(root: &Item, perm_seed: u64) -> Tree {
     build(emit(root, perm_seed, &[]), None)
 }
 
-// --- Oráculo independiente -----------------------------------------------------------------------------------------
+// --- Independent oracle --------------------------------------------------------------------------------------------
 
-/// Qué enlaces conservan el tamaño según la regla del plan: ruta completa menor en orden lexicográfico de bytes.
+/// Which links retain their size under the plan's rule: smallest full path in bytewise lexicographic order.
 fn losers(root: &Item) -> std::collections::HashSet<Vec<u8>> {
     fn walk(it: &Item, path: Vec<u8>, out: &mut Vec<(u128, Vec<u8>)>) {
         if let Some(ch) = &it.dir {
@@ -246,7 +246,7 @@ fn losers(root: &Item) -> std::collections::HashSet<Vec<u8>> {
     out
 }
 
-/// Compara el árbol con la expectativa calculada por recursión. Devuelve (alloc, logical, archivos) del subárbol.
+/// Compare the tree with the recursively calculated expectation. Returns (alloc, logical, files) for the subtree.
 fn check_item(
     tree: &Tree,
     id: NodeId,
@@ -316,7 +316,7 @@ fn invariantes_y_totales_con_muchas_semillas() {
         assert_eq!(tree.stats().files, files);
         assert_eq!(tree.stats().hardlink_extra_entries as usize, l.len());
         assert_eq!(tree.stats().orphans, 0);
-        // Sanidad del generador: hay hermanos con el mismo alloc (si no, el test de determinismo no probaría nada).
+        // Generator sanity check: some siblings have the same alloc (otherwise the determinism test proves nothing).
         for id in 0..tree.len() as u32 {
             let ch: Vec<_> = tree.children(id).collect();
             ties += ch
@@ -467,7 +467,7 @@ fn el_enlace_duro_que_conserva_es_el_de_ruta_menor() {
         assert_eq!(tree.node(zz).flags & flags::HARDLINK, 0);
         assert_eq!((tree.node(arch).alloc, tree.node(arch).logical), (0, 0));
         assert_eq!(tree.node(arch).flags & flags::HARDLINK, flags::HARDLINK);
-        // "m\copia" < "m\otro": conserva copia.
+        // "m\copia" < "m\otro": copia is retained.
         let m = tree.child_by_name(0, b"m").unwrap();
         assert_eq!(
             tree.node(tree.child_by_name(m, b"copia").unwrap()).alloc,
@@ -485,7 +485,7 @@ fn el_enlace_duro_que_conserva_es_el_de_ruta_menor() {
 
 #[test]
 fn la_ruta_se_compara_en_bytes_con_la_barra_inversa() {
-    // Orden de bytes: "a b\x" < "a\x" porque ' ' (0x20) < '\' (0x5C). Un orden por componentes diría lo contrario.
+    // Byte order: "a b\x" < "a\x" because ' ' (0x20) < '\\' (0x5C). Component-wise ordering would say otherwise.
     let root = Item::dir(
         "ROOT",
         vec![
@@ -552,7 +552,7 @@ fn los_directorios_nunca_participan_en_la_dedup() {
     assert_eq!(tree.stats().hardlink_extra_entries, 0);
 }
 
-// --- Histogramas ---------------------------------------------------------------------------------------------------
+// --- Histograms -----------------------------------------------------------------------------------------------------
 
 fn hist_of(files: Vec<Item>) -> Hist {
     let tree = build_item(&Item::dir("ROOT", files), 1);
@@ -561,27 +561,27 @@ fn hist_of(files: Vec<Item>) -> Hist {
 
 #[test]
 fn umbral_del_50_por_ciento_de_tipo_es_estricto() {
-    // 50 % exacto: Mixto.
+    // Exactly 50%: Mixed.
     let h = hist_of(vec![Item::file("a.mp4", 500), Item::file("b.jpg", 500)]);
     assert_eq!(h.dominant_type(), None);
     assert_eq!(h.type_pct[FileType::Video as usize], 50);
     assert_eq!(h.type_pct.iter().map(|&x| x as u32).sum::<u32>(), 100);
-    // 50,05 %: vídeo.
+    // 50.05%: video.
     let h = hist_of(vec![Item::file("a.mp4", 501), Item::file("b.jpg", 499)]);
     assert_eq!(h.dominant_type(), Some(FileType::Video));
-    // El 51 % de "otros" también cuenta como tipo dominante.
+    // 51% in "other" also counts as the dominant type.
     let h = hist_of(vec![Item::file("a.xyz", 51), Item::file("b.jpg", 49)]);
     assert_eq!(h.dominant_type(), Some(FileType::Other));
 }
 
 #[test]
 fn el_umbral_se_calcula_sobre_u64_y_no_sobre_los_porcentajes_redondeados() {
-    // 50,0000001 % pero el porcentaje redondeado seria 50: el dominante sale de los u64.
+    // 50.0000001%, but the rounded percentage would be 50: dominance uses the u64 values.
     let big = 1u64 << 40;
     let h = hist_of(vec![Item::file("a.mp4", big + 1), Item::file("b.jpg", big)]);
     assert_eq!(h.dominant_type(), Some(FileType::Video));
     assert_eq!(h.type_pct[0], 50);
-    // Valores cercanos al limite de u64 no desbordan.
+    // Values near the u64 limit do not overflow.
     let h = hist_of(vec![
         Item::file("a.mp4", 1 << 62),
         Item::file("b.jpg", (1 << 62) - 1),
@@ -591,19 +591,19 @@ fn el_umbral_se_calcula_sobre_u64_y_no_sobre_los_porcentajes_redondeados() {
 
 #[test]
 fn umbral_del_80_por_ciento_de_antiguedad() {
-    // 80 % en el tramo más antiguo (> 3 años): exacto, cuenta.
+    // Exactly 80% in the oldest band (> 3 years): it qualifies.
     let h = hist_of(vec![
         Item::file("a.txt", 800).with_mtime(2000),
         Item::file("b.txt", 200).with_mtime(1),
     ]);
     assert_eq!(h.dominant_age(), Some(4));
-    // 79 % en el más antiguo: no llega; el 21 % reciente arrastra al tramo reciente.
+    // 79% in the oldest band: not enough; the recent 21% pulls the result to the recent band.
     let h = hist_of(vec![
         Item::file("a.txt", 790).with_mtime(2000),
         Item::file("b.txt", 210).with_mtime(1),
     ]);
     assert_eq!(h.dominant_age(), Some(0));
-    // 70 % > 3 años + 20 % en 1-3 años: el 90 % tiene al menos 1 año -> tramo 3.
+    // 70% > 3 years + 20% in 1-3 years: 90% is at least 1 year old -> band 3.
     let h = hist_of(vec![
         Item::file("a.txt", 700).with_mtime(2000),
         Item::file("b.txt", 200).with_mtime(500),
@@ -611,7 +611,7 @@ fn umbral_del_80_por_ciento_de_antiguedad() {
     ]);
     assert_eq!(h.dominant_age(), Some(3));
     assert_eq!(h.age_pct.iter().map(|&x| x as u32).sum::<u32>(), 100);
-    // Todo reciente.
+    // All recent.
     let h = hist_of(vec![Item::file("a.txt", 100).with_mtime(2)]);
     assert_eq!(h.dominant_age(), Some(0));
 }
@@ -642,7 +642,7 @@ fn los_histogramas_son_agregados_de_todo_el_subarbol_y_los_archivos_no_tienen() 
 fn un_directorio_sin_bytes_no_tiene_dominantes_y_los_dedup_no_pesan() {
     let h = hist_of(vec![Item::file("a.mp4", 0), Item::file("b.txt", 0)]);
     assert_eq!(h, Hist::EMPTY);
-    // El enlace sobrante (alloc 0 tras dedup) no aporta a los histogramas.
+    // The duplicate link (alloc 0 after deduplication) does not contribute to histograms.
     let root = Item::dir(
         "ROOT",
         vec![
@@ -669,7 +669,7 @@ fn los_porcentajes_suman_100() {
     }
 }
 
-// --- INCOMPLETE, ERROR, huérfanos, sintético, casos límite ---------------------------------------------------------
+// --- INCOMPLETE, ERROR, orphans, synthetic node, edge cases ---------------------------------------------------------
 
 #[test]
 fn directorios_sin_lote_son_incompletos_pero_los_vacios_y_los_reparse_no() {
@@ -685,7 +685,7 @@ fn directorios_sin_lote_son_incompletos_pero_los_vacios_y_los_reparse_no() {
             junction,
         ],
     );
-    // `pendiente` no entrega su lote (escaneo detenido); su contenido no llega.
+    // `pendiente` delivers no batch (scan stopped); its contents never arrive.
     let tree = build(emit(&root, 1, &["pendiente"]), None);
     tree.check_invariants().unwrap();
     let flag = |n: &[u8]| tree.node(tree.child_by_name(0, n).unwrap()).flags;
@@ -764,7 +764,7 @@ fn las_entradas_sin_padre_llegado_son_huerfanas_y_no_entran_en_el_arbol() {
         },
     );
     b.add_batch(root).unwrap();
-    let mut o = Batch::listing(50, 100); // el directorio 50 nunca llegó
+    let mut o = Batch::listing(50, 100); // directory 50 never arrived
     o.push(
         50,
         b"huerfano",
@@ -804,7 +804,7 @@ fn espacio_no_explicado_es_un_hijo_sintetico_siempre_el_ultimo() {
 #[test]
 fn el_espacio_no_explicado_se_recorta_a_cero() {
     let root = Item::dir("ROOT", vec![Item::file("a", 4096)]);
-    // Usado menor que lo escaneado (p. ej. por dedup o archivos que se borraron): sin nodo.
+    // Used space is less than scanned (e.g. due to deduplication or deleted files): no node.
     let tree = build(emit(&root, 1, &[]), Some(100));
     assert_eq!(tree.len(), 2);
     assert_eq!(tree.stats().unexplained_alloc, 0);
@@ -995,12 +995,12 @@ fn los_flags_cloud_y_reparse_se_cuentan() {
     assert_eq!(tree.node(0).logical, (1 << 20) + 5);
 }
 
-// --- Correcciones de la auditoría ------------------------------------------------------------------------------------
+// --- Audit corrections ----------------------------------------------------------------------------------------------
 
 #[test]
 fn un_huerfano_con_ruta_menor_no_le_quita_el_tamano_a_un_enlace_del_arbol() {
-    // `a.bin` cuelga de un directorio (id 50) que nunca llegó: no está en el árbol. Su ruta parcial ("a.bin") es
-    // menor que "z.bin", pero no puede ganar la deduplicación.
+    // `a.bin` belongs to a directory (id 50) that never arrived, so it is not in the tree. Its partial path ("a.bin") is
+    // less than "z.bin", but it cannot win deduplication.
     let mut b = TreeBuilder::new();
     let mut root = Batch::detached(0);
     root.push(
@@ -1112,7 +1112,7 @@ fn un_mtime_desconocido_no_cuenta_como_el_mas_antiguo() {
         f.mtime = 0;
         f
     };
-    // Solo fechas desconocidas: no hay tramo de antigüedad.
+    // Only unknown dates: there is no age band.
     let h = hist_of(vec![unknown("a.txt", 100), unknown("b.txt", 100)]);
     assert_eq!(h.dominant_age(), None);
     assert_eq!(h.age_pct, [0; 5]);
@@ -1121,7 +1121,7 @@ fn un_mtime_desconocido_no_cuenta_como_el_mas_antiguo() {
         100,
         "el tipo sí cuenta"
     );
-    // Con fechas conocidas, las desconocidas se excluyen del 80 %: 100 B recientes y 5000 B sin fecha -> reciente.
+    // With known dates, unknown dates are excluded from the 80%: 100 B recent and 5000 B undated -> recent.
     let h = hist_of(vec![
         unknown("a.txt", 5000),
         Item::file("b.txt", 100).with_mtime(1),
@@ -1153,14 +1153,14 @@ fn los_acumuladores_saturan_en_vez_de_desbordar() {
             Item::dir("d", vec![Item::file("c.mp4", big)]),
         ],
     );
-    let tree = build_item(&root, 1); // en depuración un `+` desbordaría y entraría en pánico
+    let tree = build_item(&root, 1); // in debug mode, `+` would overflow and panic
     assert_eq!(tree.node(0).alloc, u64::MAX);
     assert_eq!(tree.hist(0).dominant_type(), Some(FileType::Video));
 }
 
 #[test]
 fn las_carpetas_de_la_nube_con_reparse_si_se_recorren() {
-    // Directorio con REPARSE|CLOUD (OneDrive): se recorre, cuenta como directorio y, si no llega su lote, es INCOMPLETE.
+    // Directory with REPARSE|CLOUD (OneDrive): traversed and counted as a directory; INCOMPLETE if its batch never arrives.
     let cloud_dir = |name: &str, children: Vec<Item>| {
         let mut d = Item::dir(name, children);
         d.flags |= flags::REPARSE | flags::CLOUD;
@@ -1173,7 +1173,7 @@ fn las_carpetas_de_la_nube_con_reparse_si_se_recorren() {
             cloud_dir("nube-pendiente", vec![Item::file("b.txt", 4096)]),
         ],
     );
-    // `emit` solo entra en los directorios sin REPARSE: aquí hay que entregar los lotes de la nube a mano.
+    // `emit` only enters directories without REPARSE: cloud batches must be supplied manually here.
     let mut b = TreeBuilder::new();
     let mut r = Batch::detached(0);
     r.push(
@@ -1225,7 +1225,7 @@ fn las_carpetas_de_la_nube_con_reparse_si_se_recorren() {
 
 #[test]
 fn una_carpeta_de_la_nube_sin_poblar_se_cuenta_y_queda_incompleta() {
-    // El escáner no la recorre (no llega su lote): se cuenta con su AllocationSize y queda CLOUD | INCOMPLETE.
+    // The scanner does not traverse it (no batch arrives): its AllocationSize is counted and it remains CLOUD | INCOMPLETE.
     let mut b = TreeBuilder::new();
     let mut r = Batch::detached(0);
     r.push(
@@ -1258,7 +1258,7 @@ fn una_carpeta_de_la_nube_sin_poblar_se_cuenta_y_queda_incompleta() {
             ..EntryData::default()
         },
     );
-    // Junction (REPARSE sin CLOUD): no se sigue y NO es incompleta.
+    // Junction (REPARSE without CLOUD): not followed and NOT incomplete.
     l.push(
         0,
         b"junction",

@@ -1,4 +1,4 @@
-# Toolchain fijado para que el CI y los desarrolladores compilen igual. Sube la versión a propósito.
+# Pinned toolchain so CI and developers build with the same version. Upgrade it deliberately.
 [toolchain]
 channel = "1.98.1"
 profile = "minimal"

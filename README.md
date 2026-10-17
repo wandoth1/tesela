@@ -83,8 +83,8 @@ name of the detection.
 ### Uninstall and what stays behind
 
 *Installed apps > Tesela > Uninstall* (or `msiexec /x tesela-<version>-x64.msi`). This removes the program folder,
-the Start menu shortcut, the Installed apps entry and the values the installer wrote to
-`HKCU\Software\Tesela`.
+the Start menu shortcut, the Installed apps entry and the `Software\Tesela` values the installer wrote under `HKCU` for
+a per-user install or `HKLM` for an all-users install.
 
 **Your data is not deleted** (the installer does not know about it; it is yours):
 
