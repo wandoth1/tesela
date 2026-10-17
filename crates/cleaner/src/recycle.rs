@@ -2950,7 +2950,7 @@ mod tests {
                 root
             ));
             assert!(!is_recycle_bin_path_on(
-                Path::new(r"C:SERS<USUARIO>.TXT"),
+                Path::new(r"C:\Users\<usuario>\a.txt"),
                 root
             ));
         }

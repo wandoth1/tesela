@@ -346,10 +346,12 @@ mod tests {
             "óptico montado en una carpeta de C:"
         );
         // Sin raíz de volumen conocida (o con letra desconocida) falla cerrado.
-        assert!(!local(r"ZZ:.txt"));
+        assert!(!local(r"ZZ:\a.txt"));
         // Lo que no tiene forma de unidad con letra no es local, sepa lo que se sepa del volumen.
         assert!(!local(r"relativa\a.txt"));
-        assert!(!local(r"\servidor\recurso\a.txt"));
+        assert!(!local(
+            &["\\", "\\", "servidor", "\\", "recurso", "\\", "a.txt"].concat()
+        ));
     }
 
     /// GM-M6: la enumeración de volúmenes montados en carpetas no falla y solo devuelve raíces que no son una letra de unidad.
