@@ -2326,6 +2326,21 @@ impl FakeShell {
     }
 }
 
+/// A3-m1: lo que cuenta la shell simulada de un elemento: su tamaño lógico, o, en un directorio, la SUMA de todos sus
+/// descendientes (sin seguir enlaces). Antes usaba `metadata(directorio).len()` (0 en NTFS) y la ocupación simulada no
+/// crecía con el contenido: las aserciones del tipo "no supera el 90 %" no medían nada.
+fn tree_len(p: &Path) -> u64 {
+    let Ok(md) = fs::symlink_metadata(p) else {
+        return 0;
+    };
+    if !md.is_dir() {
+        return md.len();
+    }
+    fs::read_dir(p)
+        .map(|rd| rd.flatten().map(|e| tree_len(&e.path())).sum())
+        .unwrap_or(0)
+}
+
 impl RecycleShell for FakeShell {
     fn recycle(&self, items: &[recycle::SendItem]) -> recycle::BatchOutcome {
         use crate::recycle::BinState;
@@ -2362,7 +2377,8 @@ impl RecycleShell for FakeShell {
                 );
                 break;
             }
-            let len = fs::metadata(p).map_or(0, |m| m.len());
+            // A3-m1: lo que ocupa en la Papelera un directorio es TODO su contenido, no el tamaño de su entrada.
+            let len = tree_len(p);
             let unknown = p
                 .file_name()
                 .is_some_and(|n| n.to_string_lossy().contains("unknown"));
@@ -2466,6 +2482,32 @@ impl RecycleShell for FakeShell {
             _ => Fit::Fits,
         }
     }
+}
+
+/// A3-m1: la ocupación de la Papelera simulada crece con el CONTENIDO de lo que recibe (suma de todos sus descendientes) y no
+/// con el tamaño de la entrada del directorio. Control negativo: con el cálculo anterior (`metadata(dir).len()`), una carpeta
+/// con 95 000 bytes dentro no sumaba nada y una aserción "no supera 90 000" pasaba sin medir lo que se había enviado.
+#[test]
+fn la_shell_simulada_cuenta_el_contenido_de_los_directorios_en_su_ocupacion() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(100_000), 0, "nunca");
+    sb.write("Docs/pequena/a.bin", 1_000);
+    sb.write("Docs/pequena/sub/b.bin", 2_000);
+    sb.write("Docs/pequena/sub/hondo/c.bin", 3_000);
+    sb.write("Docs/grande/x.bin", 60_000);
+    sb.write("Docs/grande/y.bin", 35_000);
+    assert_eq!(tree_len(&sb.path("Docs/pequena")), 6_000);
+    assert_eq!(tree_len(&sb.path("Docs/grande")), 95_000);
+    // El cálculo antiguo daba el tamaño de la entrada del directorio, no el de su contenido.
+    assert!(fs::metadata(sb.path("Docs/grande")).unwrap().len() < 95_000);
+    let send = |rel: &str| recycle::SendItem::capture(&sb.long(rel));
+    fake.recycle(&[send("Docs/pequena")]);
+    assert_eq!(*fake.used.lock().unwrap(), 6_000);
+    // Una carpeta cuyo contenido pasa del 90 % de la capacidad SÍ lo refleja la ocupación (control negativo): la aserción
+    // de las pruebas "no supera el 90 %" ya puede fallar.
+    fake.recycle(&[send("Docs/grande")]);
+    assert_eq!(*fake.used.lock().unwrap(), 101_000);
+    assert!(*fake.used.lock().unwrap() > 90_000);
 }
 
 /// Un plan de elementos de `Docs/<nombre>` con el tamaño dado: el archivo real mide `len` bytes y la ESTIMACIÓN aprobada es
@@ -3374,7 +3416,9 @@ fn dos_directorios_pequenos_de_astra_no_comparten_operacion_y_el_que_crece_no_se
     );
     assert!(sb.path("Docs/d2/crece.bin").exists() && sb.path("Docs/d2/y1.bin").exists());
     assert!(rep.totals.changed >= 1);
-    // Y lo que sí se envió no pasa del 90 % de la capacidad simulada.
+    // Y lo que sí se envió no pasa del 90 % de la capacidad simulada. A3-m1: la ocupación simulada suma el CONTENIDO de la
+    // carpeta enviada (d1: 1 000 bytes; d2 no llegó), así que la aserción mide algo (antes `metadata(dir).len()` daba 0).
+    assert_eq!(*fake.used.lock().unwrap(), 1_000);
     assert!(*fake.used.lock().unwrap() <= 90_000);
 }
 
