@@ -1,273 +1,268 @@
 # Tesela
 
-**Mira qué ocupa tu disco y decide qué liberar, sabiendo qué se borra y comprobando lo que se libera.**
-Analizador visual de espacio en disco para Windows, escrito en Rust: rápido, ligero y claro.
+**See what takes up your disk and decide what to free, knowing what gets deleted and checking what was actually freed.**
+A visual disk space analyzer for Windows, written in Rust: fast, light and clear. The application is available in Spanish and English.
 
-[Instalación](#instalación) · [Code signing policy](CODE_SIGNING.md) · [Seguridad](SECURITY.md) · [Cambios](CHANGELOG.md)
+[Installation](#installation) · [Code signing policy](CODE_SIGNING.md) · [Security](SECURITY.md) · [Changelog](CHANGELOG.md)
 
-> 🚧 **Estado: MVP v0.1 publicado (v0.1.4).** Hechos el modelo, el escáner, la interfaz (mapa, lista, detalles, escaneo con progreso real, es/en, claro/oscuro) y **la limpieza**: Recomendaciones, cesta, confirmación y resumen, con borrado seguro por handle y envío a la Papelera. **Esta versión borra de verdad** (solo lo que apruebas en la confirmación): pruébala primero con `--dry-run` o con `--demo`. Instalador MSI por usuario en [Releases](https://github.com/wandoth1/tesela/releases) (ver [Instalación](#instalación)); usa la **v0.1.4** o posterior: las versiones anteriores tenían fallos en la limpieza. Conclusiones de la fase 0 en [docs/fase-0-conclusiones.md](docs/fase-0-conclusiones.md); el plan completo está en [docs/PLAN.md](docs/PLAN.md).
+> 🚧 **Status: MVP v0.1 published (v0.1.4).** Done: the model, the scanner, the interface (map, list, details, scan with real progress, Spanish/English, light/dark) and **the cleaner**: Recommendations, basket, confirmation and summary, with safe handle-based deletion and sending to the Recycle Bin. **This version really deletes** (only what you approve in the confirmation): try it first with `--dry-run` or `--demo`. Per-user MSI installer in [Releases](https://github.com/wandoth1/tesela/releases) (see [Installation](#installation)); use **v0.1.4** or later: earlier versions had bugs in the cleaner. Phase 0 findings are in [docs/phase-0-findings.md](docs/phase-0-findings.md); the full plan is in [docs/PLAN.md](docs/PLAN.md).
 
-## Qué será
+## What Tesela is
 
-- **Mapa del disco (treemap) + lista.** Cada carpeta es un bloque proporcional a lo que ocupa, coloreado por tipo de archivo, antigüedad o riesgo.
-- **Respuesta en segundos.** Mientras analiza ya te dice "hasta X GB en candidatos de bajo riesgo" (una estimación, que se comprueba al limpiar), porque empieza por los sitios típicos de basura (temporales, cachés, Papelera).
-- **Asistente de limpieza con riesgo visible.** Cada sugerencia va marcada como 🟢 Seguro, 🟠 Revisar o 🔺 Solo informar, y explica en una frase por qué.
-- **Nada se borra a ciegas.** Todo pasa por una cesta de revisión. Lo regenerable (temporales, cachés) se borra; tus archivos van a la Papelera. Las carpetas del sistema están protegidas.
-- **Honesto con los números.** Lo que se libera se mide (el cambio real del espacio libre) y se cuenta aparte de lo eliminado y lo enviado a la Papelera, y enseña qué parte del disco no ha podido medir.
-- **Ligero.** Binario único, sin Electron ni WebView, sin telemetría ni cuentas. Funciona sin permisos de administrador y tiene un modo rápido opcional que lee directamente la tabla de archivos (MFT) de NTFS.
+- **Disk map (treemap) + list.** Each folder is a block proportional to the space it takes, colored by file type, age or risk.
+- **An answer in seconds.** While it scans it already tells you "up to X GB in low-risk candidates" (an estimate, checked when cleaning), because it starts with the usual junk locations (temporary files, caches, Recycle Bin).
+- **A cleanup assistant with visible risk.** Each suggestion is marked 🟢 Safe, 🟠 Review or 🔺 Info only, and explains in one sentence why.
+- **Nothing is deleted blindly.** Everything goes through a review basket. What can be regenerated (temporary files, caches) is deleted; your own files go to the Recycle Bin. System folders are protected.
+- **Honest with the numbers.** What gets freed is measured (the real change in free space) and counted separately from what was deleted and what was sent to the Recycle Bin, and it shows which part of the disk it could not measure.
+- **Light.** A single binary, no Electron or WebView, no telemetry or accounts. It works without administrator rights and has an optional fast mode that reads the NTFS file table (MFT) directly.
 
-## Instalación
+## Installation
 
-Windows 10 22H2 o Windows 11, x64. **No necesita administrador.** Descarga los archivos de la última release en
-[github.com/wandoth1/tesela/releases](https://github.com/wandoth1/tesela/releases) (mientras no haya ninguna publicada, el
-instalador solo se puede construir desde el código: `pwsh -File scripts/build-msi.ps1`).
+Windows 10 22H2 or Windows 11, x64. **No administrator needed.** Download the files of the latest release from
+[github.com/wandoth1/tesela/releases](https://github.com/wandoth1/tesela/releases) (while none is published, the
+installer can only be built from the source: `pwsh -File scripts/build-msi.ps1`).
 
-**Code signing policy:** la v0.1 todavía no está firmada; la [política de firma de código (Code signing policy)](CODE_SIGNING.md) describe qué se firmará, quién aprueba cada release y cómo se construye.
+**Code signing policy:** v0.1 is not signed yet; the [Code signing policy](CODE_SIGNING.md) describes what will be signed, who approves each release and how it is built.
 
-### Instalador MSI (recomendado)
+### MSI installer (recommended)
 
-1. Descarga `tesela-<versión>-x64.msi`.
-2. Haz doble clic. Se instala **solo para tu usuario** en `%LOCALAPPDATA%\Programs\Tesela`, sin pedir permisos de administrador,
-   con un acceso **Tesela** en el menú Inicio y una entrada en *Configuración > Aplicaciones > Aplicaciones instaladas*. (En
-   silencio: `msiexec /i tesela-<versión>-x64.msi /qn`.)
-   **Carpeta de instalación:** con `INSTALLFOLDER=` el MSI instala donde le digas, **sin comprobar quién puede escribir allí**; elige una
-   carpeta que solo tú (y los administradores) puedas escribir. Si otros usuarios pueden escribir en ella, podrían dejar una DLL junto
-   a `tesela.exe` que se cargaría al abrirlo (riesgo sospechado, no demostrado; el programa ya busca sus DLL solo en `System32`, pero conviene no depender de ello; detalle en [installer/README.md](installer/README.md)).
-3. **Actualizar:** instala encima el MSI de la versión nueva; sustituye a la anterior sin dejar duplicados. Instalar una versión
-   **más antigua** que la instalada se bloquea con un mensaje (desinstala primero la nueva si de verdad quieres volver atrás).
-4. **Reparar:** *Aplicaciones instaladas* no ofrece "Modificar" (no hay nada que elegir); para reparar, ejecuta
-   `msiexec /fa tesela-<versión>-x64.msi` con el MSI de la versión instalada.
+1. Download `tesela-<version>-x64.msi`.
+2. Double-click it. It installs **for your user only** in `%LOCALAPPDATA%\Programs\Tesela`, without asking for administrator
+   rights, with a **Tesela** shortcut in the Start menu and an entry in *Settings > Apps > Installed apps*. (Silently:
+   `msiexec /i tesela-<version>-x64.msi /qn`.)
+   **Install folder:** with `INSTALLFOLDER=` the MSI installs wherever you tell it, **without checking who can write there**; choose a
+   folder that only you (and administrators) can write to. If other users can write to it, they could leave a DLL next to
+   `tesela.exe` that would be loaded when it starts (suspected risk, not demonstrated; the program already looks for its DLLs only in `System32`, but it is better not to depend on that; details in [installer/README.md](installer/README.md)).
+3. **Update:** install the new version's MSI over it; it replaces the previous one without leaving duplicates. Installing an
+   **older** version than the installed one is blocked with a message (uninstall the new one first if you really want to go back).
+4. **Repair:** *Installed apps* does not offer "Modify" (there is nothing to choose); to repair, run
+   `msiexec /fa tesela-<version>-x64.msi` with the MSI of the installed version.
 
-### Zip portable
+### Portable zip
 
-`tesela-<versión>-x64-portable.zip` trae `tesela.exe`, `tesela-scan.exe`, las licencias y los avisos de terceros. Descomprímelo
-en una carpeta **de tu perfil** (no en la raíz de una unidad ni en una carpeta que otros usuarios puedan escribir: Windows busca ciertas DLL primero junto al `.exe`) y ejecuta `tesela.exe`; no instala nada ni toca el registro. Para quitarlo, borra la carpeta.
+`tesela-<version>-x64-portable.zip` contains `tesela.exe`, `tesela-scan.exe`, the licenses and the third-party notices. Unzip it
+into a folder **in your profile** (not in the root of a drive nor in a folder other users can write to: Windows looks for certain DLLs first next to the `.exe`) and run `tesela.exe`; it installs nothing and does not touch the registry. To remove it, delete the folder.
 
-> El zip descargado lleva la marca de la web (*Mark of the Web*) y los archivos que descomprimes la heredan, así que SmartScreen puede avisar también al abrir el `tesela.exe` descomprimido (ver más abajo). Si has verificado la descarga, puedes quitar la marca antes de descomprimir con *Propiedades > Desbloquear* del zip, o con `Unblock-File .\tesela-<versión>-x64-portable.zip`.
+> The downloaded zip carries the *Mark of the Web*, and the files you unzip inherit it, so SmartScreen may also warn when you open the unzipped `tesela.exe` (see below). If you have verified the download, you can remove the mark before unzipping with *Properties > Unblock* on the zip, or with `Unblock-File .\tesela-<version>-x64-portable.zip`.
 
-`tesela --version` y `tesela-scan --version` imprimen la versión. `tesela-scan` (herramienta de consola) la escribe por la salida **estándar**; `tesela.exe` (aplicación gráfica, sin consola propia) la escribe por la salida de **errores** de quien lo lanza, así que en PowerShell se ve con `Start-Process .\tesela.exe -ArgumentList --version -Wait -NoNewWindow` o desde `cmd`.
+`tesela --version` and `tesela-scan --version` print the version. `tesela-scan` (a console tool) writes it to **standard** output; `tesela.exe` (a graphical application, with no console of its own) writes it to the **error** output of whatever launched it, so in PowerShell you can see it with `Start-Process .\tesela.exe -ArgumentList --version -Wait -NoNewWindow` or from `cmd`.
 
-### Verificar la descarga
+### Verify the download
 
-Cada release incluye `SHA256SUMS.txt` y una *attestation* de procedencia (GitHub certifica que los archivos salen del flujo
-público `release.yml` de este repositorio, sin manipular).
+Each release includes `SHA256SUMS.txt` and a provenance *attestation* (GitHub certifies that the files come from this repository's
+public `release.yml` workflow, untampered).
 
 ```powershell
-# 1. La suma SHA-256 tiene que ser la de SHA256SUMS.txt:
+# 1. The SHA-256 sum has to be the one in SHA256SUMS.txt:
 Get-FileHash .\tesela-0.1.0-x64.msi -Algorithm SHA256
-# 2. La procedencia (necesita GitHub CLI: https://cli.github.com):
+# 2. The provenance (needs GitHub CLI: https://cli.github.com):
 gh attestation verify .\tesela-0.1.0-x64.msi --repo wandoth1/tesela `
     --signer-workflow wandoth1/tesela/.github/workflows/release.yml `
     --source-ref refs/tags/v0.1.0
 ```
 
-`--source-ref refs/tags/vX.Y.Z` comprueba que el archivo se construyó desde ESA etiqueta (cambia `v0.1.0` por la versión que has descargado); `--signer-workflow` comprueba que lo firmó el flujo `release.yml` de este repositorio.
+`--source-ref refs/tags/vX.Y.Z` checks that the file was built from THAT tag (change `v0.1.0` to the version you downloaded); `--signer-workflow` checks that it was signed by this repository's `release.yml` workflow.
 
-### Aviso de Windows SmartScreen
+### Windows SmartScreen warning
 
-La v0.1 **todavía no está firmada** (la firma con [SignPath Foundation](CODE_SIGNING.md) se solicitará más adelante), así que
-Windows SmartScreen puede mostrar *"Windows protegió su PC"* al abrir el MSI o el `.exe`: no conoce al editor ni el archivo,
-**no** es que haya detectado nada. Si has verificado la descarga (arriba):
+v0.1 is **not signed yet** (signing with [SignPath Foundation](CODE_SIGNING.md) will be requested later), so
+Windows SmartScreen may show *"Windows protected your PC"* when you open the MSI or the `.exe`: it does not know the publisher or the file,
+it has **not** detected anything. If you have verified the download (above):
 
-1. Pulsa **Más información**.
-2. Pulsa **Ejecutar de todos modos**.
+1. Click **More info**.
+2. Click **Run anyway**.
 
-(Si el navegador bloquea la descarga, usa *Conservar* en su lista de descargas.) Con la versión firmada el aviso desaparecerá
-al ganar reputación. Si tu antivirus pone en cuarentena el instalador, no añadas excepciones a ciegas: abre una issue con el
-nombre de la detección.
+(If the browser blocks the download, use *Keep* in its downloads list.) With the signed version the warning will go away
+as it gains reputation. If your antivirus quarantines the installer, do not add exceptions blindly: open an issue with the
+name of the detection.
 
-### Desinstalar y qué queda
+### Uninstall and what stays behind
 
-*Aplicaciones instaladas > Tesela > Desinstalar* (o `msiexec /x tesela-<versión>-x64.msi`). Se quitan la carpeta del programa,
-el acceso del menú Inicio, la entrada de Aplicaciones instaladas y los valores que el instalador escribió en
+*Installed apps > Tesela > Uninstall* (or `msiexec /x tesela-<version>-x64.msi`). This removes the program folder,
+the Start menu shortcut, the Installed apps entry and the values the installer wrote to
 `HKCU\Software\Tesela`.
 
-**No se borran tus datos** (el instalador no los conoce; son tuyos):
+**Your data is not deleted** (the installer does not know about it; it is yours):
 
-- `%APPDATA%\Tesela\config.toml`: tus ajustes (tema e idioma).
-- `%LOCALAPPDATA%\Tesela`: `history.jsonl` (resúmenes de limpiezas) y los registros `limpieza-<fecha>-<hora>-<n>.jsonl` (ruta e identidad
-  de cada elemento limpiado).
+- `%APPDATA%\Tesela\config.toml`: your settings (theme and language).
+- `%LOCALAPPDATA%\Tesela`: `history.jsonl` (cleanup summaries) and the logs `limpieza-<date>-<time>-<n>.jsonl` (the path and identity
+  of every item cleaned; `limpieza` is Spanish for "cleanup").
 
-Para borrarlos a mano tras desinstalar (o antes, con *Ajustes > Borrar el historial*, que quita el historial y los registros):
+To delete them by hand after uninstalling (or before, with *Settings > Delete the cleanup history and logs*, which removes the history and the logs):
 
 ```powershell
 Remove-Item -Recurse -Force "$env:APPDATA\Tesela", "$env:LOCALAPPDATA\Tesela"
 ```
 
-## Uso
+## Usage
 
-Windows 10 22H2 y Windows 11. La aplicación **solo borra o mueve lo que aprobaste en la confirmación** (nunca al escanear, ni en `--demo`). Guarda sus ajustes en `%APPDATA%\Tesela\config.toml` y en `%LOCALAPPDATA%\Tesela` un registro de cada limpieza (`limpieza-<fecha>-<hora>-<n>.jsonl`: ruta, identidad y resultado de cada elemento; solo en tu equipo, se conservan los últimos 30 y se vuelca al sistema tras cada resultado) y `history.jsonl` con resúmenes (fecha, unidad y cifras, sin rutas). "Borrar el historial", en Ajustes, borra ambos.
+Windows 10 22H2 and Windows 11. The application **only deletes or moves what you approved in the confirmation** (never while scanning, nor in `--demo`). It keeps its settings in `%APPDATA%\Tesela\config.toml` and, in `%LOCALAPPDATA%\Tesela`, a log of every cleanup (`limpieza-<date>-<time>-<n>.jsonl`: path, identity and result of each item; only on your computer, the last 30 are kept and it is flushed to the system after every result) and `history.jsonl` with summaries (date, drive and figures, no paths). "Delete the cleanup history and logs", in Settings, deletes both.
 
 ```powershell
-tesela                      # pantalla de inicio: elige una unidad o "Analizar una carpeta…"
-tesela --scan C:\           # analiza esa unidad (o carpeta) nada más arrancar
-tesela --scan C:\ --dry-run # modo simulación: hace todo salvo borrar o mover (mide y registra qué habría pasado)
-tesela --demo               # modo demostración: árbol SINTÉTICO y unidades ficticias; no lee tu disco ni borra nada
+tesela                      # home screen: choose a drive or "Analyze a folder…"
+tesela --scan C:\           # scan that drive (or folder) as soon as it starts
+tesela --scan C:\ --dry-run # simulation mode: does everything except delete or move (measures and logs what would have happened)
+tesela --demo               # demo mode: SYNTHETIC tree and fictional drives; it does not read your disk or delete anything
 tesela --help
 ```
 
-El modo `--demo` es el único con el que se hacen capturas y pruebas: todo lo que enseña (carpetas, tamaños, unidades) está inventado y es siempre el mismo. Admite `--screen home|scan|map|list|recs|confirm|summary`, `--open Users/usuario`, `--select Descargas`, `--stopped` (un análisis detenido, con carpetas incompletas), `--theme light|dark`, `--lang es|en` y `--size 1280x800`.
+`--demo` is the only mode used for screenshots and tests: everything it shows (folders, sizes, drives) is made up and always the same. It accepts `--screen home|scan|map|list|recs|confirm|summary`, `--open Users/usuario`, `--select Descargas`, `--stopped` (a stopped scan, with incomplete folders), `--theme light|dark`, `--lang es|en` and `--size 1280x800`. (The names in the demo tree, such as `usuario` and `Descargas`, are in Spanish, and the screenshots below use the Spanish interface.)
 
-![Mapa de una carpeta de usuario en el modo demostración, tema claro](docs/img/mapa-claro.png)
-![Mapa de una unidad en el modo demostración, tema oscuro](docs/img/mapa-oscuro.png)
-![Recomendaciones en el modo demostración: lo seguro ya marcado, lo que conviene revisar y lo que solo se explica](docs/img/recomendaciones.png)
-![Confirmación antes de limpiar, con lo que se borra y lo que va a la Papelera](docs/img/confirmacion.png)
-![Resumen de una limpieza: el cambio medido del espacio libre, lo eliminado y lo movido a la Papelera](docs/img/resumen.png)
+![Map of a user folder in demo mode, light theme](docs/img/mapa-claro.png)
+![Map of a drive in demo mode, dark theme](docs/img/mapa-oscuro.png)
+![Recommendations in demo mode: the safe items already checked, what is worth reviewing and what is only explained](docs/img/recomendaciones.png)
+![Confirmation before cleaning, with what gets deleted and what goes to the Recycle Bin](docs/img/confirmacion.png)
+![Summary of a cleanup: the measured change in free space, what was deleted and what was moved to the Recycle Bin](docs/img/resumen.png)
 
-- **Mapa:** un bloque por carpeta o archivo, proporcional a lo que ocupa **en disco**, coloreado por tipo (paleta apta para daltonismo). Se insinúa el nivel siguiente dentro de cada bloque. Los bloques demasiado pequeños se agrupan en **"Otros (N elementos, X)"**, que se abre con doble clic. Las carpetas que el análisis no llegó a recorrer entera llevan rayas diagonales y un "≥".
-- **Grises con significado:** el bloque "Windows y otros datos del sistema" (lo que ocupa el disco pero tu usuario no puede ver), `pagefile.sys` y `hiberfil.sys` ("solo informar") y "Mixto" (carpetas sin un tipo dominante).
-- **Lista:** las mismas carpetas con cifras exactas; es la vista accesible (lector de pantalla) y comparte la selección con el mapa.
-- **Teclado:** doble clic o `Intro` entra en una carpeta; `Retroceso` sube; las flechas mueven la selección; `Ctrl+F` busca; `F5` reescanea; `Alt+Inicio` vuelve a la pantalla de inicio. Clic derecho: abrir en el Explorador, copiar la ruta y Propiedades.
-- **Ajustes (⚙):** tema (sistema, claro u oscuro), idioma (sistema, español o English) y borrar el historial de limpiezas.
+- **Map:** one block per folder or file, proportional to the space it takes **on disk**, colored by type (a color-blind-friendly palette). The next level is hinted inside each block. Blocks that are too small are grouped into **"Others (N items, X)"**, which opens with a double-click. Folders the scan did not manage to walk in full carry diagonal stripes and a "≥".
+- **Grays with meaning:** the "Windows and other system data" block (what takes up the disk but your user cannot see), `pagefile.sys` and `hiberfil.sys` ("Info only") and "Mixed" (folders with no dominant type).
+- **List:** the same folders with exact figures; it is the accessible view (screen reader) and shares the selection with the map.
+- **Keyboard:** double-click or `Enter` enters a folder; `Backspace` goes up; the arrow keys move the selection; `Ctrl+F` searches; `F5` rescans; `Alt+Home` goes back to the home screen. Right-click: open in Explorer, copy the path and Properties.
+- **Settings (⚙):** theme (same as system, light or dark), language (same as system, Español or English) and delete the cleanup history.
 
-### Limpieza
+### Cleaning
 
-- **Recomendaciones:** temporales del usuario y de Windows (solo lo no modificado en los últimos 7 días), cachés de Edge, Chrome y Firefox (con el navegador cerrado), y, como **Revisar**, Descargas y la Papelera. `pagefile.sys`, `hiberfil.sys` y `swapfile.sys` solo se explican. "Hasta X en candidatos de bajo riesgo" suma **solo** lo Seguro, y es una estimación, no un mínimo garantizado: la cifra buena la mide la limpieza.
-- **Todo pasa por la cesta y una confirmación** que agrupa por destino: lo regenerable se **borra** (se vuelve a crear solo) y tus archivos van a la **Papelera**. Lo que no cabe en la Papelera (o va a un disco sin tamaño máximo de Papelera configurado: se fija en las propiedades de la Papelera) sale aparte, en ámbar, y solo se elimina si lo marcas expresamente. Los cinco archivos tuyos más grandes se nombran siempre.
-- **Protegido:** Windows, Archivos de programa, `AppData` entero, las carpetas clave del perfil (solo se limpia su contenido), el propio Tesela (aunque esté dentro del temporal) y lo que no se pueda comprobar. Solo se limpian **unidades locales**: una ruta de red, aunque apunte a un disco de tu propio equipo (con `localhost` y su compartición administrativa), se rechaza. Se ve con candado y borde punteado y no se puede añadir.
-- **Borrado seguro:** se comprueba la identidad de cada elemento (volumen, id de archivo y enlaces) justo antes de tocarlo, se abre en exclusiva y se borra por handle, sin entrar nunca en puntos de reparse (junctions, enlaces simbólicos); un enlace duro no cuenta como liberado. Lo que está en uso se **salta**, no se fuerza. Lo que va a la Papelera se comprueba igual y se entrega a Windows **por su ruta original** (sin renombrarlo antes), con un handle de guarda abierto que impide cambiar sus carpetas por un enlace mientras tanto, y justo antes de que Windows actúe se comprueba otra vez que es el objeto aprobado (si no, no se envía). Windows avisa de lo que ha pasado con cada elemento y Tesela compara la **identidad** de lo que llegó a la Papelera con la aprobada (y que el nombre aprobado ya no exista). Si alguien lo sustituyó justo en medio, lo que llega suele ser otro objeto: se te dice y se puede restaurar desde la Papelera; pero si ese objeto no cabe, Windows lo elimina, y esa ventana mínima no se puede cerrar del todo. Los elementos se reparten en operaciones según el espacio que queda en la Papelera (las carpetas se miden justo antes), y lo que no cabe o no se puede garantizar no se envía; si Windows llegara a eliminar algo de forma definitiva, el envío se detiene en ese momento y no se toca nada más. Sin registro local de la limpieza no se borra nada. Mientras se ejecuta, cerrar la ventana se bloquea ("Espera a que termine o cancela"). Si Tesela se ejecuta como administrador, la limpieza real y vaciar la Papelera no funcionan (por seguridad); el análisis y la simulación sí. Con el control de cuentas (UAC) desactivado, o con la cuenta Administrador integrada, todos los procesos cuentan como elevados y Tesela se negará a limpiar: usa una cuenta de usuario estándar (o con UAC activado) y ábrelo con un doble clic normal, sin "Ejecutar como administrador".
-- **"Cambio medido del espacio libre"** es lo que ha cambiado de verdad en el espacio libre de la unidad durante la limpieza (otros programas que escriban a la vez también lo mueven); lo eliminado y lo enviado a la Papelera se cuentan aparte, porque lo enviado no libera hasta que se vacía.
-- El árbol se actualiza **sin reescanear** (los histogramas quedan marcados como aproximados hasta reescanear).
+- **Recommendations:** temporary files of the user and of Windows (only what has not been modified in the last 7 days), Edge, Chrome and Firefox caches (with the browser closed), and, as **Review**, Downloads and the Recycle Bin. `pagefile.sys`, `hiberfil.sys` and `swapfile.sys` are only explained. "Up to X in low-risk candidates" adds up **only** what is Safe, and it is an estimate, not a guaranteed minimum: the real figure is the one the cleanup measures.
+- **Everything goes through the basket and a confirmation** that groups by destination: what can be regenerated is **deleted** (it is recreated on its own) and your own files go to the **Recycle Bin**. What does not fit in the Recycle Bin (or goes to a disk with no maximum Recycle Bin size configured: it is set in the Recycle Bin properties) is shown separately, in amber, and is only deleted if you explicitly check it. Your five biggest own files are always named.
+- **Protected:** Windows, Program Files, the whole of `AppData`, the key folders of the profile (only their contents are cleaned), Tesela itself (even if it is inside the temporary folder) and whatever cannot be checked. Only **local drives** are cleaned: a network path, even one that points to a disk of your own computer (through `localhost` and its administrative share), is rejected. It is shown with a padlock and a dotted border and cannot be added.
+- **Safe deletion:** the identity of each item (volume, file ID and links) is checked right before touching it, it is opened exclusively and deleted by handle, never entering reparse points (junctions, symbolic links); a hard link does not count as freed. What is in use is **skipped**, not forced. What goes to the Recycle Bin is checked the same way and handed to Windows **by its original path** (without renaming it first), with a guard handle open that prevents its folders from being swapped for a link in the meantime, and right before Windows acts it is checked once more that it is the approved object (if not, it is not sent). Windows reports what happened with each item and Tesela compares the **identity** of what reached the Recycle Bin with the approved one (and that the approved name no longer exists). If someone replaced it right in the middle, what arrives is usually a different object: you are told, and it can be restored from the Recycle Bin; but if that object does not fit, Windows deletes it, and that minimal window cannot be fully closed. Items are split into operations according to the space left in the Recycle Bin (folders are measured right before), and what does not fit or cannot be guaranteed is not sent; if Windows ever deleted something permanently, sending stops at that moment and nothing else is touched. Without a local cleanup log nothing is deleted. While it runs, closing the window is blocked ("Wait for it to finish or cancel"). If Tesela runs as administrator, real cleaning and emptying the Recycle Bin do not work (for safety); scanning and simulation do. With User Account Control (UAC) turned off, or with the built-in Administrator account, every process counts as elevated and Tesela will refuse to clean: use a standard user account (or with UAC on) and open it with a normal double-click, not "Run as administrator".
+- **"Measured change in free space"** is what actually changed in the drive's free space during the cleanup (other programs writing at the same time also move it); what was deleted and what was sent to the Recycle Bin are counted separately, because what is sent does not free space until the Recycle Bin is emptied.
+- The tree is updated **without rescanning** (the histograms are marked as approximate until you rescan).
 
-## Hoja de ruta
+## Roadmap
 
-| Versión | Contenido |
+| Version | Content |
 |---|---|
-| Fase 0 ✅ | Pruebas de medición: interfaz gráfica, API de lectura de carpetas, Papelera (hecha: [conclusiones](docs/fase-0-conclusiones.md)) |
-| v0.1 | Escaneo, mapa + lista, cesta, limpieza de temporales, cachés y Papelera. Entregable: **instalador MSI por usuario** desde la v0.1 |
-| v0.2 | Asistente completo (carpetas de proyectos, descargas antiguas, archivos grandes), deshacer |
-| v0.3 | Modo rápido leyendo la MFT (administrador) |
-| v1.0 | Duplicados, reescaneo incremental, instalador firmado, winget, ARM64 |
+| Phase 0 ✅ | Measurement tests: graphical interface, folder-reading API, Recycle Bin (done: [findings](docs/phase-0-findings.md)) |
+| v0.1 | Scan, map + list, basket, cleaning of temporary files, caches and Recycle Bin. Deliverable: **per-user MSI installer** from v0.1 |
+| v0.2 | Full assistant (project folders, old downloads, large files), undo |
+| v0.3 | Fast mode reading the MFT (administrator) |
+| v1.0 | Duplicates, incremental rescan, signed installer, winget, ARM64 |
 
-## Tecnología
+## Technology
 
-Rust · [egui/eframe](https://github.com/emilk/egui) · [windows-rs](https://github.com/microsoft/windows-rs) · Windows 10 22H2 y Windows 11.
+Rust · [egui/eframe](https://github.com/emilk/egui) · [windows-rs](https://github.com/microsoft/windows-rs) · Windows 10 22H2 and Windows 11.
 
----
+## Development
 
-**English:** Tesela is a visual disk space analyzer and cleaner for Windows, written in Rust. The MVP v0.1 is feature-complete (scanner, treemap UI, and the cleaner with handle-based safe deletion) and ships as a **per-user MSI installer** (no administrator needed) plus a portable zip, built and attested by GitHub Actions; the first release is not published yet and is **unsigned** (see [Code signing policy](CODE_SIGNING.md)). See [docs/PLAN.md](docs/PLAN.md) and [docs/fase-0-conclusiones.md](docs/fase-0-conclusiones.md) (in Spanish).
+Cargo workspace at the root (`crates/`); `spike/` is the phase 0 measurement code, with its own workspace.
+State of the MVP v0.1: done are the model (`tesela-model`), the read-only scanner (`tesela-scanner`) with its CLI
+`tesela-scan`, the treemap layout (`tesela-layout`), the cleaner (`tesela-cleaner`: rules, protections, deletion by
+handle and Recycle Bin), the interface (`tesela-ui`) and the executable (`tesela-app`, binary `tesela`).
 
-## Desarrollo
-
-Workspace de Cargo en la raíz (`crates/`); `spike/` es el código de medición de la fase 0, con su propio workspace.
-Estado del MVP v0.1: hechos el modelo (`tesela-model`), el escáner de solo lectura (`tesela-scanner`) con su CLI
-`tesela-scan`, el layout del treemap (`tesela-layout`), la limpieza (`tesela-cleaner`: reglas, protecciones, borrado por
-handle y Papelera), la interfaz (`tesela-ui`) y el ejecutable (`tesela-app`, binario `tesela`).
-
-Requisitos: Rust (el toolchain de `rust-toolchain.toml`, MSVC), el **Windows SDK** (`rc.exe`: `winresource` incrusta el icono y los datos de versión en los `.exe`), Python 3 (`build-release.ps1` lo usa para leer los imports PE), **PowerShell 7** (`pwsh`) y, para el instalador, **WiX 5.0.2** como `dotnet tool` (`pwsh -File scripts/install-wix.ps1 -Version 5.0.2`; ver [installer/README.md](installer/README.md)). Para la suite de pruebas **completa**, define `TESELA_REAL_RECYCLE_TESTS=1` (pruebas con la Papelera real) y `TESELA_PROCESS_TESTS=1` (pruebas que lanzan procesos hijo); ver abajo.
+Requirements: Rust (the toolchain in `rust-toolchain.toml`, MSVC), the **Windows SDK** (`rc.exe`: `winresource` embeds the icon and the version data in the `.exe` files), Python 3 (`build-release.ps1` uses it to read the PE imports), **PowerShell 7** (`pwsh`) and, for the installer, **WiX 5.0.2** as a `dotnet tool` (`pwsh -File scripts/install-wix.ps1 -Version 5.0.2`; see [installer/README.md](installer/README.md)). For the **full** test suite, set `TESELA_REAL_RECYCLE_TESTS=1` (tests with the real Recycle Bin) and `TESELA_PROCESS_TESTS=1` (tests that launch child processes); see below.
 
 ```powershell
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
-cargo test --workspace            # los tests solo tocan carpetas de prueba en %TEMP%\tesela-test-<uuid> (y, para la Papelera, solo elementos propios)
-$env:TESELA_REAL_RECYCLE_TESTS = '1'; $env:TESELA_PROCESS_TESTS = '1'; cargo test --workspace   # la suite COMPLETA: añade las pruebas con la Papelera REAL y con procesos hijo (ver abajo)
+cargo test --workspace            # the tests only touch test folders in %TEMP%\tesela-test-<uuid> (and, for the Recycle Bin, only their own items)
+$env:TESELA_REAL_RECYCLE_TESTS = '1'; $env:TESELA_PROCESS_TESTS = '1'; cargo test --workspace   # the FULL suite: adds the tests with the REAL Recycle Bin and with child processes (see below)
 cargo deny check
-cargo run --release -p tesela-scan -- <ruta> --top 20   # solo lectura; opciones en la cabecera de crates/tesela-scan/src/main.rs
-cargo run -p tesela-app -- --demo                        # la interfaz con datos sintéticos
-cargo test -p tesela-layout --release -- --ignored relayout   # benchmark del layout (20k rectángulos)
-pwsh -File scripts/build-release.ps1                     # release SIN rutas de la máquina en los binarios (y lo comprueba)
-pwsh -File scripts/build-msi.ps1                         # MSI por usuario + zip portable + SHA256SUMS.txt (necesita WiX 5.0.2: installer/README.md)
-python -I -m unittest discover -s scripts/tests -p "test_*.py"   # pruebas de scripts/check-pe.py
+cargo run --release -p tesela-scan -- <path> --top 20   # read-only; options in the header of crates/tesela-scan/src/main.rs
+cargo run -p tesela-app -- --demo                        # the interface with synthetic data
+cargo test -p tesela-layout --release -- --ignored relayout   # layout benchmark (20k rectangles)
+pwsh -File scripts/build-release.ps1                     # release WITHOUT machine paths in the binaries (and it checks that)
+pwsh -File scripts/build-msi.ps1                         # per-user MSI + portable zip + SHA256SUMS.txt (needs WiX 5.0.2: installer/README.md)
+python -I -m unittest discover -s scripts/tests -p "test_*.py"   # tests of scripts/check-pe.py
 ```
 
-Capturas del README (solo del modo `--demo`; ver [docs/img/README.md](docs/img/README.md)):
-`cargo run -p tesela-app --features capture -- --demo --size 1280x800 --screenshot salida.png` (no pisa un archivo que ya exista: `--overwrite` lo reemplaza). La feature `capture` no forma
-parte del ejecutable que se publica. `--bench-hover <segundos>` mueve un puntero sintético sobre el mapa e imprime el coste de
-CPU por frame y `--idle-memory <segundos>` deja la ventana en reposo e imprime el private working set del proceso (sin PowerShell, CIM ni WMI); los resultados de cualquier medición se quedan fuera del repositorio.
+README screenshots (only from `--demo` mode; see [docs/img/README.md](docs/img/README.md)):
+`cargo run -p tesela-app --features capture -- --demo --size 1280x800 --screenshot output.png` (it does not overwrite a file that already exists: `--overwrite` replaces it). The `capture` feature is not
+part of the executable that is published. `--bench-hover <seconds>` moves a synthetic pointer over the map and prints the CPU
+cost per frame, and `--idle-memory <seconds>` leaves the window idle and prints the process's private working set (without PowerShell, CIM or WMI); the results of any measurement stay out of the repository.
 
-**Pruebas con la Papelera real.** Las pruebas del `cleaner` que envían elementos a la Papelera del usuario (y comprueban que
-Windows los entrega con su identidad) solo corren con `TESELA_REAL_RECYCLE_TESTS=1`; sin ella se saltan con un mensaje. El CI de
-GitHub (un Windows Server sin sesión interactiva) no tiene una Papelera de usuario fiable y fallaban allí por el entorno, no por
-el código. Lanza la suite completa con la variable en tu equipo antes de tocar `crates/cleaner`. Solo usan elementos propios
-(filtrados por el uuid de la prueba) y no vacían la Papelera.
+**Tests with the real Recycle Bin.** The `cleaner` tests that send items to the user's Recycle Bin (and check that
+Windows delivers them with their identity) only run with `TESELA_REAL_RECYCLE_TESTS=1`; without it they are skipped with a message. GitHub's CI
+(a Windows Server with no interactive session) has no reliable user Recycle Bin and the tests failed there because of the environment, not because of
+the code. Run the full suite with the variable on your machine before touching `crates/cleaner`. They only use their own items
+(filtered by the test's uuid) and do not empty the Recycle Bin.
 
-**Pruebas con procesos hijo.** Las pruebas que lanzan copias de `tesela.exe` / `tesela-scan.exe` (con archivos vacíos con nombre
-de DLL al lado, para comprobar que no se cargan), abren y cierran la ventana de `--demo` o ejecutan la CLI `tesela-scan` solo
-corren con `TESELA_PROCESS_TESTS=1`; sin ella se saltan con un mensaje (las aserciones no se han debilitado). Un antivirus de
-escritorio puede bloquear ese patrón (ejecutables copiados junto a DLL falsas, ventanas que se abren y se cierran); por eso en local no se activan por defecto. El CI las define siempre
-(`.github/workflows/ci.yml`, job `build`), así que ahí corren en cada push a `main` y en cada pull request. Las pruebas
-unitarias de `dll_hardening` que no lanzan procesos y la lectura del PE (`DependentLoadFlags`, manifiesto) no dependen de la variable.
+**Tests with child processes.** The tests that launch copies of `tesela.exe` / `tesela-scan.exe` (with empty files named
+like DLLs next to them, to check that they are not loaded), open and close the `--demo` window or run the `tesela-scan` CLI only
+run with `TESELA_PROCESS_TESTS=1`; without it they are skipped with a message (the assertions have not been weakened). A desktop antivirus
+may block that pattern (executables copied next to fake DLLs, windows that open and close); that is why they are not enabled by default locally. CI always sets it
+(`.github/workflows/ci.yml`, job `build`), so there they run on every push to `main` and on every pull request. The
+unit tests of `dll_hardening` that do not launch processes and the PE reading (`DependentLoadFlags`, manifest) do not depend on the variable.
 
-El release enlaza el runtime de C de forma estática (`.cargo/config.toml`, repetido en `build-release.ps1` porque
-`CARGO_ENCODED_RUSTFLAGS` tiene prioridad sobre el config): el `.exe` no importa `VCRUNTIME*.dll`, `MSVCP*.dll` ni
-`api-ms-win-crt-*.dll`. En Windows 10/11 el UCRT es del sistema; se enlaza estático para no depender del runtime de VC++
-redistribuible, que un instalador por usuario y sin administrador no puede instalar. `build-release.ps1` toma los ejecutables de la salida JSON de
-Cargo, exige `tesela.exe` y `tesela-scan.exe` (falla si falta alguno, aparece otro o queda uno antiguo en la carpeta) y
-lee la tabla de imports PE con `scripts/check-pe.py` (necesita Python 3).
+The release links the C runtime statically (`.cargo/config.toml`, repeated in `build-release.ps1` because
+`CARGO_ENCODED_RUSTFLAGS` takes priority over the config): the `.exe` does not import `VCRUNTIME*.dll`, `MSVCP*.dll` or
+`api-ms-win-crt-*.dll`. On Windows 10/11 the UCRT belongs to the system; it is linked statically so as not to depend on the redistributable
+VC++ runtime, which a per-user installer without administrator cannot install. `build-release.ps1` takes the executables from Cargo's JSON output,
+requires `tesela.exe` and `tesela-scan.exe` (it fails if one is missing, another appears or an old one is left in the folder) and
+reads the PE import table with `scripts/check-pe.py` (needs Python 3).
 
-### Privacidad
+### Privacy
 
-El repositorio es público y **no puede contener datos de ninguna máquina**: hardware, sistema, usuario, rutas, tamaños de
-discos reales ni resultados de escaneos (los ejemplos, capturas y fixtures son siempre sintéticos).
+The repository is public and **cannot contain data from any machine**: hardware, system, user, paths, sizes of
+real disks or scan results (examples, screenshots and fixtures are always synthetic).
 
-- **Instala los hooks tras clonar:** `pwsh -File scripts/install-hooks.ps1`. `pre-commit` revisa lo que está en staging
-  (contenido del índice y nombres de archivo) y `commit-msg` revisa el mensaje. Exigen **PowerShell 7 (`pwsh`)**; sin él, o
-  sin `scripts/privacy-check.ps1` en el worktree, el commit se bloquea con un mensaje claro.
-- `scripts/privacy-check.ps1 -All` revisa todo el árbol (el CI lo ejecuta con `-GenericOnly`). Busca SID, rutas de perfil
-  reales, unidades D:–Z:, rutas UNC de red (`\\<servidor>\<recurso>`: en la documentación usa un marcador entre `<>`), hardware,
-  antivirus y builds de Windows; en local añade el usuario, el equipo y el perfil leídos
-  del entorno en tiempo de ejecución. Se decodifica UTF-8 (y, si los bytes no son UTF-8 válido, también Latin-1/ANSI, cada decodificación por separado con sus números de línea), UTF-16 y UTF-32 con BOM, y de los binarios se revisan sus cadenas (ASCII, y ASCII con letras de cualquier alfabeto, en Latin-1 y en UTF-16 de ambas alineaciones); se rechazan **por su firma** los
-  formatos opacos o comprimidos (ZIP y derivados, también por su registro de fin en los últimos 64 KiB, gzip, 7z, rar, xz,
-  bz2, zstd, cab, msi, pdf, sqlite: su contenido no se puede revisar) y se rechazan las imágenes, con UNA excepción estrecha: `docs/img/<nombre>.png` si es un PNG sin metadatos (solo fragmentos IHDR, PLTE, tRNS, IDAT, IEND, sRGB, gAMA, cHRM y pHYs), de menos de 2 MiB, y `docs/img/README.md` tiene una línea con su nombre y la orden `--demo` que lo genera.
-  `docs/spike-results.md` no puede existir y `spike/` pasa las reglas no ligadas a rutas.
-- **Límites que ninguna firma detecta:** zlib crudo, lzma-alone (`.lzma`), datos cifrados u ofuscados y texto en base64 u otra
-  transformación. Los frena que el repositorio no admite binarios desconocidos y que quien audita el cambio los vea. Se
-  decodifican UTF-8 (con BOM o sin él), UTF-16 y UTF-32 (con BOM) y, ante cualquier NUL en TODO el archivo, se revisan además sus
-  cadenas (ASCII y ASCII con letras de cualquier alfabeto) en Latin-1 y en UTF-16. Los valores locales con acentos se buscan en
-  todas esas codificaciones con límites de palabra que cuentan las letras latinas acentuadas; un valor pegado a una letra
-  cirílica, griega o CJK cuenta como coincidencia (falso positivo, del lado seguro). *Límites conocidos, sin cambio:* no se
-  normalizan NFC/NFD, no se interpretan los bytes 0x80-0x9F de CP1252, un valor de 3 a 5 caracteres solo se ve en UTF-16 de un
-  binario si va dentro de una cadena de 6 o más, y el UTF-16 big endian sin BOM solo se ve para letras latinas (Latin-1).
-- **Mensajes y rangos:** el mensaje de commit se revisa entero (también las líneas con `#` y lo que sigue a la línea de tijera
-  de `git commit --verbose`, aunque git lo recortaría: el hook ve el archivo antes). `privacy-check.ps1 -From <sha> -To <sha>`
-  revisa el mensaje de cada commit y TODOS los blobs que introduce el rango, también los que un commit posterior borra; el CI lo
-  ejecuta en cada push a CUALQUIER rama o etiqueta (`before..sha`; con `before` a ceros o ausente, que es lo que pasa en una rama
-  nueva o en una etiqueta, toda la historia) y en cada pull request (`base..head`). En un rango, un PNG de `docs/img/` se acepta
-  si su SHA-256 figura en el `docs/img/README.md` de su propio commit o del commit final (`-To`). Los cambios de tipo (un archivo
-  que pasa a enlace simbólico, cuyo destino es su contenido) también se revisan.
-- **Lista negra local (opcional, no versionada):** crea `<git-common-dir>/privacy-denylist` (en un clon normal,
-  `.git/privacy-denylist`; en un worktree, el `.git` del repositorio principal; `git rev-parse --git-common-dir` lo dice) con
-  **un término por línea**. Coincidencia literal sin distinguir mayúsculas; se ignoran las líneas vacías y las que empiezan por
-  `#`. Sirve para nombres propios (carpetas, programas, equipos) que ningún patrón genérico puede conocer.
-- Pruebas del propio check, con `pwsh` y con Windows PowerShell 5.1:
-  `pwsh -File scripts/tests/privacy-check.tests.ps1` y `pwsh -File scripts/tests/privacy-check.tests.ps1 -Shell powershell`.
-- `scripts/build-release.ps1` compila con `--remap-path-prefix` calculado en tiempo de ejecución (`trim-paths` de cargo sigue
-  siendo inestable y el prefijo depende de la máquina, así que no cabe en `.cargo/config.toml`) y falla si el `.exe` contiene el
-  usuario, el perfil, el repositorio o el toolchain.
+- **Install the hooks after cloning:** `pwsh -File scripts/install-hooks.ps1`. `pre-commit` checks what is staged
+  (index contents and file names) and `commit-msg` checks the message. They require **PowerShell 7 (`pwsh`)**; without it, or
+  without `scripts/privacy-check.ps1` in the worktree, the commit is blocked with a clear message.
+- `scripts/privacy-check.ps1 -All` checks the whole tree (CI runs it with `-GenericOnly`). It looks for SIDs, real profile
+  paths, drives D:–Z:, network UNC paths (`\\<server>\<share>`: in the documentation use a placeholder between `<>`), hardware,
+  antivirus and Windows builds; locally it adds the user, the machine and the profile read
+  from the environment at run time. It decodes UTF-8 (and, if the bytes are not valid UTF-8, also Latin-1/ANSI, each decoding separately with its line numbers), UTF-16 and UTF-32 with BOM, and for binaries it checks their strings (ASCII, and ASCII with letters of any alphabet, in Latin-1 and in UTF-16 of both alignments); opaque or compressed
+  formats are rejected **by their signature** (ZIP and derivatives, also by their end record in the last 64 KiB, gzip, 7z, rar, xz,
+  bz2, zstd, cab, msi, pdf, sqlite: their contents cannot be checked) and images are rejected, with ONE narrow exception: `docs/img/<name>.png` if it is a PNG without metadata (only IHDR, PLTE, tRNS, IDAT, IEND, sRGB, gAMA, cHRM and pHYs chunks), under 2 MiB, and `docs/img/README.md` has a line with its name and the `--demo` command that generates it.
+  `docs/spike-results.md` cannot exist and `spike/` passes the rules not tied to paths.
+- **Limits that no signature detects:** raw zlib, lzma-alone (`.lzma`), encrypted or obfuscated data and text in base64 or any other
+  transformation. They are held back by the repository not accepting unknown binaries and by whoever audits the change seeing them. UTF-8 (with or without BOM), UTF-16 and UTF-32 (with BOM) are
+  decoded and, on any NUL in the WHOLE file, its strings (ASCII and ASCII with letters of any alphabet) are also checked in Latin-1 and in UTF-16. Local values with accents are searched in
+  all those encodings with word boundaries that count accented Latin letters; a value attached to a
+  Cyrillic, Greek or CJK letter counts as a match (a false positive, on the safe side). *Known limits, unchanged:* NFC/NFD is not
+  normalized, bytes 0x80-0x9F of CP1252 are not interpreted, a value of 3 to 5 characters is only seen in the UTF-16 of a
+  binary if it is inside a string of 6 or more, and UTF-16 big endian without BOM is only seen for Latin letters (Latin-1).
+- **Messages and ranges:** the commit message is checked in full (also lines with `#` and what follows the scissors line
+  of `git commit --verbose`, even though git would trim it: the hook sees the file before that). `privacy-check.ps1 -From <sha> -To <sha>`
+  checks the message of every commit and ALL the blobs the range introduces, including those a later commit deletes; CI
+  runs it on every push to ANY branch or tag (`before..sha`; with `before` all zeros or absent, which is what happens on a new
+  branch or a tag, the whole history) and on every pull request (`base..head`). In a range, a PNG in `docs/img/` is accepted
+  if its SHA-256 appears in the `docs/img/README.md` of its own commit or of the final commit (`-To`). Type changes (a file
+  that becomes a symbolic link, whose target is its content) are also checked.
+- **Local denylist (optional, not versioned):** create `<git-common-dir>/privacy-denylist` (in a normal clone,
+  `.git/privacy-denylist`; in a worktree, the `.git` of the main repository; `git rev-parse --git-common-dir` tells you) with
+  **one term per line**. Literal, case-insensitive match; empty lines and those starting with
+  `#` are ignored. It is for proper names (folders, programs, machines) that no generic pattern can know.
+- Tests of the check itself, with `pwsh` and with Windows PowerShell 5.1:
+  `pwsh -File scripts/tests/privacy-check.tests.ps1` and `pwsh -File scripts/tests/privacy-check.tests.ps1 -Shell powershell`.
+- `scripts/build-release.ps1` compiles with a `--remap-path-prefix` computed at run time (cargo's `trim-paths` is still
+  unstable and the prefix depends on the machine, so it does not fit in `.cargo/config.toml`) and fails if the `.exe` contains the
+  user, the profile, the repository or the toolchain.
 
-### Notas de diseño del escáner
+### Scanner design notes
 
-- Carpetas de la nube (OneDrive y similares): las **ya pobladas** (reparse point con etiqueta de nube) se recorren; las **no
-  pobladas** (atributos `RECALL_ON_OPEN` o `RECALL_ON_DATA_ACCESS`) **no se recorren**, para no provocar descargas por red: se
-  cuentan con su `AllocationSize` y quedan marcadas `CLOUD | INCOMPLETE` (la CLI las muestra como `NUBE`). El resto de reparse
-  points de directorio (junctions, symlinks, montajes) no se siguen. No hay forma de crear placeholders reales en el CI: solo se
-  prueban la clasificación y el builder con atributos sintéticos.
-- El `mtime` de un directorio en el listado de su padre se refresca de forma diferida en NTFS: justo tras escribir puede ir
-  atrasado. Su tamaño propio es 0 en el listado del padre (el espacio real que ocupa el directorio va al bloque de datos del
-  sistema, es decir, al "espacio no explicado").
+- Cloud folders (OneDrive and similar): the **already populated** ones (a reparse point with a cloud tag) are walked; the **unpopulated**
+  ones (attributes `RECALL_ON_OPEN` or `RECALL_ON_DATA_ACCESS`) are **not walked**, so as not to trigger network downloads: they are
+  counted with their `AllocationSize` and marked `CLOUD | INCOMPLETE` (the CLI shows them as `NUBE`, Spanish for "cloud"). The remaining directory reparse
+  points (junctions, symlinks, mounts) are not followed. There is no way to create real placeholders in CI: only the
+  classification and the builder are tested, with synthetic attributes.
+- The `mtime` of a directory in its parent's listing is refreshed lazily on NTFS: right after writing it can be
+  stale. Its own size is 0 in the parent's listing (the real space the directory takes goes to the system data block, that is,
+  to the "unexplained space").
 
-- **Espacio del volumen y cuotas de disco:** `NtQueryVolumeInformationFile` da tres magnitudes de ámbitos distintos, por
-  este orden de consulta: `FileFsFullSizeInformationEx` (clase 14, Windows 10 1809+: `ActualTotalAllocationUnits` y
-  `ActualAvailableAllocationUnits` son del VOLUMEN, `CallerAvailableAllocationUnits` es del usuario); si no está soportada,
-  `FileFsFullSizeInformation` (clase 7), cuyo `TotalAllocationUnits` con cuota es lo disponible PARA EL USUARIO y por eso solo
-  vale como capacidad del volumen cuando `CallerAvailable == ActualAvailable`; y por último `GetDiskFreeSpaceExW`, con la misma
-  condición. El "espacio no explicado" (`total - libre - escaneado`) usa SOLO cifras con ámbito de volumen: con una cuota y sin
-  la clase 14 no hay residuo (restar ámbitos distintos daría un número inventado), y la tarjeta de la unidad enseña las cifras
-  del usuario con el aviso "Cifras de tu cuenta (cuota de disco)". Con ámbito de volumen y una cuota que limita, la tarjeta
-  añade una línea aparte "Disponible para tu cuenta (cuota)". El anillo de uso y "X libres de Y" usan siempre dos cifras del
-  mismo ámbito.
+- **Volume space and disk quotas:** `NtQueryVolumeInformationFile` gives three magnitudes of different scopes, in
+  this query order: `FileFsFullSizeInformationEx` (class 14, Windows 10 1809+: `ActualTotalAllocationUnits` and
+  `ActualAvailableAllocationUnits` belong to the VOLUME, `CallerAvailableAllocationUnits` belongs to the user); if it is not supported,
+  `FileFsFullSizeInformation` (class 7), whose `TotalAllocationUnits` with a quota is what is available TO THE USER and so
+  is only valid as volume capacity when `CallerAvailable == ActualAvailable`; and finally `GetDiskFreeSpaceExW`, with the same
+  condition. The "unexplained space" (`total - free - scanned`) uses ONLY volume-scope figures: with a quota and without
+  class 14 there is no remainder (subtracting different scopes would give an invented number), and the drive card shows the user's
+  figures with the notice "Figures for your account (disk quota)". With volume scope and a quota that limits, the card
+  adds a separate line "Available to your account (quota)". The usage ring and "X free of Y" always use two figures of the
+  same scope.
 
-### Licencias de terceros
+### Third-party licenses
 
-- **Dependencias de Rust:** [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) lista cada componente que se compila en el `.exe` con el texto de su licencia. Se genera con [`cargo about`](https://github.com/EmbarkStudios/cargo-about) y la configuración de `about.toml` y `about.hbs`; no se edita a mano. Para regenerarlo tras cambiar dependencias: `cargo install cargo-about --locked --features cli` (una vez) y `cargo about generate --locked -o THIRD-PARTY-NOTICES.md about.hbs`. El archivo va **incrustado en el ejecutable** y se puede leer desde la propia aplicación: Ajustes, "Acerca de Tesela", "Avisos de terceros".
-- **Iconos:** un subconjunto de 30 de [Fluent UI System Icons](https://github.com/microsoft/fluentui-system-icons) (© Microsoft, MIT), tal como salen de su repositorio oficial, con su `LICENSE` en `crates/ui/assets/icons/`.
-- **Fuentes:** la interfaz usa Segoe UI (Variable) del propio Windows, que se carga en tiempo de ejecución y **no se redistribuye**. El `.exe` **no lleva ninguna fuente** (egui se compila sin `default_fonts`, así que tampoco hay fuentes OFL ni Ubuntu). Los nombres en chino, japonés, coreano, tailandés, índico, árabe, hebreo o con símbolos cargan, solo si aparecen, la fuente de reserva del sistema que corresponda (Microsoft YaHei o MS Gothic, Malgun Gothic, Tahoma, Nirmala UI, Segoe UI y Segoe UI Symbol). Si Windows no tuviera ninguna fuente utilizable, la aplicación lo dice y se cierra. Los emoji en color no se pueden dibujar (egui no los admite).
+- **Rust dependencies:** [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) lists every component compiled into the `.exe` with the text of its license. It is generated with [`cargo about`](https://github.com/EmbarkStudios/cargo-about) and the configuration in `about.toml` and `about.hbs`; it is not edited by hand. To regenerate it after changing dependencies: `cargo install cargo-about --locked --features cli` (once) and `cargo about generate --locked -o THIRD-PARTY-NOTICES.md about.hbs`. The file is **embedded in the executable** and can be read from the application itself: Settings, "About Tesela", "Third-party notices".
+- **Icons:** a subset of 30 of [Fluent UI System Icons](https://github.com/microsoft/fluentui-system-icons) (© Microsoft, MIT), as they come from their official repository, with their `LICENSE` in `crates/ui/assets/icons/`.
+- **Fonts:** the interface uses Segoe UI (Variable) from Windows itself, which is loaded at run time and **not redistributed**. The `.exe` **carries no font** (egui is compiled without `default_fonts`, so there are no OFL or Ubuntu fonts either). Names in Chinese, Japanese, Korean, Thai, Indic scripts, Arabic, Hebrew or with symbols load, only if they appear, the matching system fallback font (Microsoft YaHei or MS Gothic, Malgun Gothic, Tahoma, Nirmala UI, Segoe UI and Segoe UI Symbol). If Windows had no usable font, the application says so and closes. Color emoji cannot be drawn (egui does not support them).
 
-## Licencia
+## License
 
-Licencia dual a tu elección:
+Dual license, at your choice:
 
 - MIT ([LICENSE-MIT](LICENSE-MIT))
 - Apache 2.0 ([LICENSE-APACHE](LICENSE-APACHE))
 
-Salvo que digas lo contrario, cualquier contribución que envíes para incluirla en el proyecto queda bajo esa misma licencia dual, sin términos adicionales.
+Unless you state otherwise, any contribution you submit for inclusion in the project is under that same dual license, with no additional terms.
