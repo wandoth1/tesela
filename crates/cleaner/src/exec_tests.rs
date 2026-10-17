@@ -3892,6 +3892,78 @@ impl RecycleShell for FlakyRoom {
     }
 }
 
+/// A3-M2 (repetición de Astra): capacidad 100 000, la Papelera vacía al empezar la medida y con 99 000 ocupados al acabar el
+/// recorrido; una carpeta de 4 000 bytes se enviaba con la lectura vieja (vacía). Ahora la ocupación se lee también DESPUÉS
+/// del recorrido y manda la MAYOR de las dos: `NoRoom`, sin llegar a la shell.
+#[test]
+fn una_papelera_que_se_llena_durante_la_medida_deja_el_directorio_sin_enviar() {
+    for (lecturas, enviado) in [
+        // Antes 0, después 99 000: no cabe (la lectura de después manda).
+        (vec![0u64, 99_000], false),
+        // Antes 88 000, después 0: manda la mayor, la de antes (presupuesto 2 000 < 4 096).
+        (vec![88_000, 0], false),
+        // Control: las dos vacías, se envía.
+        (vec![0, 0], true),
+        // Control: ocupación media en las dos, cabe en lo que queda (90 000 - 50 000).
+        (vec![50_000, 50_000], true),
+    ] {
+        let sb = Sandbox::new();
+        let fake = FakeShell::new(&sb, Some(100_000), 0, "nunca");
+        let flaky = Arc::new(FlakyRoom {
+            inner: fake.clone(),
+            calls: std::sync::atomic::AtomicUsize::new(0),
+            used: lecturas.clone(),
+        });
+        let c = cleaner_for(&sb).with_shell(flaky.clone());
+        let plan = plan_dir(&sb, &c, "d", 4_000);
+        let rep = exec(&c, &plan, false, false, None).unwrap();
+        if enviado {
+            assert_eq!(rep.items[0].status, ItemStatus::Recycled, "{lecturas:?}");
+            assert_eq!(fake.names(), vec![vec!["d"]]);
+        } else {
+            assert_eq!(
+                rep.items[0].status,
+                ItemStatus::NotRecycled(RecycleFail::NoRoom),
+                "{lecturas:?}"
+            );
+            assert!(fake.names().is_empty(), "{lecturas:?}: no llegó a la shell");
+            assert!(sb.path("Docs/d/f0.bin").exists());
+            assert_eq!(rep.no_room, 1);
+        }
+        // Dos lecturas por directorio: antes y después del recorrido.
+        assert!(flaky.calls.load(Ordering::SeqCst) >= 2, "{lecturas:?}");
+    }
+}
+
+/// A3-M2: `BinRoom::worst` toma la MAYOR ocupación y la MENOR capacidad, y falla cerrado si falta un dato en cualquiera.
+#[test]
+fn la_peor_de_dos_lecturas_de_la_papelera() {
+    let a = BinRoom {
+        max: Some(100),
+        used: Some(10),
+    };
+    let b = BinRoom {
+        max: Some(80),
+        used: Some(40),
+    };
+    assert_eq!(
+        a.worst(b),
+        BinRoom {
+            max: Some(80),
+            used: Some(40)
+        }
+    );
+    assert_eq!(a.worst(b), b.worst(a));
+    // Sin ocupación en una de las dos: `None`, y `take_op` da `NoRoom`.
+    let sin_uso = BinRoom {
+        max: Some(100),
+        used: None,
+    };
+    assert_eq!(a.worst(sin_uso).used, None);
+    assert_eq!(take_op(&[1], a.worst(sin_uso)), Take::NoRoom);
+    assert_eq!(a.worst(BinRoom::UNKNOWN), BinRoom::UNKNOWN);
+}
+
 /// A-B1: tras volver a medir se comprueba otra vez el presupuesto con la ocupación de AHORA. Si ya no cabe todo el grupo, lo que
 /// sobra vuelve al principio de la cola (y se envía en la operación siguiente); si ya no cabe ni el primero, no se envía.
 #[test]

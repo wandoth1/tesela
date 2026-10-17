@@ -911,10 +911,12 @@ impl Cleaner {
                     // misma operación, lo que ya estaba medido podía crecer mientras se medían los demás y llegar a la shell
                     // con un tamaño que ya no era cierto (`PreDeleteItem` comprueba la identidad, no el tamaño). Solo, el
                     // directorio se mide y se entrega sin nada de por medio salvo la línea de intención del registro
-                    // (§3.7.13). H4: la ocupación de la Papelera (`bin_room`, de milisegundos y creciente con la Papelera) se
-                    // lee ANTES del recorrido, no después: así la ventana medida-entrega solo contiene la comparación pura
-                    // `take_op`. La ocupación puede tener, como mucho, la antigüedad del recorrido (del orden de 0,15 s) y la
-                    // cambian terceros mucho menos que el contenido de una carpeta.
+                    // (§3.7.13). A3-M2: la ocupación de la Papelera se lee ANTES del recorrido y OTRA VEZ después, y manda la
+                    // MAYOR de las dos (`BinRoom::worst`): con una sola lectura previa, la Papelera podía llenarse mientras
+                    // se medía (Astra: capacidad 100 000, vacía al empezar, 99 000 al acabar el recorrido, y una carpeta de
+                    // 4 000 bytes se enviaba con la lectura vieja). La segunda lectura son unos milisegundos y cae dentro de la
+                    // ventana, que es donde debe estar. La ocupación es una HEURÍSTICA, no una garantía: un tercero puede
+                    // cambiarla hasta que la shell actúe y la shell decide por su cuenta si el elemento cabe.
                     let entries: Vec<(&PlanItem, Pending)> = if first_is_dir {
                         queue.pop_front();
                         let Some((it, mut p)) = slots[first].take() else {
@@ -929,7 +931,11 @@ impl Cleaner {
                             results.insert(it.id, (status, st));
                             continue;
                         }
-                        // Con la medida recién hecha y la ocupación leída antes de medirla.
+                        // Con la medida recién hecha y la MAYOR de las dos ocupaciones: la de antes y la de después del recorrido.
+                        let room_after = vol
+                            .as_deref()
+                            .map_or(BinRoom::UNKNOWN, |r| shell.bin_room(r));
+                        let room = room.worst(room_after);
                         if let Take::NoRoom = take_op(&[p.size], room) {
                             // No hay sitio ahora: enviarlo haría que la shell lo elimine o expulse lo que ya hay en la
                             // Papelera. No se toca (el handle de guarda se suelta al salir de este bloque).
@@ -1008,9 +1014,10 @@ impl Cleaner {
                         }
                         // ...y se vuelve a comprobar el presupuesto con los tamaños y la ocupación de AHORA: lo que ya no
                         // cabe en la operación vuelve al principio de la cola (se medirá otra vez cuando le toque).
-                        let room_now = vol
-                            .as_deref()
-                            .map_or(BinRoom::UNKNOWN, |r| shell.bin_room(r));
+                        let room_now = room.worst(
+                            vol.as_deref()
+                                .map_or(BinRoom::UNKNOWN, |r| shell.bin_room(r)),
+                        );
                         let fresh_sizes: Vec<u64> = staged.iter().map(|s| s.2.size).collect();
                         let keep = match take_op(&fresh_sizes, room_now) {
                             Take::NoRoom => {
@@ -1597,6 +1604,19 @@ impl BinRoom {
         max: None,
         used: None,
     };
+
+    /// La peor de dos lecturas del mismo volumen (A3-M2): la MAYOR ocupación y la MENOR capacidad. Si falta cualquiera de los
+    /// datos en cualquiera de las dos lecturas, falta en el resultado y `take_op` falla cerrado (`NoRoom`).
+    pub fn worst(self, other: BinRoom) -> BinRoom {
+        let pick = |a: Option<u64>, b: Option<u64>, f: fn(u64, u64) -> u64| match (a, b) {
+            (Some(x), Some(y)) => Some(f(x, y)),
+            _ => None,
+        };
+        BinRoom {
+            max: pick(self.max, other.max, u64::min),
+            used: pick(self.used, other.used, u64::max),
+        }
+    }
 }
 
 /// Lo que el ejecutor necesita de la shell para enviar a la Papelera. La implementación real usa `IFileOperation`; las
