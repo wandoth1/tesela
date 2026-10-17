@@ -1,23 +1,23 @@
-# Avisos de terceros
+# Third-party notices
 
-Tesela se distribuye bajo MIT OR Apache-2.0 (ver LICENSE-MIT y LICENSE-APACHE). Incluye los componentes de terceros que se
-listan abajo, cada uno bajo su propia licencia. Este archivo se genera con `cargo about` (ver about.toml y about.hbs); no se
-edita a mano.
+Tesela is distributed under MIT OR Apache-2.0 (see LICENSE-MIT and LICENSE-APACHE). It includes the third-party
+components listed below, each under its own license. This file is generated with `cargo about` (see about.toml and
+about.hbs); do not edit it by hand.
 
-Iconos: Fluent UI System Icons, Microsoft Corporation, licencia MIT.
+Icons: Fluent UI System Icons, Microsoft Corporation, MIT license.
 
-## Licencias usadas
+## Licenses used
 
-- MIT License (157 componente(s))
-- Apache License 2.0 (9 componente(s))
-- Boost Software License 1.0 (2 componente(s))
-- Unicode License v3 (2 componente(s))
-- ISC License (1 componente(s))
-- zlib License (1 componente(s))
+- MIT License (157 component(s))
+- Apache License 2.0 (9 component(s))
+- Boost Software License 1.0 (2 component(s))
+- Unicode License v3 (2 component(s))
+- ISC License (1 component(s))
+- zlib License (1 component(s))
 
 ## Apache License 2.0
 
-Usada por:
+Used by:
 
 - moxcms 0.8.1 (https://github.com/awxkee/moxcms.git)
 - pxfm 0.1.30 (https://github.com/awxkee/pxfm)
@@ -229,7 +229,7 @@ Usada por:
 
 ## Apache License 2.0
 
-Usada por:
+Used by:
 
 - codespan-reporting 0.13.1 (https://github.com/brendanzab/codespan)
 - self_cell 1.3.0 (https://github.com/Voultapher/self_cell)
@@ -441,7 +441,7 @@ Usada por:
 
 ## Apache License 2.0
 
-Usada por:
+Used by:
 
 - unicode-general-category 1.1.0 (https://github.com/yeslogic/unicode-general-category)
 
@@ -652,7 +652,7 @@ Usada por:
 
 ## Apache License 2.0
 
-Usada por:
+Used by:
 
 - dpi 0.1.2 (https://github.com/rust-windowing/winit)
 - winit 0.30.13 (https://github.com/rust-windowing/winit)
@@ -863,7 +863,7 @@ Apache License
 
 ## Apache License 2.0
 
-Usada por:
+Used by:
 
 - accesskit_winit 0.32.2 (https://github.com/AccessKit/accesskit)
 - dunce 1.0.5 (https://gitlab.com/kornelski/dunce)
@@ -947,7 +947,7 @@ limitations under the License.
 
 ## Boost Software License 1.0
 
-Usada por:
+Used by:
 
 - error-code 3.4.0 (https://github.com/DoumanAsh/error-code)
 
@@ -980,7 +980,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## Boost Software License 1.0
 
-Usada por:
+Used by:
 
 - clipboard-win 5.4.1 (https://github.com/DoumanAsh/clipboard-win)
 
@@ -997,7 +997,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ## ISC License
 
-Usada por:
+Used by:
 
 - libloading 0.8.9 (https://github.com/nagisa/rust_libloading/)
 
@@ -1019,7 +1019,7 @@ THIS SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - euclid 0.22.14 (https://github.com/servo/euclid)
 
@@ -1054,7 +1054,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - cfg-if 1.0.5 (https://github.com/rust-lang/cfg-if)
 
@@ -1089,7 +1089,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - bitflags 2.13.2 (https://github.com/bitflags/bitflags)
 - log 0.4.34 (https://github.com/rust-lang/log)
@@ -1126,7 +1126,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - uuid 1.28.0 (https://github.com/uuid-rs/uuid)
 
@@ -1162,7 +1162,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - flate2 1.1.10 (https://github.com/rust-lang/flate2-rs)
 
@@ -1197,7 +1197,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - either 1.19.0 (https://github.com/rayon-rs/either)
 - itertools 0.15.0 (https://github.com/rust-itertools/itertools)
@@ -1233,7 +1233,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - ordered-float 5.5.0 (https://github.com/reem/rust-ordered-float)
 
@@ -1268,7 +1268,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - unicode-segmentation 1.13.3 (https://github.com/unicode-rs/unicode-segmentation)
 - unicode-width 0.2.2 (https://github.com/unicode-rs/unicode-width)
@@ -1304,7 +1304,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - png 0.18.1 (https://github.com/image-rs/image-png)
 
@@ -1339,7 +1339,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - hashbrown 0.16.1 (https://github.com/rust-lang/hashbrown)
 - hashbrown 0.17.1 (https://github.com/rust-lang/hashbrown)
@@ -1375,7 +1375,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - lock_api 0.4.14 (https://github.com/Amanieu/parking_lot)
 - parking_lot 0.12.5 (https://github.com/Amanieu/parking_lot)
@@ -1412,7 +1412,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - indexmap 2.14.2 (https://github.com/indexmap-rs/indexmap)
 
@@ -1447,7 +1447,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - equivalent 1.0.3 (https://github.com/indexmap-rs/equivalent)
 
@@ -1482,7 +1482,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - scopeguard 1.2.0 (https://github.com/bluss/scopeguard)
 
@@ -1517,7 +1517,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - fearless_simd 0.4.1 (https://github.com/linebender/fearless_simd)
 - kurbo 0.13.1 (https://github.com/linebender/kurbo)
@@ -1555,7 +1555,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - smallvec 1.16.3 (https://github.com/servo/rust-smallvec)
 
@@ -1590,7 +1590,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - ahash 0.8.12 (https://github.com/tkaitchuck/ahash)
 
@@ -1625,7 +1625,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - getrandom 0.4.3 (https://github.com/rust-random/getrandom)
 
@@ -1661,7 +1661,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - presser 0.3.1 (https://github.com/EmbarkStudios/presser)
 
@@ -1696,7 +1696,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - font-types 0.12.7 (https://github.com/googlefonts/fontations)
 - read-fonts 0.41.0 (https://github.com/googlefonts/fontations)
@@ -1733,7 +1733,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - tracing-core 0.1.36 (https://github.com/tokio-rs/tracing)
 - tracing 0.1.44 (https://github.com/tokio-rs/tracing)
@@ -1769,7 +1769,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - document-features 0.2.12 (https://github.com/slint-ui/document-features)
 
@@ -1798,7 +1798,7 @@ SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - litrs 1.0.1 (https://github.com/LukasKalbertodt/litrs)
 
@@ -1833,7 +1833,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - pollster 1.0.1 (https://github.com/zesterer/pollster)
 
@@ -1868,7 +1868,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - gpu-allocator 0.28.0 (https://github.com/Traverse-Research/gpu-allocator)
 
@@ -1884,7 +1884,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - renderdoc-sys 1.1.0 (https://github.com/ebkalderon/renderdoc-rs)
 
@@ -1919,7 +1919,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - cursor-icon 1.2.0 (https://github.com/rust-windowing/cursor-icon)
 
@@ -1948,7 +1948,7 @@ SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - bit-vec 0.9.1 (https://github.com/contain-rs/bit-vec)
 
@@ -1983,7 +1983,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - bit-set 0.10.0 (https://github.com/contain-rs/bit-set)
 
@@ -2018,7 +2018,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - serde_spanned 1.1.2 (https://github.com/toml-rs/toml)
 - toml 1.1.8+spec-1.1.0 (https://github.com/toml-rs/toml)
@@ -2051,7 +2051,7 @@ SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - arrayvec 0.7.8 (https://github.com/bluss/arrayvec)
 
@@ -2086,7 +2086,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - fluent-bundle 0.16.0 (https://github.com/projectfluent/fluent-rs)
 - fluent-syntax 0.12.0 (https://github.com/projectfluent/fluent-rs)
@@ -2117,7 +2117,7 @@ SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - nohash-hasher 0.2.0 (https://github.com/paritytech/nohash-hasher)
 
@@ -2145,7 +2145,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - vello_common 0.1.0 (https://github.com/linebender/vello)
 - vello_cpu 0.1.0 (https://github.com/linebender/vello)
@@ -2181,7 +2181,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - zerocopy-derive 0.8.63 (https://github.com/google/zerocopy)
 - zerocopy 0.8.63 (https://github.com/google/zerocopy)
@@ -2218,7 +2218,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - static_assertions 1.1.0 (https://github.com/nvzqz/static-assertions-rs)
 
@@ -2249,7 +2249,7 @@ SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - crc32fast 1.5.2 (https://github.com/srijs/rust-crc32fast)
 
@@ -2280,7 +2280,7 @@ SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - bytemuck 1.25.2 (https://github.com/Lokathor/bytemuck)
 - bytemuck_derive 1.12.1 (https://github.com/Lokathor/bytemuck)
@@ -2300,7 +2300,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - raw-window-handle 0.6.2 (https://github.com/rust-windowing/raw-window-handle)
 
@@ -2331,7 +2331,7 @@ SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - rfd 0.17.2 (https://github.com/PolyMeilex/rfd)
 
@@ -2362,9 +2362,9 @@ SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
-- tesela-ui 0.1.4 (https://github.com/wandoth1/tesela)
+- tesela-ui 0.1.5 (https://github.com/wandoth1/tesela)
 
 ```text
 MIT License
@@ -2393,7 +2393,7 @@ SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - sys-locale 0.3.2 (https://github.com/1Password/sys-locale)
 
@@ -2424,7 +2424,7 @@ SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - rfd 0.17.2 (https://github.com/PolyMeilex/rfd)
 
@@ -2455,7 +2455,7 @@ SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - arboard 3.7.0 (https://github.com/1Password/arboard)
 
@@ -2486,7 +2486,7 @@ SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - range-alloc 0.1.5 (https://github.com/gfx-rs/range-alloc)
 
@@ -2517,7 +2517,7 @@ SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - web-time 1.1.0 (https://github.com/daxpedda/web-time)
 
@@ -2548,7 +2548,7 @@ SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - naga-types 30.0.1 (https://github.com/gfx-rs/wgpu)
 - naga 30.0.1 (https://github.com/gfx-rs/wgpu)
@@ -2586,15 +2586,15 @@ SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
-- tesela-app 0.1.4 (https://github.com/wandoth1/tesela)
-- tesela-cleaner 0.1.4 (https://github.com/wandoth1/tesela)
-- tesela-layout 0.1.4 (https://github.com/wandoth1/tesela)
-- tesela-model 0.1.4 (https://github.com/wandoth1/tesela)
-- tesela-scanner 0.1.4 (https://github.com/wandoth1/tesela)
-- tesela-scan 0.1.4 (https://github.com/wandoth1/tesela)
-- tesela-update 0.1.4 (https://github.com/wandoth1/tesela)
+- tesela-app 0.1.5 (https://github.com/wandoth1/tesela)
+- tesela-cleaner 0.1.5 (https://github.com/wandoth1/tesela)
+- tesela-layout 0.1.5 (https://github.com/wandoth1/tesela)
+- tesela-model 0.1.5 (https://github.com/wandoth1/tesela)
+- tesela-scanner 0.1.5 (https://github.com/wandoth1/tesela)
+- tesela-scan 0.1.5 (https://github.com/wandoth1/tesela)
+- tesela-update 0.1.5 (https://github.com/wandoth1/tesela)
 - accesskit 0.24.1 (https://github.com/AccessKit/accesskit)
 - accesskit_consumer 0.35.0 (https://github.com/AccessKit/accesskit)
 - accesskit_windows 0.32.1 (https://github.com/AccessKit/accesskit)
@@ -2651,7 +2651,7 @@ USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - simd-adler32 0.3.10 (https://github.com/mcountryman/simd-adler32)
 
@@ -2682,7 +2682,7 @@ SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - miniz_oxide 0.8.9 (https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide)
 - miniz_oxide 0.9.1 (https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide)
@@ -2718,7 +2718,7 @@ SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - miniz_oxide 0.8.9 (https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide)
 - miniz_oxide 0.9.1 (https://github.com/Frommi/miniz_oxide/tree/master/miniz_oxide)
@@ -2753,7 +2753,7 @@ SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - fdeflate 0.3.7 (https://github.com/image-rs/fdeflate)
 - image 0.25.10 (https://github.com/image-rs/image)
@@ -2789,7 +2789,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - color 0.3.3 (https://github.com/linebender/color)
 - half 2.7.1 (https://github.com/VoidStarKat/half-rs)
@@ -2820,7 +2820,7 @@ SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - rustc-hash 2.1.3 (https://github.com/rust-lang/rustc-hash)
 
@@ -2852,7 +2852,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - adler2 2.0.1 (https://github.com/oyvindln/adler2)
 - displaydoc 0.2.7 (https://github.com/yaahc/displaydoc)
@@ -2905,7 +2905,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - allocator-api2 0.2.21 (https://github.com/zakarumych/allocator-api2)
 
@@ -2938,7 +2938,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - winnow 1.0.4 (https://github.com/winnow-rs/winnow)
 
@@ -2966,7 +2966,7 @@ WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - tracing-core 0.1.36 (https://github.com/tokio-rs/tracing)
 
@@ -2997,7 +2997,7 @@ SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - byteorder-lite 0.1.0 (https://github.com/image-rs/byteorder-lite)
 - memchr 2.8.3 (https://github.com/BurntSushi/memchr)
@@ -3029,7 +3029,7 @@ THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - guillotiere 0.7.0 (https://github.com/nical/guillotiere)
 
@@ -3059,7 +3059,7 @@ CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - crossbeam-channel 0.5.17 (https://github.com/crossbeam-rs/crossbeam)
 - crossbeam-deque 0.8.8 (https://github.com/crossbeam-rs/crossbeam)
@@ -3099,7 +3099,7 @@ DEALINGS IN THE SOFTWARE.
 
 ## MIT License
 
-Usada por:
+Used by:
 
 - harfrust 0.12.0 (https://github.com/harfbuzz/harfrust)
 
@@ -3131,7 +3131,7 @@ SOFTWARE.
 
 ## Unicode License v3
 
-Usada por:
+Used by:
 
 - unicode-ident 1.0.27 (https://github.com/dtolnay/unicode-ident)
 
@@ -3180,7 +3180,7 @@ authorization of the copyright holder.
 
 ## Unicode License v3
 
-Usada por:
+Used by:
 
 - tinystr 0.8.4 (https://github.com/unicode-org/icu4x)
 
@@ -3236,7 +3236,7 @@ ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation a
 
 ## zlib License
 
-Usada por:
+Used by:
 
 - foldhash 0.2.0 (https://github.com/orlp/foldhash)
 
