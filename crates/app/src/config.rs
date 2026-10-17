@@ -21,10 +21,10 @@ pub struct Config {
     #[serde(default)]
     pub window_height: Option<f32>,
     /// "Buscar actualizaciones al abrir Tesela". Sin la clave (o en `false`) Tesela no se conecta a nada.
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     pub check_updates: Option<bool>,
     /// Segundos Unix del último intento de comprobación (como mucho una petición cada 24 horas).
-    #[serde(default)]
+    #[serde(default, deserialize_with = "lenient")]
     pub update_last_check: Option<u64>,
     /// Última versión publicada que se supo (solo su etiqueta, `vX.Y.Z`). Una etiqueta ilegible se ignora.
     #[serde(default, deserialize_with = "tesela_update::deserialize_lenient")]
@@ -32,6 +32,26 @@ pub struct Config {
     /// Versión cuyo aviso se descartó.
     #[serde(default, deserialize_with = "tesela_update::deserialize_lenient")]
     pub update_dismissed: Option<Version>,
+}
+
+/// Para una clave NUEVA (la comprobación de actualizaciones): un valor del tipo equivocado (por ejemplo `check_updates = "si"`
+/// o una fecha negativa, de editar el archivo a mano) se lee como si no estuviera, en vez de invalidar TODA la configuración
+/// (tema, idioma y tamaño de la ventana incluidos).
+fn lenient<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum Any<T> {
+        Value(T),
+        Other(serde::de::IgnoredAny),
+    }
+    Ok(match <Any<T> as serde::Deserialize>::deserialize(d)? {
+        Any::Value(v) => Some(v),
+        Any::Other(_) => None,
+    })
 }
 
 impl Config {
@@ -353,5 +373,42 @@ mod tests {
         assert_eq!(c.theme, Some(ThemePref::Dark), "el resto sigue en pie");
         assert_eq!(c.check_updates, Some(true));
         assert_eq!((c.update_latest_seen, c.update_dismissed), (None, None));
+    }
+
+    #[test]
+    fn una_clave_nueva_con_el_tipo_equivocado_solo_invalida_esa_clave() {
+        let dir = temp_dir();
+        let path = dir.join("config.toml");
+        for bad in [
+            "check_updates = \"si\"\n",
+            "check_updates = 1\n",
+            "update_last_check = -5\n",
+            "update_last_check = \"ayer\"\n",
+            "update_last_check = 1.5\n",
+            "check_updates = [true]\nupdate_last_check = { a = 1 }\n",
+        ] {
+            std::fs::write(
+                &path,
+                format!("theme = \"dark\"\nwindow_width = 1400.0\n{bad}"),
+            )
+            .unwrap();
+            let c = Config::load(&path);
+            assert_eq!(c.theme, Some(ThemePref::Dark), "{bad}");
+            assert_eq!(c.window_width, Some(1400.0), "{bad}");
+            assert_eq!(c.check_updates, None, "{bad}");
+            assert_eq!(c.update_last_check, None, "{bad}");
+            assert!(!c.settings().update.check, "{bad}");
+        }
+        // Con el tipo bueno se lee tal cual.
+        std::fs::write(
+            &path,
+            "check_updates = true\nupdate_last_check = 1800000000\n",
+        )
+        .unwrap();
+        let c = Config::load(&path);
+        assert_eq!(
+            (c.check_updates, c.update_last_check),
+            (Some(true), Some(1_800_000_000))
+        );
     }
 }
