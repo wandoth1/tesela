@@ -190,17 +190,40 @@ fn child_dirs(dir: &Path) -> Vec<(String, PathBuf)> {
 /// * Firefox: `cache2` y `startupCache` de cada perfil de `%LOCALAPPDATA%\Mozilla\Firefox\Profiles`. Nunca
 ///   `%APPDATA%\Mozilla\Firefox\Profiles`.
 ///
-/// Solo LISTA carpetas. Los reparse points no cuentan. Ninguna ruta devuelta contiene historial, marcadores, cookies ni
-/// credenciales. Estas son las RAÍCES de las que saldrá la autorización de borrado (verificadas por handle).
+/// Solo LISTA carpetas. Los reparse points no cuentan (cada carpeta de cada nivel listado tiene que ser un directorio normal con
+/// el criterio del escáner). Ninguna ruta devuelta contiene historial, marcadores, cookies ni credenciales. Estas son las
+/// CANDIDATAS a raíz de la autorización de borrado: el `cleaner` las verifica DESPUÉS por handle, componente a componente desde
+/// `%LOCALAPPDATA%`, y descarta (con un motivo que la interfaz enseña) las que pasan por un enlace; por eso esta función NO
+/// comprueba los ancestros de `User Data` (`Google`, `Chrome`...): si lo hiciera, una `User Data` convertida en enlace
+/// desaparecería sin dejar rastro en vez de salir como "no disponible". Para recorrer (la cola prioritaria del escáner) se usa
+/// [`browser_cache_dirs_verified`], que sí los comprueba.
 pub fn browser_cache_dirs(roots: &BrowserRoots) -> Vec<(KnownKind, PathBuf)> {
+    cache_dirs(roots, false)
+}
+
+/// Igual que [`browser_cache_dirs`], pero SOLO las cachés cuyos ancestros (`Google`, `Chrome`, `User Data`..., `Mozilla`,
+/// `Firefox`, `Profiles`) son todos directorios reales por debajo de `%LOCALAPPDATA%`: un enlace en un ancestro intermedio
+/// desviaría todo lo de debajo a otro sitio, y esto es lo que el escáner recorre sin pedir nada más.
+pub fn browser_cache_dirs_verified(roots: &BrowserRoots) -> Vec<(KnownKind, PathBuf)> {
+    cache_dirs(roots, true)
+}
+
+fn cache_dirs(roots: &BrowserRoots, verify_ancestors: bool) -> Vec<(KnownKind, PathBuf)> {
+    // Con `verify_ancestors`, la carpeta con sus ancestros comprobados; sin él, la propia carpeta.
+    let checked = |local: &Path, p: PathBuf| {
+        if verify_ancestors {
+            real_dir_under(local, &p)
+        } else {
+            Some(p)
+        }
+    };
     let mut out = Vec::new();
     for fam in [BrowserFamily::Chrome, BrowserFamily::Edge] {
-        // `User Data` y todos sus ancestros por debajo de `%LOCALAPPDATA%` tienen que ser directorios reales.
         let Some(user_data) = roots
             .local_appdata
             .as_deref()
             .zip(roots.user_data(fam))
-            .and_then(|(local, ud)| real_dir_under(local, &ud))
+            .and_then(|(local, ud)| checked(local, ud))
         else {
             continue;
         };
@@ -226,7 +249,7 @@ pub fn browser_cache_dirs(roots: &BrowserRoots) -> Vec<(KnownKind, PathBuf)> {
         .local_appdata
         .as_deref()
         .zip(roots.firefox_local_profiles())
-        .and_then(|(local, pr)| real_dir_under(local, &pr))
+        .and_then(|(local, pr)| checked(local, pr))
     {
         for (_, profile) in child_dirs(&profiles) {
             for sub in FIREFOX_PROFILE_CACHE {
@@ -1097,19 +1120,23 @@ mod tests {
                 .join("Mozilla/Firefox/Profiles/abc.default/cache2")
                 .exists()
         );
-        let dirs = browser_cache_dirs(&roots);
+        // La verificada no ofrece nada a través de enlaces; la de candidatas SÍ las lista (el `cleaner` las rechaza después con
+        // su motivo: sin ellas una `User Data` convertida en enlace desaparecería sin rastro).
+        let dirs = browser_cache_dirs_verified(&roots);
         assert!(
             dirs.is_empty(),
             "se ofrecieron cachés a través de un enlace: {dirs:?}"
         );
+        assert_eq!(browser_cache_dirs(&roots).len(), 3, "las candidatas sí");
         // El mismo árbol SIN enlaces sí se ofrece (la prueba no es vacía): se quitan como enlaces y se crean carpetas reales.
         for l in &links {
             fs::remove_dir(l).unwrap();
         }
         t.dir("Local/Google/Chrome/User Data/Default/Cache");
         t.dir("Local/Mozilla/Firefox/Profiles/abc.default/cache2");
-        let dirs = browser_cache_dirs(&roots);
+        let dirs = browser_cache_dirs_verified(&roots);
         assert_eq!(dirs.len(), 2, "{dirs:?}");
+        assert_eq!(browser_cache_dirs(&roots).len(), 2);
     }
 
     #[test]

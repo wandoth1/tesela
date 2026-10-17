@@ -30,7 +30,8 @@ mod sys;
 mod walker;
 
 pub use browser::{
-    BrowserFamily, BrowserPath, BrowserRoots, browser_cache_dirs, classify_browser_path,
+    BrowserFamily, BrowserPath, BrowserRoots, browser_cache_dirs, browser_cache_dirs_verified,
+    classify_browser_path,
 };
 pub use known::{
     KnownKind, current_user_sid, downloads_dir, known_folder, known_paths, known_paths_labeled,
