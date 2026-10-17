@@ -1132,7 +1132,14 @@ fn summary_lines(env: &Env, s: &Summary) -> Vec<(String, bool)> {
         if b.replaced > 0 {
             v.push((n("sum-bin-replaced", b.replaced), true));
         }
-        let explained = b.changed + b.unverifiable + b.replaced;
+        if b.with_links > 0 {
+            v.push((n("sum-bin-with-links", b.with_links), true));
+        }
+        // No estaban en la lista (su `$I` no se pudo leer): no explican nada de lo que sigue.
+        if b.unlisted > 0 {
+            v.push((n("sum-bin-unlisted", b.unlisted), true));
+        }
+        let explained = b.changed + b.unverifiable + b.replaced + b.with_links;
         if b.still_there > explained {
             v.push((n("sum-bin-failed", b.still_there - explained), true));
         }
@@ -1651,6 +1658,37 @@ mod summary_tests {
             // Sin sustituidos no hay línea de sustituidos.
             let (tr, v) = lines(lang, bin(0, 0, 0, 0));
             assert!(!has(&v, &text(&tr, "sum-bin-replaced", 1)), "{v:?}");
+        }
+    }
+
+    #[test]
+    fn los_elementos_con_enlaces_y_los_ilegibles_tienen_su_linea_al_vaciar() {
+        for lang in [Lang::Es, Lang::En] {
+            let r = |still_there, with_links, unlisted| Report {
+                bin: Some(BinReport {
+                    requested: 10,
+                    still_there,
+                    with_links,
+                    unlisted,
+                    ..BinReport::default()
+                }),
+                ..Report::default()
+            };
+            // 3 siguen y los 3 llevan enlaces: lo explican todo, sin "no se pudo vaciar".
+            let (tr, v) = lines(lang, r(3, 3, 0));
+            assert!(has(&v, &text(&tr, "sum-bin-with-links", 3)), "{v:?}");
+            for n in 1..=3 {
+                assert!(!has(&v, &text(&tr, "sum-bin-failed", n)), "{n}: {v:?}");
+            }
+            // Los ilegibles no estaban en la lista: tienen su línea y no explican lo que sigue.
+            let (tr, v) = lines(lang, r(2, 1, 4));
+            assert!(has(&v, &text(&tr, "sum-bin-unlisted", 4)), "{v:?}");
+            assert!(has(&v, &text(&tr, "sum-bin-with-links", 1)), "{v:?}");
+            assert!(has(&v, &text(&tr, "sum-bin-failed", 1)), "{v:?}");
+            // Sin ninguno, ninguna de las dos líneas.
+            let (tr, v) = lines(lang, r(0, 0, 0));
+            assert!(!has(&v, &text(&tr, "sum-bin-with-links", 1)), "{v:?}");
+            assert!(!has(&v, &text(&tr, "sum-bin-unlisted", 1)), "{v:?}");
         }
     }
 }
