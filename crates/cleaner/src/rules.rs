@@ -255,7 +255,7 @@ fn validate(r: &Rule) -> Result<(), String> {
     Ok(())
 }
 
-/// Las reglas embebidas (ya validadas; un test lo comprueba).
+/// Embedded rules (already validated; a test checks this).
 pub fn rules() -> &'static Rules {
     static R: OnceLock<Rules> = OnceLock::new();
     R.get_or_init(|| {
@@ -382,10 +382,10 @@ mod tests {
         // Descargas "seguro".
         let e = Rules::parse(&with("[[rule]]\nid = \"downloads\"\nrisk = \"safe\"\ndestination = \"permanent\"\naction = \"contents\"\nselectable = true\n")).unwrap_err();
         assert!(e.contains("downloads"), "{e}");
-        // Destino definitivo en algo que no es regenerable por regla.
+        // Permanent destination for something not marked regenerable by a rule.
         let e = Rules::parse(&with("[[rule]]\nid = \"downloads\"\nrisk = \"review\"\ndestination = \"permanent\"\naction = \"none\"\n")).unwrap_err();
         assert!(e.contains("permanent deletion"), "{e}");
-        // Informes de errores o volcados: ni definitivos (no son regenerables) ni "seguros" (se preseleccionarían).
+        // Error reports or dumps: neither permanent (they are not regenerable) nor "safe" (which would preselect them).
         for id in ["wer-reports", "crash-dumps"] {
             let rule = |risk: &str, dest: &str| {
                 with(&format!(

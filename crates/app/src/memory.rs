@@ -24,7 +24,7 @@ mod tests {
     fn el_private_working_set_del_proceso_es_plausible() {
         let a = super::private_working_set().expect("contador del proceso");
         assert!(a > 64 << 10 && a < 64 << 30, "{a}");
-        // Reservar y tocar 32 MiB lo hace subir.
+        // Allocating and touching 32 MiB increases it.
         let v = std::hint::black_box(vec![1u8; 32 << 20]);
         let b = super::private_working_set().unwrap();
         assert_eq!(std::hint::black_box(&v)[1 << 20], 1);

@@ -79,7 +79,7 @@ pub fn outlook_open() -> bool {
 
 /// Names of running processes (a ToolHelp snapshot).
 fn process_names() -> Vec<String> {
-    // SAFETY: `CreateToolhelp32Snapshot` no tiene precondiciones.
+    // SAFETY: `CreateToolhelp32Snapshot` has no preconditions.
     let snap = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) };
     if snap == INVALID_HANDLE_VALUE || snap.is_null() {
         return Vec::new();

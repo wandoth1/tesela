@@ -1,6 +1,6 @@
 //! Hardens DLL loading for the process (called FIRST in `main`, before eframe and wgpu).
 //!
-//! `wgpu` carga `d3d12.dll`, `dxgi.dll`, `dcomp.dll` y `d3dcompiler_47.dll` POR NOMBRE con `LoadLibraryExW(nombre, NULL, 0)`
+//! `wgpu` loads `d3d12.dll`, `dxgi.dll`, `dcomp.dll`, and `d3dcompiler_47.dll` BY NAME with `LoadLibraryExW(name, NULL, 0)`
 //! (`libloading`): the default Windows search order checks the `.exe` directory before `System32`, and none of these DLLs
 //! are `KnownDLLs`. A DLL with one of those names placed beside the `.exe` (in an install folder or zip writable by others)
 //! would be loaded instead of the system DLL. `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)` limits searches for
@@ -8,8 +8,8 @@
 //! with absolute paths (such as GPU drivers loaded by DXGI) or loads already performed by the system loader before `main`
 //! (the `.exe`'s own imports).
 //!
-//! Complemento: `Dx12Compiler::Fxc` fijado en `main.rs` evita que wgpu sondee `dxcompiler.dll`, que no existe en un
-//! standard Windows installation, so there would be no legitimate DLL to win the search.
+//! Complement: `Dx12Compiler::Fxc` is fixed in `main.rs`, preventing wgpu from probing `dxcompiler.dll`, which does not exist
+//! on a standard Windows installation, so no legitimate DLL could win the search.
 #![allow(unsafe_code)]
 
 use windows_sys::Win32::System::LibraryLoader::{

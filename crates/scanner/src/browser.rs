@@ -7,12 +7,12 @@
 //!
 //! # Sources for names (the list must be EXACT and CONSERVATIVE)
 //! * Chromium, `chrome/common/chrome_constants.h`: the default profile is `Default` (`kInitialProfile`); other profiles are
-//!   `Profile <N>` (`kMultiProfileDirPrefix = "Profile "`) y `Cache` es `kCacheDirname`.
+//!   `Profile <N>` (`kMultiProfileDirPrefix = "Profile "`), and `Cache` is `kCacheDirname`.
 //! * Chromium, `gpu/ipc/common/gpu_disk_cache_type.cc`, function `GetGpuDiskCacheSubdir`: `GPUCache` (`kGlShaders`),
 //!   `DawnWebGPUCache` (`kDawnWebGPU`) and `DawnGraphiteCache` (`kDawnGraphite`). They are under the profile directory,
 //!   like `GPUCache`.
-//! * `GraphiteDawnCache` (a nivel de `User Data`, como `ShaderCache`): `chrome/browser/chrome_content_browser_client.cc`
-//!   (`user_data_dir.Append("GraphiteDawnCache")`) y `gpu/ipc/common/gpu_disk_cache_factory.cc` (del tipo DawnGraphite,
+//! * `GraphiteDawnCache` (at the `User Data` level, like `ShaderCache`): `chrome/browser/chrome_content_browser_client.cc`
+//!   (`user_data_dir.Append("GraphiteDawnCache")`) and `gpu/ipc/common/gpu_disk_cache_factory.cc` (DawnGraphite type,
 //!   regenerable).
 //! * `Code Cache` (per profile): `content/browser/storage_partition_impl.cc`. `ShaderCache` and `GrShaderCache` (under
 //!   `User Data`): `chrome/browser/chrome_content_browser_client.cc`. All are source-confirmed; do not expand this list
@@ -183,10 +183,10 @@ fn child_dirs(dir: &Path) -> Vec<(String, PathBuf)> {
 
 /// Specific browser CACHE directories (and ONLY those) that currently exist:
 ///
-/// * Chrome y Edge: de cada perfil de `User Data` (`Default`, `Profile N`), `Cache`, `Code Cache`, `GPUCache`,
-///   `DawnWebGPUCache` y `DawnGraphiteCache`; y `ShaderCache`, `GrShaderCache` y `GraphiteDawnCache` a nivel de `User Data`.
-///   NO `Service Worker\CacheStorage` (datos de sitios).
-/// * Firefox: `cache2` y `startupCache` de cada perfil de `%LOCALAPPDATA%\Mozilla\Firefox\Profiles`. Nunca
+/// * Chrome and Edge: for each `User Data` profile (`Default`, `Profile N`), `Cache`, `Code Cache`, `GPUCache`,
+///   `DawnWebGPUCache`, and `DawnGraphiteCache`; plus `ShaderCache`, `GrShaderCache`, and `GraphiteDawnCache` under `User Data`.
+///   NOT `Service Worker\CacheStorage` (site data).
+/// * Firefox: `cache2` and `startupCache` for each profile under `%LOCALAPPDATA%\Mozilla\Firefox\Profiles`. Never
 ///   `%APPDATA%\Mozilla\Firefox\Profiles`.
 ///
 /// Only LISTS folders. Reparse points are excluded (every folder at every listed level must be a normal directory under
@@ -271,7 +271,7 @@ pub enum BrowserPath {
     /// `CacheStorage`, etc.), including the `User Data` or `Profiles` directory itself: NOT cache.
     Profile(BrowserFamily),
     /// A well-formed absolute path that is NOT under any browser data (an ancestor such as
-    /// `AppData\Local` tampoco lo es).
+    /// `AppData\Local` is not either).
     NotBrowser,
     /// Cannot determine anything (relative path, `..`, unusual prefix, 8.3 alias, ambiguous case, etc.): DO NOT TOUCH.
     Unknown,
@@ -297,7 +297,7 @@ fn looks_like_short_name(s: &str) -> bool {
 }
 
 /// Is this an untrusted path component? (Trailing dots or spaces, which Windows removes; `:` or characters
-/// prohibidos, que abren flujos de datos o son comodines; controles; alias 8.3).
+/// forbidden characters, data-stream or wildcard characters; control characters; 8.3 aliases).
 fn untrusted_component(s: &str) -> bool {
     s.is_empty()
         || s.ends_with('.')
@@ -339,7 +339,7 @@ fn normalize(p: &Path) -> Option<(char, Vec<String>)> {
     Some((drive, comps))
 }
 
-/// Nombres reservados de dispositivo (`CON`, `NUL`, `COM1`...): no son carpetas normales.
+/// Reserved device names (`CON`, `NUL`, `COM1`, ...): these are not ordinary directories.
 fn is_device_name(n: &OsStr) -> bool {
     let s = n.to_string_lossy();
     let stem = s.split('.').next().unwrap_or("").to_ascii_uppercase();
@@ -420,7 +420,7 @@ fn starts_with_names(rest: &[String], pattern: &[&str]) -> Cmp {
     }
 }
 
-/// Clasifica lo que cuelga de `User Data` (`rest`).
+/// Classifies descendants of `User Data` (`rest`).
 fn classify_chromium(fam: BrowserFamily, rest: &[String]) -> BrowserPath {
     let Some(first) = rest.first() else {
         return BrowserPath::Profile(fam); // la propia `User Data`
@@ -492,7 +492,7 @@ pub fn classify_browser_path(roots: &BrowserRoots, path: &Path) -> BrowserPath {
                 return match kind {
                     Kind::Chromium(fam) => classify_chromium(fam, rest),
                     Kind::FirefoxLocal => {
-                        // `<perfil>\cache2` o `<perfil>\startupCache` (y lo que cuelga de ellos).
+                        // `<profile>\cache2` or `<profile>\startupCache` (and their descendants).
                         let mut amb = false;
                         let mut is_cache = false;
                         if rest.len() >= 2 {
@@ -564,8 +564,8 @@ mod tests {
         }
     }
 
-    /// Datos que NUNCA pueden ser caché, dentro de un perfil de Chromium. `Service Worker` lleva `CacheStorage`,
-    /// `Database` y `ScriptCache`: ninguno es caché.
+    /// Data that can NEVER be cache inside a Chromium profile. `Service Worker` contains `CacheStorage`, `Database`, and
+    /// `ScriptCache`; none of them is cache.
     const CHROMIUM_PRIVATE: [&str; 15] = [
         "Bookmarks",
         "History",
@@ -778,7 +778,7 @@ mod tests {
                 "Roaming/Mozilla/Firefox/Profiles/abcd.default-release/{f}"
             ));
         }
-        // Perfil local: dos cachés y otras cosas.
+        // Local profile: two caches and other data.
         for f in [
             "cache2/entries/x",
             "startupCache/startupCache.8.little",
@@ -851,7 +851,7 @@ mod tests {
         let ud = t.0.join("Local/Google/Chrome/User Data");
         let cls = |p: PathBuf| classify_browser_path(&roots, &p);
         let es_cache = |p: PathBuf| matches!(cls(p), BrowserPath::Cache(_));
-        // Mayúsculas de ASCII: da igual.
+        // ASCII casing does not matter.
         assert_eq!(
             cls(ud.join(r"default\CACHE")),
             BrowserPath::Cache(KnownKind::ChromeCache)
@@ -1090,7 +1090,7 @@ mod tests {
         }
     }
 
-    /// GM-m4: un enlace en un ancestro INTERMEDIO (`Google`, `Mozilla`...) desvía lo que se lista debajo: no se ofrece nada.
+    /// GM-m4: a link in an INTERMEDIATE ancestor (`Google`, `Mozilla`, ...) redirects what is listed below: offer nothing.
     #[test]
     fn un_enlace_en_un_ancestro_intermedio_descarta_las_cachés_de_debajo() {
         let t = Temp::new();

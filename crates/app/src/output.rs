@@ -94,7 +94,7 @@ mod tests {
     #[test]
     fn la_comprobacion_previa_rechaza_destinos_imposibles() {
         let t = Temp::new();
-        // Carpeta de destino inexistente.
+        // Destination directory does not exist.
         let e = preflight(&t.0.join("no-existe").join("x.png"), false).unwrap_err();
         assert!(e.contains("does not exist"), "{e}");
         assert!(preflight(&t.0.join("no-existe").join("x.png"), true).is_err());
