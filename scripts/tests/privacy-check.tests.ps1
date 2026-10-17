@@ -1046,7 +1046,7 @@ try {
         )) {
         $script:total++
         $out = (Run-Check @('-From', $case[1], '-To', $case[0])).Out
-        if ($out -notlike ('*' + $case[2] + ': SID*') -or $out -like '*mensaje:*') { $script:failures.Add("etiqueta del campo $($case[2]): $out") }
+        if ($out -notlike ('*' + $case[2] + ': Windows SID*') -or $out -like '*mensaje:*') { $script:failures.Add("etiqueta del campo $($case[2]): $out") }
     }
     Reset-Repo
     Invoke-Git -C $repo checkout -q -f -B cuerpo $base
@@ -1055,7 +1055,7 @@ try {
     try { & git -C $repo commit -q --allow-empty --no-verify -m "chore: linea 1`n`nlinea 3`n$sid" 2>&1 | Out-Null } finally { $ErrorActionPreference = $prevEap2 }
     $script:total++
     $out = (Run-Check @('-From', $base, '-To', (Sha 'HEAD'))).Out
-    if ($out -notlike '*mensaje:4: SID*') { $script:failures.Add("numero de linea del cuerpo (se esperaba mensaje:4): $out") }
+    if ($out -notlike '*mensaje:4: Windows SID*') { $script:failures.Add("numero de linea del cuerpo (se esperaba mensaje:4): $out") }
 
     # HISTORICAL --demo screenshots: their hashes are in the script's closed list (only in -To mode), not in any README.
     Reset-Repo
