@@ -190,7 +190,11 @@ sel-added =
         [one] { $count } item added to the basket
        *[other] { $count } items added to the basket
     }
-sel-added-skipped = { $count } could not be added
+sel-added-skipped =
+    { $n ->
+        [one] { $count } could not be added
+       *[other] { $count } could not be added
+    }
 sel-row-marked = selected for the basket
 sel-map-count = Selected for the basket: { $count }.
 sel-map-this = This item is selected for the basket.

@@ -354,7 +354,7 @@ impl Explore {
             msg.push_str(" · ");
             msg.push_str(&tr.ta(
                 "sel-added-skipped",
-                args!["count" => tr.int(skipped as u64)],
+                args!["n" => skipped as u64, "count" => tr.int(skipped as u64)],
             ));
         }
         self.toast = Some((msg, now + 3.0));
@@ -371,6 +371,10 @@ impl Explore {
         let mut do_add = false;
         let mut do_clear = false;
         let full = ui.available_rect_before_wrap();
+        // La barra ocupa la columna central: según su ancho se acorta el texto de los controles (el nombre accesible no
+        // cambia): el interruptor pierde su texto por debajo de 900 px y los botones por debajo de 600.
+        let toggle_text = full.width() >= 900.0;
+        let button_text = full.width() >= 600.0;
         let mut left_rect = full;
         if has {
             let right = ui.scope_builder(
@@ -380,7 +384,12 @@ impl Explore {
                 |ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
                     let clear = tr.t("sel-clear");
-                    if widgets::button(ui, env, ButtonStyle::Ghost, None, &clear, true).clicked() {
+                    let r = if button_text {
+                        widgets::button(ui, env, ButtonStyle::Ghost, None, &clear, true)
+                    } else {
+                        widgets::icon_button(ui, env, Icon::Dismiss, &clear, true)
+                    };
+                    if r.clicked() {
                         do_clear = true;
                     }
                     let can = !summary.add.is_empty();
@@ -390,14 +399,18 @@ impl Explore {
                     } else {
                         tr.t("sel-add-none")
                     };
-                    let r = widgets::button(
-                        ui,
-                        env,
-                        ButtonStyle::Secondary,
-                        Some(Icon::Cart),
-                        &label,
-                        can,
-                    );
+                    let r = if button_text {
+                        widgets::button(
+                            ui,
+                            env,
+                            ButtonStyle::Secondary,
+                            Some(Icon::Cart),
+                            &label,
+                            can,
+                        )
+                    } else {
+                        widgets::icon_button(ui, env, Icon::Cart, &label, can)
+                    };
                     if !can {
                         r.clone().on_hover_text(tr.t("sel-add-none-tip"));
                     }
@@ -421,11 +434,13 @@ impl Explore {
             |ui| {
                 ui.set_clip_rect(ui.clip_rect().intersect(left_rect));
                 ui.spacing_mut().item_spacing.x = 10.0;
-                self.mode_toggle(ui, env);
+                self.mode_toggle(ui, env, toggle_text);
                 ui.vertical(|ui| {
                     ui.spacing_mut().item_spacing.y = 1.0;
                     if has {
                         let (first, second) = summary_lines(tr, &summary);
+                        // `vertical` coloca el bloque arriba del todo: se centra a ojo (una o dos líneas) en la barra.
+                        ui.add_space(if second.is_some() { 5.0 } else { 13.0 });
                         let full_text = match &second {
                             Some(s) => format!("{first} · {s}"),
                             None => first.clone(),
@@ -456,6 +471,7 @@ impl Explore {
                             "sel-hint"
                         };
                         let text = tr.t(key);
+                        ui.add_space(13.0);
                         let l = ui.add(
                             egui::Label::new(
                                 egui::RichText::new(&text).size(12.0).color(pal.text_muted),
@@ -478,7 +494,7 @@ impl Explore {
     }
 
     /// El interruptor "Seleccionar" (modo selección): una casilla con su texto, alcanzable con Tab y accesible como casilla.
-    fn mode_toggle(&mut self, ui: &mut Ui, env: &mut Env) {
+    fn mode_toggle(&mut self, ui: &mut Ui, env: &mut Env, with_text: bool) {
         let pal = env.pal;
         let label = env.tr.t("sel-toggle");
         let on = self.multi.mode;
@@ -487,7 +503,12 @@ impl Explore {
             theme::font_semibold(14.0),
             Color32::PLACEHOLDER,
         );
-        let w = 12.0 + 16.0 + 8.0 + galley.size().x + 14.0;
+        // Sin texto, un cuadrado de 34 px con solo la casilla (el nombre accesible y la pista siguen diciendo "Seleccionar").
+        let w = if with_text {
+            12.0 + 16.0 + 8.0 + galley.size().x + 14.0
+        } else {
+            34.0
+        };
         let (rect, resp) = ui.allocate_exact_size(vec2(w, 34.0), Sense::click());
         resp.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, true, on, label.clone()));
         if ui.is_rect_visible(rect) {
@@ -503,20 +524,27 @@ impl Explore {
                 Stroke::new(1.0, if on { pal.accent } else { pal.border }),
                 StrokeKind::Inside,
             );
+            let cx = if with_text {
+                rect.left() + 20.0
+            } else {
+                rect.center().x
+            };
             paint_checkbox(
                 ui.painter(),
                 env,
-                Rect::from_center_size(pos2(rect.left() + 20.0, rect.center().y), vec2(16.0, 16.0)),
+                Rect::from_center_size(pos2(cx, rect.center().y), vec2(16.0, 16.0)),
                 on,
             );
-            ui.painter().galley(
-                pos2(
-                    rect.left() + 12.0 + 16.0 + 8.0,
-                    rect.center().y - galley.size().y / 2.0,
-                ),
-                galley,
-                pal.text,
-            );
+            if with_text {
+                ui.painter().galley(
+                    pos2(
+                        rect.left() + 12.0 + 16.0 + 8.0,
+                        rect.center().y - galley.size().y / 2.0,
+                    ),
+                    galley,
+                    pal.text,
+                );
+            }
             if resp.has_focus() {
                 widgets::focus_ring(ui.painter(), &pal, rect.expand(1.0), 9);
             }
@@ -527,7 +555,8 @@ impl Explore {
         if resp.clicked() {
             self.multi.mode = !on;
         }
-        resp.on_hover_text(env.tr.t("sel-toggle-tip"));
+        let tip = format!("{label} · {}", env.tr.t("sel-toggle-tip"));
+        resp.on_hover_text(tip);
     }
 }
 

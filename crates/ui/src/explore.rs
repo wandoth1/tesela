@@ -603,18 +603,6 @@ impl Explore {
             .exact_size(56.0)
             .frame(bar_frame(pal.surface))
             .show(ui, |ui| self.basket_bar(ui, env));
-        // La barra de selección va siempre (mismo alto): si solo apareciese al marcar, el mapa se recolocaría bajo el puntero.
-        if self.view != View::Recommendations {
-            let fill = if self.multi.is_empty() {
-                pal.bg
-            } else {
-                pal.accent_soft
-            };
-            egui::Panel::bottom("tesela-selection")
-                .exact_size(crate::multisel::BAR_H)
-                .frame(bar_frame(fill))
-                .show(ui, |ui| self.selection_bar(ui, env));
-        }
         egui::Panel::top("tesela-toolbar")
             .exact_size(56.0)
             .frame(bar_frame(pal.surface))
@@ -648,6 +636,19 @@ impl Explore {
                         .inner_margin(Margin::same(20)),
                 )
                 .show(ui, |ui| details::show(ui, env, self));
+        }
+        // La barra de selección va siempre (mismo alto) y solo en la columna central, tras los paneles laterales: si
+        // apareciese solo al marcar, el mapa se recolocaría bajo el puntero, y quitar alto a la barra lateral la haría desbordar.
+        if self.view != View::Recommendations {
+            let fill = if self.multi.is_empty() {
+                pal.bg
+            } else {
+                pal.accent_soft
+            };
+            egui::Panel::bottom("tesela-selection")
+                .exact_size(crate::multisel::BAR_H)
+                .frame(bar_frame(fill))
+                .show(ui, |ui| self.selection_bar(ui, env));
         }
         egui::CentralPanel::default()
             .frame(

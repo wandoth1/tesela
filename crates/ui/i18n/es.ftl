@@ -207,7 +207,11 @@ sel-added =
         [one] { $count } elemento añadido a la cesta
        *[other] { $count } elementos añadidos a la cesta
     }
-sel-added-skipped = { $count } no se podían añadir
+sel-added-skipped =
+    { $n ->
+        [one] { $count } no se podía añadir
+       *[other] { $count } no se podían añadir
+    }
 sel-row-marked = seleccionado para la cesta
 sel-map-count = Seleccionados para la cesta: { $count }.
 sel-map-this = Este elemento está seleccionado para la cesta.
