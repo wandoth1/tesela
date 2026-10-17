@@ -248,7 +248,7 @@ impl TeselaUi {
                 .clone()
                 .map(|b| b.0)
                 .unwrap_or_else(|| default_backend(opts.demo.is_some(), opts.isolated)),
-            dry_run: opts.dry_run,
+            dry_run: effective_dry_run(opts.dry_run, opts.isolated, opts.demo.is_some()),
             isolated: opts.isolated,
             history: Vec::new(),
             drives: Vec::new(),
@@ -642,6 +642,14 @@ impl TeselaUi {
     }
 }
 
+/// ¿Modo simulación efectivo? Una sesión aislada que NO es la demostración (las herramientas de medición sin `--demo`) es siempre
+/// una simulación: su respaldo inerte tiene la protección vacía y solo no borra nada porque no tiene carpeta de datos (sin
+/// registro, la limpieza no se ejecuta); la simulación lo garantiza por sí misma (defensa en profundidad). La demostración
+/// NO cambia (su respaldo simulado bifurca por `dry_run` y los resúmenes y las capturas del README dependen de ello).
+fn effective_dry_run(dry_run: bool, isolated: bool, demo: bool) -> bool {
+    dry_run || (isolated && !demo)
+}
+
 /// El historial de limpiezas que se enseña: el de la carpeta de datos del respaldo, salvo en la demostración y en una
 /// sesión aislada, que no leen nada del disco (la demostración nunca tiene carpeta de datos; el aislamiento lo garantiza
 /// aunque el respaldo la tenga).
@@ -732,6 +740,19 @@ mod tests {
         // La demostración sigue siendo la simulada, y por defecto el respaldo real tiene su carpeta de datos.
         assert!(default_backend(true, true).is_demo());
         assert!(default_backend(true, false).is_demo());
+    }
+
+    #[test]
+    fn la_sesion_aislada_sin_demo_es_siempre_una_simulacion_y_la_demo_no_cambia() {
+        // R-S1: herramientas de medición sin `--demo` (aisladas, sin demostración): simulación forzada.
+        assert!(effective_dry_run(false, true, false));
+        assert!(effective_dry_run(true, true, false));
+        // La demostración (aislada, con demo) y el uso normal respetan `--dry-run` tal cual.
+        assert!(!effective_dry_run(false, true, true));
+        assert!(effective_dry_run(true, true, true));
+        assert!(!effective_dry_run(false, false, false));
+        assert!(effective_dry_run(true, false, false));
+        assert!(!effective_dry_run(false, false, true));
     }
 
     #[test]
