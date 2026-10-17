@@ -400,28 +400,28 @@ try {
     }
     $sigStatements = @('INSERT INTO `Signature` (`Signature`, `FileName`) VALUES (''EvilSearch'', ''evil.dll'')')
     $path = New-Mutant 'signature-row' $sigStatements
-    Check 'una fila en la tabla Signature (busqueda de archivo no declarada)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*tabla Signature tiene 3 filas*exactamente 2*')
+    Check 'una fila en la tabla Signature (busqueda de archivo no declarada)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*Signature table has 3 rows*exactly 2*')
 
     # --- Sequence rows for scope, directory, and language logic ----------------------------------------------------------
     foreach ($t in 'InstallExecuteSequence', 'InstallUISequence') {
         $path = New-Mutant "logic-nofolder-$t" @("DELETE FROM ``$t`` WHERE ``Action``='TeselaFolderPrevUser'")
-        Check "sin TeselaFolderPrevUser en $t (una actualizacion no conservaria la carpeta)" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*falta TeselaFolderPrevUser en $t*")
+        Check "sin TeselaFolderPrevUser en $t (una actualizacion no conservaria la carpeta)" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*missing TeselaFolderPrevUser in $t*")
         $path = New-Mutant "logic-cond-$t" @("UPDATE ``$t`` SET ``Condition``='1' WHERE ``Action``='TeselaFolderDefaultMachine'")
-        Check "TeselaFolderDefaultMachine con otra condicion en $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*TeselaFolderDefaultMachine en $t lleva la condicion*")
+        Check "TeselaFolderDefaultMachine con otra condicion en $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*TeselaFolderDefaultMachine in $t has condition*")
         $path = New-Mutant "logic-seq-$t" @("UPDATE ``$t`` SET ``Sequence``=105 WHERE ``Action``='TeselaSetProtected64'")
         $p = Test-MsiPackage -Path $path -ExpectedVersion $version
-        Check "TeselaSetProtected64 despues de LaunchConditions en $t" ((Has-Problem $p "*TeselaSetProtected64 en $t tiene la secuencia 105*") -and (Has-Problem $p '*TeselaSetProtected64*antes de LaunchConditions*'))
+        Check "TeselaSetProtected64 despues de LaunchConditions en $t" ((Has-Problem $p "*TeselaSetProtected64 in $t has sequence 105*") -and (Has-Problem $p '*TeselaSetProtected64*after AppSearch and before LaunchConditions*'))
         $path = New-Mutant "logic-beforesearch-$t" @("UPDATE ``$t`` SET ``Sequence``=40 WHERE ``Action``='TeselaFolderPrevMachine'")
-        Check "TeselaFolderPrevMachine antes de AppSearch en $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*TeselaFolderPrevMachine*despues de AppSearch*')
+        Check "TeselaFolderPrevMachine antes de AppSearch en $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*TeselaFolderPrevMachine*after AppSearch and before LaunchConditions*')
     }
     $path = New-Mutant 'logic-desktop-exec' @("UPDATE ``InstallExecuteSequence`` SET ``Condition``='DESKTOPSHORTCUT=""""' WHERE ``Action``='TeselaRememberDesktop'")
-    Check 'TeselaRememberDesktop en el servidor sin la guarda UILevel (volveria a marcar la casilla que el usuario desmarco)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*TeselaRememberDesktop en InstallExecuteSequence lleva la condicion*')
+    Check 'TeselaRememberDesktop en el servidor sin la guarda UILevel (volveria a marcar la casilla que el usuario desmarco)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*TeselaRememberDesktop in InstallExecuteSequence has condition*')
     $path = New-Mutant 'logic-scope-exec' @("INSERT INTO ``InstallExecuteSequence`` (``Action``, ``Condition``, ``Sequence``) VALUES ('TeselaLangEs1', '', 62)")
     Check 'el idioma elegido tambien en la secuencia del servidor' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*TeselaLangEs1 is in InstallExecuteSequence*')
     $path = New-Mutant 'lang-missing-id' @("UPDATE ``InstallUISequence`` SET ``Condition``='TESELA_LANG="""" AND (UserLanguageID=9226 OR UserLanguageID=10250)' WHERE ``Action``='TeselaLangEs2'")
-    Check 'las acciones de idioma no cubren todos los LANGID del espanol' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*TeselaLangEs1..3 no cubren exactamente*')
+    Check 'las acciones de idioma no cubren todos los LANGID del espanol' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*TeselaLangEs1..3 do not cover exactly the Spanish LANGIDs*')
     $path = New-Mutant 'lang-extra-id' @("UPDATE ``InstallUISequence`` SET ``Condition``='TESELA_LANG="""" AND (UserLanguageID=1033)' WHERE ``Action``='TeselaLangEs3'")
-    Check 'una accion de idioma con un LANGID que no es espanol (1033)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*TeselaLangEs1..3 no cubren exactamente*')
+    Check 'una accion de idioma con un LANGID que no es espanol (1033)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*TeselaLangEs1..3 do not cover exactly the Spanish LANGIDs*')
 
     # --- UI strings: every English Tx* has a Spanish counterpart and is displayed ---------------------------------------
     $path = New-Mutant 'tx-no-es' @('DELETE FROM `CustomAction` WHERE `Action`=''TeselaEs_TxNext''')
@@ -496,18 +496,18 @@ try {
     $path = New-Mutant 'ui-actiontext' @('INSERT INTO `ActionText` (`Action`, `Description`) VALUES (''EvilAction'', ''x'')')
     Check 'texto de progreso de una accion no esperada' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*progress text for unexpected action*EvilAction*')
     $path = New-Mutant 'ui-exit-seq' @("UPDATE ``AdminUISequence`` SET ``Sequence``=-5 WHERE ``Action``='FatalError'")
-    Check 'FatalError mal colocada en AdminUISequence (ICE20)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*FatalError con la secuencia -3 en AdminUISequence*')
+    Check 'FatalError mal colocada en AdminUISequence (ICE20)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*missing FatalError at sequence -3 in AdminUISequence*')
     $path = New-Mutant 'ui-welcome-cond' @("UPDATE ``InstallUISequence`` SET ``Condition``='' WHERE ``Action``='WelcomeDlg'")
-    Check 'la bienvenida se mostraria tambien al reparar o desinstalar' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*WelcomeDlg en InstallUISequence lleva la condicion*')
+    Check 'la bienvenida se mostraria tambien al reparar o desinstalar' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*WelcomeDlg in InstallUISequence has condition*')
     $path = New-Mutant 'ui-progress-late' @("UPDATE ``InstallUISequence`` SET ``Sequence``=1400 WHERE ``Action``='ProgressDlg'")
-    Check 'ProgressDlg despues de ExecuteAction' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*ProgressDlg tiene que ir antes de ExecuteAction*')
+    Check 'ProgressDlg despues de ExecuteAction' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*ProgressDlg must run before ExecuteAction*')
 
     # --- m6: una clave de registro sin producto no puede dejar un callejon sin salida (se comprueba tesela.exe) --------------------
     $path = New-Mutant 'exe-no-locator' @('DELETE FROM `RegLocator` WHERE `Signature_`=''PrevUserExe''', 'DELETE FROM `AppSearch` WHERE `Signature_`=''PrevUserExe''', 'DELETE FROM `Signature` WHERE `Signature`=''PrevUserExe''')
     $p = Test-MsiPackage -Path $path -ExpectedVersion $version
     Check 'sin la comprobacion de tesela.exe de la instalacion por usuario' ((Has-Problem $p '*RegLocator has 5 registry searches*') -and (Has-Problem $p '*PrevUserExe*'))
     $path = New-Mutant 'exe-other-file' @('UPDATE `Signature` SET `FileName`=''otra.exe'' WHERE `Signature`=''PrevMachineExe''')
-    Check 'la comprobacion busca otro archivo (no tesela.exe)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*Signature PrevMachineExe tiene que buscar solo el archivo tesela.exe*')
+    Check 'la comprobacion busca otro archivo (no tesela.exe)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*Signature PrevMachineExe must search only for file tesela.exe*')
     $path = New-Mutant 'exe-minversion' @('UPDATE `Signature` SET `MinVersion`=''9.0.0'' WHERE `Signature`=''PrevUserExe''')
     Check 'la comprobacion exige una version' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*Signature PrevUserExe*')
     $path = New-Mutant 'exe-locator-type' @('UPDATE `RegLocator` SET `Type`=18 WHERE `Signature_`=''PrevUserExe''')
@@ -517,7 +517,7 @@ try {
         Check "sin la accion $a (la clave sin producto bloquearia)" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*missing action $a*")
         foreach ($t2 in 'InstallExecuteSequence', 'InstallUISequence') {
             $path = New-Mutant "stale-cond-$a-$t2" @("UPDATE ``$t2`` SET ``Condition``='1' WHERE ``Action``='$a'")
-            Check "$a con otra condicion en $t2" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*$a en $t2 lleva la condicion*")
+            Check "$a con otra condicion en $t2" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*$a in $t2 has condition*")
         }
     }
 

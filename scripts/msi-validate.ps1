@@ -677,10 +677,10 @@ function Test-MsiPackage {
         # or directory searches.
         $sig = @(Get-MsiRows $msi 'SELECT `Signature`, `FileName`, `MinVersion`, `MaxVersion`, `MinSize`, `MaxSize`, `MinDate`, `MaxDate`, `Languages` FROM `Signature`' 9)
         $sigWant = @($MsiExpectedRegLocators | Where-Object { $_.File })
-        if ($sig.Count -cne $sigWant.Count) { $problems.Add("la tabla Signature tiene $($sig.Count) filas, tiene que tener exactamente $($sigWant.Count) (la comprobacion de tesela.exe)") }
+        if ($sig.Count -cne $sigWant.Count) { $problems.Add("the Signature table has $($sig.Count) rows; it must contain exactly $($sigWant.Count) (the tesela.exe check)") }
         foreach ($e in $sigWant) {
             $s = @($sig | Where-Object { $_[0] -ceq $e.Id })
-            if ($s.Count -cne 1 -or $s[0][1] -cne $e.File -or (($s[0][2..8] -join '') -cne '')) { $problems.Add("Signature $($e.Id) tiene que buscar solo el archivo $($e.File) (sin version, tamano ni fecha)") }
+            if ($s.Count -cne 1 -or $s[0][1] -cne $e.File -or (($s[0][2..8] -join '') -cne '')) { $problems.Add("Signature $($e.Id) must search only for file $($e.File) (no version, size, or date)") }
         }
 
         # Sequence rows for the logic actions (exact action, condition, and number), and their order relative to standard
@@ -692,34 +692,34 @@ function Test-MsiPackage {
             foreach ($e in $MsiExpectedLogicRows) {
                 if ($e.Where -ceq 'ui' -and -not $isUi) { continue }
                 if ($e.Where -ceq 'exec' -and $isUi) { continue }
-                if (-not $seq[$t].ContainsKey($e.Action)) { $problems.Add("falta $($e.Action) en $t"); continue }
+                if (-not $seq[$t].ContainsKey($e.Action)) { $problems.Add("missing $($e.Action) in $t"); continue }
                 $r = $seq[$t][$e.Action]
-                if ($r[1] -cne $e.Cond) { $problems.Add("$($e.Action) en ${t} lleva la condicion '$($r[1])', se esperaba '$($e.Cond)'") }
-                if ([int]$r[2] -cne [int]$e.Seq) { $problems.Add("$($e.Action) en ${t} tiene la secuencia $($r[2]), se esperaba $($e.Seq)") }
+                if ($r[1] -cne $e.Cond) { $problems.Add("$($e.Action) in ${t} has condition '$($r[1])'; expected '$($e.Cond)'") }
+                if ([int]$r[2] -cne [int]$e.Seq) { $problems.Add("$($e.Action) in ${t} has sequence $($r[2]); expected $($e.Seq)") }
             }
             foreach ($e in $MsiExpectedLogicRows) {
                 if ($e.Seq -gt 100) { continue }
                 if (-not $seq[$t].ContainsKey($e.Action) -or -not $seq[$t].ContainsKey('AppSearch') -or -not $seq[$t].ContainsKey('LaunchConditions')) { continue }
                 $n = [int]$seq[$t][$e.Action][2]
                 if ($n -le [int]$seq[$t]['AppSearch'][2] -or $n -ge [int]$seq[$t]['LaunchConditions'][2]) {
-                    $problems.Add("$($e.Action) (secuencia $n) tiene que ir despues de AppSearch y antes de LaunchConditions en ${t}")
+                    $problems.Add("$($e.Action) (sequence $n) must run after AppSearch and before LaunchConditions in ${t}")
                 }
             }
         }
         foreach ($k in $MsiLangEsSeq.Keys) {
-            if (-not $seq['InstallUISequence'].ContainsKey($k)) { $problems.Add("falta $k en InstallUISequence"); continue }
-            if ([int]$seq['InstallUISequence'][$k][2] -cne $MsiLangEsSeq[$k]) { $problems.Add("$k tiene la secuencia $($seq['InstallUISequence'][$k][2]), se esperaba $($MsiLangEsSeq[$k])") }
-            if ($seq['InstallExecuteSequence'].ContainsKey($k)) { $problems.Add("$k esta en InstallExecuteSequence (el idioma solo se elige en la interfaz)") }
+            if (-not $seq['InstallUISequence'].ContainsKey($k)) { $problems.Add("missing $k in InstallUISequence"); continue }
+            if ([int]$seq['InstallUISequence'][$k][2] -cne $MsiLangEsSeq[$k]) { $problems.Add("$k has sequence $($seq['InstallUISequence'][$k][2]); expected $($MsiLangEsSeq[$k])") }
+            if ($seq['InstallExecuteSequence'].ContainsKey($k)) { $problems.Add("$k is in InstallExecuteSequence (language is selected only in the UI)") }
         }
         # The three language actions cover ALL Spanish LANGIDs and only those (each condition: TESELA_LANG="" AND (...)).
         $ids = New-Object System.Collections.Generic.List[int]
         foreach ($k in $MsiLangEsSeq.Keys) {
             if (-not $seq['InstallUISequence'].ContainsKey($k)) { continue }
             $cond = $seq['InstallUISequence'][$k][1]
-            if ($cond -cnotmatch '^TESELA_LANG="" AND \(UserLanguageID=\d+( OR UserLanguageID=\d+)*\)$') { $problems.Add("la condicion de $k no tiene la forma esperada: '$cond'"); continue }
+            if ($cond -cnotmatch '^TESELA_LANG="" AND \(UserLanguageID=\d+( OR UserLanguageID=\d+)*\)$') { $problems.Add("condition for $k does not have the expected form: '$cond'"); continue }
             foreach ($m in [regex]::Matches($cond, 'UserLanguageID=(\d+)')) { $ids.Add([int]$m.Groups[1].Value) }
         }
-        if ((($ids | Sort-Object) -join ',') -cne (($MsiSpanishLangIds | Sort-Object) -join ',')) { $problems.Add('las acciones TeselaLangEs1..3 no cubren exactamente los LANGID del espanol') }
+        if ((($ids | Sort-Object) -join ',') -cne (($MsiSpanishLangIds | Sort-Object) -join ',')) { $problems.Add('TeselaLangEs1..3 do not cover exactly the Spanish LANGIDs') }
         # Dialogs in the UI sequence: Welcome (new install) or Maintenance (already installed), Progress before
         # ExecuteAction, and the three exit dialogs (-1 success, -2 user cancellation, -3 error) in both UI and admin sequences.
         $ui = $seq['InstallUISequence']
@@ -729,19 +729,19 @@ function Test-MsiPackage {
             @{ Action = 'ProgressDlg'; Cond = '' }
         )
         foreach ($s in $showRows) {
-            if (-not $ui.ContainsKey($s.Action)) { $problems.Add("falta $($s.Action) en InstallUISequence"); continue }
-            if ($ui[$s.Action][1] -cne $s.Cond) { $problems.Add("$($s.Action) en InstallUISequence lleva la condicion '$($ui[$s.Action][1])', se esperaba '$($s.Cond)'") }
-            if ($ui.ContainsKey('MigrateFeatureStates') -and [int]$ui[$s.Action][2] -le [int]$ui['MigrateFeatureStates'][2]) { $problems.Add("$($s.Action) tiene que ir despues de MigrateFeatureStates (despues de calcular los costes)") }
-            if ($ui.ContainsKey('ExecuteAction') -and [int]$ui[$s.Action][2] -ge [int]$ui['ExecuteAction'][2]) { $problems.Add("$($s.Action) tiene que ir antes de ExecuteAction") }
+            if (-not $ui.ContainsKey($s.Action)) { $problems.Add("missing $($s.Action) in InstallUISequence"); continue }
+            if ($ui[$s.Action][1] -cne $s.Cond) { $problems.Add("$($s.Action) in InstallUISequence has condition '$($ui[$s.Action][1])'; expected '$($s.Cond)'") }
+            if ($ui.ContainsKey('MigrateFeatureStates') -and [int]$ui[$s.Action][2] -le [int]$ui['MigrateFeatureStates'][2]) { $problems.Add("$($s.Action) must run after MigrateFeatureStates (after costs are calculated)") }
+            if ($ui.ContainsKey('ExecuteAction') -and [int]$ui[$s.Action][2] -ge [int]$ui['ExecuteAction'][2]) { $problems.Add("$($s.Action) must run before ExecuteAction") }
         }
-        if ($ui.ContainsKey('ProgressDlg') -and $ui.ContainsKey('WelcomeDlg') -and [int]$ui['ProgressDlg'][2] -le [int]$ui['WelcomeDlg'][2]) { $problems.Add('ProgressDlg tiene que ir despues de WelcomeDlg') }
-        if (-not $ui.ContainsKey('ExecuteAction')) { $problems.Add('falta ExecuteAction en InstallUISequence') }
+        if ($ui.ContainsKey('ProgressDlg') -and $ui.ContainsKey('WelcomeDlg') -and [int]$ui['ProgressDlg'][2] -le [int]$ui['WelcomeDlg'][2]) { $problems.Add('ProgressDlg must run after WelcomeDlg') }
+        if (-not $ui.ContainsKey('ExecuteAction')) { $problems.Add('missing ExecuteAction in InstallUISequence') }
         $exitRows = @(@{ Action = 'ExitDialog'; Seq = -1 }, @{ Action = 'UserExit'; Seq = -2 }, @{ Action = 'FatalError'; Seq = -3 })
         $adm = New-Object System.Collections.Hashtable ([System.StringComparer]::Ordinal)
         foreach ($r in (Get-MsiRows $msi 'SELECT `Action`, `Condition`, `Sequence` FROM `AdminUISequence`' 3)) { $adm[$r[0]] = $r }
         foreach ($x in $exitRows) {
-            if (-not $ui.ContainsKey($x.Action) -or [int]$ui[$x.Action][2] -cne $x.Seq) { $problems.Add("falta $($x.Action) con la secuencia $($x.Seq) en InstallUISequence") }
-            if (-not $adm.ContainsKey($x.Action) -or [int]$adm[$x.Action][2] -cne $x.Seq) { $problems.Add("falta $($x.Action) con la secuencia $($x.Seq) en AdminUISequence (ICE20)") }
+            if (-not $ui.ContainsKey($x.Action) -or [int]$ui[$x.Action][2] -cne $x.Seq) { $problems.Add("missing $($x.Action) at sequence $($x.Seq) in InstallUISequence") }
+            if (-not $adm.ContainsKey($x.Action) -or [int]$adm[$x.Action][2] -cne $x.Seq) { $problems.Add("missing $($x.Action) at sequence $($x.Seq) in AdminUISequence (ICE20)") }
         }
 
         # The UI (dialogs, controls, events, and strings).
