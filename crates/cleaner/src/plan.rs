@@ -158,6 +158,8 @@ pub struct Plan {
     /// Elementos de la Papelera que NO se listaron porque sus metadatos (`$I`) están ilegibles (m1): no se vacían y su tamaño no
     /// entra en lo que se promete vaciar.
     pub bin_unlisted: u64,
+    /// Outlook was running during approval (informational, never a deletion guard).
+    pub outlook_open: bool,
 }
 
 impl Plan {
@@ -194,6 +196,27 @@ impl Plan {
         self.unfit_items().map(PlanItem::bytes).sum()
     }
 
+    /// ((local PST files, bytes), (OST/NST cache files, bytes)).
+    pub fn mail_totals(&self) -> ((u64, u64), (u64, u64)) {
+        self.items
+            .iter()
+            .fold(((0, 0), (0, 0)), |((ln, lb), (cn, cb)), i| {
+                let e = &i.estimate;
+                (
+                    (ln + e.mail_local_files, lb + e.mail_local_bytes),
+                    (cn + e.mail_cache_files, cb + e.mail_cache_bytes),
+                )
+            })
+    }
+
+    pub fn permanent_mail_files(&self, allow_unfit: bool) -> u64 {
+        self.items
+            .iter()
+            .filter(|i| i.destination == Destination::Permanent || (allow_unfit && i.is_unfit()))
+            .map(|i| i.estimate.mail_local_files)
+            .sum()
+    }
+
     /// Los `n` elementos más grandes de "Tu archivo" (sin categoría), de mayor a menor.
     pub fn biggest_user_items(&self, n: usize) -> Vec<&PlanItem> {
         let mut v: Vec<&PlanItem> = self.items.iter().filter(|i| i.category.is_none()).collect();
@@ -226,6 +249,8 @@ impl Plan {
 pub struct ApproveOptions {
     /// Tamaño aproximado de la Papelera, si se pidió vaciarla (por ejemplo, el de su carpeta en el árbol escaneado).
     pub bin_bytes_hint: u64,
+    /// Optional live approval counter, shared with the UI.
+    pub progress: Option<Arc<AtomicU64>>,
 }
 
 /// El `cleaner`: reglas, raíces y protección, listos para aprobar y ejecutar.
@@ -444,7 +469,10 @@ impl Cleaner {
             }
         }
         // Medir con el mismo recorrido que borrará (aperturas compartidas, nada se toca).
-        let progress = Arc::new(AtomicU64::new(0));
+        let progress = opts
+            .progress
+            .clone()
+            .unwrap_or_else(|| Arc::new(AtomicU64::new(0)));
         let units: Vec<Arc<Unit>> = cands
             .iter()
             .enumerate()
@@ -491,6 +519,9 @@ impl Cleaner {
                 hard_linked: c.links > 1,
                 volume: c.volume,
             });
+        }
+        if plan.mail_totals() != ((0, 0), (0, 0)) {
+            plan.outlook_open = crate::process::outlook_open();
         }
         plan
     }

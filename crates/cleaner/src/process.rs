@@ -64,6 +64,19 @@ pub fn match_browsers<S: AsRef<str>>(names: &[S]) -> Vec<Browser> {
         .collect()
 }
 
+/// Outlook process matching is only a warning; exclusive handles remain the safety check.
+pub fn match_outlook<S: AsRef<str>>(names: &[S]) -> bool {
+    names.iter().any(|n| {
+        ["outlook.exe", "olk.exe"]
+            .iter()
+            .any(|exe| n.as_ref().eq_ignore_ascii_case(exe))
+    })
+}
+
+pub fn outlook_open() -> bool {
+    match_outlook(&process_names())
+}
+
 /// Nombres de los procesos en ejecución (instantánea de ToolHelp).
 fn process_names() -> Vec<String> {
     // SAFETY: `CreateToolhelp32Snapshot` no tiene precondiciones.
@@ -128,5 +141,17 @@ mod tests {
         let me = me.file_name().unwrap().to_string_lossy().to_string();
         assert!(names.iter().any(|n| n.eq_ignore_ascii_case(&me)), "{me}");
         let _ = running_browsers();
+    }
+}
+
+#[cfg(test)]
+mod outlook_tests {
+    use super::*;
+    #[test]
+    fn outlook_matches_only_classic_and_new_process_names() {
+        assert!(match_outlook(&["OUTLOOK.EXE"]));
+        assert!(match_outlook(&["olk.exe"]));
+        assert!(!match_outlook(&["outlook.exe.bak", "myolk.exe"]));
+        assert!(!match_outlook::<&str>(&[]));
     }
 }

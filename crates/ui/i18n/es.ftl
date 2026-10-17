@@ -514,3 +514,13 @@ ago-days =
     }
 settings-clear-history = Borrar el historial y los registros de limpieza
 home-last-clean = Última limpieza: { $ago } · cambio medido del espacio libre: { $size }
+
+# Approval and mail data confirmation
+approve-title = Comprobando…
+approve-progress = { $count } entradas comprobadas
+confirm-unfit-pending = Los elementos que no caben en la Papelera se quedarán intactos salvo que marques su casilla de confirmación.
+confirm-mail-cache = Incluye { $count } archivos de caché de Outlook (.ost/.nst, { $size }). Se vuelven a descargar del servidor y puede tardar. Se pierde lo no sincronizado, como borradores o correo pendiente de envío. Cierra Outlook antes: los archivos en uso se omiten.
+confirm-mail-local = Incluye { $count } archivos de datos de Outlook (.pst, { $size }). Pueden contener correo guardado solo en este equipo. El borrado definitivo es irrecuperable. Haz una copia antes si no estás seguro.
+confirm-mail-check = Entiendo que los archivos .pst eliminados definitivamente (correo local) no se podrán recuperar.
+confirm-outlook-open = Outlook está abierto. Ciérralo antes; de lo contrario, los archivos en uso se pueden omitir y la carpeta se limpiará solo en parte.
+run-file-wait = Eliminar un archivo grande puede tardar. Una operación en curso no se puede interrumpir; la cancelación se aplica entre entradas.
