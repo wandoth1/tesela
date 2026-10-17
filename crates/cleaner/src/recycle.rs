@@ -280,7 +280,17 @@ fn filetime_to_unix(ft: FILETIME) -> i64 {
 
 /// Lista TODOS los elementos de la Papelera del usuario (todas las unidades). Es lineal en el tamaño de la Papelera
 /// (decenas de segundos con 100 000 elementos, PLAN.md §3.6): quien llama la ejecuta en un hilo de trabajo.
+///
+/// GM-S1: un elemento cuyos metadatos (`$I`) están corruptos (ruta original, fecha o nombre ilegibles) se SALTA y consta que no
+/// se listó; antes un solo `$I` roto abortaba la lista entera y con ella toda la limpieza de la Papelera. Lo que no se lista no
+/// se vacía (se queda donde está). Solo un fallo de la propia enumeración aborta.
 pub fn list_bin() -> Result<Vec<BinItem>> {
+    list_bin_counted().map(|(items, _)| items)
+}
+
+/// Como [`list_bin`], y además cuántos elementos se SALTARON por tener los metadatos ilegibles (m1 de la auditoría): quien
+/// llama lo anota en el plan, en el registro y en el informe, y no cuenta su tamaño en lo que promete vaciar.
+pub fn list_bin_counted() -> Result<(Vec<BinItem>, u64)> {
     let _com = Com::init()?;
     // SAFETY: COM está inicializado en este hilo; todas las interfaces y cadenas que se obtienen aquí son propias de
     // esta función y se liberan con el RAII de `windows` o con `take_pwstr`.
@@ -289,6 +299,7 @@ pub fn list_bin() -> Result<Vec<BinItem>> {
             SHGetKnownFolderItem(&FOLDERID_RecycleBinFolder, KF_FLAG_DEFAULT, None)?;
         let en: IEnumShellItems = bin.BindToHandler(None, &BHID_EnumItems)?;
         let mut out = Vec::new();
+        let mut skipped = 0u64;
         loop {
             let mut fetched = 0u32;
             let mut arr = [None];
@@ -297,32 +308,57 @@ pub fn list_bin() -> Result<Vec<BinItem>> {
                 break;
             }
             let Some(item) = &arr[0] else { break };
-            let id = take_pwstr(item.GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING)?);
-            let name = take_pwstr(item.GetDisplayName(SIGDN_PARENTRELATIVE)?);
-            let item2: IShellItem2 = item.cast()?;
-            let loc = item2.GetProperty(&SCID_ORIGINAL_LOCATION)?;
-            let loc = PropVariantToBSTR(&loc)?;
-            let original_parent = PathBuf::from(OsString::from_wide(&loc));
-            let time_deleted = filetime_to_unix(item2.GetFileTime(&SCID_DATE_DELETED)?);
-            let size = item2.GetUInt64(&PKEY_Size).unwrap_or(0);
-            // Las identidades del `$R` y del `$I`, para volver a comprobarlas al purgar (M3).
-            let data = PathBuf::from(&id);
-            let data_res = identity_result(&data);
-            let no_identity = data_res.as_ref().is_err_and(|c| is_no_identity_error(*c));
-            let data_id = data_res.ok();
-            let meta_id = meta_sibling(&data).and_then(|m| identity_at(&m));
-            out.push(BinItem {
-                id,
-                name,
-                original_parent,
-                time_deleted,
-                size,
-                data_id,
-                meta_id,
-                no_identity,
-            });
+            // SAFETY (llamada): `item` es una interfaz viva de esta enumeración.
+            if !push_readable(&mut out, read_bin_item(item)) {
+                skipped += 1;
+            }
         }
-        Ok(out)
+        Ok((out, skipped))
+    }
+}
+
+/// Añade el elemento si se pudo leer; si no (su `$I` está corrupto), lo salta (GM-S1). Devuelve si se añadió.
+fn push_readable(out: &mut Vec<BinItem>, item: Result<BinItem>) -> bool {
+    match item {
+        Ok(i) => {
+            out.push(i);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Lee un elemento enumerado de la Papelera (nombre, origen, fecha, tamaño e identidades del `$R` y del `$I`).
+///
+/// # Safety
+/// `item` debe ser una interfaz viva, y COM debe estar inicializado en el hilo que llama.
+unsafe fn read_bin_item(item: &IShellItem) -> Result<BinItem> {
+    // SAFETY: lo garantiza quien llama; las cadenas se liberan con `take_pwstr` y el resto es RAII de `windows`.
+    unsafe {
+        let id = take_pwstr(item.GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING)?);
+        let name = take_pwstr(item.GetDisplayName(SIGDN_PARENTRELATIVE)?);
+        let item2: IShellItem2 = item.cast()?;
+        let loc = item2.GetProperty(&SCID_ORIGINAL_LOCATION)?;
+        let loc = PropVariantToBSTR(&loc)?;
+        let original_parent = PathBuf::from(OsString::from_wide(&loc));
+        let time_deleted = filetime_to_unix(item2.GetFileTime(&SCID_DATE_DELETED)?);
+        let size = item2.GetUInt64(&PKEY_Size).unwrap_or(0);
+        // Las identidades del `$R` y del `$I`, para volver a comprobarlas al purgar (M3).
+        let data = PathBuf::from(&id);
+        let data_res = identity_result(&data);
+        let no_identity = data_res.as_ref().is_err_and(|c| is_no_identity_error(*c));
+        let data_id = data_res.ok();
+        let meta_id = meta_sibling(&data).and_then(|m| identity_at(&m));
+        Ok(BinItem {
+            id,
+            name,
+            original_parent,
+            time_deleted,
+            size,
+            data_id,
+            meta_id,
+            no_identity,
+        })
     }
 }
 
@@ -381,13 +417,23 @@ pub fn bin_size_on(root: &Path) -> Result<u64> {
     Ok(info.i64Size.max(0) as u64)
 }
 
-/// ¿Está `p` dentro de una Papelera (`<unidad>:\$Recycle.Bin\...`)? Mira la forma de la ruta (carpeta de primer nivel
-/// de la raíz de una unidad llamada `$Recycle.Bin`), sin consultar al sistema.
+/// ¿Está `p` dentro de una Papelera (`<raíz del volumen>\$Recycle.Bin\...`)? La raíz del volumen es la de una unidad con letra o
+/// la de un volumen montado en una carpeta (GM-M6: `C:\montajes\datos\$Recycle.Bin\...`); se consulta a Windows
+/// (`GetVolumePathNameW`) por la raíz de `p`.
 pub fn is_recycle_bin_path(p: &Path) -> bool {
+    is_recycle_bin_path_on(p, crate::volume::volume_root(p).as_deref())
+}
+
+/// [`is_recycle_bin_path`] con la raíz del volumen de `p` ya conocida (`None` = no se sabe: solo valen las raíces de unidad
+/// con letra). Mira la forma de la ruta, sin consultar al sistema.
+pub(crate) fn is_recycle_bin_path_on(p: &Path, volume_root: Option<&Path>) -> bool {
     use crate::paths::PathKey;
     let key = PathKey::new(p);
+    let root = volume_root.map(PathKey::new);
     let is_bin = |k: &PathKey| {
-        k.file_name() == "$recycle.bin" && k.parent().is_some_and(|q| q.is_drive_root())
+        k.file_name() == "$recycle.bin"
+            && k.parent()
+                .is_some_and(|q| q.is_drive_root() || root.as_ref() == Some(&q))
     };
     is_bin(&key) || key.ancestors().iter().any(is_bin)
 }
@@ -418,6 +464,9 @@ pub struct BatchOutcome {
     /// Solo al purgar: elementos que NO se purgaron porque su sistema de archivos no da identidad (FAT, exFAT) y no se
     /// pueden verificar: `id` de cada uno. No es que hayan cambiado (H6.9).
     pub unverifiable_bin: Vec<OsString>,
+    /// Solo al purgar (M2): elementos cuyo `$R` lleva reparse points dentro (junction, symlink, enlace de WSL, archivo de la
+    /// nube) o no se pudo comprobar entero: se EXCLUYEN antes de entregarlos a la shell (no se purgan y no cortan el lote).
+    pub linked_bin: Vec<OsString>,
 }
 
 /// Un elemento que se entrega a la shell: su ruta original y la IDENTIDAD aprobada (volumen + FileId).
@@ -429,6 +478,9 @@ pub struct SendItem {
     /// reabrir la ruta) y veta si ocupa más de lo que se contó para el presupuesto. Un directorio va siempre solo en su
     /// operación y se mide justo antes de entregarlo: no lleva comprobación aquí.
     pub size_guard: Option<SizeGuard>,
+    /// A3-M1: solo un DIRECTORIO. La vigilancia de cambios abierta ANTES de medirlo y viva hasta ahora: si algo cambió dentro
+    /// desde que se midió, la medida no es cierta. `PreDeleteItem` la consulta (veto) y, si pasa, la para.
+    pub watch: Option<Arc<sys::DirWatch>>,
 }
 
 /// Cómo vuelve a medirse un archivo en `PreDeleteItem` (A2-B1): su handle de guarda y el tamaño con el que se contó en el
@@ -471,6 +523,7 @@ impl SendItem {
             path: path.to_path_buf(),
             identity: sys::meta(&h).expect("lee la identidad").identity,
             size_guard: None,
+            watch: None,
         }
     }
 }
@@ -487,6 +540,9 @@ pub enum VetoKind {
     /// A2-B1: un archivo del lote ocupa ahora MÁS de lo que se contó para el presupuesto de la operación (creció desde que
     /// se midió). Se veta: el reparto se hizo con un tamaño que ya no es cierto.
     Grew,
+    /// A3-M1: algo DENTRO de un directorio cambió desde que se midió (la vigilancia que lo cubre lo vio, se desbordó o falló):
+    /// la medida ya no es cierta y el reparto se hizo con ella. Se veta.
+    Modified,
 }
 
 /// Un veto del receptor.
@@ -530,6 +586,8 @@ enum Approved {
     Object {
         identity: FileIdentity,
         size: Option<SizeGuard>,
+        /// A3-M1: la vigilancia de cambios de un directorio (ver [`SendItem::watch`]).
+        watch: Option<Arc<sys::DirWatch>>,
     },
     /// Al PURGAR (A-M4): las identidades del `$R` (los datos) y del `$I` hermano (los metadatos) capturadas al enumerar. La
     /// ruta es la del `$R` (el `id` del elemento de la Papelera).
@@ -544,6 +602,9 @@ enum Approved {
 /// Lo aprobado, por ruta: lo que `PreDeleteItem` comprueba antes de que la shell actúe.
 struct Guard {
     approved: Vec<(PathKey, Approved)>,
+    /// El nombre EXACTO (tal como se entregó) de cada elemento de `approved`, en el mismo orden (GM-M5): en un directorio
+    /// sensible a mayúsculas dos nombres que solo difieren en ellas tienen la misma `PathKey` (que pliega mayúsculas).
+    names: Vec<OsString>,
     /// Es la guarda de una PURGA de la Papelera (si no, de un envío).
     purge: bool,
 }
@@ -552,6 +613,10 @@ impl Guard {
     /// Guarda de un ENVÍO a la Papelera (ruta original + identidad aprobada).
     fn new(items: &[SendItem]) -> Guard {
         Guard {
+            names: items
+                .iter()
+                .map(|i| i.path.as_os_str().to_os_string())
+                .collect(),
             approved: items
                 .iter()
                 .map(|i| {
@@ -560,6 +625,7 @@ impl Guard {
                         Approved::Object {
                             identity: i.identity,
                             size: i.size_guard.clone(),
+                            watch: i.watch.clone(),
                         },
                     )
                 })
@@ -571,7 +637,16 @@ impl Guard {
     /// Guarda de una PURGA (A-M4): cada elemento de la lista con las identidades de su `$R` y de su `$I` capturadas al
     /// enumerar. Sin las dos, el elemento no se purga (nunca llega aquí: ver `check_bin_item`); si falta alguna se vetaría.
     fn purge(items: &[&BinItem]) -> Guard {
+        let kept: Vec<&&BinItem> = items
+            .iter()
+            .filter(|i| {
+                i.data_id.is_some()
+                    && i.meta_id.is_some()
+                    && meta_sibling(Path::new(&i.id)).is_some()
+            })
+            .collect();
         Guard {
+            names: kept.iter().map(|i| i.id.clone()).collect(),
             approved: items
                 .iter()
                 .filter_map(|i| {
@@ -602,12 +677,14 @@ impl Guard {
     /// `PreDeleteItem` hijo a hijo (medido con la shell real: `...\$R<token>\hijo.txt`), no con la ruta de su `$R`: lo que
     /// cuelga de un `$R` aprobado se atribuye a ESE `$R`. Al ENVIAR vale solo la ruta exacta (un evento por carpeta).
     fn find(&self, path: &OsString) -> Option<&(PathKey, Approved)> {
+        // GM-M5: primero el nombre exacto; la clave (que pliega mayúsculas) solo si no hay ambigüedad.
+        if let Some(i) = crate::paths::owner_index(&self.names, path) {
+            return self.approved.get(i);
+        }
         let key = PathKey::new(Path::new(path));
-        self.approved.iter().find(|(k, _)| *k == key).or_else(|| {
-            self.purge
-                .then(|| self.approved.iter().find(|(k, _)| key.is_same_or_under(k)))
-                .flatten()
-        })
+        self.purge
+            .then(|| self.approved.iter().find(|(k, _)| key.is_same_or_under(k)))
+            .flatten()
     }
 
     /// El `id` (ruta del `$R`) del elemento de una purga al que pertenece `path` (él mismo o uno de sus hijos); `None` si no
@@ -637,14 +714,31 @@ impl Guard {
             Err(c) => Err(VetoKind::OpenFailed(c)),
         };
         match want {
-            Approved::Object { identity, size } => {
+            Approved::Object {
+                identity,
+                size,
+                watch,
+            } => {
                 same(Path::new(path), identity)?;
                 // A2-B1: lo aprobado sigue siendo lo que había, pero un archivo que creció desde que se midió ya no cabe en lo
                 // que se repartió: se mide por el handle de guarda (el mismo objeto), no por la ruta.
-                match size {
-                    Some(g) => g.check(),
-                    None => Ok(()),
+                if let Some(g) = size {
+                    g.check()?;
                 }
+                // A3-M1: un directorio lleva la vigilancia de cambios que se abrió ANTES de medirlo. Si algo cambió dentro (o
+                // la vigilancia falló), la medida no vale. Si no, es la última comprobación y se PARA aquí: no queda un handle
+                // con E/S pendiente sobre el directorio mientras la shell lo mueve (y se vuelve a mirar tras parar: lo que
+                // cayera en el último instante consta).
+                if let Some(w) = watch {
+                    if w.changed() {
+                        return Err(VetoKind::Modified);
+                    }
+                    w.stop();
+                    if w.changed() {
+                        return Err(VetoKind::Modified);
+                    }
+                }
+                Ok(())
             }
             Approved::Bin {
                 data_path,
@@ -652,6 +746,23 @@ impl Guard {
                 meta_path,
                 meta,
             } => {
+                // GM-m5: al purgar una CARPETA de la Papelera la shell pregunta por sus hijos (`...\$R<token>\hijo`). Un hijo
+                // solo vale si, abierto por su ruta sin seguir enlaces, no es un reparse point (un junction dentro del `$R`
+                // llevaría el borrado fuera), está en el MISMO volumen que el `$R` aprobado y su ruta final cuelga de ese `$R`
+                // (un ancestro enlazado la sacaría de él). Antes bastaba con que el texto de la ruta empezase por el `$R`.
+                if PathKey::new(Path::new(path)) != PathKey::new(data_path) {
+                    let h = sys::open_for_query(Path::new(path)).map_err(VetoKind::OpenFailed)?;
+                    let m = sys::meta(&h).map_err(VetoKind::OpenFailed)?;
+                    if m.is_reparse() || m.identity.volume_serial != data.volume_serial {
+                        return Err(VetoKind::IdentityMismatch);
+                    }
+                    let under = sys::final_path(&h)
+                        .map_err(VetoKind::OpenFailed)
+                        .map(|f| PathKey::new(&f).is_same_or_under(&PathKey::new(data_path)))?;
+                    if !under {
+                        return Err(VetoKind::NotApproved);
+                    }
+                }
                 // El `$R` aprobado (no el hijo por el que se pregunta, si es el caso) y su `$I`.
                 same(data_path, data)?;
                 same(meta_path, meta)
@@ -716,6 +827,9 @@ impl SinkCore {
 
     /// `PreDeleteItem`: `true` = la shell puede seguir con este elemento; `false` = el receptor debe devolver `E_ABORT`.
     pub(crate) fn pre_delete(&self, item: OsString) -> bool {
+        // SOLO PRUEBAS: gancho de la etapa 2 (justo antes de comprobar el elemento), también con la shell real.
+        #[cfg(test)]
+        crate::engine::test_hooks::before_pre_delete(Path::new(&item));
         let guard = &self.guard;
         // Defensa: si el lote ya está cancelado, ningún elemento más se procesa aunque la shell siguiera.
         if self.state.tripped.load(Ordering::SeqCst) {
@@ -959,6 +1073,7 @@ impl Operation {
             sink_aborted: self.state.tripped.load(Ordering::SeqCst),
             vetoed,
             changed_bin: Vec::new(),
+            linked_bin: Vec::new(),
             unverifiable_bin: Vec::new(),
             replaced_bin: Vec::new(),
         }
@@ -1041,6 +1156,9 @@ pub enum PurgeStep<'a> {
     /// Elementos a los que `PreDeleteItem` puso veto (A-M4): entre la enumeración y el instante en que la shell iba a
     /// borrarlos, su `$R` o su `$I` dejaron de ser los capturados. No se purgaron.
     Vetoed(&'a [&'a BinItem]),
+    /// Elementos que NO se purgaron porque su `$R` lleva reparse points dentro o no se pudo comprobar entero (M2): se saltan
+    /// ANTES de entregar el trozo y el resto del lote sigue.
+    Linked(&'a [&'a BinItem]),
     /// Después de cada trozo: cada elemento con el `HRESULT` que notificó la shell (`None` = sin aviso).
     Done(&'a [(&'a BinItem, Option<i32>)]),
 }
@@ -1080,6 +1198,9 @@ fn purge_items_flags(
     let mut changed: Vec<&BinItem> = Vec::new();
     let mut unverifiable: Vec<&BinItem> = Vec::new();
     let mut found: Vec<(IShellItem, &BinItem)> = Vec::with_capacity(items.len());
+    // GM-m5: los `id` ya casados con la lista. Si la enumeración de la shell repitiera un elemento, se entregaría dos veces a la
+    // operación y el recuento de los que faltan por casar (`found + changed + unverifiable == by_id.len()`) se adelantaría.
+    let mut matched: std::collections::HashSet<OsString> = std::collections::HashSet::new();
     // SAFETY: COM está inicializado en este hilo; todas las interfaces y cadenas son propias de esta función y se
     // liberan con el RAII de `windows` o con `take_pwstr`.
     unsafe {
@@ -1096,6 +1217,7 @@ fn purge_items_flags(
             let Some(item) = arr[0].take() else { break };
             if let Some(id) = display(&item, SIGDN_DESKTOPABSOLUTEPARSING)
                 && let Some(approved) = by_id.get(&id).copied()
+                && first_match(&mut matched, &id)
             {
                 // M3: el elemento se identifica por `id` (un nombre), pero antes de tocarlo se comprueba que el `$R` y el
                 // `$I` son los mismos objetos que al enumerar.
@@ -1143,6 +1265,23 @@ fn purge_items_flags(
             // Cambiaron entre la enumeración y ahora: no se tocan (constan como "cambiados").
             out.changed_bin.extend(lost.iter().map(|i| i.id.clone()));
             obs(PurgeStep::Skipped(&lost));
+        }
+        // M2: un `$R` con reparse points dentro (junction, symlink, enlace de WSL, archivo de la nube) se EXCLUYE aquí, antes
+        // de entregar nada: el receptor vetaría el hijo-enlace en `PreDeleteItem` (GM-m5) y un veto corta el lote entero, de
+        // modo que "vaciar" se detendría en ese elemento cada vez. Excluido así, solo él se queda y el resto se purga. El
+        // veto del receptor sigue como última defensa por si el enlace aparece después de esta comprobación.
+        let mut linked: Vec<&BinItem> = Vec::new();
+        staged.retain(|(_, bi, _)| {
+            if bin_item_has_links(bi) {
+                linked.push(*bi);
+                false
+            } else {
+                true
+            }
+        });
+        if !linked.is_empty() {
+            out.linked_bin.extend(linked.iter().map(|i| i.id.clone()));
+            obs(PurgeStep::Linked(&linked));
         }
         if staged.is_empty() {
             continue;
@@ -1235,6 +1374,65 @@ fn purge_items_flags(
         }
     }
     Ok(out)
+}
+
+/// `true` la PRIMERA vez que se ve un `id` (GM-m5): los repetidos de la enumeración de la shell no se vuelven a casar.
+fn first_match(seen: &mut std::collections::HashSet<OsString>, id: &OsString) -> bool {
+    seen.insert(id.clone())
+}
+
+/// Profundidad máxima del recorrido de [`bin_item_has_links`]: más allá no se comprueba y se trata como "con enlaces".
+const MAX_LINK_SCAN_DEPTH: usize = 512;
+
+/// M2: ¿lleva el `$R` de un elemento de la Papelera algún reparse point dentro (junction, symlink, enlace de WSL, archivo de la
+/// nube) o no se pudo comprobar entero? Recorre el `$R` por handles relativos (sin entrar en ningún reparse point). FALLA
+/// CERRADO: cualquier error al abrir o listar, una identidad que no es la capturada o una profundidad excesiva cuentan como
+/// "con enlaces" y el elemento no se purga. Un `$R` archivo está limpio salvo que él mismo sea un reparse point.
+fn bin_item_has_links(item: &BinItem) -> bool {
+    fn walk(dir: &sys::Handle, volume: u64, depth: usize) -> bool {
+        if depth > MAX_LINK_SCAN_DEPTH {
+            return true;
+        }
+        let Ok(entries) = sys::list_dir(dir) else {
+            return true;
+        };
+        for e in entries {
+            if e.is_reparse() {
+                return true;
+            }
+            if e.is_dir() {
+                let Ok(child) = sys::open_child_dir_for_listing(dir, &e.name) else {
+                    return true;
+                };
+                let same = sys::meta(&child).is_ok_and(|m| {
+                    m.identity.file_id == e.file_id
+                        && m.identity.volume_serial == volume
+                        && !m.is_reparse()
+                });
+                if !same || walk(&child, volume, depth + 1) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+    let data = Path::new(&item.id);
+    let Ok(h) = sys::open_dir_for_listing(data) else {
+        return true;
+    };
+    let Ok(m) = sys::meta(&h) else {
+        return true;
+    };
+    if m.is_reparse() || item.data_id.is_none_or(|want| want != m.identity) {
+        return true;
+    }
+    m.is_dir && walk(&h, m.identity.volume_serial, 0)
+}
+
+/// Separa los elementos sin enlaces dentro (se purgan) de los que los llevan o no se pudieron comprobar (M2).
+#[cfg(test)]
+pub(crate) fn partition_linked<'a>(items: &[&'a BinItem]) -> (Vec<&'a BinItem>, Vec<&'a BinItem>) {
+    items.iter().copied().partition(|i| !bin_item_has_links(i))
 }
 
 /// Elementos por trozo al purgar (y por vuelta de la cancelación).
@@ -2721,6 +2919,86 @@ mod tests {
         );
     }
 
+    /// GM-m5: un hijo de un `$R` carpeta solo pasa si, abierto por su ruta, no es un reparse point, está en el mismo volumen y
+    /// su ruta final cuelga del `$R` aprobado. Un junction DENTRO del `$R` (o un ancestro enlazado que saque la ruta de él)
+    /// llevaría el borrado de la shell fuera de lo aprobado: se veta. Sin sistema de archivos de otro volumen disponible, el
+    /// criterio del volumen se cubre con el de la ruta final.
+    #[test]
+    fn un_hijo_de_un_r_carpeta_con_un_enlace_se_veta() {
+        let mut sb = Sandbox::new();
+        sb.write("fuera/secreto.txt", 10);
+        let dir_item = {
+            let it = synthetic_bin_item(&sb, "DDDD07", b"x");
+            std::fs::remove_file(PathBuf::from(&it.id)).unwrap();
+            std::fs::create_dir_all(PathBuf::from(&it.id).join("sub")).unwrap();
+            std::fs::write(PathBuf::from(&it.id).join("sub/hijo.txt"), b"h").unwrap();
+            BinItem {
+                data_id: identity_at(Path::new(&it.id)),
+                ..it
+            }
+        };
+        let r = PathBuf::from(&dir_item.id);
+        // Control: un hijo normal, y el propio directorio `sub`, pasan.
+        let core = purge_core(&[&dir_item]);
+        assert!(core.pre_delete(r.join("sub/hijo.txt").into_os_string()));
+        assert!(core.pre_delete(r.join("sub").into_os_string()));
+        // Un junction DENTRO del `$R` que apunta fuera: el propio enlace no vale.
+        let rel = "bin/S-synthetic/$RDDDD07.txt/enlace";
+        sb.junction(rel, "fuera");
+        let core = purge_core(&[&dir_item]);
+        assert!(!core.pre_delete(r.join("enlace").into_os_string()));
+        assert_eq!(
+            core.state.vetoes.lock().unwrap()[0].kind,
+            VetoKind::IdentityMismatch
+        );
+        // Un hijo que se alcanza A TRAVÉS del junction: su ruta final queda fuera del `$R`.
+        let core = purge_core(&[&dir_item]);
+        assert!(!core.pre_delete(r.join("enlace/secreto.txt").into_os_string()));
+        assert_eq!(
+            core.state.vetoes.lock().unwrap()[0].kind,
+            VetoKind::NotApproved
+        );
+        // Un hijo que no existe: no se puede abrir, se veta.
+        let core = purge_core(&[&dir_item]);
+        assert!(!core.pre_delete(r.join("sub/no-esta.txt").into_os_string()));
+        assert!(matches!(
+            core.state.vetoes.lock().unwrap()[0].kind,
+            VetoKind::OpenFailed(_)
+        ));
+        sb.remove_junction(rel);
+    }
+
+    /// GM-m5: la enumeración de la shell puede repetir un elemento; solo se casa la primera vez.
+    #[test]
+    fn un_elemento_repetido_en_la_enumeracion_solo_se_casa_una_vez() {
+        let mut seen = std::collections::HashSet::new();
+        let a = OsString::from("a");
+        let b = OsString::from("b");
+        assert!(first_match(&mut seen, &a));
+        assert!(!first_match(&mut seen, &a));
+        assert!(first_match(&mut seen, &b));
+        assert!(!first_match(&mut seen, &b));
+        assert!(!first_match(&mut seen, &a));
+    }
+
+    /// GM-S1: un elemento de la Papelera con los metadatos corruptos se salta y NO aborta la lista: los de antes y los de
+    /// después se conservan.
+    #[test]
+    fn un_elemento_con_el_i_corrupto_se_salta_sin_abortar_la_lista() {
+        let sb = Sandbox::new();
+        let a = synthetic_bin_item(&sb, "AAAA01", b"a");
+        let c = synthetic_bin_item(&sb, "CCCC01", b"c");
+        let corrupto: Result<BinItem> = Err(ShellError {
+            hresult: 0x8000_4005u32 as i32,
+            detail: "metadatos corruptos".into(),
+        });
+        let mut out = Vec::new();
+        assert!(push_readable(&mut out, Ok(a.clone())));
+        assert!(!push_readable(&mut out, corrupto));
+        assert!(push_readable(&mut out, Ok(c.clone())));
+        assert_eq!(out, vec![a, c]);
+    }
+
     /// A-M4 (sin COM): la guarda de un `$R` solo se abre si es el objeto capturado y no está ya pendiente de borrar; y demuestra
     /// el borrado solo cuando lo está. `replaced_after` separa lo que la shell dio por purgado de lo que de verdad lo fue.
     #[test]
@@ -2824,6 +3102,81 @@ mod tests {
     fn send_item(sb: &Sandbox, rel: &str, size: usize) -> SendItem {
         sb.write(rel, size);
         SendItem::capture(&sb.long(rel))
+    }
+
+    /// GM-M5 (sin sistema de archivos): dos nombres que solo difieren en mayúsculas (posible en un directorio sensible a ellas)
+    /// tienen la MISMA `PathKey`. La guarda busca primero el nombre EXACTO, así que cada uno recibe su propia identidad; con
+    /// la búsqueda por clave, el segundo habría heredado la del primero. Un nombre que no coincide con ninguno exacto solo se
+    /// resuelve por clave si es inequívoco.
+    #[test]
+    fn la_guarda_distingue_dos_nombres_que_solo_difieren_en_mayusculas() {
+        let id = |n: u128| FileIdentity {
+            volume_serial: 9,
+            file_id: n,
+        };
+        let item = |p: &str, n: u128| SendItem {
+            path: PathBuf::from(p),
+            identity: id(n),
+            size_guard: None,
+            watch: None,
+        };
+        let g = Guard::new(&[item(r"C:\x\a.bin", 1), item(r"C:\x\A.bin", 2)]);
+        assert_eq!(
+            PathKey::new(Path::new(r"C:\x\a.bin")),
+            PathKey::new(Path::new(r"C:\x\A.bin"))
+        );
+        let want = |p: &str| -> Option<FileIdentity> {
+            match g.find(&OsString::from(p)) {
+                Some((_, Approved::Object { identity, .. })) => Some(*identity),
+                _ => None,
+            }
+        };
+        assert_eq!(want(r"C:\x\a.bin"), Some(id(1)));
+        assert_eq!(want(r"C:\x\A.bin"), Some(id(2)));
+        // Ni uno ni otro exacto (`A.BIN`): con dos candidatos por clave no se adivina (se vetaría como no aprobado).
+        assert_eq!(want(r"C:\x\A.BIN"), None);
+        // Con un solo candidato la clave sí resuelve (la shell puede dar otras mayúsculas o la forma `c:`).
+        let solo = Guard::new(&[item(r"C:\x\a.bin", 1)]);
+        assert!(matches!(
+            solo.find(&OsString::from(r"c:\X\A.BIN")),
+            Some((_, Approved::Object { identity, .. })) if *identity == id(1)
+        ));
+    }
+
+    /// GM-M6: un elemento reciclado en un volumen montado en una CARPETA se reconoce como "dentro de una Papelera" (su
+    /// `$Recycle.Bin` cuelga de la raíz de ese volumen, no de la de una letra). Prueba pura sobre rutas con la raíz inyectada.
+    #[test]
+    fn la_papelera_de_un_volumen_montado_en_una_carpeta_se_reconoce() {
+        let mount = Path::new(r"C:\montajes\datos\");
+        let bin = r"C:\montajes\datos\$Recycle.Bin\<sid>\$R123.txt";
+        assert!(is_recycle_bin_path_on(Path::new(bin), Some(mount)));
+        assert!(is_recycle_bin_path_on(
+            Path::new(r"C:\montajes\datos\$Recycle.Bin"),
+            Some(mount)
+        ));
+        // Sin conocer la raíz del volumen, solo valen las unidades con letra (el comportamiento anterior).
+        assert!(!is_recycle_bin_path_on(Path::new(bin), None));
+        // Solo en la raíz del volumen: una subcarpeta con ese nombre no es una Papelera.
+        assert!(!is_recycle_bin_path_on(
+            Path::new(r"C:\montajes\datos\sub\$Recycle.Bin\x"),
+            Some(mount)
+        ));
+        // Otra raíz de montaje no se contagia.
+        assert!(!is_recycle_bin_path_on(
+            Path::new(r"C:\montajes\otro\$Recycle.Bin\x"),
+            Some(mount)
+        ));
+        // Las unidades con letra siguen igual, con o sin raíz conocida.
+        for root in [None, Some(Path::new(r"C:\"))] {
+            assert!(is_recycle_bin_path_on(
+                Path::new(r"C:\$Recycle.Bin\S-1-5\$Rabc"),
+                root
+            ));
+            assert!(!is_recycle_bin_path_on(
+                Path::new(r"C:\Users\<usuario>\a.txt"),
+                root
+            ));
+        }
     }
 
     /// H3 (sin COM): la comprobación de `PreDeleteItem` por ruta. Misma identidad pasa; otra identidad, un archivo que ya no
@@ -3410,6 +3763,7 @@ mod tests {
                 PurgeStep::Skipped(_) => "skipped".to_string(),
                 PurgeStep::Unverifiable(_) => "unverifiable".to_string(),
                 PurgeStep::Vetoed(i) => format!("vetoed {}", i.len()),
+                PurgeStep::Linked(i) => format!("linked {}", i.len()),
                 PurgeStep::Replaced(_) => "replaced".to_string(),
                 PurgeStep::Done(d) => format!("done {}", d.len()),
             };

@@ -493,6 +493,16 @@ sum-bin-unverifiable =
         [one] { $count } Recycle Bin item is on a drive whose file system cannot be verified (FAT or exFAT) and was not touched.
        *[other] { $count } Recycle Bin items are on a drive whose file system cannot be verified (FAT or exFAT) and were not touched.
     }
+sum-bin-with-links =
+    { $n ->
+        [one] { $count } Recycle Bin item contains links (or its contents could not be checked) and was not emptied: it was left where it was.
+       *[other] { $count } Recycle Bin items contain links (or their contents could not be checked) and were not emptied: they were left where they were.
+    }
+sum-bin-unlisted =
+    { $n ->
+        [one] { $count } Recycle Bin item has damaged data, could not be read and was not included when emptying.
+       *[other] { $count } Recycle Bin items have damaged data, could not be read and were not included when emptying.
+    }
 sum-cancelled = You cancelled the cleanup: what was already done stays done.
 sum-diverge = "Deleted permanently" and the measured change in free space differ: this can be because of hard links, files another program had open, writes by other programs, or changes made by Windows itself.
 

@@ -170,6 +170,8 @@ pub struct LogWriter {
     truncated: AtomicBool,
     /// Tope de bytes (las pruebas lo bajan).
     max_bytes: AtomicU64,
+    /// Tope de líneas (solo las pruebas lo bajan).
+    max_lines: AtomicU64,
     /// El primer error de escritura o de volcado marca el registro como fallido para siempre.
     failed: AtomicBool,
     first_error: Mutex<Option<String>>,
@@ -280,6 +282,7 @@ impl LogWriter {
             bytes: AtomicU64::new(0),
             truncated: AtomicBool::new(false),
             max_bytes: AtomicU64::new(MAX_BYTES),
+            max_lines: AtomicU64::new(MAX_LINES),
             failed: AtomicBool::new(false),
             first_error: Mutex::new(None),
             cancel_on_error: Mutex::new(None),
@@ -467,18 +470,33 @@ impl LogWriter {
 
     /// Cuenta una línea y dice si el registro ya pasó su tope (líneas o bytes): en ese caso deja UNA marca de truncado y ya
     /// no se escribe más. Lo comparten las entradas y las notas `rejected`, para que ninguna se salte el tope (R4).
+    ///
+    /// GM-S1: se cuenta y se compara DENTRO del cerrojo del escritor (antes, el contador y la comparación iban fuera: varios
+    /// hilos podían leer el mismo valor y pasarse del tope) y con `>=`: con `n > MAX` se escribía una línea de más (la
+    /// número `MAX + 1`). El cerrojo se suelta antes de que quien llama escriba su línea; el número ya está reservado.
     fn over_cap(&self) -> Option<u64> {
+        let mut g = self.out.lock().unwrap_or_else(|e| e.into_inner());
         let n = self.lines.fetch_add(1, Ordering::Relaxed);
-        if n > MAX_LINES
+        if n >= self.max_lines.load(Ordering::Relaxed)
             || self.bytes.load(Ordering::Relaxed) > self.max_bytes.load(Ordering::Relaxed)
         {
             if !self.truncated.swap(true, Ordering::Relaxed) {
-                let _ = self.raw("{\"t\":\"truncated\"}");
-                self.flush();
+                // La marca se escribe con el cerrojo que ya tenemos (`raw` lo volvería a pedir).
+                let line = "{\"t\":\"truncated\"}";
+                let r = writeln!(g, "{line}").and_then(|()| g.flush());
+                self.bytes
+                    .fetch_add(line.len() as u64 + 1, Ordering::Relaxed);
+                let _ = self.checked(r);
             }
             return None;
         }
         Some(n)
+    }
+
+    /// SOLO PARA PRUEBAS: baja el tope de líneas.
+    #[cfg(test)]
+    pub(crate) fn set_max_lines_for_test(&self, n: u64) {
+        self.max_lines.store(n, Ordering::Relaxed);
     }
 
     /// Una nota de algo que NO llegó al plan (`rejected`), con el mismo tope y el mismo truncado que las entradas. No cuenta
@@ -1262,6 +1280,33 @@ mod tests {
                 path.exists(),
                 "{i}: no se borra un registro con operaciones"
             );
+        }
+    }
+
+    /// GM-S1: el tope de líneas es EXACTO. Con el tope en `N`, constan `N` entradas y una sola marca de truncado: antes se
+    /// escribía una de más (`n > MAX`) y, con varios hilos, la cuenta y la comparación fuera del cerrojo dejaban pasar más.
+    #[test]
+    fn el_tope_de_lineas_es_exacto_tambien_con_varios_hilos() {
+        for threads in [1usize, 8] {
+            let sb = Sandbox::new();
+            let dir = sb.mkdir("Tesela");
+            let log = Arc::new(LogWriter::create(&dir, false).unwrap());
+            log.set_max_lines_for_test(25);
+            std::thread::scope(|s| {
+                for t in 0..threads {
+                    let log = log.clone();
+                    s.spawn(move || {
+                        for i in 0..200 / threads {
+                            log.write_event(&event(t * 1_000 + i, 5));
+                        }
+                    });
+                }
+            });
+            log.flush();
+            let text = fs::read_to_string(log.path()).unwrap();
+            assert!(log.truncated(), "{threads}");
+            assert_eq!(text.matches("\"t\":\"entry\"").count(), 25, "{threads}");
+            assert_eq!(text.matches("\"truncated\"").count(), 1, "{threads}");
         }
     }
 

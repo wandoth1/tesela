@@ -21,7 +21,7 @@ use crate::sys::{self, DirEntry, Expect, FileIdentity, Handle, Win32};
 use crate::volume;
 use crossbeam_deque::{Injector, Steal, Stealer, Worker};
 use std::ffi::OsString;
-use std::os::windows::ffi::OsStringExt;
+use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::panic::AssertUnwindSafe;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -78,6 +78,14 @@ pub struct Stats {
     /// huella aunque los hilos lo recorran en otro orden; quitar un hijo y crear otro del mismo tamaño la cambia (otro `FileId`).
     pub fp_sum: AtomicU64,
     pub fp_xor: AtomicU64,
+    /// Longitud (unidades UTF-16) de la ruta más larga de lo que hay dentro (GM-M3): la
+    /// shell no admite rutas de 260 o más y una carpeta con un descendiente así no se puede mover a la Papelera entera.
+    pub max_path: AtomicU64,
+    /// Bytes en disco y tamaño lógico de los reparse points de dentro (GM-B1): la carpeta se mueve ENTERA y la shell cuenta
+    /// contra la capacidad también lo que no se recorre (archivos de la nube hidratados, p. ej.). No entran en `bytes` ni
+    /// `logical`, que son lo que liberaría borrar: el borrado salta los reparse points.
+    pub reparse_bytes: AtomicU64,
+    pub reparse_logical: AtomicU64,
 }
 
 impl Stats {
@@ -116,6 +124,9 @@ impl Stats {
             gone: Self::get(&self.gone),
             fp_sum: Self::get(&self.fp_sum),
             fp_xor: Self::get(&self.fp_xor),
+            max_path: Self::get(&self.max_path),
+            reparse_bytes: Self::get(&self.reparse_bytes),
+            reparse_logical: Self::get(&self.reparse_logical),
         }
     }
 }
@@ -178,9 +189,30 @@ pub struct StatsSnapshot {
     /// Huella del contenido (ver [`Stats::fp_sum`]).
     pub fp_sum: u64,
     pub fp_xor: u64,
+    /// Ruta más larga (unidades UTF-16) de lo que hay dentro (ver [`Stats::max_path`]).
+    pub max_path: u64,
+    /// Bytes en disco y tamaño lógico de los reparse points de dentro (ver [`Stats::reparse_bytes`]).
+    pub reparse_bytes: u64,
+    pub reparse_logical: u64,
 }
 
 impl StatsSnapshot {
+    /// Lo que se cuenta contra la capacidad de la Papelera (GM-M3, GM-B1): `bytes` (archivos de un solo enlace),
+    /// `shared_bytes` (archivos con varios enlaces) y `reparse_bytes` (reparse points de dentro) son conjuntos DISJUNTOS que la
+    /// shell cuenta todos, así que se SUMAN (el máximo de los dos primeros subestimaba una carpeta con las dos clases y los
+    /// reparse points no contaban nada). El tamaño lógico (también con los reparse points) se compara aparte porque un
+    /// archivo disperso o comprimido ocupa más lógicamente que en disco. El mayor manda.
+    ///
+    /// Reparse points de dentro: se cuenta su PROPIO tamaño tal como lo da el listado (un archivo de la nube hidratado ocupa
+    /// su tamaño; un junction, un symlink o un punto de montaje, prácticamente nada). Nunca se mide a dónde apuntan: mover la
+    /// carpeta mueve el enlace, no el destino, y no se entra en ellos.
+    pub fn recycle_charge(&self) -> u64 {
+        self.bytes
+            .saturating_add(self.shared_bytes)
+            .saturating_add(self.reparse_bytes)
+            .max(self.logical.saturating_add(self.reparse_logical))
+    }
+
     /// ¿Es COMPLETA una medida (modo `Measure`)? Solo si el recorrido vio TODO lo que había: ningún error al abrir o listar
     /// (en uso, sin permiso, otros: una subcarpeta que no se pudo listar deja su contenido sin contar), ninguna entrada que
     /// cambiara de identidad o de tipo durante el recorrido y ninguna que desapareciera entre el listado y la apertura. Una
@@ -215,6 +247,9 @@ impl StatsSnapshot {
         self.gone += o.gone;
         self.fp_sum = self.fp_sum.wrapping_add(o.fp_sum);
         self.fp_xor ^= o.fp_xor;
+        self.max_path = self.max_path.max(o.max_path);
+        self.reparse_bytes += o.reparse_bytes;
+        self.reparse_logical += o.reparse_logical;
     }
 }
 
@@ -419,6 +454,8 @@ struct DirNode {
     unit: Arc<Unit>,
     handle: Handle,
     path: PathBuf,
+    /// Longitud de `path` en unidades UTF-16 (para la ruta más larga de la medida: ver [`Stats::max_path`]).
+    path_len: usize,
     key: PathKey,
     parent: Option<Arc<DirNode>>,
     /// Tareas pendientes de este directorio, más 1 de guarda mientras se reparten sus hijos.
@@ -882,6 +919,7 @@ fn verify_root(
     Some(Arc::new(DirNode {
         unit: unit.clone(),
         handle: h,
+        path_len: final_path.as_os_str().encode_wide().count(),
         path: final_path,
         key,
         parent: None,
@@ -1067,6 +1105,11 @@ fn process_child(
     let child_path = join_name(&parent.path, name);
     #[cfg(test)]
     test_hooks::before_open(&child_path);
+    // GM-M3: la ruta más larga de lo que hay dentro (cualquier entrada, también la protegida o el reparse point: viajan con la
+    // carpeta). Se anota en todos los modos para que medir, simular y borrar cuenten lo mismo; lo usa la medida.
+    unit.stats
+        .max_path
+        .fetch_max((parent.path_len + 1 + name.len()) as u64, Ordering::Relaxed);
     let action = env.protection.child_action(&ckey);
     // Protegido: denegado (o un archivo que sería "solo descender", que no tiene sentido): se respeta.
     if action == ChildAction::Skip || (action == ChildAction::Descend && !entry.is_dir()) {
@@ -1093,6 +1136,10 @@ fn process_child(
     }
     if entry.is_reparse() {
         Stats::add(&unit.stats.reparse, 1);
+        // GM-B1: lo que ocupa NO se pierde: la carpeta se mueve entera y la shell lo cuenta (un archivo de la nube hidratado
+        // ocupa su tamaño). No entra en `bytes`/`logical` (lo que liberaría borrar: aquí se salta), sino en su propio contador.
+        Stats::add(&unit.stats.reparse_bytes, entry.alloc);
+        Stats::add(&unit.stats.reparse_logical, entry.logical);
         unit.stats.add_fp(
             fp_class(FP_REPARSE, entry.is_dir()),
             entry.file_id,
@@ -1167,6 +1214,7 @@ fn process_child(
         let node = Arc::new(DirNode {
             unit: unit.clone(),
             handle: h,
+            path_len: parent.path_len + 1 + name.len(),
             path: child_path,
             key: ckey,
             parent: Some(parent.clone()),
@@ -1372,6 +1420,14 @@ pub(crate) mod test_hooks {
         install_at(0, root, f)
     }
 
+    /// Instala un gancho que solo se ejecuta para rutas bajo `root`, justo antes de que el receptor de la shell las compruebe.
+    pub fn install_before_pre_delete(
+        root: PathBuf,
+        f: impl Fn(&Path) + Send + Sync + 'static,
+    ) -> HookGuard {
+        install_at(2, root, f)
+    }
+
     /// Instala un gancho que solo se ejecuta para rutas bajo `root`, justo antes de entregarlas a la shell.
     pub fn install_before_shell(
         root: PathBuf,
@@ -1420,6 +1476,12 @@ pub(crate) mod test_hooks {
 
     pub fn before_open(p: &Path) {
         run(0, p);
+    }
+
+    /// Etapa 2: justo ANTES de que el receptor de la shell compruebe un elemento (`PreDeleteItem`), ya con la operación en
+    /// marcha (A3-M1: la ventana entre la última comprobación del ejecutor y la del receptor).
+    pub fn before_pre_delete(p: &Path) {
+        run(2, p);
     }
 
     pub fn before_shell(p: &Path) {

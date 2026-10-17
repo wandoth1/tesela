@@ -368,7 +368,7 @@ impl Roots {
                     .map(|v| Exempt::new(v.path, v.zone)),
             );
         }
-        Protection::new(&pr)
+        Protection::new(&pr).with_mount_roots(&crate::volume::mounted_roots())
     }
 }
 

@@ -155,6 +155,9 @@ pub struct Plan {
     pub rejected: Vec<Rejected>,
     /// Hijos de carpetas expandidas que se omiten por estar protegidos: (entradas, bytes del listado).
     pub omitted_protected: (u64, u64),
+    /// Elementos de la Papelera que NO se listaron porque sus metadatos (`$I`) están ilegibles (m1): no se vacían y su tamaño no
+    /// entra en lo que se promete vaciar.
+    pub bin_unlisted: u64,
 }
 
 impl Plan {
@@ -264,12 +267,34 @@ pub fn default_threads() -> usize {
     (2 * cores).clamp(2, 8)
 }
 
-/// Margen de seguridad frente al tamaño máximo de la Papelera: por encima del 90 % no se considera que quepa (la shell
-/// compara con su propio criterio y, si no cabe, elimina SIN avisar: ver las pruebas de `recycle`).
-const BIN_MARGIN_PERCENT: u64 = 90;
+/// Margen de seguridad frente al tamaño máximo de la Papelera: por encima del 90 % no se considera que quepa. Es una
+/// HEURÍSTICA de reparto, no una garantía: la shell decide por su cuenta si algo cabe (con su propio criterio y a su hora) y,
+/// si no cabe, elimina SIN avisar; Tesela lo detecta después (`DeletedUnexpectedly`) y detiene el envío.
+const BIN_MARGIN_PERCENT: u128 = 90;
+
+/// Un elemento que por sí solo pasa del 10 % de la capacidad va solo en su operación.
+const BIN_BIG_PERCENT: u128 = 10;
+
+/// El tope de una operación: el 90 % de `max`, calculado de una vez y sin desbordar (GM-m6: `fit_decide` y `take_op` usan
+/// EXACTAMENTE esta cuenta; antes uno hacía `bytes * 100 > max * 90` y el otro `max / 10 * 9`).
+pub(crate) fn bin_cap(max: u64) -> u64 {
+    ((u128::from(max) * BIN_MARGIN_PERCENT) / 100) as u64
+}
+
+/// El umbral de "grande" (10 % de `max`), con la misma cuenta que [`bin_cap`].
+pub(crate) fn bin_big(max: u64) -> u64 {
+    ((u128::from(max) * BIN_BIG_PERCENT) / 100) as u64
+}
 
 /// La Papelera no admite rutas de 260 caracteres o más.
 const MAX_BIN_PATH: usize = 258;
+
+/// Longitud de una ruta en unidades UTF-16 (lo que cuenta Windows para `MAX_PATH`), no en bytes WTF-8 (GM-M3: un nombre con
+/// caracteres fuera del plano básico o acentos pesa distinto en bytes que en unidades).
+pub(crate) fn path_units(p: &Path) -> usize {
+    use std::os::windows::ffi::OsStrExt;
+    p.as_os_str().encode_wide().count()
+}
 
 impl Cleaner {
     pub fn new(roots: Roots) -> Cleaner {
@@ -364,6 +389,11 @@ impl Cleaner {
         self.shell.fit(path, bytes)
     }
 
+    /// Como [`Cleaner::fit`], con la longitud de la ruta más larga de lo que hay dentro del elemento (de su medida).
+    pub(crate) fn fit_deep(&self, path: &Path, bytes: u64, deepest: usize) -> Fit {
+        self.shell.fit_deep(path, bytes, deepest)
+    }
+
     /// Aprueba la cesta: captura identidades, re-valida la protección, mide y decide el encaje en la Papelera.
     pub fn approve(
         &self,
@@ -382,14 +412,17 @@ impl Cleaner {
                 Source::Path(p) => self.candidate_entry(p, &mut cands, &mut plan),
                 Source::ContentsOf(p) => self.candidates_of_contents(p, &mut cands, &mut plan),
                 Source::EmptyBin => {
-                    if let Ok(mut items) = crate::recycle::list_bin() {
+                    if let Ok((mut items, unlisted)) = crate::recycle::list_bin_counted() {
+                        plan.bin_unlisted = unlisted;
                         if let Some(f) = &self.bin_filter {
                             items.retain(|i| f(i));
                         }
                         // El tamaño tiene que ser el de la LISTA enumerada: con un filtro, la suma de lo que se listó; sin él,
                         // el total de toda la Papelera según la shell (o, si falla, lo que sepa quien llama).
                         let listed: u64 = items.iter().map(|i| i.size).sum();
-                        let hint = if self.bin_filter.is_some() {
+                        // m1: con elementos sin listar, el total de la shell los incluye y se prometería vaciar de más: manda la suma
+                        // de lo listado (puede quedarse corta: la shell no da el tamaño de las carpetas, pero nunca promete de más).
+                        let hint = if self.bin_filter.is_some() || unlisted > 0 {
                             listed
                         } else {
                             crate::recycle::bin_totals()
@@ -438,9 +471,9 @@ impl Cleaner {
                 });
                 continue;
             }
-            let size = est.bytes.max(est.logical).max(est.shared_bytes);
+            let size = est.recycle_charge();
             let fit = if dest == Destination::Recycle {
-                self.shell.fit(&c.canon, size)
+                self.shell.fit_deep(&c.canon, size, est.max_path as usize)
             } else {
                 Fit::Fits
             };
@@ -595,6 +628,38 @@ impl Cleaner {
         Some((m, canon, key))
     }
 
+    /// GM-B2: la cadena de ANCESTROS de `path` (tal como se escribió, componente a componente desde la raíz del volumen, con
+    /// aperturas relativas y sin ningún reparse point, salvo las carpetas de la nube: ver [`tolerated_ancestor`]) y el propio elemento abierto RELATIVO a ese padre verificado, con la
+    /// misma identidad que el handle ya abierto por ruta. `GetFinalPathNameByHandleW` resuelve EN SILENCIO los junctions de los
+    /// ancestros y sustituía la ruta pedida por la resuelta: el plan acababa actuando sobre otra carpeta que la que el usuario
+    /// marcó. Compararlo con `PathKey` no vale (en el CI `%TEMP%` es 8.3 y las dos formas de una misma ruta difieren), así
+    /// que se recorre la cadena real: los nombres 8.3 los resuelve el sistema de archivos al abrir.
+    fn check_ancestors(path: &Path, m: &sys::Meta) -> Result<(), RejectReason> {
+        let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+            // Una raíz de unidad no tiene ancestros (y la protección ya la deniega).
+            return Ok(());
+        };
+        let ph = match sys::open_chain_dir(parent, tolerated_ancestor) {
+            Ok(ph) => ph,
+            Err(sys::ChainError::Reparse { .. } | sys::ChainError::BadPath) => {
+                return Err(RejectReason::ReparseAncestor);
+            }
+            Err(sys::ChainError::Os(c)) => return Err(reason_of(c)),
+        };
+        let wide: Vec<u16> = std::os::windows::ffi::OsStrExt::encode_wide(name).collect();
+        let expect = if m.is_dir {
+            sys::Expect::Dir
+        } else {
+            sys::Expect::File
+        };
+        match sys::open_child_for_query(&ph, &wide, expect).and_then(|ch| sys::meta(&ch)) {
+            Ok(cm) if cm.identity == m.identity => Ok(()),
+            // Otro objeto: lo que se abrió por ruta no es lo que hay bajo el padre verificado (un ancestro cambió entre medias).
+            Ok(_) => Err(RejectReason::ReparseAncestor),
+            Err(c) => Err(reason_of(c)),
+        }
+    }
+
     fn candidates_of_contents(&self, folder: &Path, out: &mut Vec<Candidate>, plan: &mut Plan) {
         let h = match sys::open_dir_for_listing(folder) {
             Ok(h) => h,
@@ -609,6 +674,14 @@ impl Cleaner {
         let Some((m, canon, key)) = self.verify(&h, folder, plan) else {
             return;
         };
+        // GM-B2: los ancestros de la carpeta tal como se pidió no pueden ser enlaces (la ruta resuelta la sustituiría).
+        if let Err(reason) = Self::check_ancestors(folder, &m) {
+            plan.rejected.push(Rejected {
+                path: canon,
+                reason,
+            });
+            return;
+        }
         let verdict = self.protection.target_verdict(&key);
         if !m.is_dir || m.is_reparse() || verdict != Verdict::ContentsOnly {
             plan.rejected.push(Rejected {
@@ -633,15 +706,58 @@ impl Cleaner {
         };
         for e in entries {
             let child = canon.join(OsString::from_wide(&e.name));
-            if e.is_reparse() && !(sys::is_cloud_tag(e.reparse_tag) && !e.is_dir()) {
+            if e.is_reparse() && (e.is_dir() || !sys::is_cloud_tag(e.reparse_tag)) {
                 plan.rejected.push(Rejected {
                     path: child,
                     reason: RejectReason::Reparse,
                 });
                 continue;
             }
-            self.candidate_entry(&child, out, plan);
+            self.candidate_child(&h, m.identity.volume_serial, &child, &e, out, plan);
         }
+    }
+
+    /// GM-B2: un hijo de una carpeta ya abierta (`dir`), abierto RELATIVO a ese handle y con el `FileId` y el volumen del
+    /// listado. Antes se volvía a abrir por ruta tras listar: entre las dos cosas se podía cambiar el hijo (o un ancestro) y
+    /// la aprobación capturaba la identidad del objeto equivocado.
+    fn candidate_child(
+        &self,
+        dir: &sys::Handle,
+        volume_serial: u64,
+        child: &Path,
+        e: &sys::DirEntry,
+        out: &mut Vec<Candidate>,
+        plan: &mut Plan,
+    ) {
+        #[cfg(test)]
+        crate::engine::test_hooks::before_open(child);
+        let expect = if e.is_dir() {
+            sys::Expect::Dir
+        } else {
+            sys::Expect::File
+        };
+        let h = match sys::open_child_for_query(dir, &e.name, expect) {
+            Ok(h) => h,
+            Err(c) => {
+                plan.rejected.push(Rejected {
+                    path: child.to_path_buf(),
+                    reason: reason_of(c),
+                });
+                return;
+            }
+        };
+        let same = sys::meta(&h).is_ok_and(|m| {
+            m.identity.file_id == e.file_id && m.identity.volume_serial == volume_serial
+        });
+        if !same {
+            // Cambió entre el listado y la apertura: no se aprueba lo que no es lo listado.
+            plan.rejected.push(Rejected {
+                path: child.to_path_buf(),
+                reason: RejectReason::Other(0),
+            });
+            return;
+        }
+        self.candidate_from(&h, child, false, out, plan);
     }
 
     /// Un archivo o una carpeta del usuario ("Tu archivo"): captura su identidad y, si la carpeta contiene algo
@@ -657,9 +773,29 @@ impl Cleaner {
                 return;
             }
         };
-        let Some((m, canon, key)) = self.verify(&h, path, plan) else {
+        self.candidate_from(&h, path, true, out, plan);
+    }
+
+    /// El resto de [`Cleaner::candidate_entry`] sobre un handle ya abierto. `check_chain`: comprobar los ancestros de `path`
+    /// (GM-B2); un hijo abierto relativo a un directorio ya verificado no lo necesita.
+    fn candidate_from(
+        &self,
+        h: &sys::Handle,
+        path: &Path,
+        check_chain: bool,
+        out: &mut Vec<Candidate>,
+        plan: &mut Plan,
+    ) {
+        let Some((m, canon, key)) = self.verify(h, path, plan) else {
             return;
         };
+        if check_chain && let Err(reason) = Self::check_ancestors(path, &m) {
+            plan.rejected.push(Rejected {
+                path: canon,
+                reason,
+            });
+            return;
+        }
         let cloud_file = !m.is_dir && m.is_reparse() && sys::is_cloud_tag(m.reparse_tag);
         if m.is_reparse() && !cloud_file {
             plan.rejected.push(Rejected {
@@ -712,7 +848,8 @@ impl Cleaner {
         });
     }
 
-    /// Una carpeta que contiene algo protegido: sus hijos permitidos pasan a ser elementos y lo protegido se omite.
+    /// Una carpeta que contiene algo protegido: sus hijos permitidos pasan a ser elementos y lo protegido se omite. Los hijos
+    /// se abren RELATIVOS a `dir` y con la identidad del listado (GM-B2).
     fn expand_dir(
         &self,
         dir: &sys::Handle,
@@ -773,18 +910,27 @@ impl Cleaner {
                     plan.omitted_protected.1 += e.alloc;
                 }
                 ChildAction::Delete => {
-                    if e.is_reparse() && !(sys::is_cloud_tag(e.reparse_tag) && !e.is_dir()) {
+                    if e.is_reparse() && (e.is_dir() || !sys::is_cloud_tag(e.reparse_tag)) {
                         plan.rejected.push(Rejected {
                             path: child,
                             reason: RejectReason::Reparse,
                         });
                     } else {
-                        self.candidate_entry(&child, out, plan);
+                        self.candidate_child(dir, volume_serial, &child, &e, out, plan);
                     }
                 }
             }
         }
     }
+}
+
+/// M1: ¿se tolera este ancestro que es un reparse point al aprobar un elemento de la cesta? Solo las carpetas de
+/// sincronización de la nube (OneDrive y similares: etiqueta `IO_REPARSE_TAG_CLOUD*`): son placeholders que no redirigen la
+/// resolución de nombres, y rechazarlas dejaba sin llegar a `cloud_file` ni a `confirm-cloud` todo archivo suelto bajo la
+/// nube (regresión de la primera versión de GM-B2). Junction, symlink, punto de montaje, enlace de WSL y cualquier otra
+/// etiqueta se siguen rechazando. La identidad de cada salto se verifica igualmente.
+pub(crate) fn tolerated_ancestor(m: &sys::Meta) -> bool {
+    m.is_dir && sys::is_cloud_tag(m.reparse_tag)
 }
 
 struct Candidate {
@@ -843,7 +989,7 @@ pub(crate) fn fit_decide(bytes: u64, f: &BinFacts) -> Fit {
     if f.policy_no_recycle {
         return Fit::Unfit(UnfitReason::Policy);
     }
-    let too_big = |max: u64| (bytes as u128) * 100 > (max as u128) * BIN_MARGIN_PERCENT as u128;
+    let too_big = |max: u64| bytes > bin_cap(max);
     match f.limit {
         BinLimit::NoBin => Fit::Unfit(UnfitReason::NoBin),
         BinLimit::NukeOnDelete => Fit::Unfit(UnfitReason::NukeOnDelete),
@@ -859,6 +1005,12 @@ pub(crate) fn fit_decide(bytes: u64, f: &BinFacts) -> Fit {
 /// ¿Cabe un elemento de `bytes` con ruta `path` en la Papelera de su volumen? Cualquier error al averiguarlo (raíz del
 /// volumen, límite, tamaño del volumen, directivas) da `Unfit`: nunca falla abierto.
 pub(crate) fn fit_for(path: &Path, bytes: u64) -> Fit {
+    fit_for_deep(path, bytes, 0)
+}
+
+/// Como [`fit_for`], con la longitud (unidades UTF-16) de la ruta más larga de lo que hay DENTRO (`deepest`, de la medida;
+/// 0 si no se sabe): la shell no admite rutas de 260 o más y un descendiente así deja la carpeta sin Papelera (GM-M3).
+pub(crate) fn fit_for_deep(path: &Path, bytes: u64, deepest: usize) -> Fit {
     // `GetVolumePathNameW` resuelve una ruta rara o relativa contra el directorio actual: solo se pregunta por rutas
     // absolutas de unidades locales (las que ya pasaron la comprobación de `is_local_path`).
     let root = volume::is_local_path(path)
@@ -871,7 +1023,7 @@ pub(crate) fn fit_for(path: &Path, bytes: u64) -> Fit {
     fit_decide(
         bytes,
         &BinFacts {
-            path_len: path.as_os_str().len(),
+            path_len: path_units(path).max(deepest),
             volume_known: root.is_some(),
             policy_no_recycle: volume::recycle_policy_disabled(),
             limit,

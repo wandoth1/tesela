@@ -278,3 +278,92 @@ pub fn restrict_dll_search_to_system32() -> bool {
     // SAFETY: llamada de `kernel32` sin punteros; solo cambia la búsqueda de DLL del proceso.
     unsafe { SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32) != 0 }
 }
+
+/// Convierte un archivo en un reparse point de un tipo genérico (etiqueta de un tercero con GUID, sin ningún filtro que la
+/// atienda), con `logical` bytes lógicos DISPERSOS (no ocupan disco). Sirve para probar lo que ocupan los reparse points
+/// de dentro de una carpeta (GM-B1) sin depender de OneDrive ni de privilegios. `false` si el volumen no lo admite.
+pub fn make_reparse_file(path: &Path, logical: u64) -> bool {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::IO::DeviceIoControl;
+    use windows_sys::Win32::System::Ioctl::FSCTL_SET_REPARSE_POINT;
+    let f = fs::File::create(path).expect("crea el archivo");
+    // Disperso y con el tamaño lógico pedido ANTES de ponerle el reparse point (después ya no se abre con normalidad).
+    let mut returned = 0u32;
+    // SAFETY: handle de `f`, vivo; FSCTL_SET_SPARSE sin búfer; `returned` escribible; llamada síncrona.
+    let sparse = unsafe {
+        DeviceIoControl(
+            f.as_raw_handle() as _,
+            windows_sys::Win32::System::Ioctl::FSCTL_SET_SPARSE,
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut(),
+            0,
+            &mut returned,
+            std::ptr::null_mut(),
+        )
+    };
+    if sparse == 0 || f.set_len(logical).is_err() {
+        return false;
+    }
+    // REPARSE_GUID_DATA_BUFFER: etiqueta (u32), longitud de datos (u16), reservado (u16), GUID (16 bytes), datos.
+    let mut buf = Vec::new();
+    buf.extend_from_slice(&0x0000_0123u32.to_le_bytes());
+    buf.extend_from_slice(&0u16.to_le_bytes());
+    buf.extend_from_slice(&0u16.to_le_bytes());
+    buf.extend_from_slice(&[0x5A; 16]);
+    // SAFETY: handle de `f`, vivo y con acceso de escritura; `buf` vive durante la llamada y su longitud es la pasada; no hay
+    // búfer de salida; `returned` escribible; llamada síncrona.
+    let ok = unsafe {
+        DeviceIoControl(
+            f.as_raw_handle() as _,
+            FSCTL_SET_REPARSE_POINT,
+            buf.as_ptr().cast(),
+            buf.len() as u32,
+            std::ptr::null_mut(),
+            0,
+            &mut returned,
+            std::ptr::null_mut(),
+        )
+    };
+    ok != 0
+}
+
+/// Pone a un directorio VACÍO un reparse point de un tipo genérico (etiqueta de un tercero con GUID, que ningún filtro
+/// atiende) para probar cómo trata la cadena de ancestros un componente que es un reparse point que no es un junction ni
+/// un symlink. `false` si el volumen no lo admite.
+pub fn make_reparse_dir(path: &Path) -> bool {
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::IO::DeviceIoControl;
+    use windows_sys::Win32::System::Ioctl::FSCTL_SET_REPARSE_POINT;
+    fs::create_dir_all(path).expect("crea el directorio");
+    // `FILE_FLAG_BACKUP_SEMANTICS` (0x0200_0000) para abrir un directorio con escritura.
+    let Ok(f) = fs::OpenOptions::new()
+        .write(true)
+        .custom_flags(0x0200_0000)
+        .open(path)
+    else {
+        return false;
+    };
+    let mut buf = Vec::new();
+    buf.extend_from_slice(&0x0000_0123u32.to_le_bytes());
+    buf.extend_from_slice(&0u16.to_le_bytes());
+    buf.extend_from_slice(&0u16.to_le_bytes());
+    buf.extend_from_slice(&[0x5A; 16]);
+    let mut returned = 0u32;
+    // SAFETY: handle de `f`, vivo y con acceso de escritura; `buf` vive durante la llamada y su longitud es la pasada; no
+    // hay búfer de salida; `returned` escribible; llamada síncrona.
+    let ok = unsafe {
+        DeviceIoControl(
+            f.as_raw_handle() as _,
+            FSCTL_SET_REPARSE_POINT,
+            buf.as_ptr().cast(),
+            buf.len() as u32,
+            std::ptr::null_mut(),
+            0,
+            &mut returned,
+            std::ptr::null_mut(),
+        )
+    };
+    ok != 0
+}

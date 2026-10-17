@@ -14,6 +14,10 @@
 //!   vigila la entrega (devuelve `E_ABORT`): `PreDeleteItem` compara la identidad de lo que hay en la ruta con la aprobada
 //!   y veta el sustituto (M1); `PostDeleteItem` corta tras el primer borrado definitivo o la primera ruta sin verificar
 //!   (M2). Lo que queda del lote no se procesa y sigue en su sitio.
+//!   A3-M1: un DIRECTORIO lleva una vigilancia de cambios (`ReadDirectoryChangesW` sobre un segundo handle verificado)
+//!   abierta ANTES de su recorrido de medida y viva hasta su `PreDeleteItem`: si algo cambia dentro, o no se puede vigilar,
+//!   la medida no vale y no se envía ("cambió desde la confirmación"). A3-M2: la ocupación de la Papelera se lee antes y
+//!   después del recorrido y manda la mayor; es una heurística, no una garantía (la shell decide por su cuenta si cabe).
 //! * **Tres contadores**: "eliminado definitivamente" y "movido a la Papelera" son sumas de tamaños; "liberado ahora" es la
 //!   diferencia MEDIDA del espacio libre de cada volumen antes y después.
 //! * **Simulación** (`dry_run`): hace todo salvo lo destructivo y registra las identidades que habría tocado.
@@ -21,7 +25,7 @@
 use crate::engine::{self, Event, Mode, Outcome, RootStatus, StatsSnapshot, Unit, UnitSpec};
 use crate::log::LogWriter;
 use crate::paths::PathKey;
-use crate::plan::{Cleaner, Fit, Plan, PlanItem, fit_for};
+use crate::plan::{Cleaner, Fit, Plan, PlanItem, bin_big, bin_cap, fit_for, fit_for_deep};
 use crate::protect::Verdict;
 use crate::recycle::{self, BinItem, RecycleMode};
 use crate::rules::{CategoryId, Destination};
@@ -238,6 +242,12 @@ pub struct BinReport {
     /// Elementos que no se tocaron porque su sistema de archivos no da identidad (FAT, exFAT) y no se pueden verificar.
     /// No es que hayan cambiado (H6.9).
     pub unverifiable: u64,
+    /// Elementos que NO se purgaron porque su `$R` lleva reparse points dentro (junction, symlink, enlace de WSL, archivo de
+    /// la nube) o no se pudo comprobar entero (M2): se excluyen ANTES de entregarlos y no cortan el lote.
+    pub with_links: u64,
+    /// Elementos de la Papelera que no se listaron al confirmar porque sus metadatos (`$I`) están ilegibles: no se vacían y su
+    /// tamaño no cuenta en lo que se prometió (m1).
+    pub unlisted: u64,
     /// Tamaño aproximado de la Papelera al confirmar.
     pub bytes_hint: u64,
     /// La shell no pudo hacer la operación.
@@ -416,12 +426,10 @@ impl Cleaner {
             .iter()
             .filter(|i| i.destination == Destination::Recycle)
             .filter(|i| {
-                let size = i
-                    .estimate
-                    .bytes
-                    .max(i.estimate.logical)
-                    .max(i.estimate.shared_bytes);
-                self.fit(&i.path, size) != i.fit
+                // GM-M3: bytes + compartidos (conjuntos disjuntos) y el lógico; el mayor manda. Con la ruta más larga de lo
+                // que hay dentro, como al aprobar.
+                let size = i.estimate.recycle_charge();
+                self.fit_deep(&i.path, size, i.estimate.max_path as usize) != i.fit
             })
             .map(|i| i.id)
             .collect();
@@ -501,6 +509,18 @@ impl Cleaner {
         // 1. Vaciar la Papelera con la lista enumerada al confirmar.
         if let Some(bp) = plan.bin.as_ref().filter(|b| !b.items.is_empty()) {
             progress.set_phase(Phase::EmptyingBin);
+            // m1: lo que no se pudo listar consta en el registro (y en el informe, `BinReport::unlisted`).
+            if plan.bin_unlisted > 0
+                && let Some(l) = &opts.log
+            {
+                l.write_note(
+                    "bin-unlisted",
+                    &format!(
+                        "{} elementos de la Papelera con los metadatos ilegibles no se listaron y no se vacían",
+                        plan.bin_unlisted
+                    ),
+                );
+            }
             report.bin = Some(self.empty_bin(
                 &bp.items,
                 bp.bytes_hint,
@@ -509,6 +529,9 @@ impl Cleaner {
                 sink.as_deref(),
                 opts.log.as_deref(),
             ));
+            if let Some(b) = report.bin.as_mut() {
+                b.unlisted = plan.bin_unlisted;
+            }
             progress.items_done.fetch_add(1, Ordering::Relaxed);
         }
 
@@ -718,6 +741,13 @@ impl Cleaner {
                     }
                     l.flush();
                 }
+                recycle::PurgeStep::Linked(items) => {
+                    // M2: el `$R` lleva enlaces dentro (o no se pudo comprobar): no se entrega a la shell.
+                    for i in items {
+                        l.write_bin_item(&i.original_path(), &i.id, i.size, "linked");
+                    }
+                    l.flush();
+                }
                 recycle::PurgeStep::Vetoed(items) => {
                     // A-M4: la shell iba a borrar algo que ya no era lo capturado y el receptor lo vetó.
                     for i in items {
@@ -738,7 +768,7 @@ impl Cleaner {
                 }
             }
         };
-        match recycle::purge_items_observed(items, cancel, &mut observe) {
+        match self.shell.purge(items, cancel, &mut observe) {
             Ok(out) => {
                 let wanted: HashSet<&OsString> = items.iter().map(|i| &i.id).collect();
                 let purged: HashSet<&OsString> = out
@@ -759,6 +789,8 @@ impl Cleaner {
                 // que la shell los borrara (veto de `PreDeleteItem`, A-M4).
                 rep.changed = bin_changed(out.changed_bin.len(), &out.vetoed, &wanted);
                 rep.unverifiable = out.unverifiable_bin.len() as u64;
+                rep.with_links =
+                    out.linked_bin.iter().filter(|i| wanted.contains(i)).count() as u64;
                 // El `E_ABORT` que provoca el propio receptor al vetar no es un fallo de la shell.
                 rep.failed = out.error.is_some() && !out.sink_aborted;
             }
@@ -829,6 +861,30 @@ impl Cleaner {
                 l.flush();
             }
         };
+        // A3-M1: ¿cambió algo dentro de alguno de los directorios de la operación desde que se midió (lo vio su vigilancia)?
+        let watch_changed = |entries: &[(&PlanItem, Pending)]| {
+            entries
+                .iter()
+                .any(|(_, p)| p.watch.as_ref().is_some_and(|w| w.changed()))
+        };
+        // La operación no se entrega: sus elementos constan como "cambió desde la confirmación".
+        let reject_changed =
+            |entries: &[(&PlanItem, Pending)],
+             results: &mut HashMap<usize, (ItemStatus, StatsSnapshot)>| {
+                for (it, _) in entries {
+                    emit(it, None, 0, Outcome::Changed);
+                    results.insert(
+                        it.id,
+                        (
+                            ItemStatus::Root(RootStatus::Changed),
+                            StatsSnapshot {
+                                changed: 1,
+                                ..StatsSnapshot::default()
+                            },
+                        ),
+                    );
+                }
+            };
         let mut stopped = false;
         for chunk in items.chunks(RECYCLE_CHUNK) {
             if cancel.load(Ordering::Relaxed) {
@@ -870,10 +926,11 @@ impl Cleaner {
                             continue;
                         }
                         emit(it, Some(p.identity), p.links, Outcome::WouldRecycle);
-                        st.bytes = it.estimate.bytes;
+                        st.bytes = p.disk;
+                        st.logical = p.logical;
                         results.insert(it.id, (ItemStatus::WouldRecycle, st));
                     }
-                    Prepared::Ready(p) => slots.push(Some((it, p))),
+                    Prepared::Ready(p) => slots.push(Some((it, *p))),
                     Prepared::Rejected(status, o) => {
                         emit(it, None, 0, o);
                         results.insert(it.id, (status, st));
@@ -912,10 +969,12 @@ impl Cleaner {
                     // misma operación, lo que ya estaba medido podía crecer mientras se medían los demás y llegar a la shell
                     // con un tamaño que ya no era cierto (`PreDeleteItem` comprueba la identidad, no el tamaño). Solo, el
                     // directorio se mide y se entrega sin nada de por medio salvo la línea de intención del registro
-                    // (§3.7.13). H4: la ocupación de la Papelera (`bin_room`, de milisegundos y creciente con la Papelera) se
-                    // lee ANTES del recorrido, no después: así la ventana medida-entrega solo contiene la comparación pura
-                    // `take_op`. La ocupación puede tener, como mucho, la antigüedad del recorrido (del orden de 0,15 s) y la
-                    // cambian terceros mucho menos que el contenido de una carpeta.
+                    // (§3.7.13). A3-M2: la ocupación de la Papelera se lee ANTES del recorrido y OTRA VEZ después, y manda la
+                    // MAYOR de las dos (`BinRoom::worst`): con una sola lectura previa, la Papelera podía llenarse mientras
+                    // se medía (Astra: capacidad 100 000, vacía al empezar, 99 000 al acabar el recorrido, y una carpeta de
+                    // 4 000 bytes se enviaba con la lectura vieja). La segunda lectura son unos milisegundos y cae dentro de la
+                    // ventana, que es donde debe estar. La ocupación es una HEURÍSTICA, no una garantía: un tercero puede
+                    // cambiarla hasta que la shell actúe y la shell decide por su cuenta si el elemento cabe.
                     let entries: Vec<(&PlanItem, Pending)> = if first_is_dir {
                         queue.pop_front();
                         let Some((it, mut p)) = slots[first].take() else {
@@ -930,7 +989,11 @@ impl Cleaner {
                             results.insert(it.id, (status, st));
                             continue;
                         }
-                        // Con la medida recién hecha y la ocupación leída antes de medirla.
+                        // Con la medida recién hecha y la MAYOR de las dos ocupaciones: la de antes y la de después del recorrido.
+                        let room_after = vol
+                            .as_deref()
+                            .map_or(BinRoom::UNKNOWN, |r| shell.bin_room(r));
+                        let room = room.worst(room_after);
                         if let Take::NoRoom = take_op(&[p.size], room) {
                             // No hay sitio ahora: enviarlo haría que la shell lo elimine o expulse lo que ya hay en la
                             // Papelera. No se toca (el handle de guarda se suelta al salir de este bloque).
@@ -1009,9 +1072,10 @@ impl Cleaner {
                         }
                         // ...y se vuelve a comprobar el presupuesto con los tamaños y la ocupación de AHORA: lo que ya no
                         // cabe en la operación vuelve al principio de la cola (se medirá otra vez cuando le toque).
-                        let room_now = vol
-                            .as_deref()
-                            .map_or(BinRoom::UNKNOWN, |r| shell.bin_room(r));
+                        let room_now = room.worst(
+                            vol.as_deref()
+                                .map_or(BinRoom::UNKNOWN, |r| shell.bin_room(r)),
+                        );
                         let fresh_sizes: Vec<u64> = staged.iter().map(|s| s.2.size).collect();
                         let keep = match take_op(&fresh_sizes, room_now) {
                             Take::NoRoom => {
@@ -1045,6 +1109,8 @@ impl Cleaner {
                         .map(|(it, p)| recycle::SendItem {
                             path: p.path.clone(),
                             identity: p.identity,
+                            // A3-M1: un DIRECTORIO lleva la vigilancia de cambios abierta antes de medirlo.
+                            watch: p.watch.clone(),
                             size_guard: (!it.is_dir()).then(|| recycle::SizeGuard {
                                 handle: p.held.clone(),
                                 budget: p.size,
@@ -1054,6 +1120,14 @@ impl Cleaner {
                     #[cfg(test)]
                     for p in &paths {
                         crate::engine::test_hooks::before_shell(p);
+                    }
+                    // A3-M1 (S1 de la auditoría): también ANTES de escribir la línea de intención. Una carpeta que ya cambió no
+                    // deja un `recycle-begin` sin entrega; se vuelve a mirar justo después de escribirla (lo último antes de la
+                    // shell), porque la escritura tarda y cae dentro de la ventana.
+                    if watch_changed(&entries) {
+                        reject_changed(&entries, &mut results);
+                        drop(entries);
+                        continue;
                     }
                     // Antes de entregarlas a la shell se anota la INTENCIÓN (la lista de rutas del lote) y se vuelca: tras un
                     // cierre forzoso se sabe qué pudo moverse. Si no se puede dejar escrita, NO se entrega nada a la shell.
@@ -1070,6 +1144,14 @@ impl Cleaner {
                                 ),
                             );
                         }
+                        drop(entries);
+                        continue;
+                    }
+                    // A3-M1: lo último antes de la shell. Si algo cambió dentro del directorio desde que se midió (la vigilancia
+                    // lo vio), la medida no es cierta: no se entrega ("cambió desde la confirmación"). Un directorio va solo en
+                    // su operación; en la shell, `PreDeleteItem` vuelve a consultar la misma vigilancia (y, si pasa, la para).
+                    if watch_changed(&entries) {
+                        reject_changed(&entries, &mut results);
                         drop(entries);
                         continue;
                     }
@@ -1099,20 +1181,28 @@ impl Cleaner {
                             l.flush();
                         }
                     }
-                    let events: HashMap<PathKey, &recycle::DeleteEvent> = outcome
-                        .events
-                        .iter()
-                        .map(|e| (PathKey::new(Path::new(&e.item)), e))
-                        .collect();
-                    let vetoed: HashSet<PathKey> = outcome
-                        .vetoed
-                        .iter()
-                        .map(|v| PathKey::new(Path::new(v.id())))
-                        .collect();
+                    // GM-M5: cada evento y cada veto se asigna al elemento de la operación por su nombre EXACTO; la clave (que
+                    // pliega mayúsculas) solo si no hay ambigüedad. Con dos nombres que solo difieren en mayúsculas en un
+                    // directorio sensible a ellas, una tabla por clave los confundía y el segundo heredaba el resultado (o el
+                    // veto) del primero.
+                    let names: Vec<&std::ffi::OsStr> =
+                        entries.iter().map(|(_, p)| p.path.as_os_str()).collect();
+                    let mut event_of: Vec<Option<&recycle::DeleteEvent>> = vec![None; names.len()];
+                    for e in &outcome.events {
+                        if let Some(i) = crate::paths::owner_index(&names, &e.item) {
+                            event_of[i] = Some(e);
+                        }
+                    }
+                    let mut veto_of: Vec<bool> = vec![false; names.len()];
+                    for v in &outcome.vetoed {
+                        if let Some(i) = crate::paths::owner_index(&names, v.id()) {
+                            veto_of[i] = true;
+                        }
+                    }
                     // 3. Juzgar cada elemento por lo que notificó la shell (con el handle de guarda aún abierto).
-                    for (it, p) in &entries {
-                        let ev = events.get(&PathKey::new(&p.path)).copied();
-                        let (mut status, mut o) = if vetoed.contains(&PathKey::new(&p.path)) {
+                    for (idx, (it, p)) in entries.iter().enumerate() {
+                        let ev = event_of[idx];
+                        let (mut status, mut o) = if veto_of[idx] {
                             // `PreDeleteItem` vio otro objeto en la ruta aprobada y lo vetó: no se envió (sigue ahí, el
                             // sustituto) y consta como "cambió desde la confirmación".
                             (ItemStatus::Root(RootStatus::Changed), Outcome::Changed)
@@ -1145,7 +1235,8 @@ impl Cleaner {
                         let mut st = StatsSnapshot::default();
                         match status {
                             ItemStatus::Recycled => {
-                                st.bytes = it.estimate.bytes;
+                                st.bytes = p.disk;
+                                st.logical = p.logical;
                                 st.files = it.estimate.files;
                                 st.dirs = it.estimate.dirs;
                             }
@@ -1207,9 +1298,7 @@ impl Cleaner {
                         // directorio, que va solo) no había nada pendiente y las operaciones siguientes siguen.
                         let failure_only = outcome.vetoed.is_empty()
                             && outcome.events.iter().any(|e| !e.succeeded());
-                        let cancelled_pending = entries
-                            .iter()
-                            .any(|(_, p)| !events.contains_key(&PathKey::new(&p.path)));
+                        let cancelled_pending = event_of.iter().any(Option::is_none);
                         if !failure_only || cancelled_pending {
                             stopped = true;
                             report.recycle_stopped = true;
@@ -1242,8 +1331,8 @@ impl Cleaner {
                     path: it.path.clone(),
                     is_dir: it.is_dir(),
                     removed: true,
-                    bytes: it.estimate.bytes,
-                    logical: it.estimate.logical,
+                    bytes: stats.bytes,
+                    logical: stats.logical,
                     files: it.estimate.files,
                 }]
             } else {
@@ -1349,11 +1438,7 @@ impl Cleaner {
         // Lo que ocupa de verdad ahora frente a lo medido al aprobar. Un directorio NO se vuelve a medir aquí (un trozo son
         // hasta 32 elementos y entre este punto y su turno pasa tiempo): se mide JUSTO ANTES de entregarlo, solo en su
         // operación, en `fresh_size` (H6.2, A2-B1). Mientras tanto vale lo aprobado.
-        let estimate = it
-            .estimate
-            .bytes
-            .max(it.estimate.logical)
-            .max(it.estimate.shared_bytes);
+        let estimate = it.estimate.recycle_charge();
         // Un archivo: lo que ocupa de verdad ahora frente a lo medido al aprobar, el mayor manda (provisional: se vuelve a
         // medir por la guarda JUSTO ANTES de la operación, en `fresh_size`).
         let (size, last) = if m.is_dir {
@@ -1364,15 +1449,27 @@ impl Cleaner {
                 Some(m.alloc.max(m.logical)),
             )
         };
-        Prepared::Ready(Pending {
+        Prepared::Ready(Box::new(Pending {
             path: final_path,
             identity: m.identity,
             links: m.links,
             held: Arc::new(held),
             size,
             last,
+            // Lo que se informará si llega a la Papelera: lo aprobado hasta que `fresh_size` lo mida de nuevo (GM-m6).
+            disk: if m.is_dir || m.links > 1 {
+                it.estimate.bytes
+            } else {
+                m.alloc
+            },
+            logical: if m.is_dir {
+                it.estimate.logical
+            } else {
+                m.logical
+            },
             snapshot: None,
-        })
+            watch: None,
+        }))
     }
 
     /// R6 + A2-m1: ¿sigue el directorio igual que justo antes del envío? Tres estados:
@@ -1428,31 +1525,52 @@ impl Cleaner {
             let fresh = m.alloc.max(m.logical);
             // Si creció frente a lo APROBADO o frente a la última medida real (la de `prepare_recycle` y las posteriores),
             // no se envía: el reparto de la operación se decidió con un tamaño que ya no es cierto.
-            let approved = it
-                .estimate
-                .bytes
-                .max(it.estimate.logical)
-                .max(it.estimate.shared_bytes);
+            let approved = it.estimate.recycle_charge();
             if fresh > approved || p.last.is_some_and(|l| fresh > l) {
                 return changed(st);
             }
             p.size = fresh;
             p.last = Some(fresh);
+            // GM-m6: lo que se informa si llega a la Papelera es lo de AHORA (un archivo que encogió).
+            p.disk = if m.links > 1 { 0 } else { m.alloc };
+            p.logical = m.logical;
             return Ok(());
         }
+        // A3-M1: la vigilancia de cambios se abre ANTES del recorrido (lo que cambie antes no se vería) y vive hasta el
+        // `PreDeleteItem` de su operación: una carpeta puede crecer MIENTRAS se mide (el recorrido ya contó el primer archivo
+        // cuando este se agranda) y el recorrido no se entera. Segundo handle del directorio con identidad verificada; si
+        // no se puede abrir o arrancar, la carpeta NO se envía (falla cerrado).
+        let watch = match sys::DirWatch::start(&p.path, p.identity) {
+            Ok(w) => w,
+            Err(sys::WatchError::Changed) => return changed(st),
+            Err(sys::WatchError::Os(c)) => {
+                st.other_errors += 1;
+                return Err((ItemStatus::Root(RootStatus::Failed(c)), Outcome::Failed(c)));
+            }
+        };
         match self.remeasure(it, cancel) {
+            Remeasure::Now(_) if watch.changed() => changed(st),
             Remeasure::Now(fresh) => {
-                let size = fresh.bytes.max(fresh.logical).max(fresh.shared_bytes);
-                let grew = fresh.bytes > it.estimate.bytes
-                    || fresh.logical > it.estimate.logical
-                    || fresh.shared_bytes > it.estimate.shared_bytes
-                    || p.last.is_some_and(|l| size > l);
-                if grew {
+                // GM-B3: un directorio solo se envía con el MISMO contenido que se aprobó: huella (identidad, tamaños,
+                // enlaces y clase de cada entrada, independiente del orden) y recuentos idénticos, y sin MÁS protegidos,
+                // reparse points ni archivos de la nube. Antes solo se miraba que no hubiese crecido: si un archivo
+                // desaparecía y aparecía otro más pequeño, la carpeta se enviaba con contenido que nadie aprobó. Una carpeta
+                // cuyo contenido cambió en cualquier sentido (también si encogió) vuelve a la confirmación.
+                let est = &it.estimate;
+                let same = snap_of(&fresh) == snap_of(est)
+                    && fresh.reparse <= est.reparse
+                    && fresh.cloud <= est.cloud
+                    && fresh.protected <= est.protected;
+                let size = fresh.recycle_charge();
+                if !same || p.last.is_some_and(|l| size > l) {
                     return changed(st);
                 }
                 p.size = size;
                 p.last = Some(size);
+                p.disk = fresh.bytes;
+                p.logical = fresh.logical;
                 p.snapshot = Some(snap_of(&fresh));
+                p.watch = Some(Arc::new(watch));
                 Ok(())
             }
             Remeasure::Cancelled => Err((
@@ -1540,12 +1658,19 @@ struct Pending {
     /// La medida del directorio hecha justo antes de entregarlo a la shell (tamaño y número de entradas): lo que
     /// `dir_check` compara después si la shell dice "eliminado" sin dar elemento en la Papelera (R6).
     snapshot: Option<DirSnap>,
+    /// Lo que se informa si llega a la Papelera: bytes en disco (sin enlaces compartidos) y tamaño lógico de AHORA (GM-m6: un
+    /// archivo que encogió desde la aprobación no se cuenta con el tamaño aprobado).
+    disk: u64,
+    /// A3-M1: solo un DIRECTORIO. La vigilancia de cambios abierta ANTES del recorrido de medida y viva hasta el
+    /// `PreDeleteItem` de su operación (o hasta que se suelte el elemento): cualquier cambio dentro invalida la medida.
+    watch: Option<Arc<sys::DirWatch>>,
+    logical: u64,
 }
 
 /// Lo que se compara de un directorio antes y después: bytes en disco, tamaño lógico, archivos, directorios, lo compartido y
 /// la HUELLA del contenido (independiente del orden: identidad, tamaños y enlaces de cada entrada). Los totales solos no
 /// bastan: quitar un hijo y crear otro del mismo tamaño los deja iguales (A-M1).
-type DirSnap = (u64, u64, u64, u64, u64, u64, u64, u64);
+type DirSnap = (u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64);
 
 fn snap_of(s: &StatsSnapshot) -> DirSnap {
     (
@@ -1557,6 +1682,11 @@ fn snap_of(s: &StatsSnapshot) -> DirSnap {
         s.shared_bytes,
         s.fp_sum,
         s.fp_xor,
+        // La ruta más larga de dentro (GM-M3): renombrar algo a un nombre más largo cambia lo que cabe en la Papelera.
+        s.max_path,
+        // Lo que ocupan los reparse points de dentro (GM-B1).
+        s.reparse_bytes,
+        s.reparse_logical,
     )
 }
 
@@ -1574,6 +1704,19 @@ impl BinRoom {
         max: None,
         used: None,
     };
+
+    /// La peor de dos lecturas del mismo volumen (A3-M2): la MAYOR ocupación y la MENOR capacidad. Si falta cualquiera de los
+    /// datos en cualquiera de las dos lecturas, falta en el resultado y `take_op` falla cerrado (`NoRoom`).
+    pub fn worst(self, other: BinRoom) -> BinRoom {
+        let pick = |a: Option<u64>, b: Option<u64>, f: fn(u64, u64) -> u64| match (a, b) {
+            (Some(x), Some(y)) => Some(f(x, y)),
+            _ => None,
+        };
+        BinRoom {
+            max: pick(self.max, other.max, u64::min),
+            used: pick(self.used, other.used, u64::max),
+        }
+    }
 }
 
 /// Lo que el ejecutor necesita de la shell para enviar a la Papelera. La implementación real usa `IFileOperation`; las
@@ -1583,12 +1726,27 @@ pub(crate) trait RecycleShell: Send + Sync {
     /// Envía los elementos (ruta original + identidad aprobada) en UNA operación y dice qué notificó la shell de cada
     /// uno. El receptor de eventos veta lo que ya no es el objeto aprobado.
     fn recycle(&self, items: &[recycle::SendItem]) -> recycle::BatchOutcome;
+    /// Purga (borra definitivamente) los elementos de la Papelera enumerados al confirmar. Por defecto, la shell real; las
+    /// pruebas ponen una simulada para probar el reparto y lo que se excluye sin tocar la Papelera de nadie (M2).
+    fn purge(
+        &self,
+        items: &[recycle::BinItem],
+        cancel: &AtomicBool,
+        obs: &mut dyn FnMut(recycle::PurgeStep<'_>),
+    ) -> Result<recycle::BatchOutcome, recycle::ShellError> {
+        recycle::purge_items_observed(items, cancel, obs)
+    }
     /// Capacidad y ocupación de la Papelera del volumen cuya raíz es `root`.
     fn bin_room(&self, root: &Path) -> BinRoom;
     /// ¿Cabe un elemento de `bytes` con ruta `path` en la Papelera de su volumen? Se decide al aprobar y se vuelve a
     /// decidir al ejecutar (la real consulta el registro y las directivas; las pruebas con shell simulada no dependen del
     /// equipo).
     fn fit(&self, path: &Path, bytes: u64) -> Fit;
+    /// Como [`RecycleShell::fit`], sabiendo cuánto mide la ruta más larga de lo que hay dentro del elemento (unidades UTF-16;
+    /// de la medida). Por defecto lo ignora (las shells simuladas no dependen de la longitud de las rutas).
+    fn fit_deep(&self, path: &Path, bytes: u64, _deepest: usize) -> Fit {
+        self.fit(path, bytes)
+    }
     /// ¿Está `p` dentro de una Papelera (`<unidad>:\$Recycle.Bin\...`)?
     fn is_bin_path(&self, p: &Path) -> bool;
 }
@@ -1613,6 +1771,9 @@ impl RecycleShell for RealShell {
     }
     fn fit(&self, path: &Path, bytes: u64) -> Fit {
         fit_for(path, bytes)
+    }
+    fn fit_deep(&self, path: &Path, bytes: u64, deepest: usize) -> Fit {
+        fit_for_deep(path, bytes, deepest)
     }
     fn is_bin_path(&self, p: &Path) -> bool {
         recycle::is_recycle_bin_path(p)
@@ -1653,12 +1814,12 @@ pub(crate) fn take_op(sizes: &[u64], room: BinRoom) -> Take {
     let (Some(max), Some(used)) = (room.max, room.used) else {
         return Take::NoRoom;
     };
-    let cap = max / 10 * 9;
+    let cap = bin_cap(max);
     let budget = cap.saturating_sub(used);
     if first > budget {
         return Take::NoRoom;
     }
-    let big = max / 10;
+    let big = bin_big(max);
     if first > big {
         return Take::Send(1);
     }
@@ -1837,7 +1998,7 @@ fn classify_hr(hr: i32) -> RecycleFail {
 }
 
 enum Prepared {
-    Ready(Pending),
+    Ready(Box<Pending>),
     Rejected(ItemStatus, Outcome),
 }
 

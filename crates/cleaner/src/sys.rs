@@ -27,8 +27,9 @@ use windows_sys::Wdk::Storage::FileSystem::{
 };
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_FILE_TOO_LARGE, ERROR_INVALID_DATA, ERROR_INVALID_FUNCTION,
-    ERROR_INVALID_PARAMETER, ERROR_NO_MORE_FILES, ERROR_NOT_SUPPORTED, GetLastError, HANDLE,
-    INVALID_HANDLE_VALUE, RtlNtStatusToDosError, UNICODE_STRING,
+    ERROR_INVALID_PARAMETER, ERROR_IO_INCOMPLETE, ERROR_NO_MORE_FILES, ERROR_NOT_SUPPORTED,
+    ERROR_OPERATION_ABORTED, GetLastError, HANDLE, INVALID_HANDLE_VALUE, RtlNtStatusToDosError,
+    UNICODE_STRING, WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Security::{
     GetTokenInformation, TOKEN_ELEVATION, TOKEN_QUERY, TokenElevation,
@@ -38,15 +39,21 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_ATTRIBUTE_TAG_INFO, FILE_BASIC_INFO, FILE_DISPOSITION_FLAG_DELETE,
     FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
     FILE_DISPOSITION_INFO, FILE_DISPOSITION_INFO_EX, FILE_FLAG_BACKUP_SEMANTICS,
-    FILE_FLAG_OPEN_REPARSE_POINT, FILE_ID_EXTD_DIR_INFO, FILE_ID_INFO, FILE_LIST_DIRECTORY,
-    FILE_NAME_NORMALIZED, FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_DELETE, FILE_SHARE_READ,
-    FILE_SHARE_WRITE, FILE_STANDARD_INFO, FileAttributeTagInfo, FileBasicInfo, FileDispositionInfo,
+    FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_OVERLAPPED, FILE_ID_EXTD_DIR_INFO, FILE_ID_INFO,
+    FILE_LIST_DIRECTORY, FILE_NAME_NORMALIZED, FILE_NOTIFY_CHANGE_DIR_NAME,
+    FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SIZE,
+    FILE_READ_ATTRIBUTES, FILE_READ_DATA, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    FILE_STANDARD_INFO, FileAttributeTagInfo, FileBasicInfo, FileDispositionInfo,
     FileDispositionInfoEx, FileIdExtdDirectoryInfo, FileIdInfo, FileStandardInfo,
-    GetFileInformationByHandleEx, GetFinalPathNameByHandleW, OPEN_EXISTING, ReadFile,
-    SetFileInformationByHandle, VOLUME_NAME_DOS,
+    GetFileInformationByHandleEx, GetFinalPathNameByHandleW, OPEN_EXISTING, ReadDirectoryChangesW,
+    ReadFile, SetFileInformationByHandle, VOLUME_NAME_DOS,
 };
-use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
-use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+use windows_sys::Win32::System::IO::{
+    CancelIoEx, GetOverlappedResult, IO_STATUS_BLOCK, OVERLAPPED,
+};
+use windows_sys::Win32::System::Threading::{
+    CreateEventW, GetCurrentProcess, OpenProcessToken, WaitForSingleObject,
+};
 
 /// ¿Se ejecuta ESTE proceso con privilegios elevados (el token tiene `TokenElevation`)? `None` si no se pudo consultar. El
 /// manifiesto es `asInvoker`: un proceso elevado que lance Tesela se lo pasa al hijo.
@@ -374,6 +381,14 @@ pub enum ChainError {
 /// `User Data` o de `%TEMP%`. Hay que mirar cada componente de la ruta TAL COMO SE ESCRIBIÓ (los nombres 8.3 de `%TEMP%`
 /// valen: los resuelve el sistema de archivos al abrir).
 pub fn open_reparse_free_dir(path: &Path) -> Result<Handle, ChainError> {
+    open_chain_dir(path, |_| false)
+}
+
+/// Como [`open_reparse_free_dir`], pero un componente que es un reparse point SE ACEPTA si `tolerate` lo permite (se le pasan
+/// sus metadatos). La identidad de cada salto se sigue verificando al abrir relativo al anterior. Lo usa la aprobación de la
+/// cesta para dejar pasar las carpetas de sincronización de la nube (M1): un placeholder de nube no redirige la resolución de
+/// nombres; junction, symlink y punto de montaje sí y se siguen rechazando.
+pub fn open_chain_dir(path: &Path, tolerate: impl Fn(&Meta) -> bool) -> Result<Handle, ChainError> {
     use std::path::{Component, Prefix};
     let plain = strip_verbatim(path.to_path_buf());
     let mut comps = plain.components();
@@ -393,7 +408,7 @@ pub fn open_reparse_free_dir(path: &Path) -> Result<Handle, ChainError> {
     let mut cur = open_for_query(&root).map_err(ChainError::Os)?;
     let check = |h: &Handle, name: &str| -> Result<(), ChainError> {
         let m = meta(h).map_err(ChainError::Os)?;
-        if m.is_reparse() {
+        if m.is_reparse() && !tolerate(&m) {
             return Err(ChainError::Reparse {
                 component: name.to_string(),
             });
@@ -721,6 +736,265 @@ pub(crate) fn delete_on_handle(h: &Handle) -> Result<(), Win32> {
         )
     };
     if ok == 0 { Err(last_error()) } else { Ok(()) }
+}
+
+// ---- Vigilancia de cambios de un directorio (A3-M1) -------------------------------------------------------------------
+
+/// Por qué no se pudo vigilar un directorio. FALLA CERRADO: sin vigilancia no se envía.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WatchError {
+    /// El objeto abierto no es el aprobado (identidad, tipo o reparse point).
+    Changed,
+    /// Error del sistema al abrirlo, leer su identidad o arrancar la vigilancia.
+    Os(Win32),
+}
+
+/// Palabras de 32 bits del búfer de `ReadDirectoryChangesW`. No se lee nunca (cualquier finalización invalida la medida):
+/// solo tiene que existir y estar alineado a DWORD mientras la lectura esté pendiente.
+const WATCH_BUF_WORDS: usize = 256;
+
+/// Lo que el kernel toca mientras hay una lectura pendiente: su dirección NO puede cambiar hasta que termine (por eso vive en
+/// una `Box` que no se mueve nunca).
+struct WatchInner {
+    /// El directorio, abierto con `FILE_FLAG_OVERLAPPED`.
+    handle: Handle,
+    /// Estructura de la lectura pendiente (su `hEvent` es `event`).
+    ov: OVERLAPPED,
+    /// Evento de reinicio manual de `ov`.
+    event: Handle,
+    buf: [u32; WATCH_BUF_WORDS],
+    /// ¿Hay una lectura pendiente en el kernel? Solo entonces el kernel escribe en `ov` y `buf`.
+    pending: bool,
+}
+
+// SAFETY: `OVERLAPPED` lleva un `HANDLE` (puntero crudo) y por eso no es `Send` por sí solo. El kernel solo escribe en `ov` y
+// `buf` mientras `pending` es cierto, la caja no se mueve y todo acceso desde Rust pasa por el `Mutex` de `DirWatch`.
+unsafe impl Send for WatchInner {}
+
+/// SOLO PRUEBAS: raíces bajo las que `DirWatch::start` falla con "acceso denegado" (para probar que sin vigilancia no se
+/// envía). Solo actúa sobre rutas que cuelgan de la carpeta de la prueba que lo instaló.
+#[cfg(test)]
+static FAIL_WATCH: std::sync::Mutex<Vec<(u64, crate::paths::PathKey)>> =
+    std::sync::Mutex::new(Vec::new());
+#[cfg(test)]
+static FAIL_WATCH_NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+/// SOLO PRUEBAS: guarda que quita el fallo forzado al soltarla.
+#[cfg(test)]
+pub struct FailWatchGuard(u64);
+
+#[cfg(test)]
+impl Drop for FailWatchGuard {
+    fn drop(&mut self) {
+        FAIL_WATCH
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .retain(|(id, _)| *id != self.0);
+    }
+}
+
+/// SOLO PRUEBAS: hace que `DirWatch::start` falle para lo que cuelgue de `root`.
+#[cfg(test)]
+pub fn fail_watch_under(root: &Path) -> FailWatchGuard {
+    let id = FAIL_WATCH_NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    FAIL_WATCH
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .push((id, crate::paths::PathKey::new(root)));
+    FailWatchGuard(id)
+}
+
+/// Vigilancia de TODO lo que cuelga de un directorio (subárbol) mientras se mide y hasta justo antes de que la shell actúe
+/// (A3-M1). Es un segundo handle del directorio con `ReadDirectoryChangesW` (tamaño, última escritura, altas, bajas y
+/// renombrados de archivos y de directorios). CUALQUIER finalización de la lectura (una notificación, el desbordamiento del
+/// búfer o un error) significa que la medida ya no es cierta: [`DirWatch::changed`] pasa a `true` y no vuelve a `false`. Los
+/// accesos de solo lectura del propio recorrido (atributos, listados) no generan notificaciones con estos filtros.
+///
+/// Límite del sistema (documentado, no oculto): NTFS retrasa las notificaciones de TAMAÑO y de ÚLTIMA ESCRITURA de un archivo
+/// que alguien sigue teniendo abierto hasta que lo cierra o se vuelca la caché; las altas, bajas y renombrados se notifican
+/// al momento. Un escritor que mantenga abierto un archivo y lo agrande puede no notificar dentro de la ventana.
+pub struct DirWatch {
+    inner: std::sync::Mutex<Option<Box<WatchInner>>>,
+    /// Hubo un cambio (o la vigilancia falló): no vuelve a `false`.
+    changed: std::sync::atomic::AtomicBool,
+}
+
+impl DirWatch {
+    /// Abre `path` por segunda vez (sin seguir enlaces), exige que sea el directorio de identidad `expect` y arranca la
+    /// vigilancia. Hay que llamarla ANTES de empezar a medir: lo que cambie antes no se vería.
+    pub fn start(path: &Path, expect: FileIdentity) -> Result<DirWatch, WatchError> {
+        #[cfg(test)]
+        {
+            let key = crate::paths::PathKey::new(path);
+            let forced = FAIL_WATCH
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .iter()
+                .any(|(_, root)| key.is_same_or_under(root));
+            if forced {
+                return Err(WatchError::Os(ACCESS_DENIED));
+            }
+        }
+        let h = open_dir_for_watch(path).map_err(WatchError::Os)?;
+        let m = meta(&h).map_err(WatchError::Os)?;
+        if m.identity != expect || !m.is_dir || m.is_reparse() {
+            return Err(WatchError::Changed);
+        }
+        // SAFETY: sin atributos de seguridad ni nombre; evento de reinicio manual, no señalado.
+        let ev = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+        if ev.is_null() {
+            return Err(WatchError::Os(last_error()));
+        }
+        // SAFETY: `OVERLAPPED` es un POD (enteros y punteros): todo-ceros es válido.
+        let ov: OVERLAPPED = unsafe { std::mem::zeroed() };
+        let mut inner = Box::new(WatchInner {
+            handle: h,
+            ov,
+            event: Handle(ev),
+            buf: [0; WATCH_BUF_WORDS],
+            pending: false,
+        });
+        inner.ov.hEvent = inner.event.0;
+        let filter = FILE_NOTIFY_CHANGE_SIZE
+            | FILE_NOTIFY_CHANGE_LAST_WRITE
+            | FILE_NOTIFY_CHANGE_FILE_NAME
+            | FILE_NOTIFY_CHANGE_DIR_NAME;
+        // SAFETY: el handle se abrió con `FILE_LIST_DIRECTORY` y `FILE_FLAG_OVERLAPPED`; `buf` y `ov` viven en la caja, que no
+        // se mueve ni se libera mientras la lectura esté pendiente (`finish_watch` espera a que termine antes de soltarla); el
+        // búfer es de `u32` (alineado a DWORD) y se pasa su tamaño exacto; `lpBytesReturned` es nulo, como exige la llamada
+        // asíncrona.
+        let ok = unsafe {
+            ReadDirectoryChangesW(
+                inner.handle.0,
+                inner.buf.as_mut_ptr().cast(),
+                (WATCH_BUF_WORDS * 4) as u32,
+                1,
+                filter,
+                std::ptr::null_mut(),
+                &mut inner.ov,
+                None,
+            )
+        };
+        if ok == 0 {
+            return Err(WatchError::Os(last_error()));
+        }
+        inner.pending = true;
+        Ok(DirWatch {
+            inner: std::sync::Mutex::new(Some(inner)),
+            changed: std::sync::atomic::AtomicBool::new(false),
+        })
+    }
+
+    /// ¿Cambió algo desde que arrancó la vigilancia (o falló)? Consulta sin esperar. Tras [`DirWatch::stop`] devuelve lo que
+    /// se supo hasta entonces.
+    pub fn changed(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        if self.changed.load(Ordering::SeqCst) {
+            return true;
+        }
+        let mut g = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        let Some(inner) = g.as_mut() else {
+            return self.changed.load(Ordering::SeqCst);
+        };
+        if inner.pending {
+            let mut n = 0u32;
+            // SAFETY: handle y `ov` válidos de una lectura lanzada con esta misma estructura; `n` es escribible; sin esperar.
+            let ok = unsafe { GetOverlappedResult(inner.handle.0, &inner.ov, &mut n, 0) };
+            if ok == 0 && last_error() == ERROR_IO_INCOMPLETE {
+                return false;
+            }
+            // Terminó: con notificaciones (`n > 0`), desbordada (`n == 0`, `ERROR_NOTIFY_ENUM_DIR`) o con un error. En los tres
+            // casos lo que se midió ya no es de fiar.
+            inner.pending = false;
+            self.changed.store(true, Ordering::SeqCst);
+            return true;
+        }
+        self.changed.load(Ordering::SeqCst)
+    }
+
+    /// Para la vigilancia (cancela la lectura pendiente y suelta el handle). Se llama tras comprobar por última vez, justo
+    /// antes de que la shell mueva el directorio: así no queda un handle con E/S pendiente sobre él.
+    pub fn stop(&self) {
+        let _ = self.changed();
+        let taken = self.inner.lock().unwrap_or_else(|e| e.into_inner()).take();
+        if let Some(inner) = taken
+            && finish_watch(inner)
+        {
+            self.changed
+                .store(true, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+}
+
+impl std::fmt::Debug for DirWatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DirWatch")
+            .field(
+                "changed",
+                &self.changed.load(std::sync::atomic::Ordering::SeqCst),
+            )
+            .finish_non_exhaustive()
+    }
+}
+
+impl Drop for DirWatch {
+    fn drop(&mut self) {
+        let taken = self
+            .inner
+            .get_mut()
+            .unwrap_or_else(|e| e.into_inner())
+            .take();
+        if let Some(inner) = taken {
+            finish_watch(inner);
+        }
+    }
+}
+
+/// Termina una vigilancia: si la lectura sigue pendiente la cancela y ESPERA a que el kernel acabe con el búfer antes de
+/// liberarlo. Devuelve `true` si la lectura había terminado con un cambio real (no por la cancelación). Si el kernel no
+/// termina (no debería), se PIERDE la memoria a propósito: liberar un búfer que el kernel aún puede escribir es peor.
+fn finish_watch(mut inner: Box<WatchInner>) -> bool {
+    if !inner.pending {
+        return false;
+    }
+    // SAFETY: handle y `ov` válidos de la lectura pendiente; cancelar solo esa lectura. Un error (`ERROR_NOT_FOUND`: ya había
+    // terminado) no importa: se espera igual.
+    unsafe { CancelIoEx(inner.handle.0, &inner.ov) };
+    // SAFETY: `event` es el evento de `ov`, vivo.
+    let waited = unsafe { WaitForSingleObject(inner.event.0, 5_000) };
+    if waited != WAIT_OBJECT_0 {
+        std::mem::forget(inner);
+        return false;
+    }
+    let mut n = 0u32;
+    // SAFETY: handle y `ov` válidos; la lectura ya terminó (el evento está señalado), así que no espera.
+    let ok = unsafe { GetOverlappedResult(inner.handle.0, &inner.ov, &mut n, 0) };
+    inner.pending = false;
+    // Cancelada (`ERROR_OPERATION_ABORTED`): nada cambió. Terminada con éxito o con cualquier otro error: algo pasó.
+    !(ok == 0 && last_error() == ERROR_OPERATION_ABORTED)
+}
+
+/// Abre un directorio solo para vigilarlo: listar, leer atributos, compartiéndolo TODO (también `FILE_SHARE_DELETE`, para no
+/// impedir que la shell lo mueva), sin seguir enlaces y para E/S asíncrona.
+fn open_dir_for_watch(path: &Path) -> Result<Handle, Win32> {
+    let p = wide_long(path);
+    // SAFETY: `p` es una cadena UTF-16 terminada en NUL que vive durante la llamada; el resto son constantes o nulos
+    // permitidos.
+    let h = unsafe {
+        CreateFileW(
+            p.as_ptr(),
+            FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
+            FILE_SHARE_ALL,
+            std::ptr::null(),
+            OPEN_EXISTING,
+            FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_OVERLAPPED,
+            std::ptr::null_mut(),
+        )
+    };
+    if h == INVALID_HANDLE_VALUE {
+        return Err(last_error());
+    }
+    Ok(Handle(h))
 }
 
 /// SOLO PARA PRUEBAS: preasigna `bytes` en disco (`FileAllocationInfo`) SIN cambiar el tamaño lógico (`EndOfFile`).
@@ -1069,5 +1343,228 @@ mod tests {
         // Un archivo no es un directorio de la cadena.
         sb.write("real/f.bin", 10);
         assert!(open_reparse_free_dir(&sb.path("real/f.bin")).is_err());
+    }
+
+    // ---- DirWatch (A3-M1) -------------------------------------------------------------------------------------------------
+
+    fn watch_tree(sb: &Sandbox) -> (PathBuf, FileIdentity) {
+        sb.write("W/a.bin", 1_000);
+        sb.write("W/sub/b.bin", 2_000);
+        sb.write("W/sub/hondo/c.bin", 3_000);
+        let dir = sb.long("W");
+        let id = meta(&open_for_query(&dir).unwrap()).unwrap().identity;
+        (dir, id)
+    }
+
+    /// Espera (poco) a que la vigilancia vea algo: las altas y bajas se notifican al momento, pero el sistema entrega la
+    /// finalización de forma asíncrona.
+    fn sees_change(w: &DirWatch) -> bool {
+        for _ in 0..40 {
+            if w.changed() {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        w.changed()
+    }
+
+    /// Lo que hizo ya la APROBACIÓN, que precede siempre a la vigilancia: abrir y cerrar cada directorio y cada archivo. NTFS
+    /// retrasa la actualización de la copia de la fecha de escritura y del tamaño de una entrada en el índice de su padre
+    /// hasta que alguien abre y cierra el objeto: medido, esa actualización pendiente llega como notificación al primer
+    /// cierre. Como la medida de la aprobación ya la provocó, no queda pendiente cuando arranca la vigilancia de la ejecución.
+    fn settle(sb: &Sandbox) {
+        for rel in ["W", "W/sub", "W/sub/hondo"] {
+            drop(open_dir_for_listing(&sb.long(rel)).unwrap());
+        }
+        for rel in ["W/a.bin", "W/sub/b.bin", "W/sub/hondo/c.bin"] {
+            drop(open_for_query(&sb.long(rel)).unwrap());
+        }
+    }
+
+    /// A3-M1: lo que NO es un cambio. El recorrido de medida (aperturas de solo lectura de cada hijo, listados, lecturas de
+    /// atributos y de contenido) no genera ninguna notificación con estos filtros: si no, ninguna carpeta se enviaría nunca.
+    #[test]
+    fn la_vigilancia_no_ve_los_accesos_de_solo_lectura() {
+        let sb = Sandbox::new();
+        let (dir, id) = watch_tree(&sb);
+        settle(&sb);
+        let w = DirWatch::start(&dir, id).expect("arranca");
+        // Lo que hace el recorrido de medida y la guarda: abrir, leer metadatos, listar.
+        let root = open_dir_for_listing(&dir).unwrap();
+        let _ = list_dir(&root).unwrap();
+        for rel in ["W/a.bin", "W/sub/b.bin", "W/sub/hondo/c.bin"] {
+            let h = open_for_query(&sb.long(rel)).unwrap();
+            let _ = meta(&h).unwrap();
+            let _ = sizes(&h).unwrap();
+            let _ = final_path(&h).unwrap();
+        }
+        let guard = open_path_for_rename(&dir).unwrap();
+        let _ = meta(&guard).unwrap();
+        // Y lecturas de contenido y de metadatos de la biblioteca estándar.
+        assert_eq!(fs::read(sb.path("W/a.bin")).unwrap().len(), 1_000);
+        let _ = fs::metadata(sb.path("W/sub")).unwrap();
+        let _ = fs::read_dir(sb.path("W/sub/hondo")).unwrap().count();
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        assert!(!w.changed(), "los accesos de solo lectura no son cambios");
+    }
+
+    /// A3-M1: lo que SÍ es un cambio, en cualquier profundidad del subárbol: alta, baja, renombrado, directorio nuevo y un
+    /// archivo existente que se agranda (y se cierra).
+    #[test]
+    fn la_vigilancia_ve_altas_bajas_renombrados_y_escrituras() {
+        type Change = (&'static str, fn(&Sandbox));
+        let changes: [Change; 6] = [
+            ("alta", |sb| {
+                sb.write("W/sub/hondo/nuevo.bin", 10);
+            }),
+            ("baja", |sb| {
+                fs::remove_file(sb.path("W/sub/b.bin")).unwrap()
+            }),
+            ("renombrado", |sb| {
+                fs::rename(sb.path("W/a.bin"), sb.path("W/z.bin")).unwrap()
+            }),
+            ("directorio", |sb| {
+                sb.mkdir("W/sub/hondo/otro");
+            }),
+            ("crece", |sb| {
+                use std::io::Write;
+                let mut f = fs::OpenOptions::new()
+                    .append(true)
+                    .open(sb.path("W/sub/hondo/c.bin"))
+                    .unwrap();
+                f.write_all(&vec![7u8; 1 << 20]).unwrap();
+            }),
+            ("encoge", |sb| {
+                let f = fs::OpenOptions::new()
+                    .write(true)
+                    .open(sb.path("W/sub/b.bin"))
+                    .unwrap();
+                f.set_len(10).unwrap();
+            }),
+        ];
+        for (name, change) in changes {
+            let sb = Sandbox::new();
+            let (dir, id) = watch_tree(&sb);
+            let w = DirWatch::start(&dir, id).expect("arranca");
+            assert!(!w.changed(), "{name}: antes del cambio no hay nada");
+            change(&sb);
+            assert!(sees_change(&w), "{name}: debe verse");
+            // Y no vuelve a `false`.
+            assert!(w.changed(), "{name}");
+        }
+    }
+
+    /// A3-M1: sin identidad aprobada no hay vigilancia (falla cerrado): identidad distinta, un directorio que no existe y un
+    /// junction (no se sigue).
+    #[test]
+    fn la_vigilancia_exige_la_identidad_y_no_sigue_enlaces() {
+        let mut sb = Sandbox::new();
+        let (dir, id) = watch_tree(&sb);
+        let other = FileIdentity {
+            file_id: id.file_id ^ 1,
+            ..id
+        };
+        assert!(matches!(
+            DirWatch::start(&dir, other),
+            Err(WatchError::Changed)
+        ));
+        assert!(matches!(
+            DirWatch::start(&sb.long("no-existe"), id),
+            Err(WatchError::Os(2 | 3))
+        ));
+        sb.junction("enlace", "W");
+        let link = sb.long("enlace");
+        assert!(matches!(
+            DirWatch::start(&link, id),
+            Err(WatchError::Changed)
+        ));
+        // Un archivo no es un directorio.
+        let f = sb.long("W/a.bin");
+        let fid = meta(&open_for_query(&f).unwrap()).unwrap().identity;
+        assert!(DirWatch::start(&f, fid).is_err());
+        // Control: con la identidad buena, arranca.
+        assert!(DirWatch::start(&dir, id).is_ok());
+    }
+
+    /// A3-M1: parar la vigilancia cancela la lectura pendiente y suelta el handle (el directorio se puede mover); soltarla sin
+    /// parar también termina sin colgarse. Lo que cambió ANTES de parar se recuerda; lo posterior no se mira.
+    #[test]
+    fn parar_la_vigilancia_suelta_el_handle_y_recuerda_lo_anterior() {
+        let sb = Sandbox::new();
+        let (dir, id) = watch_tree(&sb);
+        let w = DirWatch::start(&dir, id).expect("arranca");
+        w.stop();
+        assert!(!w.changed(), "sin cambios antes de parar");
+        sb.write("W/despues.bin", 10);
+        assert!(!w.changed(), "tras parar ya no se mira");
+        // Sin handle abierto: se puede mover el directorio.
+        fs::rename(sb.path("W"), sb.path("W2")).expect("el directorio se mueve");
+        fs::rename(sb.path("W2"), sb.path("W")).unwrap();
+        // Lo que cambió antes de parar consta después.
+        let w2 = DirWatch::start(&dir, id).expect("arranca");
+        sb.write("W/antes.bin", 10);
+        assert!(sees_change(&w2));
+        w2.stop();
+        assert!(w2.changed());
+        // Soltar sin parar: no se cuelga y suelta el handle.
+        let t = std::time::Instant::now();
+        let w3 = DirWatch::start(&dir, id).expect("arranca");
+        drop(w3);
+        assert!(t.elapsed() < std::time::Duration::from_secs(2));
+        fs::rename(sb.path("W"), sb.path("W3")).expect("sin handles abiertos");
+    }
+
+    /// A3-M1 (medición, no afirmación): la vigilancia pendiente NO impide mover el directorio (comparte `FILE_SHARE_DELETE`,
+    /// como la guarda); aun así se para tras el último `PreDeleteItem`. Y lo que NTFS retrasa: un escritor que mantiene el
+    /// archivo abierto y lo agranda. Se imprime lo observado.
+    #[test]
+    fn medicion_de_la_vigilancia_pendiente_y_de_un_escritor_abierto() {
+        use std::io::Write;
+        let sb = Sandbox::new();
+        let (dir, id) = watch_tree(&sb);
+        // 1. Con la lectura pendiente, ¿se puede renombrar el directorio?
+        let w = DirWatch::start(&dir, id).expect("arranca");
+        let moved = fs::rename(sb.path("W"), sb.path("W2"));
+        eprintln!("renombrar con la vigilancia pendiente: {moved:?}");
+        if moved.is_ok() {
+            fs::rename(sb.path("W2"), sb.path("W")).unwrap();
+        }
+        drop(w);
+        // 2. Un escritor con el archivo abierto: ¿cuándo se ve el crecimiento?
+        let w = DirWatch::start(&dir, id).expect("arranca");
+        let mut f = fs::OpenOptions::new()
+            .append(true)
+            .open(sb.path("W/a.bin"))
+            .unwrap();
+        f.write_all(&vec![1u8; 1 << 20]).unwrap();
+        let t = std::time::Instant::now();
+        let mut seen = None;
+        while t.elapsed() < std::time::Duration::from_secs(3) {
+            if w.changed() {
+                seen = Some(t.elapsed());
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        eprintln!("escritor abierto, sin cerrar ni volcar: visto en {seen:?}");
+        f.flush().unwrap();
+        f.sync_all().ok();
+        let t = std::time::Instant::now();
+        let mut seen2 = None;
+        while t.elapsed() < std::time::Duration::from_secs(3) {
+            if w.changed() {
+                seen2 = Some(t.elapsed());
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        eprintln!("tras volcar (`sync_all`): visto en {seen2:?}");
+        drop(f);
+        let t = std::time::Instant::now();
+        while !w.changed() && t.elapsed() < std::time::Duration::from_secs(3) {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        eprintln!("tras cerrar: changed = {}", w.changed());
+        assert!(w.changed(), "al cerrar el archivo el crecimiento SÍ se ve");
     }
 }
