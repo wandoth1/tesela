@@ -11,13 +11,14 @@ use std::path::PathBuf;
 use std::process::Command;
 
 /// Nombres de las DLL que `tesela.exe` importa de forma estática (y no son `KnownDLLs`) o que se cargan por nombre.
-const PLANTED: [&str; 11] = [
+const PLANTED: [&str; 12] = [
     "dxgi",
     "dwmapi",
     "uxtheme",
     "propsys",
     "uiautomationcore",
     "bcryptprimitives",
+    "winhttp",
     "d3d12",
     "dcomp",
     "d3dcompiler_47",

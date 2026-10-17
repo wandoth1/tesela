@@ -1,0 +1,22 @@
+[package]
+name = "tesela-update"
+description = "Optional update check of Tesela: asks GitHub for the latest published version and nothing else. The only code in Tesela that can touch the network."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+
+# WinHTTP (the system HTTP stack: it honors the system proxy and adds no crate to the supply chain). Only the one
+# feature the transport uses.
+[dependencies.windows]
+workspace = true
+features = ["Win32_Networking_WinHttp"]
+
+[lints]
+workspace = true

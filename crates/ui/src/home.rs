@@ -56,14 +56,23 @@ pub fn drive_title_plain(tr: &crate::i18n::Tr, d: &DriveInfo) -> String {
     format!("{label} ({}:)", d.letter)
 }
 
-/// Botón de ajustes con su menú (tema e idioma).
+/// Ancho máximo del menú de ajustes (el texto de la comprobación de actualizaciones se parte en líneas).
+const UPDATE_MENU_WIDTH: f32 = 340.0;
+
+/// Altura de la franja superior del inicio (la del botón de ajustes y la del aviso de versión nueva).
+const TOP_BAND: f32 = 36.0;
+
+/// Botón de ajustes con su menú (tema, idioma y comprobación de actualizaciones).
 pub fn settings_button(ui: &mut Ui, env: &mut Env) {
     let label = env.tr.t("settings");
     let resp = widgets::icon_button(ui, env, Icon::Settings, &label, true);
-    let (tr, settings, history) = (env.tr, env.settings, env.history);
+    let (tr, settings, history, update, pal) =
+        (env.tr, env.settings, env.history, env.update, env.pal);
     let mut acts: Vec<Action> = Vec::new();
     egui::Popup::menu(&resp).show(|ui| {
         ui.set_min_width(200.0);
+        // El texto explicativo de abajo se parte en líneas en vez de ensanchar el menú.
+        ui.set_max_width(UPDATE_MENU_WIDTH);
         ui.label(RichText::new(tr.t("settings-theme")).font(theme::font_semibold(12.0)));
         for (pref, key) in [
             (ThemePref::System, "theme-system"),
@@ -89,6 +98,29 @@ pub fn settings_button(ui: &mut Ui, env: &mut Env) {
                 .clicked()
             {
                 acts.push(Action::SetLanguage(pref));
+            }
+        }
+        // La comprobación de actualizaciones: opcional y desactivada por defecto. Se explica ANTES de activarla.
+        if update.available {
+            ui.separator();
+            let mut check = settings.update.check;
+            if ui
+                .checkbox(&mut check, tr.t("settings-update-check"))
+                .changed()
+            {
+                acts.push(Action::SetCheckUpdates(check));
+            }
+            ui.label(
+                RichText::new(tr.t("settings-update-explain"))
+                    .size(12.0)
+                    .color(pal.text_muted),
+            );
+            if update.failed {
+                ui.label(
+                    RichText::new(tr.t("update-failed"))
+                        .size(12.0)
+                        .color(pal.text_muted),
+                );
             }
         }
         ui.separator();
@@ -304,6 +336,57 @@ fn wide_button(
     resp
 }
 
+/// El separador "·" del aviso. Se PINTA (no es un `Label`): así no sale en el árbol de accesibilidad y un lector de
+/// pantalla lee el aviso y los dos enlaces, no "punto medio".
+fn dot_separator(ui: &mut Ui, color: Color32) {
+    let galley =
+        ui.painter()
+            .layout_no_wrap("·".to_owned(), egui::FontId::proportional(13.0), color);
+    let (rect, _) = ui.allocate_exact_size(galley.size(), Sense::empty());
+    ui.painter().galley(rect.min, galley, color);
+}
+
+/// El aviso discreto de una versión nueva: "Hay una versión nueva de Tesela: v0.1.5 · Ver novedades · Descartar". Ocupa la
+/// franja superior, a la izquierda del botón de ajustes. NO descarga nada: "Ver novedades" abre la página de la versión en
+/// el navegador, y "Descartar" lo oculta para esa versión.
+fn update_notice(ui: &mut Ui, env: &mut Env, v: tesela_update::Version) {
+    let (tr, pal) = (env.tr, env.pal);
+    // A la derecha queda el botón de ajustes.
+    let rect = Rect::from_min_size(
+        ui.max_rect().left_top(),
+        vec2((ui.max_rect().width() - TOP_BAND - 16.0).max(0.0), TOP_BAND),
+    );
+    let mut acts: Vec<Action> = Vec::new();
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(Layout::left_to_right(Align::Center)),
+        |ui| {
+            ui.visuals_mut().hyperlink_color = pal.accent;
+            ui.label(
+                RichText::new(tr.ta("update-available", args!["v" => v.tag()]))
+                    .size(13.0)
+                    .color(pal.text_muted),
+            );
+            dot_separator(ui, pal.text_muted);
+            let view = ui
+                .link(RichText::new(tr.t("update-view")).size(13.0))
+                .on_hover_text(tr.t("update-view-hover"));
+            if view.clicked() {
+                acts.push(Action::OpenRelease(v));
+            }
+            dot_separator(ui, pal.text_muted);
+            if ui
+                .link(RichText::new(tr.t("update-dismiss")).size(13.0))
+                .clicked()
+            {
+                acts.push(Action::DismissUpdate(v));
+            }
+        },
+    );
+    env.actions.extend(acts);
+}
+
 /// Pinta la pantalla de inicio.
 pub fn show(ui: &mut Ui, env: &mut Env, notice: Option<&str>, dialog_open: bool) {
     let pal = env.pal;
@@ -314,12 +397,17 @@ pub fn show(ui: &mut Ui, env: &mut Env, notice: Option<&str>, dialog_open: bool)
                 .inner_margin(egui::Margin::symmetric(64, 32)),
         )
         .show(ui, |ui| {
+            // El aviso de versión nueva, arriba a la izquierda (primero: ocupa la misma franja que el botón de ajustes, así
+            // no mueve nada si aparece).
+            if let Some(v) = env.update.notice.filter(|_| !env.demo) {
+                update_notice(ui, env, v);
+            }
             // Ajustes arriba a la derecha.
             let top_right = ui.max_rect().right_top() + vec2(-8.0, 0.0);
             ui.scope_builder(
                 egui::UiBuilder::new().max_rect(Rect::from_min_size(
-                    top_right - vec2(36.0, 0.0),
-                    vec2(36.0, 36.0),
+                    top_right - vec2(TOP_BAND, 0.0),
+                    vec2(TOP_BAND, TOP_BAND),
                 )),
                 |ui| settings_button(ui, env),
             );

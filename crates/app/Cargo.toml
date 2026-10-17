@@ -18,6 +18,7 @@ capture = ["dep:png"]
 
 [dependencies]
 tesela-ui.workspace = true
+tesela-update.workspace = true
 eframe.workspace = true
 serde.workspace = true
 toml.workspace = true

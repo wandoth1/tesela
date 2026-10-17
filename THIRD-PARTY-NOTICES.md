@@ -8,7 +8,7 @@ Iconos: Fluent UI System Icons, Microsoft Corporation, licencia MIT.
 
 ## Licencias usadas
 
-- MIT License (156 componente(s))
+- MIT License (157 componente(s))
 - Apache License 2.0 (9 componente(s))
 - Boost Software License 1.0 (2 componente(s))
 - Unicode License v3 (2 componente(s))
@@ -2594,6 +2594,7 @@ Usada por:
 - tesela-model 0.1.4 (https://github.com/wandoth1/tesela)
 - tesela-scanner 0.1.4 (https://github.com/wandoth1/tesela)
 - tesela-scan 0.1.4 (https://github.com/wandoth1/tesela)
+- tesela-update 0.1.4 (https://github.com/wandoth1/tesela)
 - accesskit 0.24.1 (https://github.com/AccessKit/accesskit)
 - accesskit_consumer 0.35.0 (https://github.com/AccessKit/accesskit)
 - accesskit_windows 0.32.1 (https://github.com/AccessKit/accesskit)

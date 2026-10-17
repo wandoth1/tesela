@@ -13,7 +13,7 @@ mod shell;
 
 use cli::Screen;
 use config::MIN_SIZE;
-use tesela_ui::{CleanStart, DemoOptions, MapStart, Options, StartScreen, TeselaUi};
+use tesela_ui::{CleanStart, DemoOptions, MapStart, Options, StartScreen, TeselaUi, TransportRef};
 
 fn main() -> eframe::Result {
     // LO PRIMERO, antes de analizar argumentos y de que eframe y wgpu carguen nada por nombre: la búsqueda de DLL se
@@ -131,6 +131,10 @@ fn main() -> eframe::Result {
         backend: None,
         // Demostración y herramientas de medición: nada se lee del disco del usuario (ni historial ni raíces de limpieza).
         isolated,
+        // La comprobación de actualizaciones es OPCIONAL (el ajuste está desactivado por defecto). La demostración y las
+        // herramientas de medición no reciben ni el transporte: nunca comprueban, estén o no activadas.
+        update_transport: (!isolated)
+            .then(|| TransportRef(std::sync::Arc::new(tesela_update::winhttp::WinHttp))),
     };
     let scan = cli.scan.clone();
     let wait_explore = scan.is_some();

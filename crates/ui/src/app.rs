@@ -17,6 +17,7 @@ use crossbeam_channel::{Receiver, TryRecvError};
 use std::path::PathBuf;
 use std::sync::Arc;
 use tesela_cleaner::Backend;
+use tesela_update::{Transport, Version};
 
 /// Preferencia de idioma: el del sistema o uno fijo.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -41,6 +42,23 @@ impl LangPref {
     }
 }
 
+/// Lo que se guarda de la comprobación de actualizaciones (OPCIONAL, desactivada por defecto; ver `tesela-update`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct UpdatePrefs {
+    /// El ajuste "Buscar actualizaciones al abrir Tesela". Sin activar, Tesela no se conecta a nada.
+    #[serde(default)]
+    pub check: bool,
+    /// Segundos Unix del último intento (con o sin éxito): como mucho una petición cada 24 horas.
+    #[serde(default)]
+    pub last_check: Option<u64>,
+    /// La última versión publicada que se supo (para que el aviso sobreviva a reiniciar dentro de las 24 horas).
+    #[serde(default, deserialize_with = "tesela_update::deserialize_lenient")]
+    pub latest_seen: Option<Version>,
+    /// La versión cuyo aviso se descartó: no vuelve a salir para esa misma.
+    #[serde(default, deserialize_with = "tesela_update::deserialize_lenient")]
+    pub dismissed: Option<Version>,
+}
+
 /// Ajustes que se guardan (la ventana y el archivo `config.toml` los gestiona el ejecutable).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Settings {
@@ -48,6 +66,8 @@ pub struct Settings {
     pub theme: ThemePref,
     #[serde(default)]
     pub language: LangPref,
+    #[serde(default)]
+    pub update: UpdatePrefs,
 }
 
 fn default_theme() -> ThemePref {
@@ -59,6 +79,7 @@ impl Default for Settings {
         Settings {
             theme: ThemePref::System,
             language: LangPref::System,
+            update: UpdatePrefs::default(),
         }
     }
 }
@@ -117,6 +138,16 @@ impl std::fmt::Debug for BackendRef {
     }
 }
 
+/// Cómo se hace la petición de la comprobación de actualizaciones (la real, de WinHTTP, o la de una prueba).
+#[derive(Clone)]
+pub struct TransportRef(pub Arc<dyn Transport>);
+
+impl std::fmt::Debug for TransportRef {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Transport")
+    }
+}
+
 /// Opciones de arranque.
 #[derive(Clone, Debug)]
 pub struct Options {
@@ -134,6 +165,9 @@ pub struct Options {
     /// nada del disco del usuario. Sin historial de limpiezas y con un respaldo INERTE (sin raíces de limpieza ni carpeta
     /// de datos: ni `SHGetKnownFolderPath` para las raíces, ni `%LOCALAPPDATA%\Tesela\history.jsonl`).
     pub isolated: bool,
+    /// Con qué se hace la comprobación de actualizaciones. `None` = no hay comprobación (la demostración y las
+    /// herramientas de medición NUNCA comprueban, lo pasen o no: ver `crate::update::Updater`).
+    pub update_transport: Option<TransportRef>,
 }
 
 impl Default for Options {
@@ -146,6 +180,7 @@ impl Default for Options {
             dry_run: false,
             backend: None,
             isolated: false,
+            update_transport: None,
         }
     }
 }
@@ -174,6 +209,12 @@ pub enum Action {
     ShowAbout,
     /// Borra el historial de limpiezas (Ajustes).
     ClearHistory,
+    /// Activa o desactiva "Buscar actualizaciones al abrir Tesela" (Ajustes).
+    SetCheckUpdates(bool),
+    /// Descarta el aviso de esa versión.
+    DismissUpdate(Version),
+    /// Abre en el navegador la página de esa versión (la URL la construye Tesela con la versión validada).
+    OpenRelease(Version),
 }
 
 /// Lo que las pantallas necesitan de la interfaz mientras dibujan.
@@ -194,6 +235,8 @@ pub struct Env<'a> {
     pub history: &'a [tesela_cleaner::HistoryEntry],
     /// Hay una ventana modal abierta ("Acerca de"): las teclas de navegación de la exploración no actúan.
     pub modal_open: bool,
+    /// Lo que la comprobación de actualizaciones enseña (Ajustes y aviso del inicio).
+    pub update: crate::update::UpdateView,
     pub actions: &'a mut Vec<Action>,
 }
 
@@ -220,6 +263,8 @@ pub struct TeselaUi {
     drives_rx: Option<Receiver<Vec<DriveInfo>>>,
     folder_rx: Option<Receiver<Option<PathBuf>>>,
     about: crate::about::About,
+    /// La comprobación de actualizaciones opcional.
+    updater: crate::update::Updater,
     /// Ventana principal, padre (modal) del selector de carpeta.
     parent: Option<crate::platform::ParentWindow>,
     pub(crate) screen: Screen,
@@ -255,6 +300,10 @@ impl TeselaUi {
             drives_rx: None,
             folder_rx: None,
             about: crate::about::About::default(),
+            updater: crate::update::Updater::new(
+                opts.update_transport.clone(),
+                opts.demo.is_none() && !opts.isolated,
+            ),
             parent: None,
             screen: Screen::Home,
             notice: None,
@@ -263,6 +312,7 @@ impl TeselaUi {
             font_scripts: crate::fonts::Scripts::NONE,
         };
         ui.reload_history();
+        ui.start_update_check(ctx);
         if opts.demo.is_some() {
             ui.drives = demo::drives();
         } else {
@@ -320,6 +370,17 @@ impl TeselaUi {
     /// Vuelve a leer el historial de limpiezas (la demostración no lo tiene: nunca escribe nada).
     fn reload_history(&mut self) {
         self.history = load_history(self.demo.is_some(), self.isolated, self.backend.data_dir());
+    }
+
+    /// Pide la última versión si el ajuste está activado, ya toca (24 horas desde el último intento) y esta sesión no es
+    /// la demostración ni una herramienta de medición. Anota el intento YA: aunque la petición no llegue a terminar, no se
+    /// repite antes de 24 horas.
+    fn start_update_check(&mut self, ctx: &egui::Context) {
+        let now = unix_now();
+        if self.updater.start_if_due(ctx, &self.settings.update, now) {
+            self.settings.update.last_check = Some(now);
+            self.settings_dirty = true;
+        }
     }
 
     fn demo_request(&self) -> ScanRequest {
@@ -393,6 +454,30 @@ impl TeselaUi {
         self.drives = drives;
     }
 
+    /// Sustituye la forma de abrir el navegador de "Ver novedades" (para los tests: no se abre nada).
+    #[cfg(test)]
+    pub(crate) fn set_url_opener(&mut self, opener: Box<dyn Fn(&str)>) {
+        self.updater.set_opener(opener);
+    }
+
+    /// Lo que la comprobación de actualizaciones enseña ahora (para los tests).
+    #[cfg(test)]
+    pub(crate) fn update_view(&self) -> crate::update::UpdateView {
+        self.updater.view(&self.settings.update)
+    }
+
+    /// Aplica una acción como si una pantalla la hubiera pedido (para los tests).
+    #[cfg(test)]
+    pub(crate) fn apply_for_test(&mut self, action: Action) {
+        self.apply(&egui::Context::default(), vec![action]);
+    }
+
+    /// Marca la última comprobación como fallida (para los tests de disposición).
+    #[cfg(test)]
+    pub(crate) fn force_update_failed_for_test(&mut self) {
+        self.updater.force_failed();
+    }
+
     /// La exploración, mutable (para los tests).
     #[allow(dead_code)]
     pub(crate) fn explore_mut(&mut self) -> Option<&mut Explore> {
@@ -434,6 +519,9 @@ impl TeselaUi {
     }
 
     fn poll(&mut self, ctx: &egui::Context) {
+        if self.updater.poll(&mut self.settings.update) {
+            self.settings_dirty = true;
+        }
         if let Some(rx) = &self.drives_rx {
             match rx.try_recv() {
                 Ok(d) => {
@@ -548,6 +636,18 @@ impl TeselaUi {
                     self.settings_dirty = true;
                     self.tr = Tr::new(l.resolve());
                 }
+                Action::SetCheckUpdates(on) => {
+                    self.settings.update.check = on;
+                    self.settings_dirty = true;
+                    self.updater.settings_changed(on);
+                    // Al activarlo se comprueba ya (si toca): el usuario acaba de pedirlo.
+                    self.start_update_check(ctx);
+                }
+                Action::DismissUpdate(v) => {
+                    self.settings.update.dismissed = Some(v);
+                    self.settings_dirty = true;
+                }
+                Action::OpenRelease(v) => self.updater.open_release(v),
             }
         }
     }
@@ -603,6 +703,7 @@ impl TeselaUi {
                 dry_run: self.dry_run,
                 history: &self.history,
                 modal_open: self.about.open,
+                update: self.updater.view(&self.settings.update),
                 actions: &mut actions,
             };
             let notice_text = self.notice.as_ref().map(|n| n.text(&self.tr));

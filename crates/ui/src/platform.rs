@@ -280,10 +280,14 @@ pub fn show_properties_async(path: PathBuf) -> std::thread::JoinHandle<bool> {
     })
 }
 
-/// Indicadores de `ShellExecuteExW` para abrir la Papelera: sin interfaz de error (`NO_UI`) y SÍNCRONO (`NOASYNC`): con COM
-/// inicializado en el hilo, la shell termina la petición antes de que el hilo acabe (sin él, un hilo que termina puede
-/// dejar la petición a medias).
+/// Indicadores de `ShellExecuteExW` para abrir la Papelera: sin interfaz de error (`NO_UI`) y SÍNCRONO (`NOASYNC`): con
+/// COM inicializado en el hilo, la shell termina la petición antes de que el hilo acabe (sin él, un hilo que termina
+/// puede dejar la petición a medias).
 const RECYCLE_BIN_MASK: u32 = SEE_MASK_FLAG_NO_UI | SEE_MASK_NOASYNC;
+
+/// Indicadores para abrir una página web en el navegador (los mismos motivos que [`RECYCLE_BIN_MASK`], en una constante
+/// propia para que cada uso tenga su prueba).
+const URL_OPEN_MASK: u32 = SEE_MASK_FLAG_NO_UI | SEE_MASK_NOASYNC;
 
 /// Verbo y destino de la petición a la shell (UTF-16 con NUL final). La llamada en sí abre una ventana del Explorador y
 /// no se puede ejecutar en las pruebas: esta parte, que decide QUÉ se pide, sí se prueba.
@@ -294,8 +298,22 @@ fn recycle_bin_request() -> (Vec<u16>, Vec<u16>) {
 /// Abre la Papelera de reciclaje en el Explorador (`shell:RecycleBinFolder`), en un hilo propio: la E/S de la shell no
 /// debe bloquear la interfaz. No hay nada que comprobar: si Windows no puede, no pasa nada.
 pub fn open_recycle_bin() {
-    std::thread::spawn(|| {
-        let (verb, file) = recycle_bin_request();
+    let (verb, file) = recycle_bin_request();
+    shell_open_async(verb, file, RECYCLE_BIN_MASK);
+}
+
+/// Abre `url` en el navegador predeterminado (verbo `open` de la shell), en un hilo propio. SOLO abre la página de una
+/// versión de este repositorio tal como la construye `tesela_update::release_url` (el prefijo exacto más una etiqueta
+/// `vX.Y.Z` válida y nada más: `tesela_update::is_release_page`); cualquier otra cosa se descarta sin hacer nada.
+pub fn open_url_async(url: &str) {
+    if tesela_update::is_release_page(url) {
+        shell_open_async(wide("open"), wide(url), URL_OPEN_MASK);
+    }
+}
+
+/// Pide a la shell `verb` sobre `file` (UTF-16 con NUL final) desde un hilo propio, con COM inicializado y esos `mask`.
+fn shell_open_async(verb: Vec<u16>, file: Vec<u16>, mask: u32) {
+    std::thread::spawn(move || {
         // `COINIT_DISABLE_OLE1DDE`: la combinación que recomienda la documentación de `ShellExecuteExW` (sin el soporte de DDE de OLE1).
         // SAFETY: `CoInitializeEx` no recibe punteros (nulo = reservado) y se empareja con `CoUninitialize` solo si tuvo éxito.
         let hr = unsafe {
@@ -308,7 +326,7 @@ pub fn open_recycle_bin() {
         // (punteros nulos); se rellenan a continuación los campos que usa esta llamada.
         let mut info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
         info.cbSize = size_of::<SHELLEXECUTEINFOW>() as u32;
-        info.fMask = RECYCLE_BIN_MASK;
+        info.fMask = mask;
         info.lpVerb = verb.as_ptr();
         info.lpFile = file.as_ptr();
         info.nShow = SW_SHOW;
@@ -620,9 +638,21 @@ mod tests {
         assert_eq!(RECYCLE_BIN_MASK & SEE_MASK_NOASYNC, SEE_MASK_NOASYNC);
         assert_eq!(RECYCLE_BIN_MASK & SEE_MASK_FLAG_NO_UI, SEE_MASK_FLAG_NO_UI);
         let src = include_str!("platform.rs");
-        let body = &src[src.find("pub fn open_recycle_bin").unwrap()..];
+        // La Papelera se abre con el hilo común de la shell (`shell_open_async`), que es el que inicializa COM.
+        let open = &src[src.find("pub fn open_recycle_bin").unwrap()..];
+        let open = &open[..open.find("\n}\n").unwrap()];
+        assert!(open.contains("shell_open_async") && open.contains("RECYCLE_BIN_MASK"));
+        // Abrir una página usa SU máscara (síncrona y sin interfaz de error) y solo tras el predicado de la página de versión.
+        assert_eq!(URL_OPEN_MASK & SEE_MASK_NOASYNC, SEE_MASK_NOASYNC);
+        assert_eq!(URL_OPEN_MASK & SEE_MASK_FLAG_NO_UI, SEE_MASK_FLAG_NO_UI);
+        let url = &src[src.find("pub fn open_url_async").unwrap()..];
+        let url = &url[..url.find("}\n}\n").unwrap()];
+        assert!(url.contains("is_release_page") && url.contains("URL_OPEN_MASK"));
+        assert!(url.find("is_release_page").unwrap() < url.find("shell_open_async").unwrap());
+        let body = &src[src.find("fn shell_open_async").unwrap()..];
         let body = &body[..body.find("\n}\n").unwrap()];
         assert!(body.contains("CoInitializeEx") && body.contains("CoUninitialize"));
+        assert!(body.contains("fMask = mask"));
     }
 
     #[test]

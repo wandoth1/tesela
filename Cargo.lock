@@ -2699,6 +2699,7 @@ dependencies = [
  "png",
  "serde",
  "tesela-ui",
+ "tesela-update",
  "toml",
  "uuid",
  "wgpu",
@@ -2781,9 +2782,19 @@ dependencies = [
  "tesela-layout",
  "tesela-model",
  "tesela-scanner",
+ "tesela-update",
  "unic-langid",
  "uuid",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "tesela-update"
+version = "0.1.4"
+dependencies = [
+ "serde",
+ "serde_json",
+ "windows",
 ]
 
 [[package]]

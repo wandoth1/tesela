@@ -14,7 +14,7 @@ A visual disk space analyzer for Windows, written in Rust: fast, light and clear
 - **A cleanup assistant with visible risk.** Each suggestion is marked 🟢 Safe, 🟠 Review or 🔺 Info only, and explains in one sentence why.
 - **Nothing is deleted blindly.** Everything goes through a review basket. What can be regenerated (temporary files, caches) is deleted; your own files go to the Recycle Bin. System folders are protected.
 - **Honest with the numbers.** What gets freed is measured (the real change in free space) and counted separately from what was deleted and what was sent to the Recycle Bin, and it shows which part of the disk it could not measure.
-- **Light.** A single binary, no Electron or WebView, no telemetry or accounts. It works without administrator rights. A fast mode that reads the NTFS file table (MFT) directly is planned for v0.3.
+- **Light.** A single binary, no Electron or WebView, no telemetry, no accounts. An optional update check, off by default, only asks GitHub for the latest version (see [Privacy and network](#privacy-and-network)). It works without administrator rights. A fast mode that reads the NTFS file table (MFT) directly is planned for v0.3.
 
 ## Installation
 
@@ -84,7 +84,7 @@ the Start menu shortcut, the Installed apps entry and the values the installer w
 
 **Your data is not deleted** (the installer does not know about it; it is yours):
 
-- `%APPDATA%\Tesela\config.toml`: your settings (theme and language).
+- `%APPDATA%\Tesela\config.toml`: your settings (theme and language) and, only if you turn the update check on, whether it is on, the date of the last check and the last version number it learnt (for example `v0.1.5`).
 - `%LOCALAPPDATA%\Tesela`: `history.jsonl` (cleanup summaries) and the logs `limpieza-<date>-<time>-<n>.jsonl` (the path and identity
   of every item cleaned; `limpieza` is Spanish for "cleanup").
 
@@ -118,7 +118,7 @@ tesela --help
 - **Grays with meaning:** the "Windows and other system data" block (what takes up the disk but your user cannot see), `pagefile.sys` and `hiberfil.sys` ("Info only") and "Mixed" (folders with no dominant type).
 - **List:** the same folders with exact figures; it is the accessible view (screen reader) and shares the selection with the map.
 - **Keyboard:** double-click or `Enter` enters a folder; `Backspace` goes up; the arrow keys move the selection; `Ctrl+F` searches; `F5` rescans; `Alt+Home` goes back to the home screen. Right-click: open in Explorer, copy the path and Properties.
-- **Settings (⚙):** theme (same as system, light or dark), language (same as system, Español or English) and delete the cleanup history.
+- **Settings (⚙):** theme (same as system, light or dark), language (same as system, Español or English), the optional update check (off by default) and delete the cleanup history.
 
 ### Cleaning
 
@@ -128,6 +128,17 @@ tesela --help
 - **Safe deletion:** the identity of each item (volume, file ID and links) is checked right before touching it, it is opened exclusively and deleted by handle, never entering reparse points (junctions, symbolic links); a hard link does not count as freed. What is in use is **skipped**, not forced. What goes to the Recycle Bin is checked the same way and handed to Windows **by its original path** (without renaming it first), with a guard handle open that prevents its folders from being swapped for a link in the meantime, and right before Windows acts it is checked once more that it is the approved object (if not, it is not sent). Windows reports what happened with each item and Tesela compares the **identity** of what reached the Recycle Bin with the approved one (and that the approved name no longer exists). If someone replaced it right in the middle, what arrives is usually a different object: you are told, and it can be restored from the Recycle Bin; but if that object does not fit, Windows deletes it, and that minimal window cannot be fully closed. Items are split into operations according to the space left in the Recycle Bin (folders are measured right before), and what does not fit or cannot be guaranteed is not sent; if Windows ever deleted something permanently, sending stops at that moment and nothing else is touched. Without a local cleanup log nothing is deleted. While it runs, closing the window is blocked ("Wait for it to finish or cancel"). If Tesela runs as administrator, real cleaning and emptying the Recycle Bin do not work (for safety); scanning and simulation do. With User Account Control (UAC) turned off, or with the built-in Administrator account, every process counts as elevated and Tesela will refuse to clean: use a standard user account (or with UAC on) and open it with a normal double-click, not "Run as administrator".
 - **"Measured change in free space"** is what actually changed in the drive's free space during the cleanup (other programs writing at the same time also move it); what was deleted and what was sent to the Recycle Bin are counted separately, because what is sent does not free space until the Recycle Bin is emptied.
 - The tree is updated **without rescanning** (the histograms are marked as approximate until you rescan).
+
+## Privacy and network
+
+Tesela does not connect to anything by default: no telemetry, no accounts, no ads. The only network request it can ever make is the **optional update check** (*Settings > Check for updates when Tesela opens*), which is **off by default**:
+
+- **What it asks:** the latest published release of this repository, with one `GET https://api.github.com/repos/wandoth1/tesela/releases/latest`. The first one happens when you tick the box (the setting would otherwise seem to do nothing) and then when Tesela opens, at most once every 24 hours; a failed attempt counts too. It never runs in `--demo` or in the measuring tools (`--idle-memory`, `--bench-hover`, `--screenshot`), turned on or not.
+- **What it sends:** nothing of yours. The only header it sets is the fixed name `Tesela` as the `User-Agent` (GitHub's API requires one): no version, no operating system, no identifier, no cookies, no credentials. GitHub sees your IP address, as any website does.
+- **How:** through WinHTTP, the Windows HTTP stack, so the system proxy applies. On networks that enable it, WinHTTP may also look for the network's proxy configuration automatically (WPAD), which can mean name lookups and a configuration script fetched from your local network before it talks to GitHub.
+- **What it does with the answer:** it downloads the answer (a few KB of JSON) and reads only the version number. If it is newer than yours, a small notice offers "See what's new", which opens that release's page in your browser (the address is built by Tesela from the validated version, never taken from the answer). The notice can be dismissed, and a version lower than or equal to the one you dismissed does not come back. Tesela never downloads or installs an update.
+- **Failures** (no network, a proxy, GitHub's rate limit, an unexpected answer) are ignored; Settings may show one line, "Could not check for a new version".
+- **If this repository is ever renamed or changes owner,** GitHub's API answers the old address with a redirect. Tesela does not follow redirects on purpose, so the versions already installed would stop notifying (silently, as with any other failure) until a new version with the new address is installed.
 
 ## Roadmap
 
