@@ -4,22 +4,23 @@
 //! items to the Recycle Bin, so items the user wants to keep recoverable are not deleted in the same operation.
 //!
 //! * **Permanent**: `engine` handle traversal (exclusive open, identity check, `FileDispositionInfoEx`).
-//! * **Papelera** (sin lápidas): se abre el elemento en exclusiva, se verifica su identidad y su ruta resuelta (local y
-//!   permitida), se CIERRA el handle y se entrega la RUTA ORIGINAL a `IFileOperation` con un receptor de eventos propio.
-//!   La shell dice, por elemento, el resultado y la ruta real del elemento ya en la Papelera; se abre y se compara su
-//!   IDENTIDAD con la aprobada: igual = enviado; distinta = "se movió a la Papelera un objeto distinto del aprobado"
-//!   (recuperable: está en la Papelera); sin elemento en la Papelera = eliminado definitivamente (no cabía, o un sustituto
-//!   que no cabía); error = omitido con su motivo, solo si el objeto aprobado sigue intacto en su sitio (A-M1).
-//!   Un directorio con algo abierto dentro falla en seguro (mover es renombrar) y se informa como "en uso". El receptor
-//!   vigila la entrega (devuelve `E_ABORT`): `PreDeleteItem` compara la identidad de lo que hay en la ruta con la aprobada
-//!   y veta el sustituto (M1); `PostDeleteItem` corta tras el primer borrado definitivo o la primera ruta sin verificar
-//!   (M2). Lo que queda del lote no se procesa y sigue en su sitio.
-//!   A3-M1: un DIRECTORIO lleva una vigilancia de cambios (`ReadDirectoryChangesW` sobre un segundo handle verificado)
-//!   abierta ANTES de su recorrido de medida y viva hasta su `PreDeleteItem`: si algo cambia dentro, o no se puede vigilar,
-//!   la medida no vale y no se envía ("cambió desde la confirmación"). A3-M2: la ocupación de la Papelera se lee antes y
-//!   después del recorrido y manda la mayor; es una heurística, no una garantía (la shell decide por su cuenta si cabe).
-//! * **Tres contadores**: "eliminado definitivamente" y "movido a la Papelera" son sumas de tamaños; "liberado ahora" es la
-//!   diferencia MEDIDA del espacio libre de cada volumen antes y después.
+//! * **Recycle Bin** (without tombstone renaming): the item is opened exclusively, its identity and resolved path (local and allowed)
+//!   are verified, the handle is CLOSED, and the ORIGINAL PATH is given to `IFileOperation` with a dedicated event receiver.
+//!   For each item, the shell reports the outcome and the actual path of the item in the Recycle Bin; that path is opened
+//!   and its IDENTITY compared with the approved one: same = sent; different = "a different object from the approved one
+//!   was moved to the Recycle Bin" (recoverable: it is in the Recycle Bin); no item in the Recycle Bin = permanently deleted
+//!   (it did not fit, or a replacement did not fit); error = skipped with its reason, only if the approved object remains
+//!   intact in place (A-M1). A directory with anything open inside fails safely (moving is a rename) and is reported as
+//!   "in use". The receiver monitors the operation (returns `E_ABORT`): `PreDeleteItem` compares the identity at the path
+//!   with the approved identity and vetoes a replacement (M1); `PostDeleteItem` stops after the first permanent deletion
+//!   or the first path that cannot be verified (M2). The rest of the batch is not processed and stays in place.
+//!   A3-M1: a DIRECTORY has a change monitor (`ReadDirectoryChangesW` on a second verified handle) opened BEFORE its
+//!   measurement traversal and kept alive until its `PreDeleteItem`: if anything inside changes, or cannot be monitored,
+//!   the measurement is invalid and the item is not sent ("changed since approval"). A3-M2: Recycle Bin occupancy is read
+//!   before and after traversal, and the larger value is used; this is a heuristic, not a guarantee (the shell decides
+//!   independently whether an item fits).
+//! * **Three counters**: "permanently deleted" and "moved to the Recycle Bin" are sums of sizes; "freed now" is the
+//!   MEASURED difference in each volume's free space before and after.
 //! * **Simulation** (`dry_run`): performs everything except destructive actions and records the identities it would affect.
 
 use crate::engine::{self, Event, Mode, Outcome, RootStatus, StatsSnapshot, Unit, UnitSpec};
@@ -42,25 +43,25 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 use windows::core::HRESULT;
 
-/// Cuántos rechazados del plan se anotan en el registro (el resto, en una sola línea).
+/// How many plan rejections are recorded in the log (the rest are summarized on one line).
 const MAX_REJECTED_NOTES: usize = 200;
 
-/// Opciones de la ejecución.
+/// Execution options.
 #[derive(Clone, Default)]
 pub struct ExecOptions {
-    /// Simulación: no se toca nada.
+    /// Dry run: nothing is touched.
     pub dry_run: bool,
-    /// El usuario marcó la casilla del grupo ámbar: lo que no cabe en la Papelera se elimina definitivamente.
+    /// The user checked the amber-group box: items that do not fit in the Recycle Bin are permanently deleted.
     pub allow_unfit_permanent: bool,
     /// Explicit acknowledgment that local Outlook `.pst` files may be permanently deleted.
     /// The engine also checks each file discovered after approval.
     pub allow_local_mail_permanent: bool,
-    /// Registro local de la ejecución. OBLIGATORIO salvo en simulación (M4): sin un registro utilizable no hay ninguna
-    /// acción destructiva ([`ExecError::LogRequired`]).
+    /// Local execution log. REQUIRED except in a dry run (M4): no destructive action is allowed without a usable log
+    /// ([`ExecError::LogRequired`]).
     pub log: Option<Arc<LogWriter>>,
 }
 
-/// Fase en curso (para la interfaz).
+/// Current phase (for the interface).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Phase {
@@ -72,17 +73,17 @@ pub enum Phase {
     Done = 5,
 }
 
-/// Progreso compartido con la interfaz y cancelación.
+/// Progress shared with the interface and cancellation state.
 pub struct Progress {
-    /// Poner a `true` cancela entre entradas: lo que ya empezó termina bien, lo demás no se toca.
+    /// Setting this to `true` cancels between entries: work already started finishes, and nothing else is touched.
     cancel: Arc<AtomicBool>,
-    /// El USUARIO pidió cancelar (`cancel()`). `cancel` también se activa solo si el registro falla (M4): este distingue una
-    /// cosa de la otra para que el informe diga las dos (H6.5).
+    /// The USER requested cancellation (`cancel()`). `cancel` is also set if the log fails (M4): this field distinguishes
+    /// the two cases so the report can state both (H6.5).
     user_cancelled: AtomicBool,
-    /// Entradas procesadas por el recorrido.
+    /// Entries processed by the traversal.
     pub entries: Arc<AtomicU64>,
     phase: AtomicU8,
-    /// Elementos del plan terminados y totales.
+    /// Completed and total plan items.
     pub items_done: AtomicUsize,
     pub items_total: AtomicUsize,
 }
@@ -108,36 +109,36 @@ impl Progress {
             _ => Phase::Done,
         }
     }
-    /// Indica la fase en curso (lo hace el ejecutor; el respaldo simulado de la demostración también).
+    /// Sets the current phase (used by the executor and the demo's simulated backend).
     pub fn set_phase(&self, p: Phase) {
         self.phase.store(p as u8, Ordering::Relaxed);
     }
-    /// Fija cuántos elementos tiene la ejecución.
+    /// Sets the number of items in the execution.
     pub fn set_items_total(&self, n: usize) {
         self.items_total.store(n, Ordering::Relaxed);
     }
-    /// Un elemento terminado más.
+    /// Marks one more item as complete.
     pub fn add_item_done(&self) {
         self.items_done.fetch_add(1, Ordering::Relaxed);
     }
-    /// ¿Se pidió cancelar (el usuario, o el fallo del registro, que también detiene la limpieza)?
+    /// Was cancellation requested (by the user or by a log failure, which also stops cleanup)?
     pub fn is_cancelled(&self) -> bool {
         self.cancel.load(Ordering::SeqCst)
     }
-    /// Cancela: entre entradas, lo que ya empezó termina bien y lo demás no se toca. Es la ÚNICA forma de cancelar desde
-    /// fuera y siempre anota que lo pidió el usuario (`user_cancelled`), que es lo que distingue el informe (R3).
+    /// Cancels between entries: work already started finishes, and nothing else is touched. This is the ONLY way to cancel
+    /// from outside, and it always records that the user requested it (`user_cancelled`), which distinguishes the report (R3).
     pub fn cancel(&self) {
         self.user_cancelled.store(true, Ordering::SeqCst);
         self.cancel.store(true, Ordering::SeqCst);
     }
-    /// ¿Lo canceló el usuario (aunque además haya fallado el registro)?
+    /// Did the user cancel (even if the log also failed)?
     pub fn user_cancelled(&self) -> bool {
         self.user_cancelled.load(Ordering::SeqCst)
     }
 }
 
-/// Cuántos elementos de la lista cambiaron desde la confirmación: los que no cuadraban al enumerar (`not_matching`) más los
-/// elementos a los que se atribuye algún veto (`Veto::id`: el `$R` dueño, no la ruta vetada, que puede ser de un hijo).
+/// Number of listed items that changed since approval: those that did not match during enumeration (`not_matching`) plus
+/// items associated with a veto (`Veto::id`: the owning `$R`, not the vetoed path, which may be a child).
 pub(crate) fn bin_changed(
     not_matching: usize,
     vetoes: &[recycle::Veto],
@@ -153,114 +154,115 @@ pub(crate) fn bin_changed(
     (not_matching + vetoed.len()) as u64
 }
 
-/// Qué falló al enviar un elemento a la Papelera.
+/// What failed when sending an item to the Recycle Bin.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecycleFail {
-    /// Algo dentro o el propio elemento está en uso (falló en seguro: mover es renombrar).
+    /// The item itself or something inside it is in use (failed safely: moving is a rename).
     InUse,
-    /// Sin permiso.
+    /// Access denied.
     Denied,
-    /// La shell no lo procesó y sigue en su sitio.
+    /// The shell did not process it; it remains in place.
     NotProcessed,
-    /// La shell dijo que abortó la operación en la que iba y el elemento sigue en su sitio.
+    /// The shell reported that it aborted the current operation, and the item remains in place.
     Aborted,
-    /// No hay sitio en la Papelera ahora (capacidad menos lo que ya ocupa): enviarlo haría que la shell lo elimine o
-    /// expulse elementos que ya estaban. No se toca.
+    /// There is no room in the Recycle Bin now (capacity minus current occupancy): sending it would make the shell delete it
+    /// or evict items already there. It is not touched.
     NoRoom,
-    /// Se detuvo el envío a la Papelera por seguridad (otro elemento acabó eliminado definitivamente o no se pudo
-    /// verificar): no se tocó.
+    /// Sending to the Recycle Bin stopped for safety (another item was permanently deleted or could not be verified): this
+    /// item was not touched.
     Stopped,
-    /// La shell lo rechazó con este `HRESULT` (sigue en su sitio).
+    /// The shell rejected it with this `HRESULT` (it remains in place).
     Shell(i32),
 }
 
-/// Cómo terminó un elemento.
+/// How processing of an item ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ItemStatus {
-    /// Definitivo: la raíz se procesó (lo que quedó, en los contadores).
+    /// Permanent: the root was processed (the results are in the counters).
     Done,
-    /// Verificado en la Papelera.
+    /// Verified in the Recycle Bin.
     Recycled,
-    /// Simulación: se habría enviado a la Papelera.
+    /// Dry run: would have been sent to the Recycle Bin.
     WouldRecycle,
-    /// No se envió.
+    /// Not sent.
     NotRecycled(RecycleFail),
-    /// Desapareció sin llegar a la Papelera (la shell lo eliminó definitivamente: no cabía) o, en un DIRECTORIO, su contenido
-    /// ya no es el de justo antes del envío (una medida completa con otra huella: perdió una parte, o cambió, por ejemplo
-    /// porque otro proceso escribía dentro). Para el directorio no se afirma el borrado: se afirma la diferencia (H2).
+    /// Disappeared without reaching the Recycle Bin (the shell permanently deleted it because it did not fit) or, for a
+    /// DIRECTORY, its contents no longer match just before sending (a complete measurement has a different fingerprint:
+    /// something was lost or changed, for example because another process wrote inside). For the directory, this does not
+    /// claim deletion; it reports the difference (H2).
     DeletedUnexpectedly,
-    /// Se movió a la Papelera un objeto DISTINTO del aprobado (alguien lo sustituyó entre la comprobación y la shell).
-    /// Está en la Papelera: se puede restaurar.
+    /// An object DIFFERENT from the approved one was moved to the Recycle Bin (someone replaced it between the check and
+    /// the shell operation). It is in the Recycle Bin and can be restored.
     RecycledOther,
-    /// No se pudo comprobar qué pasó (la shell no dio la ruta del elemento en la Papelera, o no se pudo abrir).
+    /// What happened could not be verified (the shell did not provide the item's Recycle Bin path, or it could not be opened).
     Unverified,
-    /// La raíz no se pudo procesar (no existe, cambió, protegida, en uso, cancelada...).
+    /// The root could not be processed (missing, changed, protected, in use, cancelled...).
     Root(RootStatus),
-    /// No se toca: no cabe en la Papelera y no se marcó la casilla de borrado definitivo, o es de los que NUNCA se borran
-    /// definitivamente ([`PlanItem::never_permanent`]: informes de errores y volcados).
+    /// Not touched: it does not fit in the Recycle Bin and permanent deletion was not selected, or it is NEVER permanently
+    /// deleted ([`PlanItem::never_permanent`]: error reports and dumps).
     SkippedUnfit,
 }
 
-/// Resultado de un elemento del plan.
+/// Result for a plan item.
 #[derive(Clone, Debug)]
 pub struct ItemReport {
     pub id: usize,
     pub category: Option<CategoryId>,
     pub path: PathBuf,
-    /// Destino con el que se ejecutó (un elemento que no cabía y se confirmó pasa a `Permanent`).
+    /// Destination used for execution (an item that did not fit and was confirmed is moved to `Permanent`).
     pub destination: Destination,
     pub status: ItemStatus,
     pub stats: StatsSnapshot,
-    /// Lo que desapareció de verdad (rutas completas): la interfaz actualiza el árbol con esto, sin reescanear. Vacío en
-    /// simulación y en lo que no se tocó.
+    /// What actually disappeared (complete paths): the interface uses this to update the tree without rescanning. Empty
+    /// during a dry run and for items that were not touched.
     pub removed: Vec<Removed>,
 }
 
-/// Una entrada que desapareció del disco, o una parte de su contenido (ver [`ItemReport::removed`]).
+/// An entry that disappeared from disk, or part of its contents (see [`ItemReport::removed`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Removed {
     pub path: PathBuf,
     pub is_dir: bool,
-    /// Desapareció entera (si no, se eliminó solo parte de su contenido).
+    /// The entire entry disappeared (otherwise, only part of its contents was deleted).
     pub removed: bool,
-    /// Bytes en disco eliminados (sin enlaces compartidos), tamaño lógico y archivos.
+    /// On-disk bytes deleted (excluding shared links), logical size, and file count.
     pub bytes: u64,
     pub logical: u64,
     pub files: u64,
 }
 
-/// Resultado de vaciar la Papelera.
+/// Result of emptying the Recycle Bin.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BinReport {
-    /// Elementos de la lista capturada.
+    /// Items in the captured list.
     pub requested: u64,
-    /// Elementos de la lista que ya no están en la Papelera.
+    /// Items from the list that are no longer in the Recycle Bin.
     pub purged: u64,
-    /// Elementos de la lista que siguen.
+    /// Items from the list that remain.
     pub still_there: u64,
-    /// De ellos, los que NO se tocaron porque su `$R` o su `$I` ya no eran los de la enumeración (cambiaron desde la
-    /// confirmación) o no se pudieron verificar.
+    /// Of these, items that were NOT touched because their `$R` or `$I` no longer matched enumeration (they changed since
+    /// approval) or could not be verified.
     pub changed: u64,
-    /// Elementos que la shell dio por purgados pero cuyo objeto aprobado NO se eliminó: entre la última comprobación y el
-    /// borrado se sustituyó su `$R` y se borró lo que había con su nombre (A-M4). No cuentan como purgados y no se pudo
-    /// evitar: la ventana que queda entre el receptor y la shell.
+    /// Items the shell reported as purged even though the approved object was NOT deleted: between the final check and
+    /// deletion, its `$R` was replaced and the object at that name was deleted (A-M4). These do not count as purged. This
+    /// could not be prevented because of the remaining race window between the receiver and the shell.
     pub replaced: u64,
-    /// Elementos que no se tocaron porque su sistema de archivos no da identidad (FAT, exFAT) y no se pueden verificar.
-    /// No es que hayan cambiado (H6.9).
+    /// Items not touched because their file system does not provide identity (FAT, exFAT), so they cannot be verified.
+    /// This does not mean they changed (H6.9).
     pub unverifiable: u64,
-    /// Elementos que NO se purgaron porque su `$R` lleva reparse points dentro (junction, symlink, enlace de WSL, archivo de
-    /// la nube) o no se pudo comprobar entero (M2): se excluyen ANTES de entregarlos y no cortan el lote.
+    /// Items NOT purged because their `$R` contains reparse points (junction, symlink, WSL link, cloud file) or could not
+    /// be checked completely (M2): they are excluded BEFORE submission and do not stop the batch.
     pub with_links: u64,
-    /// Elementos de la Papelera que no se listaron al confirmar porque sus metadatos (`$I`) están ilegibles: no se vacían y su
-    /// tamaño no cuenta en lo que se prometió (m1).
+    /// Recycle Bin items not listed at approval because their metadata (`$I`) was unreadable: they are not emptied, and
+    /// their size is not included in the promised amount (m1).
     pub unlisted: u64,
-    /// Tamaño aproximado de la Papelera al confirmar.
+    /// Approximate Recycle Bin size at approval.
     pub bytes_hint: u64,
-    /// La shell no pudo hacer la operación.
+    /// The shell could not perform the operation.
     pub failed: bool,
 }
 
-/// Espacio libre de un volumen antes y después.
+/// A volume's free space before and after execution.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VolumeDelta {
     pub root: PathBuf,
@@ -268,93 +270,93 @@ pub struct VolumeDelta {
     pub free_after: u64,
 }
 
-/// El resumen de una ejecución.
+/// Execution summary.
 #[derive(Clone, Debug, Default)]
 pub struct Report {
     pub dry_run: bool,
     pub cancelled: bool,
     pub items: Vec<ItemReport>,
-    /// Eliminado definitivamente (suma de tamaños, sin enlaces compartidos). En simulación, lo que se habría eliminado.
+    /// Permanently deleted (sum of sizes, excluding shared links). In a dry run, the amount that would have been deleted.
     pub permanent_bytes: u64,
-    /// Movido a la Papelera (verificado). En simulación, lo que se habría movido.
+    /// Moved to the Recycle Bin (verified). In a dry run, the amount that would have been moved.
     pub recycled_bytes: u64,
     pub bin: Option<BinReport>,
-    /// Contadores sumados de todo (en uso, sin permiso, cambiados, protegidos, enlaces compartidos...).
+    /// Counters summed across all items (in use, access denied, changed, protected, shared links...).
     pub totals: StatsSnapshot,
-    /// "Liberado ahora": diferencia MEDIDA del espacio libre de los volumenes (con signo; `None` en simulación).
+    /// "Freed now": MEASURED difference in volume free space (signed; `None` during a dry run).
     pub freed_now: Option<i64>,
     pub volumes: Vec<VolumeDelta>,
-    /// Elementos que desaparecieron sin llegar a la Papelera.
+    /// Items that disappeared without reaching the Recycle Bin.
     pub deleted_unexpectedly: u64,
-    /// Elementos cuyo destino en la Papelera es un objeto distinto del aprobado (están en la Papelera: se pueden restaurar).
+    /// Items whose Recycle Bin destination is an object other than the approved one (they are in the Recycle Bin and can be restored).
     pub recycled_other: u64,
-    /// Elementos de los que no se pudo comprobar qué pasó.
+    /// Items whose outcome could not be verified.
     pub unverified: u64,
-    /// El primer error (`HRESULT`) que devolvió la shell o COM al enviar a la Papelera, si hubo alguno. Lo que no se pudo
-    /// enviar queda como no procesado y sigue donde estaba.
+    /// First error (`HRESULT`) returned by the shell or COM while sending items to the Recycle Bin, if any. Items that
+    /// could not be sent remain unprocessed and stay where they were.
     pub shell_error: Option<i32>,
-    /// El envío a la Papelera se DETUVO por seguridad (ver [`StopReason`]): los que quedaban no se tocaron.
+    /// Sending to the Recycle Bin STOPPED for safety (see [`StopReason`]): remaining items were not touched.
     pub recycle_stopped: bool,
-    /// Por qué se detuvo (el primero), si `recycle_stopped`.
+    /// Why sending stopped (the first reason), if `recycle_stopped`.
     pub stop_reason: Option<StopReason>,
-    /// Elementos que no se enviaron por falta de sitio en la Papelera.
+    /// Items not sent because there was no room in the Recycle Bin.
     pub no_room: u64,
-    /// Elementos que no se enviaron por el corte de seguridad.
+    /// Items not sent because of the safety stop.
     pub stopped_items: u64,
-    /// Lo que hay en TODA la Papelera tras la ejecución (según la shell): es lo que vaciaría "Vaciar ahora". `None` si
-    /// no se envió nada a la Papelera, en simulación o si la consulta falló.
+    /// Contents of the ENTIRE Recycle Bin after execution (according to the shell): what "Empty now" would remove. `None`
+    /// if nothing was sent to the Recycle Bin, during a dry run, or if the query failed.
     pub bin_total_after: Option<u64>,
-    /// Elementos que no se pudieron enviar.
+    /// Items that could not be sent.
     pub not_recycled: u64,
-    /// Elementos que no caben en la Papelera y no se confirmaron.
+    /// Items that do not fit in the Recycle Bin and were not confirmed.
     pub skipped_unfit: u64,
-    /// Ruta del registro local.
+    /// Path to the local log.
     pub log_path: Option<PathBuf>,
-    /// El registro local FALLÓ al escribir o volcar (M4): la limpieza se detuvo en el siguiente punto seguro y no se tocó
-    /// nada más. Lo que ya estaba hecho se queda (y puede no constar entero en el registro).
+    /// The local log FAILED while writing or flushing (M4): cleanup stopped at the next safe point and nothing else was
+    /// touched. Completed work remains in effect (and may not be fully recorded in the log).
     pub log_failed: bool,
-    /// El registro llegó a su tope (líneas o bytes) y dejó de anotar: la limpieza siguió, pero lo que vino después NO consta
-    /// en el registro (H5).
+    /// The log reached its limit (lines or bytes) and stopped recording: cleanup continued, but subsequent work is NOT
+    /// recorded in the log (H5).
     pub log_truncated: bool,
 }
 
-/// Por qué se detuvo el envío a la Papelera (corte de seguridad).
+/// Why sending to the Recycle Bin stopped (safety stop).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StopReason {
-    /// La shell eliminó definitivamente un elemento (no cabía en la Papelera) o el contenido de un directorio ya no es el de
-    /// antes del envío (H2: puede haber cambiado sin que se haya perdido nada).
+    /// The shell permanently deleted an item (it did not fit in the Recycle Bin), or a directory's contents no longer match
+    /// their state just before sending (H2: they may have changed without anything being lost).
     DeletedUnexpectedly,
-    /// No se pudo comprobar qué pasó con un elemento (la shell no dijo dónde quedó, o no se pudo abrir).
+    /// An item's outcome could not be verified (the shell did not say where it ended up, or it could not be opened).
     Unverified,
-    /// La shell dijo que "eliminó" el elemento sin enviarlo a la Papelera (no cabía) pero NO lo tocó: sigue en su sitio, o
-    /// falló con un error, se comprobó que lo dejó intacto y el receptor canceló con ello lo que quedaba de su lote
-    /// (A2-M1). Se detiene el envío igual (la shell se comporta de forma inesperada), pero no se afirma que se haya borrado
-    /// nada.
+    /// The shell reported that it "deleted" the item without sending it to the Recycle Bin (it did not fit), but did NOT
+    /// touch it: it remains in place; or the operation failed, the item was verified intact, and the receiver cancelled
+    /// the rest of its batch (A2-M1). Sending stops anyway (the shell behaved unexpectedly), but this does not claim that
+    /// anything was deleted.
     ShellDeclined,
-    /// Lo que había en la ruta justo antes de que la shell actuara no era lo aprobado (`PreDeleteItem` lo vetó): se detuvo
-    /// el envío y no se mandó nada más.
+    /// The item at the path just before the shell acted was not the approved one (`PreDeleteItem` vetoed it): sending
+    /// stopped, and nothing else was submitted.
     Changed,
 }
 
-/// Por qué no se ejecutó.
+/// Why execution did not proceed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExecError {
-    /// Lo que cabe en la Papelera cambió desde la confirmación: hay que volver a confirmar (PLAN.md §2.5). Lleva los ids.
+    /// Recycle Bin fit changed since approval: confirmation is required again (PLAN.md §2.5). Contains the item IDs.
     NeedsReconfirm(Vec<usize>),
-    /// No hay registro local utilizable (no se pudo crear, o ya había fallado) y no es una simulación: sin registro no hay
-    /// acción destructiva (M4). No se ha tocado nada.
+    /// No usable local log exists (it could not be created or had already failed), and this is not a dry run: no destructive
+    /// action is allowed without a log (M4). Nothing was touched.
     LogRequired,
-    /// El proceso se ejecuta ELEVADO (como administrador): la limpieza real y vaciar la Papelera no se hacen (PLAN.md §3.9: la
-    /// aplicación nunca limpia elevada). El análisis y la simulación sí se permiten. No se ha tocado nada.
+    /// The process is ELEVATED (running as administrator): actual cleanup and emptying the Recycle Bin are not allowed
+    /// (PLAN.md §3.9: the application never cleans while elevated). Analysis and dry runs are allowed. Nothing was touched.
     Elevated,
 }
 
-/// ¿Está elevado el proceso? Un rasgo para poder probar las dos ramas sin elevar nada (el CI no se puede elevar).
+/// Is the process elevated? A trait that allows both branches to be tested without elevating (CI cannot elevate).
 pub(crate) trait Elevation: Send + Sync {
     fn is_elevated(&self) -> bool;
 }
 
-/// La consulta real al token del proceso. FALLA CERRADO: si no se puede consultar, se trata como elevado (sin limpieza).
+/// Queries the actual process token. FAILS CLOSED: if the query fails, the process is treated as elevated (no cleanup).
 pub(crate) struct RealElevation;
 
 impl Elevation for RealElevation {
@@ -377,13 +379,13 @@ impl Elevation for NotElevated {
     }
 }
 
-/// Falla cerrado: sin poder consultar el token se trata como elevado.
+/// Fails closed: if the token cannot be queried, the process is treated as elevated.
 fn elevated_from(state: Option<bool>) -> bool {
     state.unwrap_or(true)
 }
 
 impl Cleaner {
-    /// Ejecuta el plan. Bloquea (la interfaz lo lanza en un hilo propio); el progreso y la cancelación van por `progress`.
+    /// Executes the plan. Blocks (the interface runs it on its own thread); progress and cancellation are reported through `progress`.
     pub fn execute(
         &self,
         plan: &Plan,
@@ -391,33 +393,33 @@ impl Cleaner {
         progress: &Arc<Progress>,
     ) -> Result<Report, ExecError> {
         progress.set_phase(Phase::Preparing);
-        // E1: ELEVADO NO SE LIMPIA (ni se vacía la Papelera). La simulación sí puede seguir. Se comprueba ANTES que nada y
-        // aquí, en el `cleaner` (no solo en la interfaz): el manifiesto es `asInvoker` y un proceso elevado que lance Tesela
-        // le pasa sus privilegios.
+        // E1: DO NOT CLEAN WHILE ELEVATED (or empty the Recycle Bin). Dry runs may continue. Check this BEFORE anything else
+        // and here in `cleaner` (not only in the interface): the manifest is `asInvoker`, so an elevated process launching
+        // Tesela passes its privileges to it.
         if !opts.dry_run && self.elevation.is_elevated() {
             if let Some(l) = &opts.log {
                 let _ = l.discard();
             }
             return Err(ExecError::Elevated);
         }
-        // M4: SIN REGISTRO UTILIZABLE NO HAY ACCIÓN DESTRUCTIVA. La simulación sí puede seguir sin él.
+        // M4: NO DESTRUCTIVE ACTION WITHOUT A USABLE LOG. A dry run may continue without one.
         if !opts.dry_run && opts.log.as_ref().is_none_or(|l| !l.ok()) {
             if let Some(l) = &opts.log {
-                // Si ya contiene operaciones no se borra (`discard` lo impide).
+                // Do not discard it if it already contains operations (`discard` prevents this).
                 let _ = l.discard();
             }
             return Err(ExecError::LogRequired);
         }
-        // Un error de escritura del registro activa la cancelación: la limpieza se detiene en el siguiente punto seguro.
+        // A log write error triggers cancellation: cleanup stops at the next safe point.
         if let Some(l) = &opts.log {
             l.cancel_on_error(progress.cancel.clone());
             let ((local_n, local_b), (cache_n, cache_b)) = plan.mail_totals();
             if local_n + cache_n > 0 {
                 l.write_note("mail", &format!("pst_files={local_n} pst_bytes={local_b} ost_nst_files={cache_n} ost_nst_bytes={cache_b}"));
             }
-            // Lo que no llegó al plan consta en el registro con su motivo (una raíz descartada por un enlace, p. ej.).
-            // Con tope: un plan con miles de rechazados no puede inflar el registro (R4).
-            // Los "demasiado recientes" van los últimos: pueden ser muchos y no deben tapar un rechazo de seguridad.
+            // Items that did not make it into the plan are logged with their reason (for example, a root rejected because of a link).
+            // Apply a limit so a plan with thousands of rejections cannot inflate the log (R4).
+            // Put "too recent" items last: there may be many, and they must not hide a safety rejection.
             let ordered = plan
                 .rejected
                 .iter()
@@ -440,21 +442,21 @@ impl Cleaner {
                 );
             }
         }
-        // 0. Lo que cabe en la Papelera se recalcula AL EJECUTAR; si cambió, se pide confirmar otra vez ANTES de tocar nada.
+        // 0. Recalculate Recycle Bin fit AT EXECUTION; if it changed, request confirmation again BEFORE touching anything.
         let changed: Vec<usize> = plan
             .items
             .iter()
             .filter(|i| i.destination == Destination::Recycle)
             .filter(|i| {
-                // GM-M3: bytes + compartidos (conjuntos disjuntos) y el lógico; el mayor manda. Con la ruta más larga de lo
-                // que hay dentro, como al aprobar.
+                // GM-M3: add bytes, shared bytes (disjoint sets), and logical size; the larger value determines fit. Include
+                // the longest path inside, as during approval.
                 let size = i.estimate.recycle_charge();
                 self.fit_deep(&i.path, size, i.estimate.max_path as usize) != i.fit
             })
             .map(|i| i.id)
             .collect();
         if !changed.is_empty() {
-            // Nada se ejecutó: el registro (solo la línea de arranque) no debe ocupar una plaza de la retención.
+            // Nothing was executed: the log (only its startup line) must not take up a retention slot.
             if let Some(l) = &opts.log {
                 let _ = l.discard();
             }
@@ -473,12 +475,13 @@ impl Cleaner {
             Mode::Delete
         };
 
-        // Qué se hace con cada elemento.
+        // Determine what to do with each item.
         let mut perm: Vec<&PlanItem> = Vec::new();
         let mut recyc: Vec<&PlanItem> = Vec::new();
         for it in &plan.items {
-            // Falla cerrado: lo que `never_permanent` prohíbe (informes y volcados, o una unidad suelta con antigüedad mínima,
-            // cuyo recorrido definitivo no es todo-o-nada) no llega nunca a la rama definitiva: ni por destino ni con la casilla.
+            // Fail closed: items prohibited by `never_permanent` (error reports and dumps, or a standalone item with a minimum
+            // age whose permanent traversal is not all-or-nothing) never reach the permanent-deletion branch, regardless of
+            // destination or checkbox.
             match (it.destination, it.is_unfit()) {
                 (Destination::Permanent, _)
                     if !it.never_permanent() && !self.roots.is_diagnostic_path(&it.path) =>
@@ -515,7 +518,7 @@ impl Cleaner {
             .items_total
             .store(perm.len() + recyc.len() + bin_items, Ordering::Relaxed);
 
-        // Volúmenes: espacio libre antes.
+        // Volumes: free space before execution.
         let mut roots: Vec<PathBuf> = Vec::new();
         let mut seen: HashSet<PathKey> = HashSet::new();
         let mut add_vol = |r: Option<PathBuf>| {
@@ -538,10 +541,10 @@ impl Cleaner {
 
         let sink = opts.log.as_ref().map(|l| l.sink());
 
-        // 1. Vaciar la Papelera con la lista enumerada al confirmar.
+        // 1. Empty the Recycle Bin using the list enumerated at approval.
         if let Some(bp) = plan.bin.as_ref().filter(|b| !b.items.is_empty()) {
             progress.set_phase(Phase::EmptyingBin);
-            // m1: lo que no se pudo listar consta en el registro (y en el informe, `BinReport::unlisted`).
+            // m1: items that could not be listed are recorded in the log (and in the report as `BinReport::unlisted`).
             if plan.bin_unlisted > 0
                 && let Some(l) = &opts.log
             {
@@ -567,8 +570,8 @@ impl Cleaner {
             progress.items_done.fetch_add(1, Ordering::Relaxed);
         }
 
-        // 2. Lo definitivo: el recorrido por handle. Antes, la INTENCIÓN (los elementos de la operación) escrita y volcada: si
-        // no se puede, no se borra nada.
+        // 2. Permanent deletion: handle-based traversal. First write and flush the INTENT (the operation's items); if that
+        // fails, nothing is deleted.
         let can_delete = !perm.is_empty()
             && !cancel.load(Ordering::Relaxed)
             && opts.log.as_ref().is_none_or(|l| {
@@ -597,7 +600,7 @@ impl Cleaner {
             engine::run(&units, self.threads);
             for (it, u) in perm.iter().zip(&units) {
                 let st = u.status().unwrap_or(RootStatus::Cancelled);
-                // El resultado de cada raíz, tras la intención (las entradas ya constan una a una).
+                // Record each root's result after its intent (individual entries are already logged).
                 if let Some(l) = &opts.log {
                     l.write_note("delete-end", &format!("{} -> {:?}", it.path.display(), st));
                 }
@@ -636,14 +639,14 @@ impl Cleaner {
             }
         }
 
-        // 3. Lo que va a la Papelera: comprobar, soltar el handle, IFileOperation con receptor y juicio por identidad.
+        // 3. Items going to the Recycle Bin: verify, release the handle, call IFileOperation with a receiver, then judge by identity.
         if !recyc.is_empty() {
             progress.set_phase(Phase::Recycling);
             self.recycle_items(&recyc, opts, progress, sink.clone(), &mut report);
         }
 
         progress.set_phase(Phase::Verifying);
-        // 4. Contadores y espacio libre medido.
+        // 4. Counters and measured free space.
         report.cancelled = cancel.load(Ordering::Relaxed);
         for ir in &report.items {
             report.totals.merge(&ir.stats);
@@ -673,7 +676,7 @@ impl Cleaner {
             report.bin_total_after = recycle::bin_totals().ok().map(|t| t.1);
         }
         if !opts.dry_run {
-            // La liberación de espacio de NTFS puede tardar un instante en reflejarse.
+            // NTFS may take a moment to reflect freed space.
             std::thread::sleep(Duration::from_millis(250));
             let mut delta: i64 = 0;
             let mut all = true;
@@ -700,18 +703,18 @@ impl Cleaner {
                     report.permanent_bytes, report.recycled_bytes, report.freed_now, report.totals.in_use, report.totals.denied
                 ),
             );
-            // Al terminar, `sync_all` a disco (una vez; ver el módulo `log`).
+            // At the end, call `sync_all` to flush to disk (once; see the `log` module).
             let _ = l.sync();
         }
         report.log_failed = opts.log.as_ref().is_some_and(|l| !l.ok());
         report.log_truncated = opts.log.as_ref().is_some_and(|l| l.truncated());
-        // `cancelled` es SOLO la cancelación del usuario; un fallo del registro se informa aparte (y pueden darse las dos).
+        // `cancelled` means ONLY user cancellation; a log failure is reported separately (both can occur).
         report.cancelled = progress.user_cancelled();
         progress.set_phase(Phase::Done);
         Ok(report)
     }
 
-    /// Vacía la Papelera con la lista capturada. Solo se purga ESA lista; lo que entre después no se toca.
+    /// Empties the Recycle Bin using the captured list. Only THAT list is purged; items added later are untouched.
     fn empty_bin(
         &self,
         items: &[BinItem],
@@ -744,21 +747,21 @@ impl Cleaner {
             return rep;
         }
         if cancel.load(Ordering::Relaxed) || self.elevation.is_elevated() {
-            // Cancelado, o elevado (E1: segunda línea de defensa; `execute` ya lo rechaza antes): no se purga nada.
+            // Cancelled or elevated (E1: second line of defense; `execute` already rejects this): purge nothing.
             rep.still_there = rep.requested;
             rep.failed = !cancel.load(Ordering::Relaxed);
             return rep;
         }
-        // Se purga a través de la carpeta shell de la Papelera (ver `recycle::purge_items`): la shell borra `$R` y `$I` a la
-        // vez. El resultado sale de lo que la propia shell notificó por elemento (no se vuelve a enumerar la Papelera).
-        // Cada elemento consta POR SEPARADO en el registro: la intención de cada trozo antes de entregarlo a la shell y, tras
-        // él, el resultado de cada uno (purgado, error o sin aviso); los saltados por haber cambiado, también.
+        // Purge through the Recycle Bin shell folder (see `recycle::purge_items`): the shell deletes `$R` and `$I` together.
+        // Results come from the shell's per-item notifications (the Recycle Bin is not enumerated again).
+        // Log each item SEPARATELY: record each chunk's intent before submitting it to the shell, then each item's result
+        // (purged, error, or no notification), including items skipped because they changed.
         let mut observe = |step: recycle::PurgeStep<'_>| {
             let Some(l) = log else { return };
             match step {
                 recycle::PurgeStep::Begin(items) => {
                     let paths: Vec<PathBuf> = items.iter().map(|i| i.original_path()).collect();
-                    // Un error aquí marca el registro y activa la cancelación: el trozo no se entrega.
+                    // An error here marks the log as failed and triggers cancellation: the chunk is not submitted.
                     let _ = l.write_intent("bin-begin", &paths);
                 }
                 recycle::PurgeStep::Skipped(items) => {
@@ -774,21 +777,21 @@ impl Cleaner {
                     l.flush();
                 }
                 recycle::PurgeStep::Replaced(items) => {
-                    // A-M4: la shell dio la purga por buena pero lo borrado no fue el objeto aprobado.
+                    // A-M4: the shell reported a successful purge, but the deleted object was not the approved one.
                     for i in items {
                         l.write_bin_item(&i.original_path(), &i.id, i.size, "replaced");
                     }
                     l.flush();
                 }
                 recycle::PurgeStep::Linked(items) => {
-                    // M2: el `$R` lleva enlaces dentro (o no se pudo comprobar): no se entrega a la shell.
+                    // M2: `$R` contains links (or could not be fully checked): it is not submitted to the shell.
                     for i in items {
                         l.write_bin_item(&i.original_path(), &i.id, i.size, "linked");
                     }
                     l.flush();
                 }
                 recycle::PurgeStep::Vetoed(items) => {
-                    // A-M4: la shell iba a borrar algo que ya no era lo capturado y el receptor lo vetó.
+                    // A-M4: the shell was about to delete something that no longer matched the captured item, and the receiver vetoed it.
                     for i in items {
                         l.write_bin_item(&i.original_path(), &i.id, i.size, "vetoed");
                     }
@@ -824,13 +827,13 @@ impl Cleaner {
                     .count() as u64;
                 rep.purged = purged.len() as u64;
                 rep.still_there = rep.requested - rep.purged;
-                // Cambiaron desde la confirmación: los que no cuadraban al enumerar y los que cambiaron DESPUÉS, justo antes de
-                // que la shell los borrara (veto de `PreDeleteItem`, A-M4).
+                // Changed since approval: items that did not match during enumeration and those that changed LATER, just before
+                // the shell deleted them (vetoed by `PreDeleteItem`, A-M4).
                 rep.changed = bin_changed(out.changed_bin.len(), &out.vetoed, &wanted);
                 rep.unverifiable = out.unverifiable_bin.len() as u64;
                 rep.with_links =
                     out.linked_bin.iter().filter(|i| wanted.contains(i)).count() as u64;
-                // El `E_ABORT` que provoca el propio receptor al vetar no es un fallo de la shell.
+                // The `E_ABORT` generated by the receiver's veto is not a shell failure.
                 rep.failed = out.error.is_some() && !out.sink_aborted;
             }
             Err(_) => {
@@ -857,19 +860,19 @@ impl Cleaner {
         rep
     }
 
-    /// Envía los elementos a la Papelera (ver el módulo), por trozos:
-    /// 1. se PREPARA cada elemento (apertura exclusiva para capturar la identidad y detectar "en uso", ruta resuelta y
-    ///    protección) y se deja abierto un handle de GUARDA hasta después de juzgarlo (ver `prepare_recycle`);
-    /// 2. los elementos de un volumen se reparten en OPERACIONES de la shell según el espacio que queda en su Papelera
-    ///    ([`take_op`]): la shell decide POR OPERACIÓN si lo que va cabe, y un elemento que no cabe arrastra a todos los
-    ///    de su operación. Se lee la ocupación antes de cada operación y, JUSTO ANTES de entregarla, se vuelve a medir cada
-    ///    candidato (A-B1: un archivo por su handle de guarda, un directorio con un recorrido COMPLETO, A-B2) y se vuelve a
-    ///    comprobar el presupuesto con esos tamaños y la ocupación de ese instante;
-    /// 3. se entregan las rutas ORIGINALES a la shell y se juzga cada elemento con lo que la propia shell notificó;
-    /// 4. CORTE DE SEGURIDAD: si un elemento acaba eliminado definitivamente (`DeletedUnexpectedly`), se DETIENE el resto
-    ///    del envío: los siguientes quedan `NotRecycled(Stopped)` y el resumen lo dice. Nada se pierde en cadena.
+    /// Sends items to the Recycle Bin in chunks (see the module):
+    /// 1. PREPARE each item (open exclusively to capture identity and detect "in use," resolve its path, and check protection),
+    ///    then keep a GUARD handle open until after judging the item (see `prepare_recycle`);
+    /// 2. group items by volume into shell OPERATIONS according to the remaining Recycle Bin space ([`take_op`]): the shell
+    ///    decides whether items fit PER OPERATION, and one item that does not fit can affect all items in that operation.
+    ///    Read occupancy before each operation, then remeasure each candidate JUST BEFORE submission (A-B1: a file through
+    ///    its guard handle, a directory through a COMPLETE traversal, A-B2) and recheck the budget against those sizes and
+    ///    the occupancy at that moment;
+    /// 3. submit the ORIGINAL paths to the shell and judge each item using the shell's own notifications;
+    /// 4. SAFETY STOP: if an item is permanently deleted (`DeletedUnexpectedly`), STOP sending the rest: subsequent items
+    ///    become `NotRecycled(Stopped)`, as stated in the summary. Nothing is lost in a chain.
     ///
-    /// Cada elemento se anota y se vuelca al registro en cuanto termina, y antes de cada operación se anotan sus rutas.
+    /// Log and flush each item as soon as it finishes; record the paths before each operation.
     fn recycle_items(
         &self,
         items: &[&PlanItem],
@@ -881,7 +884,7 @@ impl Cleaner {
         let shell: &dyn RecycleShell = self.shell.as_ref();
         let mut results: HashMap<usize, (ItemStatus, StatsSnapshot)> = HashMap::new();
         let cancel = &progress.cancel;
-        // Para las comprobaciones POSTERIORES a la shell (¿intacto el contenido?): no se cancelan.
+        // Do not cancel checks performed AFTER the shell operation (for example, whether contents remain intact).
         let verify_cancel = Arc::new(AtomicBool::new(false));
         let emit = |it: &PlanItem, id: Option<FileIdentity>, links: u32, o: Outcome| {
             if let Some(s) = &sink {
@@ -895,18 +898,18 @@ impl Cleaner {
                     outcome: o,
                 });
             }
-            // Tras CADA elemento se vuelca el registro: si la aplicación se cierra a mitad, consta hasta dónde llegó.
+            // Flush the log after EACH item so it records how far execution got if the application closes partway through.
             if let Some(l) = &opts.log {
                 l.flush();
             }
         };
-        // A3-M1: ¿cambió algo dentro de alguno de los directorios de la operación desde que se midió (lo vio su vigilancia)?
+        // A3-M1: did a watcher detect a change inside any operation directory since it was measured?
         let watch_changed = |entries: &[(&PlanItem, Pending)]| {
             entries
                 .iter()
                 .any(|(_, p)| p.watch.as_ref().is_some_and(|w| w.changed()))
         };
-        // La operación no se entrega: sus elementos constan como "cambió desde la confirmación".
+        // Do not submit the operation: record its items as "changed since approval".
         let reject_changed =
             |entries: &[(&PlanItem, Pending)],
              results: &mut HashMap<usize, (ItemStatus, StatsSnapshot)>| {
@@ -951,14 +954,14 @@ impl Cleaner {
                 }
                 continue;
             }
-            // 1. Preparar: comprobar y dejar el handle de guarda.
+            // 1. Prepare: verify the item and retain its guard handle.
             let mut slots: Vec<Option<(&PlanItem, Pending)>> = Vec::new();
             for &it in chunk {
                 let mut st = StatsSnapshot::default();
                 progress.entries.fetch_add(1, Ordering::Relaxed);
                 match self.prepare_recycle(it, &mut st) {
                     Prepared::Ready(mut p) if opts.dry_run => {
-                        // La simulación también mide lo que mediría el envío real.
+                        // The dry run also measures what a real submission would measure.
                         if let Err((status, o)) = self.fresh_size(it, &mut p, &mut st, cancel) {
                             emit(it, None, 0, o);
                             results.insert(it.id, (status, st));
@@ -976,7 +979,7 @@ impl Cleaner {
                     }
                 }
             }
-            // 2. Repartir por volumen (en el orden de llegada) y enviar operación a operación.
+            // 2. Group by volume (in arrival order) and submit one operation at a time.
             let mut buckets: Vec<(Option<PathKey>, Option<PathBuf>, VecDeque<usize>)> = Vec::new();
             for (i, s) in slots.iter().enumerate() {
                 let (it, _) = s.as_ref().expect("recién preparado");
@@ -989,7 +992,7 @@ impl Cleaner {
             for (_, vol, mut queue) in buckets {
                 while let Some(&first) = queue.front() {
                     if cancel.load(Ordering::Relaxed) || stopped {
-                        // Sin enviar: lo preparado y no entregado a la shell no se toca.
+                        // Do not submit: prepared items not handed to the shell remain untouched.
                         for i in queue.drain(..) {
                             if let Some((it, _)) = slots[i].take() {
                                 let fail = if stopped {
@@ -1004,16 +1007,16 @@ impl Cleaner {
                         break;
                     }
                     let first_is_dir = slots[first].as_ref().is_some_and(|(it, _)| it.is_dir());
-                    // A2-B1: un DIRECTORIO va SIEMPRE solo en su operación. Un recorrido tarda; con varios candidatos en la
-                    // misma operación, lo que ya estaba medido podía crecer mientras se medían los demás y llegar a la shell
-                    // con un tamaño que ya no era cierto (`PreDeleteItem` comprueba la identidad, no el tamaño). Solo, el
-                    // directorio se mide y se entrega sin nada de por medio salvo la línea de intención del registro
-                    // (§3.7.13). A3-M2: la ocupación de la Papelera se lee ANTES del recorrido y OTRA VEZ después, y manda la
-                    // MAYOR de las dos (`BinRoom::worst`): con una sola lectura previa, la Papelera podía llenarse mientras
-                    // se medía (Astra: capacidad 100 000, vacía al empezar, 99 000 al acabar el recorrido, y una carpeta de
-                    // 4 000 bytes se enviaba con la lectura vieja). La segunda lectura son unos milisegundos y cae dentro de la
-                    // ventana, que es donde debe estar. La ocupación es una HEURÍSTICA, no una garantía: un tercero puede
-                    // cambiarla hasta que la shell actúe y la shell decide por su cuenta si el elemento cabe.
+                    // A2-B1: a DIRECTORY ALWAYS runs alone in its operation. Traversal takes time; with multiple candidates
+                    // in one operation, an item already measured could grow while the others were being measured and reach
+                    // the shell with a stale size (`PreDeleteItem` checks identity, not size). Alone, the directory is
+                    // measured and submitted with nothing in between except the log intent line (§3.7.13). A3-M2: read
+                    // Recycle Bin occupancy BEFORE traversal and AGAIN afterward, and use the LARGER value (`BinRoom::worst`):
+                    // with only the first reading, the bin could fill during measurement (Astra: capacity 100,000, empty at
+                    // start, 99,000 at the end, then a 4,000-byte folder was submitted based on the stale reading). The
+                    // second reading takes a few milliseconds and falls within the window where it is needed. Occupancy is
+                    // a HEURISTIC, not a guarantee: a third party can change it before the shell acts, and the shell decides
+                    // independently whether the item fits.
                     let entries: Vec<(&PlanItem, Pending)> = if first_is_dir {
                         queue.pop_front();
                         let Some((it, mut p)) = slots[first].take() else {
@@ -1028,14 +1031,14 @@ impl Cleaner {
                             results.insert(it.id, (status, st));
                             continue;
                         }
-                        // Con la medida recién hecha y la MAYOR de las dos ocupaciones: la de antes y la de después del recorrido.
+                        // Use the fresh measurement and the LARGER of the two occupancy readings: before and after traversal.
                         let room_after = vol
                             .as_deref()
                             .map_or(BinRoom::UNKNOWN, |r| shell.bin_room(r));
                         let room = room.worst(room_after);
                         if let Take::NoRoom = take_op(&[p.size], room) {
-                            // No hay sitio ahora: enviarlo haría que la shell lo elimine o expulse lo que ya hay en la
-                            // Papelera. No se toca (el handle de guarda se suelta al salir de este bloque).
+                            // There is no room now: submitting it would make the shell delete it or evict existing Recycle Bin
+                            // items. Leave it untouched (the guard handle is released when this block exits).
                             emit(it, None, 0, Outcome::NotRecycled);
                             results.insert(
                                 it.id,
@@ -1048,8 +1051,8 @@ impl Cleaner {
                         }
                         vec![(it, p)]
                     } else {
-                        // ARCHIVOS: pueden viajar juntos (nunca con un directorio). El primero de la cola se mide ahora
-                        // (justo antes de decidir su operación): si creció, no se envía.
+                        // FILES can be submitted together (never with a directory). Measure the first queued file now, just
+                        // before deciding its operation; if it grew, do not submit it.
                         if let Some((it, p)) = slots[first].as_mut() {
                             let mut st = StatsSnapshot::default();
                             if let Err((status, o)) = self.fresh_size(it, p, &mut st, cancel) {
@@ -1060,7 +1063,7 @@ impl Cleaner {
                                 continue;
                             }
                         }
-                        // El grupo se corta en el primer directorio de la cola: la operación solo lleva archivos.
+                        // Stop the group at the first directory in the queue: the operation contains files only.
                         let sizes: Vec<u64> = queue
                             .iter()
                             .take_while(|&&i| slots[i].as_ref().is_some_and(|s| !s.0.is_dir()))
@@ -1071,8 +1074,8 @@ impl Cleaner {
                             .map_or(BinRoom::UNKNOWN, |r| shell.bin_room(r));
                         let n = match take_op(&sizes, room) {
                             Take::NoRoom => {
-                                // No hay sitio ahora: enviarlo haría que la shell lo elimine o expulse lo que ya hay en la
-                                // Papelera. No se toca.
+                                // There is no room now: submitting it would make the shell delete it or evict existing Recycle Bin
+                                // items. Leave it untouched.
                                 queue.pop_front();
                                 if let Some((it, _)) = slots[first].take() {
                                     emit(it, None, 0, Outcome::NotRecycled);
@@ -1088,9 +1091,9 @@ impl Cleaner {
                             }
                             Take::Send(n) => n,
                         };
-                        // Los candidatos se miden DE NUEVO ahora, por su handle de guarda, y la medida de cada archivo
-                        // viaja con él: `PreDeleteItem` lo vuelve a leer justo antes de que la shell lo toque y veta lo que
-                        // creció (A2-B1; sin eso, lo medido al principio del lote podía crecer mientras se medían los demás).
+                        // Remeasure the candidates NOW through their guard handles, and carry each file's measurement with it:
+                        // `PreDeleteItem` reads it again just before the shell acts and vetoes any growth (A2-B1; without this,
+                        // an item measured at the start of the batch could grow while the others were being measured).
                         let mut staged: Vec<(usize, &PlanItem, Pending)> = Vec::new();
                         let candidates: Vec<usize> = queue.drain(..n).collect();
                         for i in candidates {
@@ -1109,8 +1112,8 @@ impl Cleaner {
                         if staged.is_empty() {
                             continue;
                         }
-                        // ...y se vuelve a comprobar el presupuesto con los tamaños y la ocupación de AHORA: lo que ya no
-                        // cabe en la operación vuelve al principio de la cola (se medirá otra vez cuando le toque).
+                        // ...then recheck the budget using the CURRENT sizes and occupancy: items that no longer fit in the
+                        // operation return to the front of the queue (they will be measured again when their turn comes).
                         let room_now = room.worst(
                             vol.as_deref()
                                 .map_or(BinRoom::UNKNOWN, |r| shell.bin_room(r)),
@@ -1141,14 +1144,14 @@ impl Cleaner {
                         continue;
                     }
                     let paths: Vec<PathBuf> = entries.iter().map(|(_, p)| p.path.clone()).collect();
-                    // La identidad aprobada viaja con la ruta: el receptor la comprueba en `PreDeleteItem`.
-                    // Un ARCHIVO lleva además su handle de guarda y el tamaño contado: `PreDeleteItem` lo vuelve a medir (A2-B1).
+                    // Carry the approved identity with the path: the receiver checks it in `PreDeleteItem`.
+                    // A FILE also carries its guard handle and counted size: `PreDeleteItem` measures it again (A2-B1).
                     let send: Vec<recycle::SendItem> = entries
                         .iter()
                         .map(|(it, p)| recycle::SendItem {
                             path: p.path.clone(),
                             identity: p.identity,
-                            // A3-M1: un DIRECTORIO lleva la vigilancia de cambios abierta antes de medirlo.
+                            // A3-M1: a DIRECTORY carries the change monitor opened before measurement.
                             watch: p.watch.clone(),
                             size_guard: (!it.is_dir()).then(|| recycle::SizeGuard {
                                 handle: p.held.clone(),
@@ -1160,16 +1163,16 @@ impl Cleaner {
                     for p in &paths {
                         crate::engine::test_hooks::before_shell(p);
                     }
-                    // A3-M1 (S1 de la auditoría): también ANTES de escribir la línea de intención. Una carpeta que ya cambió no
-                    // deja un `recycle-begin` sin entrega; se vuelve a mirar justo después de escribirla (lo último antes de la
-                    // shell), porque la escritura tarda y cae dentro de la ventana.
+                    // A3-M1 (audit S1): check AGAIN BEFORE writing the intent line. A folder that already changed must not leave
+                    // a `recycle-begin` without a submission; check it again just after writing the line (the last step before
+                    // the shell), because writing takes time and falls within the race window.
                     if watch_changed(&entries) {
                         reject_changed(&entries, &mut results);
                         drop(entries);
                         continue;
                     }
-                    // Antes de entregarlas a la shell se anota la INTENCIÓN (la lista de rutas del lote) y se vuelca: tras un
-                    // cierre forzoso se sabe qué pudo moverse. Si no se puede dejar escrita, NO se entrega nada a la shell.
+                    // Before submitting paths to the shell, record and flush the INTENT (the batch's path list): after a forced
+                    // close, this shows what may have been moved. If it cannot be written, submit NOTHING to the shell.
                     if let Some(l) = &opts.log
                         && l.write_intent("recycle-begin", &paths).is_err()
                     {
@@ -1186,18 +1189,17 @@ impl Cleaner {
                         drop(entries);
                         continue;
                     }
-                    // A3-M1: lo último antes de la shell. Si algo cambió dentro del directorio desde que se midió (la vigilancia
-                    // lo vio), la medida no es cierta: no se entrega ("cambió desde la confirmación"). Un directorio va solo en
-                    // su operación; en la shell, `PreDeleteItem` vuelve a consultar la misma vigilancia (y, si pasa, la para).
+                    // A3-M1: the final check before the shell. If the monitor saw a change inside the directory since measurement,
+                    // the measurement is stale: do not submit it ("changed since approval"). A directory runs alone; in the
+                    // shell operation, `PreDeleteItem` checks the same monitor again and stops it if the check passes.
                     if watch_changed(&entries) {
                         reject_changed(&entries, &mut results);
                         drop(entries);
                         continue;
                     }
                     let outcome = shell.recycle(&send);
-                    // Un error de la shell o de COM no se pierde: consta en el registro local y en el resumen. El `E_ABORT`
-                    // que provoca el propio receptor al cortar el lote NO es un error de la shell: el motivo del corte va en
-                    // `stop_reason`.
+                    // Do not lose shell or COM errors: record them in the local log and summary. The `E_ABORT` generated by the
+                    // receiver to stop a batch is NOT a shell error; the stop reason is recorded in `stop_reason`.
                     if let Some(e) = &outcome.error {
                         let own_abort = outcome.sink_aborted
                             && e.hresult == windows::Win32::Foundation::E_ABORT.0;
@@ -1206,10 +1208,9 @@ impl Cleaner {
                         } else if let Some(f) = outcome.events.iter().find(|ev| {
                             !ev.succeeded() && ev.hr != windows::Win32::Foundation::E_ABORT.0
                         }) {
-                            // A2-M1: el receptor corta tras un resultado de FALLO y el `E_ABORT` es suyo; el error de la
-                            // shell es el de ese resultado, y no se pierde. Se ignora el `E_ABORT` del propio receptor: tras
-                            // un veto la shell avisa del vetado con `PostDeleteItem(E_ABORT)` (medido) y eso no es un error
-                            // de Windows.
+                            // A2-M1: the receiver stops after a FAILURE result, so this `E_ABORT` is its own; preserve the shell
+                            // error from that result. Ignore the receiver's own `E_ABORT`: after a veto, the shell reports the
+                            // vetoed item with `PostDeleteItem(E_ABORT)` (observed), which is not a Windows error.
                             report.shell_error.get_or_insert(f.hr);
                         }
                         if let Some(l) = &opts.log {
@@ -1220,10 +1221,9 @@ impl Cleaner {
                             l.flush();
                         }
                     }
-                    // GM-M5: cada evento y cada veto se asigna al elemento de la operación por su nombre EXACTO; la clave (que
-                    // pliega mayúsculas) solo si no hay ambigüedad. Con dos nombres que solo difieren en mayúsculas en un
-                    // directorio sensible a ellas, una tabla por clave los confundía y el segundo heredaba el resultado (o el
-                    // veto) del primero.
+                    // GM-M5: assign each event and veto to an operation item by its EXACT name; use the case-folded key only
+                    // when unambiguous. In a case-sensitive directory, two names differing only by case were confused by a
+                    // key-based table, causing the second to inherit the first one's result (or veto).
                     let names: Vec<&std::ffi::OsStr> =
                         entries.iter().map(|(_, p)| p.path.as_os_str()).collect();
                     let mut event_of: Vec<Option<&recycle::DeleteEvent>> = vec![None; names.len()];
@@ -1238,26 +1238,25 @@ impl Cleaner {
                             veto_of[i] = true;
                         }
                     }
-                    // 3. Juzgar cada elemento por lo que notificó la shell (con el handle de guarda aún abierto).
+                    // 3. Judge each item using the shell's notification (while its guard handle is still open).
                     for (idx, (it, p)) in entries.iter().enumerate() {
                         let ev = event_of[idx];
                         let (mut status, mut o) = if veto_of[idx] {
-                            // `PreDeleteItem` vio otro objeto en la ruta aprobada y lo vetó: no se envió (sigue ahí, el
-                            // sustituto) y consta como "cambió desde la confirmación".
+                            // `PreDeleteItem` found a different object at the approved path and vetoed it: nothing was submitted
+                            // (the replacement remains in place), and the item is recorded as "changed since approval".
                             (ItemStatus::Root(RootStatus::Changed), Outcome::Changed)
                         } else {
                             judge(p, ev, shell, outcome.any_aborted, outcome.sink_aborted)
                         };
-                        // R6 + A-M1: "no se envió y sigue donde estaba" de un DIRECTORIO solo vale si tampoco se tocó lo
-                        // que contiene: el objeto carpeta intacto no dice nada de sus hijos. Vale para CUALQUIER resultado
-                        // de "no enviado" tras pasar por la shell (la shell dijo "eliminado" sin tocar, falló, no lo
-                        // procesó...): un fallo puede llegar después de perder un hijo. Se vuelve a medir (mismo recorrido
-                        // relativo, COMPLETO) y la huella del contenido se compara con la de justo antes del envío, con TRES
-                        // resultados (A2-m1): igual, `Intact`; distinta en una medida completa, `Changed` = borrado
-                        // definitivo, aunque sea parcial; y si la medida no se pudo hacer entera (una subcarpeta sin leer, un
-                        // fallo, una cancelación) es `Unknown`: no se afirma ninguna pérdida, es `Unverified` y el envío se
-                        // detiene. La comprobación NO se interrumpe por la cancelación: debe terminar para poder decir la
-                        // verdad del informe.
+                        // R6 + A-M1: "not submitted and still in place" is true for a DIRECTORY only if its contents were also
+                        // untouched: the folder object remaining intact says nothing about its children. Apply this to ANY
+                        // result meaning "not submitted" after the shell operation (the shell reported "deleted" without
+                        // touching it, failed, did not process it...): a failure can occur after a child was lost. Remeasure
+                        // using the same COMPLETE relative traversal and compare the contents fingerprint with the one taken
+                        // just before submission. There are THREE outcomes (A2-m1): equal means `Intact`; different in a
+                        // complete measurement means `Changed` (permanent deletion, even if partial); an incomplete measurement
+                        // (unread subfolder, failure, or cancellation) means `Unknown`: claim no loss, report `Unverified`, and
+                        // stop sending. Do NOT interrupt this check on cancellation; it must finish so the report is accurate.
                         if matches!(status, ItemStatus::NotRecycled(_)) && it.is_dir() {
                             match self.dir_check(it, p, &verify_cancel) {
                                 DirCheck::Intact => {}
@@ -1285,7 +1284,7 @@ impl Cleaner {
                             ItemStatus::Root(RootStatus::Changed) => st.changed += 1,
                             _ => {}
                         }
-                        // CORTE DE SEGURIDAD: tras un borrado inesperado o algo que no se pudo verificar no se envía nada más.
+                        // SAFETY STOP: after an unexpected deletion or an unverifiable result, submit nothing else.
                         if matches!(
                             status,
                             ItemStatus::DeletedUnexpectedly | ItemStatus::Unverified
@@ -1300,7 +1299,7 @@ impl Cleaner {
                                 },
                             );
                         }
-                        // La shell dijo "eliminado" pero el elemento sigue ahí (ver `judge`): el envío se detiene igual.
+                        // The shell reported "deleted" but the item remains in place (see `judge`): stop sending anyway.
                         if matches!(status, ItemStatus::NotRecycled(RecycleFail::Shell(_)))
                             && ev.is_some_and(|e| {
                                 e.succeeded() && e.state == recycle::BinState::Deleted
@@ -1325,16 +1324,16 @@ impl Cleaner {
                         }
                         results.insert(it.id, (status, st));
                     }
-                    // Un veto (o cualquier otro corte del receptor) detiene también lo que queda por enviar.
+                    // A veto (or any other receiver stop) also stops the remaining submissions.
                     if outcome.sink_aborted && !report.recycle_stopped {
-                        // H5 (decisión conservadora, documentada en PLAN): un solo fallo de un ARCHIVO con pendientes en su lote
-                        // detiene TODO el envío, aunque en un archivo no pueda haber pérdida parcial. La alternativa (reencolar
-                        // los pendientes en otra operación) se descartó por simplicidad: el caso es raro, porque tras preparar
-                        // el lote la guarda impide bloquear un archivo desde fuera.
-                        // A2-M1: si el corte lo causó solo el FALLO de un resultado (ni veto ni pérdida: esos ya pararon el
-                        // envío arriba), cancela lo pendiente del MISMO lote (queda como `Stopped`, intacto y comprobado) y
-                        // solo entonces se detiene todo lo demás. Si el fallo fue lo último del lote (siempre, para un
-                        // directorio, que va solo) no había nada pendiente y las operaciones siguientes siguen.
+                        // H5 (conservative decision documented in PLAN): one failure for a FILE with pending items in its batch
+                        // stops ALL submissions, even though a file cannot have partial data loss. Requeuing the remaining
+                        // items in another operation was rejected for simplicity; this case is rare because the guard handle
+                        // prevents an external process from locking a file after batch preparation.
+                        // A2-M1: if the stop was caused only by a result FAILURE (not a veto or loss; those already stopped
+                        // submission above), cancel the remaining items in the SAME batch (mark them `Stopped`, intact, and
+                        // checked), then stop all other submissions. If the failure was the batch's last item (always true
+                        // for a directory, which runs alone), nothing was pending, so subsequent operations continue.
                         let failure_only = outcome.vetoed.is_empty()
                             && outcome.events.iter().any(|e| !e.succeeded());
                         let cancelled_pending = event_of.iter().any(Option::is_none);
@@ -1348,7 +1347,7 @@ impl Cleaner {
                             });
                         }
                     }
-                    // Aquí se sueltan los handles de guarda de la operación.
+                    // The operation's guard handles are released here.
                     drop(entries);
                 }
             }
@@ -1358,7 +1357,7 @@ impl Cleaner {
                 ItemStatus::Root(RootStatus::Cancelled),
                 StatsSnapshot::default(),
             ));
-            // Los contadores de lo que se respetó (protegido, reciente...) vienen de la medida al aprobar.
+            // Counters for preserved items (protected, recent...) come from the approval measurement.
             if matches!(status, ItemStatus::Recycled | ItemStatus::WouldRecycle) {
                 stats.shared_files = it.estimate.shared_files;
                 stats.shared_bytes = it.estimate.shared_bytes;
@@ -1390,17 +1389,16 @@ impl Cleaner {
         }
     }
 
-    /// Comprobación previa de un elemento que va a la Papelera:
-    /// * lo abre en exclusiva (un archivo en uso falla con `SHARING_VIOLATION`; un directorio se abre compartiendo, y si
-    ///   tiene algo abierto dentro la propia shell falla al moverlo), verifica su identidad y su ruta resuelta (local, la
-    ///   aprobada, permitida);
-    /// * y deja abierto un handle de GUARDA (`DELETE | READ_ATTRIBUTES`, compartiéndolo todo) que se conserva durante toda
-    ///   la operación de la shell y hasta después de juzgar el elemento. Mientras está abierto, Windows NO deja renombrar
-    ///   el padre ni el abuelo del elemento (error 5): no se puede cambiar un ancestro por un junction a otra carpeta en
-    ///   la ventana entre esta comprobación y que la shell abra el elemento. La shell recicla igual (el handle comparte
-    ///   `DELETE`: la guarda NO impide renombrar el propio elemento ni poner otro con su nombre; eso lo vigila
-    ///   `PreDeleteItem`, que compara la identidad justo antes de que la shell actúe). Además permite comprobar al final
-    ///   que el objeto aprobado es el que acabó en la Papelera.
+    /// Preflight check for an item going to the Recycle Bin:
+    /// * open it exclusively (an in-use file fails with `SHARING_VIOLATION`; a directory is opened with sharing, and the
+    ///   shell itself fails to move it if anything inside is open), then verify its identity and resolved path (local,
+    ///   approved, and allowed);
+    /// * keep a GUARD handle (`DELETE | READ_ATTRIBUTES`, sharing all access) open throughout the shell operation and until
+    ///   after the item is judged. While it is open, Windows does NOT allow renaming the item's parent or grandparent (error 5),
+    ///   preventing an ancestor from being replaced with a junction to another folder between this check and the shell opening
+    ///   the item. The shell can still recycle it (the handle shares `DELETE`): the guard does NOT prevent renaming the item
+    ///   itself or placing a replacement at its path. `PreDeleteItem` monitors this by comparing identity just before the shell
+    ///   acts. The guard also allows a final check that the approved object ended up in the Recycle Bin.
     fn prepare_recycle(&self, it: &PlanItem, st: &mut StatsSnapshot) -> Prepared {
         let UnitSpec::Entry {
             path,
@@ -1429,7 +1427,7 @@ impl Cleaner {
         };
         let reparse_ok = !m.is_reparse()
             || (!m.is_dir && m.reparse_tag == *approved_tag && sys::is_cloud_tag(m.reparse_tag));
-        // Misma identidad pero otro número de enlaces: alguien añadió o quitó nombres desde la confirmación.
+        // Same identity but a different link count: someone added or removed names since approval.
         if m.identity != *approved
             || m.is_dir != *is_dir
             || !reparse_ok
@@ -1438,8 +1436,8 @@ impl Cleaner {
             st.changed += 1;
             return Prepared::Rejected(ItemStatus::Root(RootStatus::Changed), Outcome::Changed);
         }
-        // M-1: una unidad con antigüedad mínima (informes, volcados) solo se envía si el objeto SIGUE siendo así de antiguo. La
-        // identidad y el tamaño no bastan: un volcado "tocado" tras la confirmación conserva ambos.
+        // M-1: a unit with a minimum age (reports, dumps) is submitted only if the object is STILL that old. Identity and size
+        // are not enough: a dump touched after approval retains both.
         if too_young(it, m.newest_filetime) {
             st.changed += 1;
             return Prepared::Rejected(ItemStatus::Root(RootStatus::Changed), Outcome::Young);
@@ -1457,9 +1455,9 @@ impl Cleaner {
             st.protected += 1;
             return Prepared::Rejected(ItemStatus::Root(RootStatus::Protected), Outcome::Protected);
         }
-        // El handle de guarda. Un directorio ya se abrió compartiéndolo todo con `DELETE`: ese mismo es la guarda. Un
-        // archivo se abrió en exclusiva (para detectar "en uso"): se suelta y se abre la guarda compartiendo, y se
-        // vuelve a comprobar que es el mismo objeto en la misma ruta.
+        // The guard handle. A directory was already opened sharing everything with `DELETE`; that handle is the guard. A file
+        // was opened exclusively (to detect "in use"), so release it, open the shared guard handle, and verify again that it
+        // is the same object at the same path.
         let held = if *is_dir {
             h
         } else {
@@ -1480,12 +1478,12 @@ impl Cleaner {
             }
             g
         };
-        // Lo que ocupa de verdad ahora frente a lo medido al aprobar. Un directorio NO se vuelve a medir aquí (un trozo son
-        // hasta 32 elementos y entre este punto y su turno pasa tiempo): se mide JUSTO ANTES de entregarlo, solo en su
-        // operación, en `fresh_size` (H6.2, A2-B1). Mientras tanto vale lo aprobado.
+        // Actual size compared with the approval measurement. Do NOT remeasure a directory here (a chunk can contain up to 32
+        // items, and time passes before its turn): measure it JUST BEFORE submission, alone in its operation, in `fresh_size`
+        // (H6.2, A2-B1). Until then, use the approved measurement.
         let estimate = it.estimate.recycle_charge();
-        // Un archivo: lo que ocupa de verdad ahora frente a lo medido al aprobar, el mayor manda (provisional: se vuelve a
-        // medir por la guarda JUSTO ANTES de la operación, en `fresh_size`).
+        // For a file, compare its actual size with the approval measurement and use the larger value (provisional: the guard
+        // measures it again JUST BEFORE the operation in `fresh_size`).
         let (size, last) = if m.is_dir {
             (estimate, None)
         } else {
@@ -1501,7 +1499,7 @@ impl Cleaner {
             held: Arc::new(held),
             size,
             last,
-            // Lo que se informará si llega a la Papelera: lo aprobado hasta que `fresh_size` lo mida de nuevo (GM-m6).
+            // What to report if it reaches the Recycle Bin: the approved amount until `fresh_size` measures it again (GM-m6).
             disk: if m.is_dir || m.links > 1 {
                 it.estimate.bytes
             } else {
@@ -1517,12 +1515,12 @@ impl Cleaner {
         }))
     }
 
-    /// R6 + A2-m1: ¿sigue el directorio igual que justo antes del envío? Tres estados:
-    /// * `Intact`: una medida COMPLETA con la misma huella (tamaños, número de entradas e identidades);
-    /// * `Changed`: una medida COMPLETA que difiere en cualquier sentido (se perdió o se cambió algo);
-    /// * `Unknown`: la medida no se pudo hacer entera (A-B2: una subcarpeta sin listar, una entrada que cambió o desapareció
-    ///   durante el recorrido, un fallo al abrir, una cancelación) o no hay medida anterior con la que comparar. No demuestra
-    ///   nada, ni que esté intacto ni que se perdiera algo.
+    /// R6 + A2-m1: does the directory still match its state just before submission? Three outcomes:
+    /// * `Intact`: a COMPLETE measurement with the same fingerprint (sizes, entry count, and identities);
+    /// * `Changed`: a COMPLETE measurement that differs in any way (something was lost or changed);
+    /// * `Unknown`: the measurement was incomplete (A-B2: an unlisted subfolder, an entry that changed or disappeared during
+    ///   traversal, an open failure, or cancellation), or there is no earlier measurement to compare. This proves nothing:
+    ///   neither that the directory is intact nor that anything was lost.
     fn dir_check(&self, it: &PlanItem, p: &Pending, cancel: &Arc<AtomicBool>) -> DirCheck {
         match (self.remeasure(it, cancel), p.snapshot) {
             (Remeasure::Now(after), Some(before)) => {
@@ -1536,18 +1534,17 @@ impl Cleaner {
         }
     }
 
-    /// B2 + H6.2 + A-B1 + A2-B1: lo que ocupa un elemento pudo CRECER desde la aprobación, y también mientras esperaba su
-    /// turno (una operación de la shell puede tardar). Se vuelve a medir JUSTO ANTES de entregarlo (un directorio, solo en su
-    /// operación; un archivo, en su lote, donde además `PreDeleteItem` lo mide otra vez), no al preparar el trozo entero y no
-    /// una sola vez:
-    /// * un ARCHIVO, por su handle de guarda (`FileStandardInfo`: tamaño en disco y lógico), sin volver a abrir la ruta, y
-    ///   comprobando de paso que sigue siendo el mismo objeto (identidad, enlaces, no pendiente de borrar);
-    /// * un DIRECTORIO, con el mismo recorrido (relativo, sin entrar en reparse points) y solo si la medida es COMPLETA
-    ///   (A-B2).
+    /// B2 + H6.2 + A-B1 + A2-B1: an item's size may have GROWN since approval, including while it waited for its turn (a shell
+    /// operation can take time). Remeasure it JUST BEFORE submission (a directory alone in its operation; a file in its batch,
+    /// where `PreDeleteItem` measures it again), rather than measuring the entire chunk during preparation or measuring only once:
+    /// * a FILE, through its guard handle (`FileStandardInfo`: on-disk and logical sizes), without reopening the path, while
+    ///   also checking that it is still the same object (identity, links, and not pending deletion);
+    /// * a DIRECTORY, using the same traversal (relative, without entering reparse points), and only if the measurement is
+    ///   COMPLETE (A-B2).
     ///
-    /// Si creció (frente a lo aprobado o frente a la última medida), no se envía: el reparto se basa en un tamaño que ya no
-    /// es cierto y `Err` lleva el estado "cambió desde la confirmación"; si encogió, manda el tamaño nuevo. Quien llama
-    /// vuelve a comprobar el presupuesto de la Papelera (`take_op`) con estos tamaños nuevos.
+    /// If it grew (compared with approval or the latest measurement), do not submit it: the grouping is based on a size that
+    /// is no longer valid, and `Err` carries the "changed since approval" status. If it shrank, use the new size. The caller
+    /// rechecks the Recycle Bin budget (`take_op`) using these updated sizes.
     fn fresh_size(
         &self,
         it: &PlanItem,
@@ -1559,49 +1556,49 @@ impl Cleaner {
             st.changed += 1;
             Err((ItemStatus::Root(RootStatus::Changed), Outcome::Changed))
         };
-        // Lo que ya no cumple la antigüedad mínima: el mismo estado ("cambió desde la confirmación"), pero en el registro consta
-        // como "demasiado reciente" (S-7), no como un cambio cualquiera.
+        // An item that no longer meets the minimum age has the same status ("changed since approval"), but the log records it
+        // as "too recent" (S-7), not as a generic change.
         let young = |st: &mut StatsSnapshot| {
             st.changed += 1;
             Err((ItemStatus::Root(RootStatus::Changed), Outcome::Young))
         };
         if !it.is_dir() {
-            // Por el handle de guarda: el objeto que se aprobó, no lo que haya ahora en la ruta.
+            // Use the guard handle to check the approved object, not whatever is currently at the path.
             let Ok(m) = sys::meta(&p.held) else {
                 return changed(st);
             };
             if m.identity != p.identity || m.is_dir || m.delete_pending || m.links != p.links {
                 return changed(st);
             }
-            // M-1: otra vez la antigüedad mínima, ahora justo antes de la operación.
+            // M-1: check the minimum age again, now just before the operation.
             if too_young(it, m.newest_filetime) {
                 return young(st);
             }
             let fresh = m.alloc.max(m.logical);
-            // Si creció frente a lo APROBADO o frente a la última medida real (la de `prepare_recycle` y las posteriores),
-            // no se envía: el reparto de la operación se decidió con un tamaño que ya no es cierto.
+            // If it grew compared with the APPROVED size or the latest actual measurement (`prepare_recycle` and later checks),
+            // do not submit it: operation grouping was decided using a size that is no longer valid.
             let approved = it.estimate.recycle_charge();
             if fresh > approved || p.last.is_some_and(|l| fresh > l) {
                 return changed(st);
             }
             p.size = fresh;
             p.last = Some(fresh);
-            // GM-m6: lo que se informa si llega a la Papelera es lo de AHORA (un archivo que encogió).
+            // GM-m6: report its CURRENT size if it reaches the Recycle Bin (including a file that shrank).
             p.disk = if m.links > 1 { 0 } else { m.alloc };
             p.logical = m.logical;
             return Ok(());
         }
-        // M-1: la fecha de la propia carpeta (lo de dentro lo comprueba la huella: un archivo reciente cambia la clase de su
-        // entrada). Sin leerla, o con otro objeto, no se envía.
+        // M-1: check the folder's own timestamp (the fingerprint checks its contents: a recent file changes that entry's
+        // class). If the timestamp cannot be read or this is a different object, do not submit it.
         match sys::meta(&p.held) {
             Ok(m) if !too_young(it, m.newest_filetime) => {}
             Ok(_) => return young(st),
             Err(_) => return changed(st),
         }
-        // A3-M1: la vigilancia de cambios se abre ANTES del recorrido (lo que cambie antes no se vería) y vive hasta el
-        // `PreDeleteItem` de su operación: una carpeta puede crecer MIENTRAS se mide (el recorrido ya contó el primer archivo
-        // cuando este se agranda) y el recorrido no se entera. Segundo handle del directorio con identidad verificada; si
-        // no se puede abrir o arrancar, la carpeta NO se envía (falla cerrado).
+        // A3-M1: open the change monitor BEFORE traversal (changes before that would not be seen) and keep it alive until the
+        // operation's `PreDeleteItem`: a folder can grow WHILE it is being measured (the traversal may have counted the first
+        // file before it grew, without noticing). Use a second directory handle with verified identity; if it cannot be opened
+        // or monitoring cannot start, do NOT submit the folder (fail closed).
         let watch = match sys::DirWatch::start(&p.path, p.identity) {
             Ok(w) => w,
             Err(sys::WatchError::Changed) => return changed(st),
@@ -1613,11 +1610,11 @@ impl Cleaner {
         match self.remeasure(it, cancel) {
             Remeasure::Now(_) if watch.changed() => changed(st),
             Remeasure::Now(fresh) => {
-                // GM-B3: un directorio solo se envía con el MISMO contenido que se aprobó: huella (identidad, tamaños,
-                // enlaces y clase de cada entrada, independiente del orden) y recuentos idénticos, y sin MÁS protegidos,
-                // reparse points ni archivos de la nube. Antes solo se miraba que no hubiese crecido: si un archivo
-                // desaparecía y aparecía otro más pequeño, la carpeta se enviaba con contenido que nadie aprobó. Una carpeta
-                // cuyo contenido cambió en cualquier sentido (también si encogió) vuelve a la confirmación.
+                // GM-B3: submit a directory only if its contents are the SAME as approved: identical fingerprint (identity,
+                // sizes, links, and class of every entry, independent of order), identical counts, and no MORE protected items,
+                // reparse points, or cloud files. Previously, only growth was checked: if a file disappeared and a smaller one
+                // appeared, the folder was submitted with unapproved contents. Any change to a folder's contents, including
+                // shrinkage, requires confirmation again.
                 let est = &it.estimate;
                 let same = snap_of(&fresh) == snap_of(est)
                     && fresh.reparse <= est.reparse
@@ -1644,32 +1641,32 @@ impl Cleaner {
     }
 }
 
-/// Qué se sabe del contenido de un directorio que la shell no envió (ver [`Cleaner::dir_check`]).
+/// What is known about the contents of a directory the shell did not submit (see [`Cleaner::dir_check`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DirCheck {
-    /// Medida completa e igual a la de antes del envío.
+    /// Complete measurement, identical to the one taken before submission.
     Intact,
-    /// Medida completa y distinta: algo se perdió o cambió.
+    /// Complete measurement, but different: something was lost or changed.
     Changed,
-    /// La medida no se pudo hacer entera: no se puede afirmar nada.
+    /// Measurement was incomplete: nothing can be concluded.
     Unknown,
 }
 
-/// Resultado de volver a medir un directorio justo antes de enviarlo.
+/// Result of remeasuring a directory just before submission.
 enum Remeasure {
-    /// La medida de un recorrido COMPLETO (ver [`StatsSnapshot::is_complete`]).
+    /// Measurement from a COMPLETE traversal (see [`StatsSnapshot::is_complete`]).
     Now(Box<StatsSnapshot>),
     Cancelled,
-    /// El recorrido terminó pero NO vio todo (una subcarpeta sin listar, una entrada que cambió o desapareció...): su resultado
-    /// no vale. Se trata como "cambió desde la confirmación" al enviar y como "NO intacto" al juzgar (R6).
+    /// Traversal finished but did NOT see everything (an unlisted subfolder, an entry that changed or disappeared...): its
+    /// result is invalid. Treat it as "changed since approval" when submitting and "NOT intact" when judging (R6).
     Incomplete,
-    /// No se pudo medir (cambió, ya no existe, protegido...): se trata como "cambió desde la confirmación".
+    /// Could not measure (changed, no longer exists, protected...): treat it as "changed since approval".
     Failed,
 }
 
 impl Cleaner {
-    /// Vuelve a medir el directorio aprobado de `it` con el mismo recorrido de la aprobación (modo `Measure`: apertura
-    /// relativa, identidad verificada y sin entrar en reparse points).
+    /// Remeasures the approved directory for `it` using the same traversal as approval (`Measure` mode: relative opening,
+    /// verified identity, and no traversal into reparse points).
     fn remeasure(&self, it: &PlanItem, cancel: &Arc<AtomicBool>) -> Remeasure {
         let progress = Arc::new(AtomicU64::new(0));
         let unit = Unit::new(
@@ -1678,14 +1675,13 @@ impl Cleaner {
             self.env(Mode::Measure, it.min_age, cancel, &progress, None, false),
         );
         engine::run(std::slice::from_ref(&unit), self.threads);
-        // Un recorrido interrumpido por la cancelación (o por un pánico de un hilo, que también la activa) no vio todo.
+        // A traversal interrupted by cancellation (or a thread panic, which also triggers it) did not see everything.
         if cancel.load(Ordering::Relaxed) {
             return Remeasure::Cancelled;
         }
         match unit.status() {
-            // A-B2: `Done` solo dice que la RAÍZ se abrió y se listó. La medida vale únicamente si el recorrido entero fue
-            // completo: una subcarpeta que no se pudo listar, una entrada que cambió o desapareció, un error de apertura...
-            // dejan contenido sin contar.
+            // A-B2: `Done` only means the ROOT was opened and listed. The measurement is valid only if the entire traversal
+            // completed: an unlisted subfolder, an entry that changed or disappeared, an open error... all leave contents uncounted.
             Some(RootStatus::Done) => {
                 let s = unit.stats.snapshot();
                 if s.is_complete() {
@@ -1700,38 +1696,38 @@ impl Cleaner {
     }
 }
 
-/// Elementos por trozo (y por vuelta de la cancelación).
+/// Items per chunk (and per cancellation check).
 const RECYCLE_CHUNK: usize = 32;
 
-/// Un elemento comprobado y listo para entregar a la shell por su ruta original.
+/// An item checked and ready to submit to the shell using its original path.
 struct Pending {
     path: PathBuf,
     identity: FileIdentity,
     links: u32,
-    /// Handle de guarda (ver `prepare_recycle`): abierto hasta después de juzgar el elemento. Compartido (`Arc`) porque el
-    /// receptor de la shell lo usa para volver a medir un archivo en `PreDeleteItem` (A2-B1).
+    /// Guard handle (see `prepare_recycle`): kept open until after the item is judged. Shared (`Arc`) because the shell
+    /// receiver uses it to remeasure a file in `PreDeleteItem` (A2-B1).
     held: Arc<sys::Handle>,
-    /// Lo que se cuenta para repartir en operaciones: provisional al preparar (el mayor entre lo aprobado y lo que ocupa
-    /// ahora) y, tras cada [`Cleaner::fresh_size`], lo que ocupa AHORA.
+    /// Size used to group items into operations: provisional during preparation (the larger of the approved size and current
+    /// size), then the CURRENT size after each [`Cleaner::fresh_size`] check.
     size: u64,
-    /// La última medida real (un archivo, por su handle de guarda; un directorio, por el recorrido) o `None` si aún no
-    /// hay ninguna. Si lo que se mide ahora es MÁS que esto, el elemento creció mientras esperaba su turno: no se envía.
+    /// Latest actual measurement (a file through its guard handle; a directory through traversal), or `None` if not measured
+    /// yet. If the current measurement is GREATER, the item grew while waiting for its turn and is not submitted.
     last: Option<u64>,
-    /// La medida del directorio hecha justo antes de entregarlo a la shell (tamaño y número de entradas): lo que
-    /// `dir_check` compara después si la shell dice "eliminado" sin dar elemento en la Papelera (R6).
+    /// Directory measurement (size and entry count) taken just before submission to the shell: `dir_check` compares it later
+    /// if the shell reports "deleted" without providing a Recycle Bin item (R6).
     snapshot: Option<DirSnap>,
-    /// Lo que se informa si llega a la Papelera: bytes en disco (sin enlaces compartidos) y tamaño lógico de AHORA (GM-m6: un
-    /// archivo que encogió desde la aprobación no se cuenta con el tamaño aprobado).
+    /// What is reported if the item reaches the Recycle Bin: current on-disk bytes (excluding shared links) and logical size
+    /// (GM-m6: a file that shrank since approval is not reported using its approved size).
     disk: u64,
-    /// A3-M1: solo un DIRECTORIO. La vigilancia de cambios abierta ANTES del recorrido de medida y viva hasta el
-    /// `PreDeleteItem` de su operación (o hasta que se suelte el elemento): cualquier cambio dentro invalida la medida.
+    /// A3-M1: for a DIRECTORY only. Change monitor opened BEFORE the measurement traversal and kept alive through the
+    /// operation's `PreDeleteItem` (or until the item is released): any change inside invalidates the measurement.
     watch: Option<Arc<sys::DirWatch>>,
     logical: u64,
 }
 
-/// Lo que se compara de un directorio antes y después: bytes en disco, tamaño lógico, archivos, directorios, lo compartido y
-/// la HUELLA del contenido (independiente del orden: identidad, tamaños y enlaces de cada entrada). Los totales solos no
-/// bastan: quitar un hijo y crear otro del mismo tamaño los deja iguales (A-M1).
+/// Directory values compared before and after: on-disk bytes, logical size, files, directories, shared items, and the
+/// contents FINGERPRINT (order-independent: identity, sizes, and links of every entry). Totals alone are insufficient:
+/// removing one child and creating another of the same size leaves them unchanged (A-M1).
 type DirSnap = (u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64);
 
 fn snap_of(s: &StatsSnapshot) -> DirSnap {
@@ -1744,20 +1740,20 @@ fn snap_of(s: &StatsSnapshot) -> DirSnap {
         s.shared_bytes,
         s.fp_sum,
         s.fp_xor,
-        // La ruta más larga de dentro (GM-M3): renombrar algo a un nombre más largo cambia lo que cabe en la Papelera.
+        // Longest path inside (GM-M3): renaming an item to a longer name can change whether it fits in the Recycle Bin.
         s.max_path,
-        // Lo que ocupan los reparse points de dentro (GM-B1).
+        // Space used by reparse points inside (GM-B1).
         s.reparse_bytes,
         s.reparse_logical,
     )
 }
 
-/// Espacio de la Papelera de un volumen.
+/// Recycle Bin space on a volume.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct BinRoom {
-    /// Tamaño máximo configurado (`MaxCapacity`); `None` si el registro no lo da.
+    /// Configured maximum size (`MaxCapacity`); `None` if the registry does not provide it.
     pub max: Option<u64>,
-    /// Lo que ocupa ahora la Papelera en ese volumen; `None` si no se pudo leer.
+    /// Current Recycle Bin occupancy on that volume; `None` if it could not be read.
     pub used: Option<u64>,
 }
 
@@ -1767,8 +1763,8 @@ impl BinRoom {
         used: None,
     };
 
-    /// La peor de dos lecturas del mismo volumen (A3-M2): la MAYOR ocupación y la MENOR capacidad. Si falta cualquiera de los
-    /// datos en cualquiera de las dos lecturas, falta en el resultado y `take_op` falla cerrado (`NoRoom`).
+    /// Conservative result from two readings of the same volume (A3-M2): the HIGHER occupancy and LOWER capacity. If either
+    /// reading lacks either value, the result omits it and `take_op` fails closed (`NoRoom`).
     pub fn worst(self, other: BinRoom) -> BinRoom {
         let pick = |a: Option<u64>, b: Option<u64>, f: fn(u64, u64) -> u64| match (a, b) {
             (Some(x), Some(y)) => Some(f(x, y)),
@@ -1781,15 +1777,14 @@ impl BinRoom {
     }
 }
 
-/// Lo que el ejecutor necesita de la shell para enviar a la Papelera. La implementación real usa `IFileOperation`; las
-/// pruebas ponen una simulada para probar el reparto en operaciones y el corte de seguridad sin que una operación real
-/// pueda eliminar o expulsar nada ajeno.
+/// Shell operations required by the executor to send items to the Recycle Bin. Production uses `IFileOperation`; tests
+/// provide a mock to exercise operation grouping and safety stops without a real operation deleting or evicting unrelated items.
 pub(crate) trait RecycleShell: Send + Sync {
-    /// Envía los elementos (ruta original + identidad aprobada) en UNA operación y dice qué notificó la shell de cada
-    /// uno. El receptor de eventos veta lo que ya no es el objeto aprobado.
+    /// Sends items (original path + approved identity) in ONE operation and reports the shell's notification for each item.
+    /// The event receiver vetoes any item that is no longer the approved object.
     fn recycle(&self, items: &[recycle::SendItem]) -> recycle::BatchOutcome;
-    /// Purga (borra definitivamente) los elementos de la Papelera enumerados al confirmar. Por defecto, la shell real; las
-    /// pruebas ponen una simulada para probar el reparto y lo que se excluye sin tocar la Papelera de nadie (M2).
+    /// Purges (permanently deletes) the Recycle Bin items enumerated at approval. Production uses the real shell; tests use
+    /// a mock to exercise grouping and exclusions without touching anyone's Recycle Bin (M2).
     fn purge(
         &self,
         items: &[recycle::BinItem],
@@ -1798,30 +1793,29 @@ pub(crate) trait RecycleShell: Send + Sync {
     ) -> Result<recycle::BatchOutcome, recycle::ShellError> {
         recycle::purge_items_observed(items, cancel, obs)
     }
-    /// Capacidad y ocupación de la Papelera del volumen cuya raíz es `root`.
+    /// Capacity and occupancy of the Recycle Bin on the volume rooted at `root`.
     fn bin_room(&self, root: &Path) -> BinRoom;
-    /// ¿Cabe un elemento de `bytes` con ruta `path` en la Papelera de su volumen? Se decide al aprobar y se vuelve a
-    /// decidir al ejecutar (la real consulta el registro y las directivas; las pruebas con shell simulada no dependen del
-    /// equipo).
+    /// Does an item of `bytes` at `path` fit in its volume's Recycle Bin? Decided at approval and checked again at execution
+    /// (the production shell implementation queries the registry and policies; tests with a mock shell do not depend on the host).
     fn fit(&self, path: &Path, bytes: u64) -> Fit;
-    /// Como [`RecycleShell::fit`], sabiendo cuánto mide la ruta más larga de lo que hay dentro del elemento (unidades UTF-16;
-    /// de la medida). Por defecto lo ignora (las shells simuladas no dependen de la longitud de las rutas).
+    /// Like [`RecycleShell::fit`], but also receives the measured length of the longest path inside the item (UTF-16 units).
+    /// The default implementation ignores it (mock shells do not depend on path length).
     fn fit_deep(&self, path: &Path, bytes: u64, _deepest: usize) -> Fit {
         self.fit(path, bytes)
     }
-    /// ¿Está `p` dentro de una Papelera (`<unidad>:\$Recycle.Bin\...`)?
+    /// Is `p` inside a Recycle Bin (`<drive>:\$Recycle.Bin\...`)?
     fn is_bin_path(&self, p: &Path) -> bool;
 }
 
-/// La shell de verdad.
+/// The real shell implementation.
 pub(crate) struct RealShell;
 
 impl RecycleShell for RealShell {
     fn recycle(&self, items: &[recycle::SendItem]) -> recycle::BatchOutcome {
         match recycle::recycle_paths(items, RecycleMode::Normal) {
             Ok(o) => o,
-            // Un fallo al arrancar COM o la operación no se traga: sin eventos, cada elemento queda como no procesado
-            // (o no verificado), y el error consta en el resultado.
+            // Do not swallow a COM initialization or operation failure: without events, each item remains unprocessed (or
+            // unverified), and the error is included in the result.
             Err(e) => recycle::BatchOutcome {
                 error: Some(e),
                 ..recycle::BatchOutcome::default()
@@ -1842,10 +1836,10 @@ impl RecycleShell for RealShell {
     }
 }
 
-/// La capacidad de la Papelera de un volumen a efectos del reparto: SOLO la configurada (`MaxCapacity`). Sin Papelera,
-/// desactivada, indeterminada o sin valor en el registro (la shell usa un porcentaje por defecto que no está
-/// documentado) no hay capacidad que garantizar: `max = None` y [`take_op`] falla cerrado (`NoRoom`). Ya no se asume
-/// ningún porcentaje del volumen (B2).
+/// Recycle Bin capacity for grouping: ONLY the configured value (`MaxCapacity`). If there is no Recycle Bin, it is disabled,
+/// its size is indeterminate, or the registry has no value (the shell uses an undocumented default percentage), there is no
+/// capacity that can be guaranteed: `max = None` and [`take_op`] fails closed (`NoRoom`). No percentage of the volume is
+/// assumed (B2).
 pub(crate) fn room_from(limit: volume::BinLimit, used: Option<u64>) -> BinRoom {
     let max = match limit {
         volume::BinLimit::Max(m) => Some(m),
@@ -1854,21 +1848,21 @@ pub(crate) fn room_from(limit: volume::BinLimit, used: Option<u64>) -> BinRoom {
     BinRoom { max, used }
 }
 
-/// Qué hacer con el principio de la cola de un volumen.
+/// What to do with the head of a volume's queue.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Take {
-    /// Enviar los `n` primeros en UNA operación.
+    /// Send the first `n` items in ONE operation.
     Send(usize),
-    /// No hay sitio para el primero: no se envía.
+    /// There is no room for the first item: submit nothing.
     NoRoom,
 }
 
-/// Reparte en operaciones: cada operación, como mucho, al 90 % de la capacidad de la Papelera MENOS lo que ya ocupa.
-/// * FALLA CERRADO (B2): sin capacidad conocida (`max`) o sin ocupación conocida (`used`) no se puede garantizar que
-///   quepa y la shell, si no cabe, elimina de verdad: `NoRoom`, nunca `Send`.
-/// * Un elemento que por sí solo pasa de un 10 % de la capacidad va SOLO.
-/// * Si el primero no cabe ni solo en el espacio que queda, `NoRoom`: enviarlo haría que la shell lo elimine o expulse
-///   elementos que ya estaban en la Papelera.
+/// Groups items into operations: each operation can use at most 90% of Recycle Bin capacity MINUS its current occupancy.
+/// * FAIL CLOSED (B2): without known capacity (`max`) or occupancy (`used`), fit cannot be guaranteed, and the shell
+///   permanently deletes items that do not fit: return `NoRoom`, never `Send`.
+/// * An item larger than 10% of capacity goes ALONE.
+/// * If the first item does not fit even by itself in the remaining space, return `NoRoom`: submitting it could make the
+///   shell delete it or evict items already in the Recycle Bin.
 pub(crate) fn take_op(sizes: &[u64], room: BinRoom) -> Take {
     let Some(&first) = sizes.first() else {
         return Take::Send(0);
@@ -1894,16 +1888,16 @@ pub(crate) fn take_op(sizes: &[u64], room: BinRoom) -> Take {
     Take::Send(n)
 }
 
-/// Qué pasó con un elemento según la shell. La comparación es por IDENTIDAD (volumen + FileId), nunca por nombre:
-/// da igual `.lnk`, `.url`, extensiones conocidas o `HideFileExt`, y no se enumera la Papelera. Pero la identidad sola no
-/// basta (otro nombre del mismo objeto, p. ej. un enlace duro, la comparte): `Recycled` exige además que
-/// * el NOMBRE aprobado ya no exista en su ruta original,
-/// * el handle de guarda, que sigue al objeto aprobado, esté ahora DENTRO de una Papelera, y
-/// * el objeto conserve su número de enlaces (un renombrado a la Papelera no lo cambia).
+/// What happened to an item according to the shell. Compare by IDENTITY (volume + FileId), never by name: `.lnk`, `.url`,
+/// known extensions, and `HideFileExt` do not matter, and the Recycle Bin is not enumerated. Identity alone is insufficient
+/// (another name for the same object, such as a hard link, shares it): `Recycled` also requires that
+/// * the approved NAME no longer exists at its original path;
+/// * the guard handle, which follows the approved object, is now INSIDE a Recycle Bin; and
+/// * the object retains its link count (renaming it into the Recycle Bin does not change that count).
 ///
-/// `aborted`: la shell dijo que abortó alguna operación (sin decir cuál): un elemento sin aviso se cuenta entonces como
-/// abortado. `sink_aborted`: el receptor cortó el lote (M2): un elemento sin aviso que sigue en su sitio quedó sin
-/// procesar por el corte (`Stopped`).
+/// `aborted`: the shell reported that some operation was aborted (without saying which one), so an item with no notification
+/// is counted as aborted. `sink_aborted`: the receiver stopped the batch (M2), so an item with no notification that remains
+/// in place was not processed because of the stop (`Stopped`).
 fn judge(
     p: &Pending,
     ev: Option<&recycle::DeleteEvent>,
@@ -1913,8 +1907,8 @@ fn judge(
 ) -> (ItemStatus, Outcome) {
     use recycle::BinState;
     let Some(ev) = ev else {
-        // La shell no llegó a procesarlo. "No se envió" solo se afirma si el OBJETO aprobado sigue intacto en su sitio (A-M1);
-        // si su guarda está pendiente de borrar, la shell lo eliminó sin avisar; si no se puede saber, no se afirma nada.
+        // The shell did not process the item. Report "not sent" only if the approved OBJECT remains intact in place (A-M1).
+        // If its guard is pending deletion, the shell deleted it without notification; if the state is unknown, claim nothing.
         return match in_place(p) {
             InPlace::Intact => {
                 let why = if sink_aborted {
@@ -1940,9 +1934,9 @@ fn judge(
             RecycleFail::Denied => Outcome::Denied,
             _ => Outcome::NotRecycled,
         };
-        // A-M1: un resultado de FALLO no prueba que la shell no tocara nada (puede haber perdido un hijo antes de fallar).
-        // Se aplica el mismo juicio que a un borrado: el objeto aprobado, intacto en su sitio. (Si es un directorio, quien
-        // llama comprueba además su contenido.)
+        // A-M1: a FAILURE result does not prove the shell left the item untouched (it may have lost a child before failing).
+        // Apply the same judgment as for deletion: is the approved object intact in place? (For a directory, the caller also
+        // checks its contents.)
         return match in_place(p) {
             InPlace::Intact => (ItemStatus::NotRecycled(fail), o),
             InPlace::Deleted => (
@@ -1954,14 +1948,13 @@ fn judge(
     }
     match &ev.state {
         BinState::Deleted => {
-            // `psiNewlyCreated` nulo con éxito suele ser un borrado definitivo, pero la shell también lo notifica sin
-            // haber tocado nada (medido: una carpeta con un archivo disperso enorme da `hr = 0x00270003`, nulo, y la
-            // carpeta sigue en el disco). Se decide POR OBJETO, no por nombre: con el handle de guarda aún abierto, un
-            // archivo que la shell SÍ eliminó mantiene su nombre visible como "pendiente de borrar" hasta soltar la guarda
-            // (medido: `hr = 0x00270008`, el nombre existe, abrirlo da acceso denegado y `DeletePending` es cierto).
-            // Solo si el objeto aprobado NO está pendiente de borrar Y reabrir la ruta da la MISMA identidad, la shell no
-            // tocó nada. Todo lo demás (pendiente de borrar, identidad distinta, ruta ilegible, handle ilegible) es un
-            // borrado definitivo.
+            // A successful result with null `psiNewlyCreated` usually means permanent deletion, but the shell also reports
+            // it without touching the item (observed: a folder with a huge sparse file returns `hr = 0x00270003`, null, and
+            // the folder remains on disk). Decide by OBJECT, not name: with the guard handle still open, a file the shell DID
+            // delete keeps its name visible as "delete pending" until the guard is released (observed: `hr = 0x00270008`,
+            // the name exists, opening it is denied, and `DeletePending` is true). Only if the approved object is NOT pending
+            // deletion AND reopening the path returns the SAME identity did the shell leave it untouched. Every other state
+            // (delete pending, different identity, unreadable path, unreadable handle) means permanent deletion.
             if untouched_by_shell(p) {
                 (
                     ItemStatus::NotRecycled(RecycleFail::Shell(ev.hr)),
@@ -1985,13 +1978,13 @@ fn judge(
                     let held_in_bin = sys::final_path(&p.held)
                         .ok()
                         .is_some_and(|f| shell.is_bin_path(&f));
-                    // El número de enlaces del objeto no puede haber cambiado desde la comprobación: un recycle legítimo
-                    // es un renombrado y lo conserva; si cambió, alguien le añadió o quitó nombres en la ventana.
+                    // The object's link count cannot have changed since the check: a legitimate recycle is a rename and
+                    // preserves it. If it changed, someone added or removed names during the race window.
                     let same_links = sys::meta(&p.held).is_ok_and(|m| m.links == p.links);
                     if name_gone && held_in_bin && same_links {
                         (ItemStatus::Recycled, Outcome::Recycled)
                     } else {
-                        // Mismo objeto por otro nombre, o el aprobado no es el que está en la Papelera.
+                        // Same object under another name, or the approved object is not the one in the Recycle Bin.
                         (ItemStatus::RecycledOther, Outcome::RecycledOther)
                     }
                 }
@@ -2002,8 +1995,8 @@ fn judge(
     }
 }
 
-/// ¿Sigue el objeto aprobado intacto en su sitio? `true` solo si el handle de guarda NO está pendiente de borrar y la
-/// ruta, reabierta, da la misma identidad. Es la comprobación por OBJETO de `judge` (R1).
+/// Is the approved object still intact in place? `true` only if the guard handle is NOT pending deletion and reopening the
+/// path returns the same identity. This is `judge`'s object-based check (R1).
 fn untouched_by_shell(p: &Pending) -> bool {
     let not_pending = sys::meta(&p.held).is_ok_and(|m| !m.delete_pending);
     let same_object = sys::open_for_query(&p.path)
@@ -2012,18 +2005,18 @@ fn untouched_by_shell(p: &Pending) -> bool {
     not_pending && same_object
 }
 
-/// Dónde está el objeto aprobado tras una operación de la shell que no lo envió (A-M1).
+/// State of the approved object after a shell operation that did not send it (A-M1).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum InPlace {
-    /// El handle de guarda no está pendiente de borrar Y la ruta, reabierta, da la misma identidad: sigue donde estaba.
+    /// The guard handle is not pending deletion AND reopening the path returns the same identity: the item remains in place.
     Intact,
-    /// El handle de guarda está pendiente de borrar: la shell lo eliminó (el nombre sigue visible hasta soltar la guarda).
+    /// The guard handle is pending deletion: the shell deleted the item (its name remains visible until the guard is released).
     Deleted,
-    /// Ni intacto ni pendiente de borrar (la ruta ya no es el objeto, o no se pudo leer): no se puede afirmar nada.
+    /// Neither intact nor pending deletion (the path no longer refers to the object, or could not be read): nothing can be concluded.
     Unknown,
 }
 
-/// Juicio por OBJETO de un elemento que no llegó a la Papelera (ver [`InPlace`]).
+/// Object-based judgment for an item that did not reach the Recycle Bin (see [`InPlace`]).
 fn in_place(p: &Pending) -> InPlace {
     match sys::meta(&p.held) {
         Ok(m) if m.delete_pending => InPlace::Deleted,
@@ -2032,7 +2025,7 @@ fn in_place(p: &Pending) -> InPlace {
     }
 }
 
-/// Traduce el `HRESULT` de una eliminación fallida de la shell.
+/// Translates the `HRESULT` from a failed shell deletion.
 fn classify_hr(hr: i32) -> RecycleFail {
     use windows::Win32::UI::Shell::{
         COPYENGINE_E_ACCESS_DENIED_DEST, COPYENGINE_E_ACCESS_DENIED_SRC,
@@ -2045,8 +2038,8 @@ fn classify_hr(hr: i32) -> RecycleFail {
         Some(32 | 33) => RecycleFail::InUse,
         Some(5) => RecycleFail::Denied,
         _ => {
-            // Códigos del motor de copia de la shell (`COPYENGINE_E_*`). Se MIDIÓ `ACCESS_DENIED_SRC` al mover a la
-            // Papelera una carpeta con un archivo abierto dentro (mover es renombrar).
+            // Shell copy-engine codes (`COPYENGINE_E_*`). `ACCESS_DENIED_SRC` was OBSERVED when moving a folder with an open
+            // file inside to the Recycle Bin (moving is a rename).
             let h = HRESULT(hr);
             if h == COPYENGINE_E_SHARING_VIOLATION_SRC || h == COPYENGINE_E_SHARING_VIOLATION_DEST {
                 RecycleFail::InUse
@@ -2059,8 +2052,8 @@ fn classify_hr(hr: i32) -> RecycleFail {
     }
 }
 
-/// ¿Es el objeto (con esa fecha más reciente de creación, escritura y cambio) más nuevo que la antigüedad mínima de `it`? Sin
-/// antigüedad mínima nunca. Un reloj adelantado o fechas futuras cuentan como "reciente" (falla cerrado).
+/// Is the object (using its latest creation, write, and change timestamp) newer than `it`'s minimum age? Never, if there is
+/// no minimum age. A fast clock or future timestamps count as "recent" (fail closed).
 fn too_young(it: &PlanItem, newest_filetime: i64) -> bool {
     let min = engine::duration_to_ft(it.min_age);
     min > 0 && engine::now_filetime() - newest_filetime < min
@@ -2095,7 +2088,7 @@ fn map_open_error(c: sys::Win32, st: &mut StatsSnapshot) -> Prepared {
     }
 }
 
-/// Lo que desapareció de un elemento definitivo, con rutas completas.
+/// Items that disappeared during permanent deletion, with full paths.
 fn removed_of(it: &PlanItem, u: &Unit) -> Vec<Removed> {
     match &it.spec {
         UnitSpec::Contents { path, .. } => u

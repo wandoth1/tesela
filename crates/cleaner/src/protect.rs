@@ -1,25 +1,25 @@
-//! Protección (PLAN.md §2.7): qué se puede añadir a la cesta y qué se respeta al borrar.
+//! Protection (PLAN.md §2.7): what can be added to the basket and what is preserved during deletion.
 //!
-//! Cuatro clases de ruta, todas sobre [`PathKey`] (formas canónicas largas):
-//! * **Denegadas** (`denied`): ni ellas ni nada de lo que contienen. `C:\Windows`, `Program Files`, `ProgramData`, los
-//!   perfiles de otros usuarios, los datos de los navegadores, la propia aplicación y los metadatos `$` de un volumen.
-//! * **Intocables como destino** (`untouchable`): no se pueden borrar como tal, pero su CONTENIDO sí se puede limpiar:
-//!   la raíz del perfil, `AppData`, `Local`, `Roaming`, `LocalLow`, las raíces de unidad y `C:\Users`. También lo son los
-//!   ANCESTROS de una ruta denegada (borrarlos se llevaría la denegada por delante).
-//! * **Raíces de carpetas conocidas** (`content_roots`: Documentos, Escritorio, Vídeos...): se añaden como
-//!   "Contenido de X", sin incluir la carpeta en sí.
-//! * **Excepciones** (`exempt`): las raíces de las categorías con regla (`Windows\Temp`, las cachés de navegador): lo que
-//!   cuelga de ellas no se deniega aunque esté dentro de UNA zona denegada concreta, la que cada excepción declara
-//!   ([`Exempt::zone`]). Una excepción nunca levanta "esa zona o cualquiera por encima": solo esa.
+//! Four path classes, all represented by [`PathKey`] (long canonical paths):
+//! * **Denied** (`denied`): neither these paths nor anything beneath them. `C:\Windows`, `Program Files`, `ProgramData`,
+//!   other users' profiles, browser data, the application itself, and a volume's `$` metadata.
+//! * **Untouchable as destinations** (`untouchable`): these paths cannot be deleted as such, but their CONTENTS can be
+//!   cleaned: the profile root, `AppData`, `Local`, `Roaming`, `LocalLow`, drive roots, and `C:\Users`. This also includes
+//!   ANCESTORS of denied paths (deleting one would take the denied path with it).
+//! * **Known folder roots** (`content_roots`: Documents, Desktop, Videos...): added as "Contents of X", without including
+//!   the folder itself.
+//! * **Exemptions** (`exempt`): roots of rule-based categories (`Windows\Temp`, browser caches): descendants are not
+//!   denied even when they fall within ONE specific denied zone declared by that exemption ([`Exempt::zone`]). An
+//!   exemption never lifts "that zone or any ancestor": only that zone.
 //!
-//! La defensa real no es la interfaz: [`Protection::child_action`] se consulta en CADA hijo durante la recursión de
-//! borrado, no solo al aprobar la cesta.
+//! The actual defense is not the interface: [`Protection::child_action`] is checked for EVERY child during deletion
+//! recursion, not only when the basket is approved.
 
 use crate::paths::PathKey;
 use std::collections::HashSet;
 use std::path::PathBuf;
 
-/// Rutas de partida de la protección (todas en forma canónica larga cuando existen).
+/// Input paths for protection (all in long canonical form when they exist).
 #[derive(Clone, Debug, Default)]
 pub struct ProtectionRoots {
     pub denied: Vec<PathBuf>,
@@ -28,12 +28,12 @@ pub struct ProtectionRoots {
     pub exempt: Vec<Exempt>,
 }
 
-/// Una raíz de categoría exenta y la ÚNICA denegación que puede levantar.
+/// An exempt category root and the ONLY denial it may lift.
 ///
-/// `zone` es la ruta denegada exacta en cuyo interior vive la raíz (la carpeta `User Data` de Chrome o Edge, la de
-/// Firefox, `C:\Windows` para `Windows\Temp`). Una denegación que no sea esa zona (ni la propia raíz) sigue en pie: si una
-/// raíz "canónica" acabara dentro de otra zona denegada (por un enlace en un ancestro, por ejemplo), esa zona la niega.
-/// `None` = la raíz no está dentro de ninguna denegación declarada (solo se levanta una denegación exactamente sobre ella).
+/// `zone` is the exact denied path containing the root (Chrome or Edge's `User Data` folder, Firefox's folder, or
+/// `C:\Windows` for `Windows\Temp`). Any denial other than that zone (or the root itself) remains in force: if a
+/// "canonical" root ends up inside another denied zone (for example, through a link in an ancestor), that zone denies it.
+/// `None` means the root is not inside any declared denial (only a denial on the root itself is lifted).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Exempt {
     pub root: PathBuf,
@@ -46,31 +46,31 @@ impl Exempt {
     }
 }
 
-/// Qué se puede hacer con una ruta como DESTINO (lo que el usuario añade a la cesta).
+/// What can be done with a path as a TARGET (what the user adds to the basket).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Verdict {
-    /// Se puede añadir.
+    /// Can be added.
     Allowed,
-    /// No se puede añadir como tal ("Ver contenido" ocupa su lugar), pero su contenido sí.
+    /// Cannot be added as such ("View contents" takes its place), but its contents can.
     Untouchable,
-    /// Carpeta conocida: solo "Contenido de …".
+    /// Known folder: only "Contents of …".
     ContentsOnly,
-    /// Denegada por completo.
+    /// Completely denied.
     Denied,
 }
 
-/// Qué hacer con un hijo al recorrer un contenedor que se está borrando.
+/// What to do with a child while traversing a container being deleted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ChildAction {
-    /// Borrarlo entero.
+    /// Delete it entirely.
     Delete,
-    /// Entrar a procesar su contenido pero NO borrarlo a él (es protegido o contiene algo protegido).
+    /// Process its contents but do NOT delete it (it is protected or contains something protected).
     Descend,
-    /// No tocarlo: está denegado.
+    /// Leave it untouched: it is denied.
     Skip,
 }
 
-/// Nombres de entradas de la raíz de un volumen que nunca se tocan (además de todo lo que empiece por `$`).
+/// Names of volume-root entries that are never touched (in addition to everything starting with `$`).
 const SYSTEM_ROOT_NAMES: [&str; 4] = [
     "system volume information",
     "pagefile.sys",
@@ -78,20 +78,20 @@ const SYSTEM_ROOT_NAMES: [&str; 4] = [
     "swapfile.sys",
 ];
 
-/// El conjunto de reglas de protección, listo para consultar.
+/// The protection rules, ready to be queried.
 #[derive(Clone, Debug)]
 pub struct Protection {
     denied: HashSet<PathKey>,
     untouchable: HashSet<PathKey>,
     content_roots: HashSet<PathKey>,
-    /// (raíz exenta, zona denegada que puede levantar).
+    /// (exempt root, denied zone it may lift).
     exempt: Vec<(PathKey, Option<PathKey>)>,
-    /// Ancestros propios de las rutas denegadas (intocables como destino).
+    /// Ancestors of denied paths (untouchable as destinations).
     anc_denied: HashSet<PathKey>,
-    /// Ancestros propios de las raíces intocables y de contenido (se recorren al borrar un contenedor, no se borran).
+    /// Ancestors of untouchable and content roots (traversed when deleting a container, but not deleted).
     anc_retain: HashSet<PathKey>,
-    /// Raíces de volúmenes montados en CARPETAS (GM-M6): como la raíz de una unidad con letra, de ellas cuelgan las entradas
-    /// de sistema (`$Recycle.Bin`, `System Volume Information`...) y ellas mismas no se tocan.
+    /// Roots of volumes mounted in FOLDERS (GM-M6): like a drive-letter root, they contain system entries (`$Recycle.Bin`,
+    /// `System Volume Information`...) and are themselves left untouched.
     mount_roots: HashSet<PathKey>,
 }
 
@@ -131,26 +131,25 @@ impl Protection {
         }
     }
 
-    /// Añade las raíces de los volúmenes montados en CARPETAS (GM-M6): como la raíz de una unidad con letra, sus entradas de
-    /// sistema se deniegan y ellas mismas son intocables.
+    /// Adds roots of volumes mounted in FOLDERS (GM-M6): like a drive-letter root, their system entries are denied and
+    /// the roots themselves are untouchable.
     pub fn with_mount_roots(mut self, roots: &[PathBuf]) -> Protection {
         self.mount_roots = keys(roots);
         self
     }
 
-    /// ¿Levanta alguna excepción la denegación que está en `zone` (un ancestro de `key` o él mismo)? Solo si `key` cuelga
-    /// de una raíz exenta `e` y `zone` es EXACTAMENTE la zona que esa excepción declara (o la propia raíz `e`): ni una
-    /// denegación entre la raíz exenta (exclusive) y `key`, ni cualquier otra zona por encima de `e`, que sigue en pie.
-    /// Así la carpeta de la propia aplicación nunca se borra aunque esté dentro de un temporal exento, y una raíz
-    /// "canónica" que un enlace haya llevado a otra zona denegada no se vuelve borrable.
+    /// Does an exemption lift the denial at `zone` (an ancestor of `key`, or `key` itself)? Only when `key` is beneath
+    /// an exempt root `e` and `zone` is EXACTLY the zone declared by that exemption (or `e` itself): a denial between the
+    /// exempt root (exclusive) and `key`, or any other zone above `e`, remains in force. This ensures the application's
+    /// own folder is never deleted even when it is inside an exempt temporary folder, and a "canonical" root redirected
+    /// into another denied zone by a link does not become deletable.
     fn lifts(&self, key: &PathKey, zone: &PathKey) -> bool {
         self.exempt.iter().any(|(root, declared)| {
             key.is_same_or_under(root) && (zone == root || declared.as_ref() == Some(zone))
         })
     }
 
-    /// ¿Es una entrada de sistema de la raíz de un volumen (`$Recycle.Bin`, `$MFT`, `System Volume Information`,
-    /// `pagefile.sys`...)?
+    /// Is this a system entry at a volume root (`$Recycle.Bin`, `$MFT`, `System Volume Information`, `pagefile.sys`...)?
     fn is_system_entry(&self, key: &PathKey) -> bool {
         key.parent()
             .is_some_and(|p| p.is_drive_root() || self.mount_roots.contains(&p))
@@ -160,9 +159,9 @@ impl Protection {
             }
     }
 
-    /// ¿Está `key` o algún ancestro suyo denegado, sin que una excepción lo levante (ver [`Protection::lifts`])?
+    /// Is `key` or any of its ancestors denied without an exemption lifting the denial (see [`Protection::lifts`])?
     fn is_denied(&self, key: &PathKey) -> bool {
-        // GM-S1: una ruta mal formada (`C:x`, `archivo:flujo`) no se interpreta: se deniega.
+        // GM-S1: a malformed path (`C:x`, `file:stream`) is not interpreted; it is denied.
         if !key.is_valid() {
             return true;
         }
@@ -172,7 +171,7 @@ impl Protection {
         hit(key) || key.ancestors().iter().any(hit)
     }
 
-    /// Veredicto de `key` como DESTINO de la cesta.
+    /// Verdict for `key` as a basket TARGET.
     pub fn target_verdict(&self, key: &PathKey) -> Verdict {
         if self.is_denied(key) {
             return Verdict::Denied;
@@ -190,7 +189,7 @@ impl Protection {
         Verdict::Allowed
     }
 
-    /// Qué hacer con el hijo `key` al recorrer un contenedor que se borra (ver [`ChildAction`]).
+    /// What to do with child `key` while traversing a container being deleted (see [`ChildAction`]).
     pub fn child_action(&self, key: &PathKey) -> ChildAction {
         if self.is_denied(key) {
             return ChildAction::Skip;
@@ -205,18 +204,18 @@ impl Protection {
         ChildAction::Delete
     }
 
-    /// ¿Hay algo protegido (denegado, intocable o carpeta conocida) por debajo de `key`? Un contenedor así se borra
-    /// "salvo lo protegido".
+    /// Is anything protected (denied, untouchable, or a known folder) beneath `key`? Such a container is deleted "except
+    /// for protected items".
     pub fn contains_protected(&self, key: &PathKey) -> bool {
         self.anc_denied.contains(key) || self.anc_retain.contains(key)
     }
 
-    /// ¿Es `key` una raíz que se respeta como tal (intocable como destino o carpeta conocida)?
+    /// Is `key` a root that must be preserved as such (untouchable as a destination or a known folder)?
     pub fn is_retained_root(&self, key: &PathKey) -> bool {
         self.untouchable.contains(key) || self.content_roots.contains(key)
     }
 
-    /// ¿Es `key` una raíz de carpeta conocida ("Contenido de …")?
+    /// Is `key` a known-folder root ("Contents of …")?
     pub fn is_content_root(&self, key: &PathKey) -> bool {
         self.content_roots.contains(key)
     }

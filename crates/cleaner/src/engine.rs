@@ -28,62 +28,62 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-/// Qué hace el recorrido con lo que encuentra.
+/// What the traversal does with the entries it finds.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
-    /// Solo cuenta (aperturas compartidas, de solo lectura): para estimar al aprobar.
+    /// Counts only (shared, read-only opens): used to estimate during approval.
     Measure,
-    /// Hace TODO salvo marcar para borrar: abre en exclusiva, verifica identidades, cuenta y registra lo que borraría.
+    /// Does EVERYTHING except marking entries for deletion: opens exclusively, verifies identities, counts, and records what it would delete.
     DryRun,
-    /// Borra.
+    /// Deletes.
     Delete,
 }
 
-/// Contadores de una unidad de trabajo (atómicos: los actualizan los hilos del pool y los lee la interfaz).
+/// Counters for a work unit (atomic: updated by the pool threads and read by the interface).
 #[derive(Debug, Default)]
 pub struct Stats {
-    /// Bytes en disco de lo eliminado (o de lo que se eliminaría), SIN contar los enlaces duros compartidos.
+    /// On-disk bytes deleted (or that would be deleted), EXCLUDING shared hard links.
     pub bytes: AtomicU64,
-    /// Tamaño lógico de lo eliminado (para el encaje en la Papelera).
+    /// Logical size of deleted items (for checking fit in the Recycle Bin).
     pub logical: AtomicU64,
     pub files: AtomicU64,
     pub dirs: AtomicU64,
-    /// Archivos con más de un enlace: se borra un nombre, pero no liberan espacio.
+    /// Files with more than one link: one name is deleted, but no space is freed.
     pub shared_files: AtomicU64,
     pub shared_bytes: AtomicU64,
-    /// `ERROR_SHARING_VIOLATION`: en uso, se salta y se cuenta.
+    /// `ERROR_SHARING_VIOLATION`: in use; skipped and counted.
     pub in_use: AtomicU64,
     /// `ERROR_ACCESS_DENIED`.
     pub denied: AtomicU64,
-    /// Identidad o tipo distintos de lo visto en el listado / aprobado.
+    /// Identity or type differs from what was listed or approved.
     pub changed: AtomicU64,
-    /// Entradas protegidas que se respetaron.
+    /// Protected entries that were preserved.
     pub protected: AtomicU64,
     pub protected_bytes: AtomicU64,
-    /// Demasiado recientes (`min_age`).
+    /// Too recent (`min_age`).
     pub young: AtomicU64,
-    /// Reparse points: no se entra ni se borran.
+    /// Reparse points: never traversed or deleted.
     pub reparse: AtomicU64,
-    /// Otros errores del sistema.
+    /// Other system errors.
     pub other_errors: AtomicU64,
-    /// Directorios que no se pudieron borrar porque no quedaron vacíos (lo normal si algo se saltó).
+    /// Directories that could not be deleted because they were not empty (expected when something was skipped).
     pub not_empty: AtomicU64,
-    /// Archivos de la nube dentro (se saltan: son reparse points).
+    /// Cloud files inside (skipped because they are reparse points).
     pub cloud: AtomicU64,
-    /// Entradas que ya no estaban al abrirlas (listadas y desaparecidas antes de llegar a ellas). Al borrar es normal; al
-    /// MEDIR significa que el directorio cambió durante el recorrido (ver [`StatsSnapshot::is_complete`]).
+    /// Entries that were gone when opened (listed, then disappeared before they were reached). This is normal during deletion;
+    /// during MEASURE it means the directory changed during traversal (see [`StatsSnapshot::is_complete`]).
     pub gone: AtomicU64,
-    /// HUELLA del contenido visto, independiente del ORDEN (A-M1): suma (con vuelta) y XOR de un hash de 64 bits por entrada
-    /// (identidad `FileId` de 128 bits, tipo, tamaños y enlaces). O(1) de memoria. Dos recorridos del mismo árbol dan la misma
-    /// huella aunque los hilos lo recorran en otro orden; quitar un hijo y crear otro del mismo tamaño la cambia (otro `FileId`).
+    /// FINGERPRINT of the observed contents, independent of ORDER (A-M1): wrapping sum and XOR of a 64-bit hash per entry
+    /// (128-bit `FileId` identity, type, sizes, and links). O(1) memory. Traversals of the same tree produce the same
+    /// fingerprint even if threads visit it in a different order; removing a child and creating another of the same size changes it (different `FileId`).
     pub fp_sum: AtomicU64,
     pub fp_xor: AtomicU64,
-    /// Longitud (unidades UTF-16) de la ruta más larga de lo que hay dentro (GM-M3): la
-    /// shell no admite rutas de 260 o más y una carpeta con un descendiente así no se puede mover a la Papelera entera.
+    /// Length (UTF-16 units) of the longest path inside (GM-M3): the shell does not support paths of 260 or more units,
+    /// so a folder containing such a descendant cannot be moved to the Recycle Bin as a whole.
     pub max_path: AtomicU64,
-    /// Bytes en disco y tamaño lógico de los reparse points de dentro (GM-B1): la carpeta se mueve ENTERA y la shell cuenta
-    /// contra la capacidad también lo que no se recorre (archivos de la nube hidratados, p. ej.). No entran en `bytes` ni
-    /// `logical`, que son lo que liberaría borrar: el borrado salta los reparse points.
+    /// On-disk bytes and logical size of reparse points inside (GM-B1): the folder is moved WHOLE and the shell counts
+    /// against capacity even items that are not traversed (for example, hydrated cloud files). These are not included in
+    /// `bytes` or `logical`, which represent space freed by deletion: deletion skips reparse points.
     pub reparse_bytes: AtomicU64,
     pub reparse_logical: AtomicU64,
     /// Informational Outlook data, counted by extension independently of deletion.
@@ -100,14 +100,14 @@ impl Stats {
     fn get(a: &AtomicU64) -> u64 {
         a.load(Ordering::Relaxed)
     }
-    /// Añade una entrada a la huella (ver [`Stats::fp_sum`]). `class` distingue cómo se trató (contada, protegida, reparse,
-    /// reciente...): si una entrada cambia de clase, la huella cambia.
+    /// Adds an entry to the fingerprint (see [`Stats::fp_sum`]). `class` distinguishes how it was handled (counted, protected,
+    /// reparse, recent...): if an entry changes class, the fingerprint changes.
     fn add_fp(&self, class: u8, file_id: u128, a: u64, b: u64, links: u32) {
         let (h1, h2) = entry_fingerprint(class, file_id, a, b, links);
         self.fp_sum.fetch_add(h1, Ordering::Relaxed);
         self.fp_xor.fetch_xor(h2, Ordering::Relaxed);
     }
-    /// Copia de los valores.
+    /// Copy of the values.
     pub fn snapshot(&self) -> StatsSnapshot {
         StatsSnapshot {
             bytes: Self::get(&self.bytes),
@@ -166,7 +166,7 @@ fn count_mail(stats: &Stats, name: &[u16], bytes: u64) {
     }
 }
 
-/// Mezcla de 64 bits (la de `splitmix64`): buena difusión con tres operaciones.
+/// 64-bit mix (the `splitmix64` one): good diffusion in three operations.
 fn mix64(mut z: u64) -> u64 {
     z = z.wrapping_add(0x9E37_79B9_7F4A_7C15);
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
@@ -174,9 +174,9 @@ fn mix64(mut z: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-/// Los dos hashes de 64 bits de una entrada para la huella ([`Stats::fp_sum`], [`Stats::fp_xor`]): se encadenan todos los
-/// campos y se sacan dos valores con constantes distintas (la suma y el XOR de muchos hashes se estropean de formas
-/// distintas, y juntos son una huella de 128 bits).
+/// The two 64-bit hashes of an entry for the fingerprint ([`Stats::fp_sum`], [`Stats::fp_xor`]): all fields are chained
+/// together and two values are derived with different constants (sums and XORs of many hashes degrade differently, and
+/// together they form a 128-bit fingerprint).
 pub(crate) fn entry_fingerprint(
     class: u8,
     file_id: u128,
@@ -191,7 +191,7 @@ pub(crate) fn entry_fingerprint(
     (h, mix64(h ^ 0xA076_1D64_78BD_642F))
 }
 
-// Cómo se trató una entrada (la clase de su huella): si cambia, la huella cambia.
+// How an entry was handled (its fingerprint class): if it changes, the fingerprint changes.
 const FP_COUNTED: u8 = 1;
 const FP_PROTECTED: u8 = 2;
 const FP_REPARSE: u8 = 3;
@@ -201,7 +201,7 @@ fn fp_class(base: u8, is_dir: bool) -> u8 {
     base | if is_dir { 0x80 } else { 0 }
 }
 
-/// Copia inmutable de [`Stats`].
+/// Immutable copy of [`Stats`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct StatsSnapshot {
     pub bytes: u64,
@@ -221,12 +221,12 @@ pub struct StatsSnapshot {
     pub not_empty: u64,
     pub cloud: u64,
     pub gone: u64,
-    /// Huella del contenido (ver [`Stats::fp_sum`]).
+    /// Contents fingerprint (see [`Stats::fp_sum`]).
     pub fp_sum: u64,
     pub fp_xor: u64,
-    /// Ruta más larga (unidades UTF-16) de lo que hay dentro (ver [`Stats::max_path`]).
+    /// Longest path inside (UTF-16 units; see [`Stats::max_path`]).
     pub max_path: u64,
-    /// Bytes en disco y tamaño lógico de los reparse points de dentro (ver [`Stats::reparse_bytes`]).
+    /// On-disk bytes and logical size of reparse points inside (see [`Stats::reparse_bytes`]).
     pub reparse_bytes: u64,
     pub reparse_logical: u64,
     pub mail_local_files: u64,
@@ -236,15 +236,15 @@ pub struct StatsSnapshot {
 }
 
 impl StatsSnapshot {
-    /// Lo que se cuenta contra la capacidad de la Papelera (GM-M3, GM-B1): `bytes` (archivos de un solo enlace),
-    /// `shared_bytes` (archivos con varios enlaces) y `reparse_bytes` (reparse points de dentro) son conjuntos DISJUNTOS que la
-    /// shell cuenta todos, así que se SUMAN (el máximo de los dos primeros subestimaba una carpeta con las dos clases y los
-    /// reparse points no contaban nada). El tamaño lógico (también con los reparse points) se compara aparte porque un
-    /// archivo disperso o comprimido ocupa más lógicamente que en disco. El mayor manda.
+    /// Amount charged against Recycle Bin capacity (GM-M3, GM-B1): `bytes` (single-link files), `shared_bytes` (files with
+    /// multiple links), and `reparse_bytes` (reparse points inside) are DISJOINT sets that the shell counts together, so
+    /// they are ADDED (taking the maximum of the first two underestimated folders containing both types, and reparse points
+    /// were not counted at all). Logical size (including reparse points) is compared separately because a sparse or
+    /// compressed file can have a larger logical size than its on-disk size. The larger value determines the charge.
     ///
-    /// Reparse points de dentro: se cuenta su PROPIO tamaño tal como lo da el listado (un archivo de la nube hidratado ocupa
-    /// su tamaño; un junction, un symlink o un punto de montaje, prácticamente nada). Nunca se mide a dónde apuntan: mover la
-    /// carpeta mueve el enlace, no el destino, y no se entra en ellos.
+    /// Reparse points inside: their OWN size as reported by the listing is counted (a hydrated cloud file uses its size;
+    /// a junction, symlink, or mount point uses practically nothing). Their targets are never measured: moving the folder
+    /// moves the link, not the target, and they are never traversed.
     pub fn recycle_charge(&self) -> u64 {
         self.bytes
             .saturating_add(self.shared_bytes)
@@ -252,10 +252,10 @@ impl StatsSnapshot {
             .max(self.logical.saturating_add(self.reparse_logical))
     }
 
-    /// ¿Es COMPLETA una medida (modo `Measure`)? Solo si el recorrido vio TODO lo que había: ningún error al abrir o listar
-    /// (en uso, sin permiso, otros: una subcarpeta que no se pudo listar deja su contenido sin contar), ninguna entrada que
-    /// cambiara de identidad o de tipo durante el recorrido y ninguna que desapareciera entre el listado y la apertura. Una
-    /// medida incompleta no vale ni para repartir en la Papelera ni para decir que nada cambió.
+    /// Is a measurement complete (mode `Measure`)? Only if traversal saw EVERYTHING present: no errors opening or listing
+    /// (in use, access denied, or other errors: a subfolder that could not be listed leaves its contents uncounted), no entry
+    /// whose identity or type changed during traversal, and no entry that disappeared between listing and opening. An
+    /// incomplete measurement cannot be used to estimate Recycle Bin fit or to conclude that nothing changed.
     pub fn is_complete(&self) -> bool {
         self.in_use == 0
             && self.denied == 0
@@ -265,7 +265,7 @@ impl StatsSnapshot {
             && self.gone == 0
     }
 
-    /// Suma de otra instantánea.
+    /// Adds another snapshot.
     pub fn merge(&mut self, o: &StatsSnapshot) {
         self.bytes += o.bytes;
         self.logical += o.logical;
@@ -296,23 +296,23 @@ impl StatsSnapshot {
     }
 }
 
-/// Qué pasó con una entrada (para el registro local).
+/// What happened to an entry (for the local log).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
     Deleted,
-    /// Simulación: se habría borrado.
+    /// Dry run: would have been deleted.
     WouldDelete,
-    /// Enviado a la Papelera (verificado).
+    /// Sent to the Recycle Bin (verified).
     Recycled,
-    /// Simulación: se habría enviado a la Papelera.
+    /// Dry run: would have been sent to the Recycle Bin.
     WouldRecycle,
-    /// Tras enviarlo, sigue en su sitio: no se envió.
+    /// Still in place after the attempt: it was not sent.
     NotRecycled,
-    /// Desapareció sin llegar a la Papelera: se eliminó definitivamente.
+    /// Disappeared without reaching the Recycle Bin: permanently deleted.
     DeletedUnexpectedly,
-    /// Se movió a la Papelera un objeto distinto del aprobado (recuperable).
+    /// An object other than the approved one was moved to the Recycle Bin (recoverable).
     RecycledOther,
-    /// No se pudo comprobar qué pasó.
+    /// What happened could not be verified.
     Unverified,
     InUse,
     Denied,
@@ -323,11 +323,11 @@ pub enum Outcome {
     Young,
     Reparse,
     Failed(Win32),
-    /// Un directorio que no quedó vacío.
+    /// A directory that was not empty.
     NotEmpty,
 }
 
-/// Una entrada procesada, para el registro (solo se construye si hay quien escuche).
+/// A processed entry for the log (only constructed when there is a listener).
 #[derive(Clone, Debug)]
 pub struct Event {
     pub unit: usize,
@@ -339,25 +339,25 @@ pub struct Event {
     pub outcome: Outcome,
 }
 
-/// Receptor de eventos (el registro local, o una prueba).
+/// Event receiver (the local log or a test).
 pub type EventSink = dyn Fn(Event) + Send + Sync;
 
-/// Parámetros comunes de un recorrido.
+/// Parameters shared by a traversal.
 pub struct Env {
     pub protection: Arc<Protection>,
     pub mode: Mode,
     pub allow_local_mail_permanent: bool,
-    /// Antigüedad mínima en intervalos de 100 ns (0 = sin límite).
+    /// Minimum age in 100 ns intervals (0 = no limit).
     pub min_age_ft: i64,
-    /// "Ahora" (FILETIME).
+    /// "Now" (FILETIME).
     pub now_ft: i64,
     pub cancel: Arc<AtomicBool>,
     pub sink: Option<Arc<EventSink>>,
-    /// Entradas procesadas (progreso para la interfaz).
+    /// Processed entries (progress for the interface).
     pub progress: Arc<AtomicU64>,
 }
 
-/// FILETIME de "ahora".
+/// FILETIME for "now".
 pub fn now_filetime() -> i64 {
     let secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -365,73 +365,73 @@ pub fn now_filetime() -> i64 {
     (secs + 11_644_473_600) * 10_000_000
 }
 
-/// Una antigüedad en intervalos de FILETIME.
+/// An age in FILETIME intervals.
 pub fn duration_to_ft(d: Duration) -> i64 {
     (d.as_secs() as i64).saturating_mul(10_000_000)
 }
 
-/// Qué recorrer.
+/// What to traverse.
 #[derive(Clone, Debug)]
 pub enum UnitSpec {
-    /// Borra los HIJOS de este directorio (que no se borra): las raíces de una categoría con regla.
+    /// Deletes the CHILDREN of this directory (which is not deleted): roots of a rule-based category.
     Contents {
         path: PathBuf,
         approved: FileIdentity,
     },
-    /// Borra esta entrada entera (archivo o directorio) con la identidad aprobada.
+    /// Deletes this entire entry (file or directory) with the approved identity.
     Entry {
         path: PathBuf,
         approved: FileIdentity,
-        /// Etiqueta de reparse aprobada (0 salvo archivos de la nube, que se admiten solo como elemento suelto).
+        /// Approved reparse tag (0 except for cloud files, which are accepted only as standalone entries).
         approved_tag: u32,
-        /// `NumberOfLinks` EXACTO que tenía al aprobar: si al ejecutar es otro (alguien le añadió o quitó nombres), se
-        /// rechaza como "cambió desde la confirmación".
+        /// EXACT `NumberOfLinks` at approval: if it differs during execution (someone added or removed names), the entry is
+        /// rejected as "changed since approval".
         approved_links: u32,
         is_dir: bool,
     },
 }
 
-/// Cómo terminó el procesado de la RAÍZ de una unidad.
+/// How processing of a unit's ROOT ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RootStatus {
     Done,
-    /// La raíz ya no existe.
+    /// The root no longer exists.
     Missing,
-    /// La identidad de la raíz no es la aprobada.
+    /// The root's identity is not the approved one.
     Changed,
-    /// La ruta resuelta de la raíz no es la aprobada o ahora está protegida.
+    /// The root's resolved path is not the approved one, or it is now protected.
     Protected,
     /// An individual `.pst` was kept because permanent deletion was not acknowledged.
     MailConsentRequired,
-    /// La ruta resuelta de la raíz no es de una unidad local con letra (UNC, también hacia un disco local, o red).
+    /// The root's resolved path is not on a local drive-letter volume (UNC, including a local disk, or a network path).
     NotLocal,
-    /// La raíz es un archivo en uso.
+    /// The root is a file in use.
     InUse,
     Denied,
     Failed(Win32),
     Cancelled,
 }
 
-/// Lo eliminado (de verdad) bajo una entrada de primer nivel de una unidad: la interfaz lo usa para actualizar el árbol
-/// sin reescanear (overlay, PLAN.md §3.6).
+/// Items actually deleted beneath a unit's top-level entry: the interface uses this to update the tree without rescanning
+/// (overlay, PLAN.md §3.6).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TopResult {
-    /// Nombre de la entrada (hija de la raíz de un `Contents`; o el propio elemento de un `Entry`).
+    /// Entry name (a child of a `Contents` root, or the `Entry` item itself).
     pub name: OsString,
     pub is_dir: bool,
-    /// La entrada desapareció entera (si no, solo una parte de su contenido).
+    /// The entire entry disappeared (otherwise, only part of its contents did).
     pub removed: bool,
-    /// Bytes en disco eliminados dentro de ella (sin enlaces duros compartidos).
+    /// On-disk bytes deleted inside it (excluding shared hard links).
     pub bytes: u64,
-    /// Tamaño lógico eliminado.
+    /// Logical size deleted.
     pub logical: u64,
-    /// Archivos eliminados.
+    /// Files deleted.
     pub files: u64,
-    /// Directorios eliminados (incluida ella si `removed`).
+    /// Directories deleted (including the entry itself if `removed`).
     pub dirs: u64,
 }
 
-/// Acumulador de lo eliminado bajo un directorio.
+/// Accumulator for items deleted beneath a directory.
 #[derive(Default)]
 struct Acc {
     bytes: AtomicU64,
@@ -454,7 +454,7 @@ impl Acc {
     }
 }
 
-/// Una unidad de trabajo con sus contadores y su resultado.
+/// A work unit with its counters and result.
 pub struct Unit {
     pub id: usize,
     pub spec: UnitSpec,
@@ -477,18 +477,18 @@ impl Unit {
             root_result: Mutex::new(None),
         })
     }
-    /// Lo eliminado bajo cada entrada de primer nivel (solo en una unidad `Contents` ejecutada en modo `Delete`).
+    /// Items deleted beneath each top-level entry (only for a `Contents` unit executed in `Delete` mode).
     pub fn tops(&self) -> Vec<TopResult> {
         self.tops.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
-    /// Lo eliminado del propio elemento (una unidad `Entry` ejecutada en modo `Delete`).
+    /// Items deleted from the entry itself (an `Entry` unit executed in `Delete` mode).
     pub fn root_result(&self) -> Option<TopResult> {
         self.root_result
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .clone()
     }
-    /// Cómo terminó la raíz (`None` si no llegó a procesarse).
+    /// How processing of the root ended (`None` if it was never processed).
     pub fn status(&self) -> Option<RootStatus> {
         *self.status.lock().unwrap_or_else(|e| e.into_inner())
     }
@@ -497,27 +497,27 @@ impl Unit {
     }
 }
 
-/// Un directorio abierto del recorrido.
+/// A directory opened during traversal.
 struct DirNode {
     unit: Arc<Unit>,
     handle: Handle,
     path: PathBuf,
-    /// Longitud de `path` en unidades UTF-16 (para la ruta más larga de la medida: ver [`Stats::max_path`]).
+    /// Length of `path` in UTF-16 units (for the longest path in the measurement; see [`Stats::max_path`]).
     path_len: usize,
     key: PathKey,
     parent: Option<Arc<DirNode>>,
-    /// Tareas pendientes de este directorio, más 1 de guarda mientras se reparten sus hijos.
+    /// Pending tasks for this directory, plus one guard while its children are being distributed.
     pending: AtomicUsize,
-    /// ¿Se puede borrar este directorio al terminar? (No la raíz de un `Contents`, ni lo protegido.)
+    /// Can this directory be deleted when finished? (Not a `Contents` root or a protected directory.)
     deletable: bool,
-    /// Algo de dentro se respetó o falló: el directorio no quedará vacío.
+    /// Something inside was preserved or failed: the directory will not be empty.
     kept: AtomicBool,
-    /// La fecha más reciente del propio directorio al abrirlo ya cumple `min_age`.
+    /// The directory's own latest timestamp already meets `min_age` when opened.
     old_enough: bool,
     volume_serial: u64,
-    /// Es la raíz de una unidad `Contents` (sus hijos son las entradas de primer nivel).
+    /// This is the root of a `Contents` unit (its children are the top-level entries).
     contents_root: bool,
-    /// Lo eliminado hasta ahora bajo este directorio.
+    /// Items deleted beneath this directory so far.
     acc: Acc,
 }
 
@@ -543,7 +543,7 @@ struct Shared {
     outstanding: AtomicUsize,
 }
 
-/// Nombre de una entrada para construir claves de comparación: sin pérdida (ver `paths::wide_to_string`).
+/// Entry name used to build comparison keys, without loss (see `paths::wide_to_string`).
 fn lossy(name: &[u16]) -> String {
     crate::paths::wide_to_string(name)
 }
@@ -575,12 +575,12 @@ fn emit(
     }
 }
 
-/// ¿El código de Windows es "ya no existe"?
+/// Does this Windows code mean "no longer exists"?
 fn is_gone(code: Win32) -> bool {
     matches!(code, 2 | 3)
 }
 
-/// Cuenta un error del sistema en el contador que le toca. Devuelve el resultado para el registro.
+/// Increments the appropriate system-error counter and returns the outcome for the log.
 fn count_error(unit: &Unit, code: Win32) -> Outcome {
     match code {
         sys::SHARING_VIOLATION => {
@@ -598,7 +598,7 @@ fn count_error(unit: &Unit, code: Win32) -> Outcome {
     }
 }
 
-/// Ejecuta las unidades con un pool de `threads` hilos y vuelve cuando todas terminaron (o se canceló).
+/// Runs the units in a pool of `threads` threads and returns when all finish (or cancellation occurs).
 pub(crate) fn run(units: &[Arc<Unit>], threads: usize) {
     let threads = threads.clamp(1, 32);
     let workers: Vec<Worker<Task>> = (0..threads).map(|_| Worker::new_lifo()).collect();
@@ -648,7 +648,7 @@ fn worker_loop(shared: &Shared, local: Worker<Task>) {
         match find_task(shared, &local) {
             Some(task) => {
                 idle = 0;
-                // Un pánico en una tarea no puede dejar a los demás hilos esperando para siempre: se cancela todo.
+                // A panic in one task must not leave the other threads waiting forever: cancel all work.
                 let cancel = match &task {
                     Task::Start(u) => u.env.cancel.clone(),
                     Task::Child(n, _) => n.env().cancel.clone(),
@@ -681,7 +681,7 @@ fn handle(shared: &Shared, local: &Worker<Task>, task: Task) {
     }
 }
 
-/// Una tarea del directorio terminó: si era la última, el directorio se finaliza y se avisa al padre.
+/// A directory task finished: if it was the last one, finalize the directory and notify its parent.
 fn finish_one(mut node: Arc<DirNode>) {
     loop {
         if node.pending.fetch_sub(1, Ordering::AcqRel) != 1 {
@@ -695,8 +695,8 @@ fn finish_one(mut node: Arc<DirNode>) {
     }
 }
 
-/// Cuenta lo eliminado bajo `node` en su padre y, si es una entrada de primer nivel de un `Contents` (o el elemento de un
-/// `Entry`), lo deja anotado para el overlay de la interfaz.
+/// Adds the items deleted beneath `node` to its parent and, if it is a top-level entry of a `Contents` unit (or the item
+/// of an `Entry` unit), records it for the interface overlay.
 fn propagate(node: &DirNode, removed: bool) {
     let me = TopResult {
         name: node
@@ -732,7 +732,7 @@ fn propagate(node: &DirNode, removed: bool) {
     }
 }
 
-/// Borra el directorio (vacío) por SU propio handle. Lo que no se borra mantiene vivos a sus ancestros.
+/// Deletes the (empty) directory through ITS own handle. Items that are not deleted keep their ancestors in place.
 fn finalize(node: &DirNode) {
     let unit = &node.unit;
     let real = node.env().mode == Mode::Delete;
@@ -740,7 +740,7 @@ fn finalize(node: &DirNode) {
         || node.env().cancel.load(Ordering::Relaxed)
         || node.kept.load(Ordering::Acquire)
     {
-        // Se queda (protegido, cancelado, o con algo dentro que se respetó o falló): su padre tampoco puede quedar vacío.
+        // It remains (protected, cancelled, or containing something preserved or failed): its parent cannot be empty either.
         node.mark_parent_kept();
         if real {
             propagate(node, false);
@@ -791,7 +791,7 @@ fn finalize(node: &DirNode) {
     }
 }
 
-/// Reparte los hijos de `node` como tareas y suelta la guarda.
+/// Distributes `node`'s children as tasks and releases the guard.
 fn list_and_spawn(shared: &Shared, local: &Worker<Task>, node: Arc<DirNode>) {
     let entries = match sys::list_dir(&node.handle) {
         Ok(v) => v,
@@ -802,7 +802,7 @@ fn list_and_spawn(shared: &Shared, local: &Worker<Task>, node: Arc<DirNode>) {
             Vec::new()
         }
     };
-    // Primero los contadores y después las tareas: `outstanding` no puede llegar a 0 con trabajo por repartir.
+    // Update counters before adding tasks: `outstanding` must not reach 0 while work remains to be distributed.
     node.pending.fetch_add(entries.len(), Ordering::AcqRel);
     shared
         .outstanding
@@ -883,8 +883,8 @@ fn start_unit(shared: &Shared, local: &Worker<Task>, unit: Arc<Unit>) {
     }
 }
 
-/// Verifica la raíz de una unidad (identidad aprobada, tipo, ruta resuelta y protección) y crea su nodo.
-/// `contents`: es la raíz de una categoría (no se borra). `deletable`: el directorio raíz se borra al final.
+/// Verifies a unit's root (approved identity, type, resolved path, and protection) and creates its node.
+/// `contents`: this is a category root (not deleted). `deletable`: delete the root directory at the end.
 fn verify_root(
     unit: &Arc<Unit>,
     h: Handle,
@@ -902,7 +902,7 @@ fn verify_root(
             return None;
         }
     };
-    // Un directorio con reparse point (junction, symlink, punto de montaje) nunca se acepta: no se entra en él.
+    // A directory with a reparse point (junction, symlink, mount point) is never accepted: it is not traversed.
     let links_changed = approved_links.is_some_and(|l| l != m.links);
     if !m.is_dir || m.identity != *approved || m.is_reparse() || links_changed {
         unit.set_status(RootStatus::Changed);
@@ -940,10 +940,10 @@ fn verify_root(
         return None;
     }
     let key = PathKey::new(&final_path);
-    // La ruta resuelta por el handle es la aprobada, y sigue siendo un destino permitido (re-validación de protección).
+    // The path resolved from the handle is the approved one and remains an allowed target (protection revalidation).
     let same_route = PathKey::new(approved_path) == key;
-    // Para borrar el CONTENIDO de una raíz vale también una carpeta intocable como destino o una carpeta conocida
-    // ("su contenido sí se puede limpiar", PLAN.md §2.7); solo lo denegado queda fuera. Un elemento suelto exige `Allowed`.
+    // To delete a root's CONTENTS, an untouchable destination or known folder is also allowed ("its contents can be cleaned",
+    // PLAN.md §2.7); only denied paths are excluded. A standalone entry requires `Allowed`.
     let verdict = env.protection.target_verdict(&key);
     let verdict_ok = match verdict {
         Verdict::Allowed => true,
@@ -981,7 +981,7 @@ fn verify_root(
     }))
 }
 
-/// Un archivo suelto aprobado como elemento de la cesta.
+/// A standalone file approved as a basket item.
 fn entry_file(
     unit: &Arc<Unit>,
     path: &Path,
@@ -1009,11 +1009,11 @@ fn entry_file(
         Ok(m) => m,
         Err(c) => return root_open_error(unit, c),
     };
-    // Un archivo de la nube (reparse con etiqueta de nube) solo vale si es el que se aprobó, con su aviso; cualquier otro
-    // reparse point se rechaza.
+    // A cloud file (reparse point with a cloud tag) is accepted only if it is the one approved, with its warning; any other
+    // reparse points are rejected.
     let reparse_ok =
         !m.is_reparse() || (m.reparse_tag == approved_tag && sys::is_cloud_tag(m.reparse_tag));
-    // Misma identidad pero otro número de enlaces (alguien añadió o quitó nombres): cambió desde la confirmación.
+    // Same identity but a different link count (someone added or removed names): it changed since approval.
     if m.is_dir || m.identity != *approved || !reparse_ok || m.links != approved_links {
         unit.set_status(RootStatus::Changed);
         Stats::add(&unit.stats.changed, 1);
@@ -1157,8 +1157,8 @@ fn entry_file(
     }
 }
 
-/// Devuelve `true` si la tarea terminó (quien llama descuenta una tarea pendiente del padre) y `false` si era un
-/// directorio: entonces su propio nodo descuenta del padre cuando se finalice (tras todos sus descendientes).
+/// Returns `true` if the task finished (the caller decrements the parent's pending-task count) and `false` if it was a
+/// directory: its node decrements the parent's count when it is finalized, after all descendants finish.
 fn process_child(
     shared: &Shared,
     local: &Worker<Task>,
@@ -1180,13 +1180,13 @@ fn process_child(
     let child_path = join_name(&parent.path, name);
     #[cfg(test)]
     test_hooks::before_open(&child_path);
-    // GM-M3: la ruta más larga de lo que hay dentro (cualquier entrada, también la protegida o el reparse point: viajan con la
-    // carpeta). Se anota en todos los modos para que medir, simular y borrar cuenten lo mismo; lo usa la medida.
+    // GM-M3: the longest path inside (any entry, including protected entries and reparse points: they move with the folder).
+    // Recorded in every mode so measurement, simulation, and deletion count the same items; used by measurement.
     unit.stats
         .max_path
         .fetch_max((parent.path_len + 1 + name.len()) as u64, Ordering::Relaxed);
     let action = env.protection.child_action(&ckey);
-    // Protegido: denegado (o un archivo que sería "solo descender", que no tiene sentido): se respeta.
+    // Protected: denied (or a file that would be "descend only," which makes no sense); preserve it.
     if action == ChildAction::Skip || (action == ChildAction::Descend && !entry.is_dir()) {
         Stats::add(&unit.stats.protected, 1);
         Stats::add(&unit.stats.protected_bytes, entry.alloc);
@@ -1211,8 +1211,8 @@ fn process_child(
     }
     if entry.is_reparse() {
         Stats::add(&unit.stats.reparse, 1);
-        // GM-B1: lo que ocupa NO se pierde: la carpeta se mueve entera y la shell lo cuenta (un archivo de la nube hidratado
-        // ocupa su tamaño). No entra en `bytes`/`logical` (lo que liberaría borrar: aquí se salta), sino en su propio contador.
+        // GM-B1: this space is NOT freed: the whole folder is moved and the shell counts it (a hydrated cloud file uses its
+        // full size). It is not included in `bytes`/`logical` (space freed by deletion; this entry is skipped), but has its own counter.
         Stats::add(&unit.stats.reparse_bytes, entry.alloc);
         Stats::add(&unit.stats.reparse_logical, entry.logical);
         unit.stats.add_fp(
@@ -1304,7 +1304,7 @@ fn process_child(
         list_and_spawn(shared, local, node);
         return false;
     }
-    // Un archivo.
+    // A file.
     let young = |newest: i64| env.min_age_ft > 0 && env.now_ft - newest < env.min_age_ft;
     if young(entry.newest_filetime) {
         Stats::add(&unit.stats.young, 1);
@@ -1372,7 +1372,7 @@ fn process_child(
         );
         return true;
     }
-    // La fecha puede haber cambiado entre el listado y la apertura (alguien escribió): se vuelve a mirar en el handle.
+    // The timestamp may have changed between listing and opening (someone wrote to the file): check it again through the handle.
     if young(m.newest_filetime) {
         Stats::add(&unit.stats.young, 1);
         unit.stats.add_fp(
