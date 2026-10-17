@@ -77,7 +77,7 @@ def parse(data):
 
 
 def parse_info(data):
-    """Todo lo que lee este script de un PE: machine, imports, delay, `load_flags` (`DependentLoadFlags`, o None si el
+    """All information this script reads from a PE: machine, imports, delay, `load_flags` (`DependentLoadFlags`, or None if the
     load configuration directory does not contain it) and `repro` (whether a REPRO debug entry exists)."""
     if len(data) < 0x40 or data[:2] != b"MZ":
         raise PeError("not a PE (missing MZ signature)")
@@ -183,7 +183,7 @@ def parse_info(data):
 
 
 def forbidden(names):
-    """Las DLL de `names` que son del runtime de C (sin distinguir mayusculas)."""
+    """C runtime DLLs in `names`, case-insensitively."""
     out = []
     for n in names:
         low = n.lower()
@@ -193,12 +193,12 @@ def forbidden(names):
 
 
 def network_modules(names):
-    """Los modulos de red de `names` que no se admiten (todos menos `winhttp.dll`), sin distinguir mayusculas."""
+    """Forbidden network modules in `names` (all except `winhttp.dll`), case-insensitively."""
     return [n for n in names if n.lower() in FORBIDDEN_NETWORK]
 
 
 def check(path, machine_name):
-    """Lista de problemas de un ejecutable (vacia si esta bien)."""
+    """List problems in an executable (empty when valid)."""
     try:
         with open(path, "rb") as f:
             data = f.read()
@@ -209,10 +209,10 @@ def check(path, machine_name):
     problems = []
     want = MACHINES[machine_name]
     if machine != want:
-        problems.append(f"{path}: arquitectura 0x{machine:04X}, se esperaba {machine_name} (0x{want:04X})")
+        problems.append(f"{path}: architecture 0x{machine:04X}, expected {machine_name} (0x{want:04X})")
     bad = forbidden(imports + delay)
     if bad:
-        problems.append(f"{path}: importa el runtime de C: {', '.join(sorted(set(bad), key=str.lower))}")
+        problems.append(f"{path}: imports C runtime: {', '.join(sorted(set(bad), key=str.lower))}")
     net = network_modules(imports + delay)
     if net:
         problems.append(
@@ -220,12 +220,12 @@ def check(path, machine_name):
         )
     flags = info["load_flags"]
     if flags != WANT_LOAD_FLAGS:
-        got = "ausente" if flags is None else f"0x{flags:04X}"
+        got = "missing" if flags is None else f"0x{flags:04X}"
         problems.append(
-            f"{path}: DependentLoadFlags {got}, se esperaba 0x{WANT_LOAD_FLAGS:04X} (/DEPENDENTLOADFLAG:0x800)"
+            f"{path}: DependentLoadFlags {got}, expected 0x{WANT_LOAD_FLAGS:04X} (/DEPENDENTLOADFLAG:0x800)"
         )
     if not info["repro"]:
-        problems.append(f"{path}: sin entrada de depuracion REPRO (falta /Brepro: el enlace no es reproducible)")
+        problems.append(f"{path}: missing REPRO debug entry (missing /Brepro: linking is not reproducible)")
     return problems
 
 

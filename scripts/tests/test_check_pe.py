@@ -159,7 +159,7 @@ class CheckPe(unittest.TestCase):
                 bad = t.write("bad.exe", make_pe(imports=["KERNEL32.dll", dll]))
                 problems = check_pe.check(bad, "x64")
                 self.assertEqual(len(problems), 1, dll)
-                self.assertIn("runtime de C", problems[0], dll)
+                self.assertIn("C runtime", problems[0], dll)
             # Also when it appears only in the delay-load table.
             late = t.write("late.exe", make_pe(imports=["KERNEL32.dll"], delay=["VCRUNTIME140.dll"]))
             self.assertEqual(len(check_pe.check(late, "x64")), 1)
@@ -245,7 +245,7 @@ class CheckPe(unittest.TestCase):
             self.assertEqual(check_pe.check(arm, "arm64"), [])
             problems = check_pe.check(arm, "x64")
             self.assertEqual(len(problems), 1)
-            self.assertIn("arquitectura", problems[0])
+            self.assertIn("architecture", problems[0])
             x86 = t.write("x86.exe", make_pe(machine=0x014C, imports=[]))
             self.assertEqual(len(check_pe.check(x86, "x64")), 1)
 
