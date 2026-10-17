@@ -29,7 +29,11 @@ Tesela **deletes files** and installs without administrator rights, so the cases
 - Privilege escalation, or code execution, through the MSI installer, the portable zip or the executables.
 - A published package that does not match its `SHA256SUMS.txt` or its provenance attestation, or that carries data from the
   machine that built it.
-- The application sends information off the computer (it must not: it has no telemetry or accounts).
+- The application sends information off the computer, or connects anywhere, beyond what is documented (it must not: it has
+  no telemetry or accounts, and its only network request is the optional update check, off by default, which asks GitHub for
+  the latest version and sends only the fixed `User-Agent` `Tesela`: see "Privacy and network" in the README).
+- The update check downloads or runs anything, opens a page that was not built from a validated version tag, or runs when it is
+  turned off or in `--demo` or a measuring tool.
 
 ## Elevation
 

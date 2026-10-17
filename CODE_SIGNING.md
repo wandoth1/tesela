@@ -96,8 +96,13 @@ person installing or operating it.
 
 Tesela has no telemetry or accounts; it scans only the drive or folder you choose and keeps
 its settings and the cleanup log **only on your computer** (`%APPDATA%\Tesela` and `%LOCALAPPDATA%\Tesela`).
-**[TO CONFIRM: that no dependency makes network requests in the version that gets signed; if any affects privacy,
-SignPath asks to link its policy.]**
+It makes **no network connection by default**. The only request it can make is the **optional update check**
+(*Settings > Check for updates when Tesela opens*, off by default): at most once every 24 hours it asks GitHub
+(`api.github.com`, through WinHTTP) for the latest published version, sending only the fixed `User-Agent` `Tesela` (no
+version, system or identifier), never downloads or installs anything, and never runs in `--demo` or in the measuring
+tools. The code that can reach the network is the `tesela-update` crate.
+**[TO CONFIRM: that no dependency makes network requests in the version that gets signed (apart from that check); if any
+affects privacy, SignPath asks to link its policy.]**
 
 ## Reputation and contact
 
