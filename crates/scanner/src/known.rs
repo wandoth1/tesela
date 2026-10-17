@@ -1,5 +1,5 @@
-//! Rutas conocidas que se escanean primero (cola prioritaria, PLAN.md §3.3) y las dos consultas de Windows que
-//! necesitan: el SID del usuario actual y la carpeta Descargas. SOLO LECTURA.
+//! Known paths scanned first (priority queue, PLAN.md §3.3) and the two Windows queries that
+//! require the current user's SID and Downloads folder. READ-ONLY.
 #![allow(unsafe_code)]
 
 use std::ffi::OsString;
@@ -16,20 +16,20 @@ use windows_sys::core::GUID;
 use crate::browser::{BrowserRoots, browser_cache_dirs_verified};
 use crate::diagnostic::diagnostic_dirs_verified;
 
-/// Longitud de una cadena UTF-16 terminada en NUL.
+/// Length of a NUL-terminated UTF-16 string.
 ///
 /// # Safety
-/// `p` debe apuntar a una cadena UTF-16 válida terminada en NUL.
+/// `p` must point to a valid NUL-terminated UTF-16 string.
 unsafe fn wcslen(p: *const u16) -> usize {
     let mut n = 0;
-    // SAFETY: lo garantiza quien llama: la cadena termina en NUL, así que no se lee más allá del terminador.
+    // SAFETY: the caller guarantees the string ends in NUL, so no reads pass the terminator.
     while unsafe { *p.add(n) } != 0 {
         n += 1;
     }
     n
 }
 
-/// SID del usuario del proceso en texto (`S-1-5-21-...`), o `None` si Windows no lo da.
+/// Current process user's SID as text (`S-1-5-21-...`), or `None` if Windows does not provide it.
 pub fn current_user_sid() -> Option<String> {
     let mut token: HANDLE = std::ptr::null_mut();
     // SAFETY: el pseudo-handle del proceso actual siempre es válido; `token` es escribible.
@@ -37,14 +37,14 @@ pub fn current_user_sid() -> Option<String> {
         return None;
     }
     let sid = (|| {
-        // Primera llamada: averigua el tamaño necesario (falla a propósito con ERROR_INSUFFICIENT_BUFFER).
+        // First call: obtain the required size (intentionally fails with ERROR_INSUFFICIENT_BUFFER).
         let mut needed = 0u32;
         // SAFETY: `token` es válido; búfer nulo de longitud 0 es la forma documentada de preguntar el tamaño.
         unsafe { GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut needed) };
         if needed == 0 {
             return None;
         }
-        // `u64` para garantizar la alineación que necesita TOKEN_USER.
+        // Use `u64` to guarantee the alignment required by TOKEN_USER.
         let mut buf = vec![0u64; (needed as usize).div_ceil(8)];
         // SAFETY: `buf` es escribible, alineado y de al menos `needed` bytes; `token` es válido.
         let ok = unsafe {
@@ -77,7 +77,7 @@ pub fn current_user_sid() -> Option<String> {
     sid
 }
 
-/// Una carpeta conocida de Windows (`SHGetKnownFolderPath`, usuario actual; puede estar redirigida), o `None` si falla.
+/// A Windows known folder (`SHGetKnownFolderPath`, current user; may be redirected), or `None` on failure.
 pub fn known_folder(id: &GUID) -> Option<PathBuf> {
     let mut out: *mut u16 = std::ptr::null_mut();
     // SAFETY: `id` apunta a un GUID válido (una constante `FOLDERID_*`); flags 0 y token nulo = usuario actual; `out` es
@@ -97,7 +97,7 @@ pub fn known_folder(id: &GUID) -> Option<PathBuf> {
     Some(path.into())
 }
 
-/// Carpeta Descargas del usuario según Windows (puede estar redirigida), o `None` si falla.
+/// User's Downloads folder according to Windows (may be redirected), or `None` on failure.
 pub fn downloads_dir() -> Option<PathBuf> {
     known_folder(&FOLDERID_Downloads)
 }
@@ -108,10 +108,10 @@ fn env_path(name: &str) -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
-/// Qué es una ruta conocida (para que la interfaz la nombre).
+/// Kind of known path (used by the interface to label it).
 ///
-/// `ChromeCache`, `EdgeCache` y `FirefoxCache` son SOLO directorios de caché concretos (ver [`browser_cache_dirs`]),
-/// nunca el perfil del navegador (historial, marcadores, cookies, credenciales...).
+/// `ChromeCache`, `EdgeCache`, and `FirefoxCache` are specific cache directories ONLY (see [`browser_cache_dirs`]),
+/// never the browser profile (history, bookmarks, cookies, credentials...).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum KnownKind {
     /// `%TEMP%` del usuario.
@@ -131,10 +131,10 @@ pub enum KnownKind {
     CrashDumps,
 }
 
-/// Rutas conocidas candidatas, con su clase (sin comprobar que existan ni que cuelguen de la ruta escaneada):
-/// `%TEMP%`, `Windows\Temp`, los directorios de CACHÉ de Chrome, Edge y Firefox ([`browser_cache_dirs`]; nunca sus
-/// perfiles), las carpetas de informes de errores y de volcados ([`crate::diagnostic_dirs_verified`]), Descargas y la carpeta de la Papelera del usuario actual en el volumen `drive_root` (`C:\`). Esa carpeta
-/// solo se LISTA, como todo el escaneo.
+/// Candidate known paths and their kinds (without checking that they exist or are under the scanned path):
+/// `%TEMP%`, `Windows\Temp`, Chrome, Edge, and Firefox CACHE directories ([`browser_cache_dirs`]; never their
+/// profiles), error-report and crash-dump folders ([`crate::diagnostic_dirs_verified`]), Downloads, and the current user's Recycle Bin folder on volume `drive_root` (`C:\`). That folder
+/// is only LISTED, like everything else in the scan.
 pub fn known_paths_labeled(drive_root: Option<&Path>) -> Vec<(KnownKind, PathBuf)> {
     known_paths_labeled_with(&BrowserRoots::from_system(), drive_root)
 }
@@ -148,9 +148,9 @@ fn known_paths_labeled_with(
         v.extend(env_path(var).map(|p| (KnownKind::UserTemp, p)));
     }
     v.extend(env_path("SystemRoot").map(|p| (KnownKind::WindowsTemp, p.join("Temp"))));
-    // Lo que el escáner recorre primero: solo cachés con TODOS sus ancestros reales (el `cleaner` usa las candidatas sin ese filtro).
+    // Paths the scanner visits first: caches whose full ancestor chains are real directories (`cleaner` uses candidates without this filter).
     v.extend(browser_cache_dirs_verified(roots));
-    // Informes de errores de Windows y volcados de bloqueo del usuario (solo los que existen y sin enlaces en el camino).
+    // Windows error reports and user crash dumps (only existing paths with no links in the path).
     v.extend(diagnostic_dirs_verified(roots));
     v.extend(
         downloads_dir()
@@ -163,7 +163,7 @@ fn known_paths_labeled_with(
     v
 }
 
-/// Las mismas rutas sin su clase (lo que usa el escáner para la cola prioritaria).
+/// The same paths without their kinds (used by the scanner's priority queue).
 pub fn known_paths(drive_root: Option<&Path>) -> Vec<PathBuf> {
     known_paths_labeled(drive_root)
         .into_iter()

@@ -1,5 +1,5 @@
-//! Consultas de volumen que necesita el `cleaner`: raíz del volumen, tipo de unidad, y el límite REAL de la Papelera
-//! de ese volumen (el registro de la shell). Todo es solo lectura.
+//! Volume queries needed by `cleaner`: volume root, drive type, and the REAL Recycle Bin limit
+//! for that volume (the shell registry). Read-only.
 #![allow(unsafe_code)]
 
 use std::ffi::OsString;
@@ -14,10 +14,10 @@ use windows_sys::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RegGetValueW,
 };
 
-/// `%TEMP%` según Windows (`GetTempPathW`).
+/// Windows' `%TEMP%` path (`GetTempPathW`).
 pub fn temp_path() -> Option<PathBuf> {
     let mut buf = vec![0u16; 1024];
-    // SAFETY: `buf` es escribible con `buf.len()` unidades UTF-16.
+    // SAFETY: `buf` is writable for `buf.len()` UTF-16 units.
     let n = unsafe { GetTempPathW(buf.len() as u32, buf.as_mut_ptr()) } as usize;
     if n == 0 || n >= buf.len() {
         return None;
@@ -25,7 +25,7 @@ pub fn temp_path() -> Option<PathBuf> {
     Some(OsString::from_wide(&buf[..n]).into())
 }
 
-/// Tipo de unidad (`GetDriveTypeW`).
+/// Drive type (`GetDriveTypeW`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DriveKind {
     Fixed,
@@ -40,11 +40,11 @@ fn wide_nul(p: &Path) -> Vec<u16> {
     p.as_os_str().encode_wide().chain(Some(0)).collect()
 }
 
-/// Raíz del volumen que contiene `path` (`C:\`), según Windows.
+/// Root of the volume containing `path` (`C:\`), as reported by Windows.
 pub fn volume_root(path: &Path) -> Option<PathBuf> {
     let w = wide_nul(path);
     let mut buf = vec![0u16; 1024];
-    // SAFETY: `w` termina en NUL; `buf` es escribible con `buf.len()` unidades UTF-16.
+    // SAFETY: `w` is NUL-terminated; `buf` is writable for `buf.len()` UTF-16 units.
     let ok = unsafe { GetVolumePathNameW(w.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) };
     if ok == 0 {
         return None;
@@ -53,10 +53,10 @@ pub fn volume_root(path: &Path) -> Option<PathBuf> {
     Some(OsString::from_wide(&buf[..n]).into())
 }
 
-/// Tipo de la unidad cuya raíz es `root` (con barra final).
+/// Drive type for the drive whose root is `root` (with a trailing backslash).
 pub fn drive_kind(root: &Path) -> DriveKind {
     let w = wide_nul(root);
-    // SAFETY: `w` es una cadena UTF-16 terminada en NUL que vive durante la llamada.
+    // SAFETY: `w` is a NUL-terminated UTF-16 string that remains alive for the call.
     match unsafe { GetDriveTypeW(w.as_ptr()) } {
         2 => DriveKind::Removable,
         3 => DriveKind::Fixed,
@@ -159,7 +159,7 @@ pub fn mounted_roots() -> Vec<PathBuf> {
     out
 }
 
-/// GUID del volumen (`{xxxxxxxx-...}`), a partir de su raíz.
+/// Volume GUID (`{xxxxxxxx-...}`) for the given root.
 pub fn volume_guid(root: &Path) -> Option<String> {
     let mut r = wide_nul(root);
     if r.len() >= 2 && r[r.len() - 2] != b'\\' as u16 {
@@ -180,18 +180,18 @@ pub fn volume_guid(root: &Path) -> Option<String> {
     (end > start).then(|| s[start..=end].to_string())
 }
 
-/// Límite de la Papelera de un volumen.
+/// Recycle Bin limit for a volume.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BinLimit {
-    /// El volumen no tiene Papelera (red, extraíble, CD).
+    /// The volume has no Recycle Bin (network, removable, CD).
     NoBin,
-    /// "No mover los archivos a la Papelera": el usuario lo desactivó para el volumen.
+    /// "Don't move files to the Recycle Bin": the user disabled it for this volume.
     NukeOnDelete,
-    /// Tamaño máximo configurado, en bytes.
+    /// Configured maximum size, in bytes.
     Max(u64),
-    /// No hay valor en el registro: la shell usa su porcentaje por defecto, que no se documenta.
+    /// No registry value: the shell uses its undocumented default percentage.
     Unknown,
-    /// No se pudo averiguar nada del volumen (tipo de unidad o GUID desconocidos): NUNCA se da por bueno.
+    /// The volume could not be identified (unknown drive type or GUID): NEVER treat it as valid.
     Indeterminate,
 }
 
@@ -216,8 +216,8 @@ fn reg_dword(hive: HKEY, subkey: &str, value: &str) -> Option<u32> {
     (rc == 0).then_some(data)
 }
 
-/// El límite de la Papelera del volumen cuya raíz es `root`, leído del registro del usuario
-/// (`Explorer\BitBucket\Volume\{guid}`: `MaxCapacity` en MB y `NukeOnDelete`).
+/// Recycle Bin limit for the volume rooted at `root`, read from the user's registry
+/// (`Explorer\BitBucket\Volume\{guid}`: `MaxCapacity` in MB and `NukeOnDelete`).
 pub fn bin_limit(root: &Path) -> BinLimit {
     match drive_kind(root) {
         DriveKind::Fixed | DriveKind::RamDisk => {}
@@ -238,8 +238,8 @@ pub fn bin_limit(root: &Path) -> BinLimit {
     }
 }
 
-/// ¿Hay una directiva "No mover los archivos eliminados a la Papelera" (`NoRecycleFiles`) en el usuario (HKCU) o en el
-/// equipo (HKLM)? Con ella la shell elimina de verdad lo que se "envía a la Papelera": todo cuenta como "no cabe".
+/// Is the "Don't move deleted files to the Recycle Bin" policy (`NoRecycleFiles`) set for the user (HKCU) or
+/// machine (HKLM)? When enabled, the shell permanently deletes anything "sent to the Recycle Bin": treat everything as "won't fit".
 pub fn recycle_policy_disabled() -> bool {
     const KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer";
     [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE]

@@ -1,4 +1,4 @@
-//! Clasificación de entradas y conversión de tiempos (funciones puras).
+//! Entry classification and time conversion (pure functions).
 
 use tesela_model::flags;
 
@@ -6,49 +6,49 @@ const ATTR_DIRECTORY: u32 = 0x0000_0010;
 const ATTR_REPARSE_POINT: u32 = 0x0000_0400;
 /// `FILE_ATTRIBUTE_RECALL_ON_OPEN`.
 const ATTR_RECALL_ON_OPEN: u32 = 0x0004_0000;
-/// `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS`: el contenido no está en el disco, se descarga al abrirlo.
+/// `FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS`: the content is not on disk and is downloaded when accessed.
 const ATTR_RECALL_ON_DATA_ACCESS: u32 = 0x0040_0000;
 
-/// ¿Es un directorio?
+/// Is this a directory?
 pub fn is_dir(attrs: u32) -> bool {
     attrs & ATTR_DIRECTORY != 0
 }
 
-/// ¿Es un reparse point (junction, symlink, punto de montaje, placeholder...)?
+/// Is this a reparse point (junction, symlink, mount point, placeholder...)?
 pub fn is_reparse(attrs: u32) -> bool {
     attrs & ATTR_REPARSE_POINT != 0
 }
 
-/// ¿Es un elemento de la nube (placeholder de OneDrive u otro proveedor de Cloud Files)?
-/// Etiquetas `IO_REPARSE_TAG_CLOUD` (`0x9000001A`) y `IO_REPARSE_TAG_CLOUD_1..F` (el nibble 12..15 varía), o los
-/// atributos de "recuperar al abrir / al acceder a los datos".
+/// Is this a cloud item (a OneDrive placeholder or one from another Cloud Files provider)?
+/// The `IO_REPARSE_TAG_CLOUD` (`0x9000001A`) and `IO_REPARSE_TAG_CLOUD_1..F` tags (the 12..15 nibble varies), or the
+/// "recall on open / recall on data access" attributes.
 pub fn is_cloud(attrs: u32, reparse_tag: u32) -> bool {
     let tag_is_cloud = is_reparse(attrs) && (reparse_tag & !0xF000) == 0x9000_001A;
     tag_is_cloud || attrs & (ATTR_RECALL_ON_OPEN | ATTR_RECALL_ON_DATA_ACCESS) != 0
 }
 
-/// ¿Es un reparse point de la nube (etiqueta `IO_REPARSE_TAG_CLOUD*`)? Estos directorios SÍ se recorren (su filtro
-/// permite listarlos); el resto de reparse points de directorio (junctions, symlinks, montajes) no se siguen.
+/// Is this a cloud reparse point (an `IO_REPARSE_TAG_CLOUD*` tag)? These directories ARE traversed (their filter
+/// allows them to be listed); other directory reparse points (junctions, symlinks, mount points) are not followed.
 pub fn is_cloud_reparse(attrs: u32, reparse_tag: u32) -> bool {
     is_reparse(attrs) && (reparse_tag & !0xF000) == 0x9000_001A
 }
 
-/// Qué hace el escáner con un directorio que ve en el listado de su padre. El criterio usa la ETIQUETA de reparse y los
-/// atributos de recuperación; el builder lo refleja con los flags (ver `dir_flags`).
+/// What the scanner does with a directory found in its parent's listing. The decision uses the reparse TAG and
+/// recall attributes; the builder represents this with flags (see `dir_flags`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DirAction {
-    /// Directorio normal: se recorre.
+    /// Normal directory: traverse it.
     Walk,
-    /// Reparse point de la nube ya poblado: se recorre abriéndolo con su filtro de nube.
+    /// Populated cloud reparse point: traverse it using its cloud filter.
     WalkCloud,
-    /// Junction, symlink o punto de montaje: no se sigue y mide 0.
+    /// Junction, symlink, or mount point: do not follow it; count zero bytes.
     SkipReparse,
-    /// Carpeta de la nube NO poblada (`RECALL_ON_OPEN` o `RECALL_ON_DATA_ACCESS`): listarla provocaría descargas por
-    /// red, así que no se recorre; se cuenta con su `AllocationSize` y queda `CLOUD | INCOMPLETE`.
+    /// Unpopulated cloud folder (`RECALL_ON_OPEN` or `RECALL_ON_DATA_ACCESS`): listing it could trigger network
+    /// downloads, so do not traverse it; count its `AllocationSize` and mark it `CLOUD | INCOMPLETE`.
     SkipUnpopulatedCloud,
 }
 
-/// Decide qué hacer con un directorio.
+/// Decide what to do with a directory.
 pub fn dir_action(attrs: u32, reparse_tag: u32) -> DirAction {
     let cloud_tag = is_cloud_reparse(attrs, reparse_tag);
     if is_reparse(attrs) && !cloud_tag {
@@ -62,22 +62,22 @@ pub fn dir_action(attrs: u32, reparse_tag: u32) -> DirAction {
     }
 }
 
-/// Qué hace el escáner con la RAÍZ del escaneo: la misma clasificación que con los descendientes (`dir_action`), con
-/// los atributos y la etiqueta de reparse de la propia raíz.
+/// What the scanner does with the scan ROOT: the same classification used for descendants (`dir_action`), using
+/// the root's own attributes and reparse tag.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RootPlan {
-    /// Flags del nodo raíz (`DIR`, y `REPARSE`/`CLOUD` según corresponda).
+    /// Flags for the root node (`DIR`, and `REPARSE`/`CLOUD` as applicable).
     pub flags: u16,
-    /// ¿Se lista la raíz? No si es un junction/symlink/montaje (no se sigue) ni una carpeta de la nube sin poblar
-    /// (listarla provocaría descargas por red).
+    /// Should the root be listed? No, if it is a junction/symlink/mount point (do not follow it) or an unpopulated cloud
+    /// folder (listing it could trigger network downloads).
     pub walk: bool,
-    /// Abrir la raíz dejando actuar al filtro de la nube (carpeta de la nube ya poblada).
+    /// Open the root and let the cloud filter handle it (a populated cloud folder).
     pub open_cloud: bool,
-    /// Mide 0 (reparse point no seguido). Una carpeta de la nube sin poblar conserva su `AllocationSize`.
+    /// Count zero bytes (unfollowed reparse point). An unpopulated cloud folder retains its `AllocationSize`.
     pub zero_size: bool,
 }
 
-/// Decide qué hacer con la raíz a partir de sus atributos y su etiqueta de reparse.
+/// Decide what to do with the root from its attributes and reparse tag.
 pub fn root_plan(attrs: u32, reparse_tag: u32) -> RootPlan {
     let action = dir_action(attrs, reparse_tag);
     RootPlan {
@@ -88,9 +88,9 @@ pub fn root_plan(attrs: u32, reparse_tag: u32) -> RootPlan {
     }
 }
 
-/// Flags de un directorio según su acción. Un reparse point que NO es de la nube nunca lleva `CLOUD` (aunque tenga
-/// atributos de recuperación): así el builder distingue "no seguido" (`REPARSE` sin `CLOUD`) de "recorrible"
-/// (`REPARSE | CLOUD`, o sin `REPARSE`) usando solo los flags, con el mismo criterio que el escáner.
+/// Flags for a directory based on its action. A reparse point that is NOT from the cloud never has `CLOUD` (even if it has
+/// recall attributes): this lets the builder distinguish "not followed" (`REPARSE` without `CLOUD`) from "traversable"
+/// (`REPARSE | CLOUD`, or no `REPARSE`) using only the flags, with the same rule as the scanner.
 pub fn dir_flags(attrs: u32, reparse_tag: u32) -> u16 {
     let f = entry_flags(attrs, reparse_tag);
     if dir_action(attrs, reparse_tag) == DirAction::SkipReparse {
@@ -100,7 +100,7 @@ pub fn dir_flags(attrs: u32, reparse_tag: u32) -> u16 {
     }
 }
 
-/// Flags de una entrada del listado.
+/// Flags for a listed entry.
 pub fn entry_flags(attrs: u32, reparse_tag: u32) -> u16 {
     let mut f = 0;
     if is_dir(attrs) {
@@ -115,15 +115,15 @@ pub fn entry_flags(attrs: u32, reparse_tag: u32) -> u16 {
     f
 }
 
-/// FILETIME (intervalos de 100 ns desde 1601) a segundos Unix en `u32`: lo anterior a 1970 es 0 y lo posterior a
-/// 2106 se satura.
+/// Convert FILETIME (100 ns intervals since 1601) to Unix seconds in `u32`: values before 1970 become 0, and those after
+/// 2106 are saturated.
 pub fn filetime_to_unix(ft: i64) -> u32 {
     const UNIX_EPOCH_SECS: i64 = 11_644_473_600;
     let secs = ft / 10_000_000 - UNIX_EPOCH_SECS;
     secs.clamp(0, u32::MAX as i64) as u32
 }
 
-/// `alloc` estimado cuando solo hay `EndOfFile` (respaldo con `FindFirstFileExW`): EOF redondeado al cluster.
+/// Estimated `alloc` when only `EndOfFile` is available (the `FindFirstFileExW` fallback): EOF rounded up to a cluster.
 pub fn estimate_alloc(logical: u64, cluster: u64) -> u64 {
     logical.div_ceil(cluster) * cluster
 }

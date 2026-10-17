@@ -1,19 +1,19 @@
-//! El recorrido: el MISMO código mide, simula y borra (PLAN.md §3.7.3 y §3.7.8).
+//! Traversal: the SAME code measures, simulates, and deletes (PLAN.md §3.7.3 and §3.7.8).
 //!
-//! # Garantías
-//! * Todo se abre RELATIVO al handle del directorio que se está recorriendo (`NtCreateFile` con `RootDirectory`): ninguna
-//!   ruta se vuelve a resolver desde la raíz, así que cambiar un ancestro por un junction no redirige nada. Es el patrón
-//!   con el que se reescribió `std::fs::remove_dir_all` tras CVE-2022-21658.
-//! * Cada hijo se abre con `FILE_OPEN_REPARSE_POINT` y con el TIPO que dijo el listado (archivo o directorio): si cambió, el
-//!   sistema lo rechaza. Nunca se entra en un reparse point y nunca se borra uno (se salta y se cuenta).
-//! * El `FileId` del handle debe coincidir con el del listado y el volumen con el de la raíz; si no, "cambió desde la
-//!   confirmación" y se salta. Un archivo se abre en EXCLUSIVA (`dwShareMode = 0`): `SHARING_VIOLATION` = en uso.
-//! * Se actúa sobre ese mismo handle (`FileDispositionInfoEx`), de abajo arriba: un directorio solo se borra cuando sus
-//!   hijos terminaron, y por su propio handle (que se abre compartiendo todo para poder listarlo aunque el Explorador o
-//!   un antivirus lo observen; la identidad se verifica igual).
-//! * La protección se consulta en CADA hijo ([`Protection::child_action`]), no solo al aprobar la cesta.
-//! * Pool propio de hilos (`crossbeam-deque`, con pilas LIFO por hilo: recorrido en profundidad, así que los handles
-//!   abiertos son del orden de la profundidad por hilo) y cancelación entre entradas.
+//! # Guarantees
+//! * Everything is opened RELATIVE to the directory handle being traversed (`NtCreateFile` with `RootDirectory`): no
+//!   path is resolved again from the root, so replacing an ancestor with a junction cannot redirect anything. This is the pattern
+//!   used to rewrite `std::fs::remove_dir_all` after CVE-2022-21658.
+//! * Each child is opened with `FILE_OPEN_REPARSE_POINT` and the TYPE reported by the listing (file or directory); if it changed, the
+//!   system rejects it. Reparse points are never traversed or deleted (they are skipped and counted).
+//! * The handle's `FileId` must match the listing and its volume must match the root; otherwise it "changed since
+//!   confirmation" and is skipped. Files are opened EXCLUSIVELY (`dwShareMode = 0`): `SHARING_VIOLATION` means in use.
+//! * Actions use that same handle (`FileDispositionInfoEx`), bottom-up: a directory is deleted only after its
+//!   children finish, through its own handle (opened with full sharing so it can be listed even if Explorer or
+//!   antivirus software has it open; identity is still verified).
+//! * Protection is checked for EVERY child ([`Protection::child_action`]), not only when the basket is approved).
+//! * Dedicated thread pool (`crossbeam-deque`, with per-thread LIFO stacks: depth-first traversal, so open handles
+//!   are proportional to traversal depth per thread) and cancellation between entries.
 
 use crate::paths::PathKey;
 use crate::protect::{ChildAction, Protection, Verdict};

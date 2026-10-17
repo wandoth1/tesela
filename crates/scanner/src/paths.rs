@@ -1,9 +1,9 @@
-//! Forma de las rutas de raíz de volumen (funciones puras, sin tocar el disco).
+//! Volume-root path handling (pure functions that do not touch the disk).
 
 use std::path::{Component, Path, PathBuf, Prefix};
 
-/// Letra de unidad si `p` es exactamente la raíz de una unidad (`C:\` o `\\?\C:\`), o la propia ruta si es la raíz de un
-/// volumen por GUID (`\\?\Volume{...}\`: un volumen montado en una carpeta, sin letra, se escanea por esa ruta).
+/// The drive letter if `p` is exactly a drive root (`C:\` or `\\?\C:\`), or the path itself if it is a
+/// GUID volume root (`\\?\Volume{...}\`: a volume mounted in a folder without a drive letter is scanned by that path).
 pub(crate) fn drive_root(p: &Path) -> Option<PathBuf> {
     let mut it = p.components();
     let Some(Component::Prefix(prefix)) = it.next() else {
@@ -17,7 +17,7 @@ pub(crate) fn drive_root(p: &Path) -> Option<PathBuf> {
         .then(|| PathBuf::from(format!("{}:\\", letter as char)))
 }
 
-/// Raíz de la unidad (por letra) a la que pertenece `p`, aunque `p` no sea la raíz.
+/// Drive-letter root that contains `p`, even if `p` is not itself the root.
 pub(crate) fn drive_of(p: &Path) -> Option<PathBuf> {
     match p.components().next() {
         Some(Component::Prefix(prefix)) => match prefix.kind() {
@@ -30,7 +30,7 @@ pub(crate) fn drive_of(p: &Path) -> Option<PathBuf> {
     }
 }
 
-/// ¿Tiene `name` la forma `Volume{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}` (sin distinguir mayúsculas)?
+/// Does `name` match the form `Volume{xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}` (case-insensitive)?
 fn is_volume_guid_name(name: &str) -> bool {
     let Some(rest) = name
         .get(..7)
@@ -49,7 +49,7 @@ fn is_volume_guid_name(name: &str) -> bool {
         })
 }
 
-/// `\\?\Volume{GUID}\` si `p` es EXACTAMENTE la raíz de un volumen por GUID (sin nada detrás), o `None`.
+/// `\\?\Volume{GUID}\` if `p` is EXACTLY a GUID volume root (with nothing after it), or `None`.
 pub(crate) fn volume_guid_root(p: &Path) -> Option<PathBuf> {
     let mut it = p.components();
     let Some(Component::Prefix(prefix)) = it.next() else {
@@ -63,13 +63,14 @@ pub(crate) fn volume_guid_root(p: &Path) -> Option<PathBuf> {
         .then(|| PathBuf::from(format!(r"\\?\{name}\")))
 }
 
-/// Ruta que se usa como raíz del escaneo a partir de las dos formas que da Windows del mismo handle: la de DOS
-/// (`VOLUME_NAME_DOS`) y la de GUID (`VOLUME_NAME_GUID`).
+/// Select the scan root from the two names Windows returns for the same handle: the DOS name
+/// (`VOLUME_NAME_DOS`) and the GUID name (`VOLUME_NAME_GUID`).
 ///
-/// Un volumen montado SOLO en una carpeta (sin letra) y abierto por `\\?\Volume{GUID}\` tiene, como nombre DOS, la
-/// carpeta de montaje: recorrer esa ruta reabriría el directorio de reparse (vacío) del volumen padre en vez del volumen.
-/// Si la forma de GUID es exactamente la raíz de un volumen y la de DOS no es la raíz de una unidad con letra, se conserva
-/// la de GUID. En cualquier otro caso (rutas normales, la raíz de una unidad con letra...) se usa la de DOS.
+/// A volume mounted ONLY in a folder (without a drive letter) and opened through `\\?\Volume{GUID}\` has the
+/// mount folder as its DOS name. Traversing that path would reopen the parent volume's (empty) mount-point directory
+/// rather than the volume itself.
+/// If the GUID form is exactly a volume root and the DOS form is not a drive-letter root, keep
+/// the GUID form. Otherwise (normal paths, a drive-letter root, and so on), use the DOS form.
 pub(crate) fn choose_root_path(dos: PathBuf, guid: &Path) -> PathBuf {
     match volume_guid_root(guid) {
         Some(g) if drive_root(&dos).is_none_or(|d| volume_guid_root(&d).is_some()) => g,

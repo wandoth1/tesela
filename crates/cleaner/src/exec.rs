@@ -1,9 +1,9 @@
-//! La ejecución del plan (PLAN.md §2.5 y §3.7.2 a §3.7.9).
+//! Plan execution (PLAN.md §2.5 and §3.7.2–§3.7.9).
 //!
-//! Orden: primero se vacía la Papelera (con la lista capturada al confirmar) y después se borra lo definitivo y se mueve
-//! lo que va a la Papelera: así lo que el usuario quiere conservar recuperable no se borra en el mismo paso.
+//! Order: first empty the Recycle Bin (using the list captured at confirmation), then permanently delete items and move
+//! items to the Recycle Bin, so items the user wants to keep recoverable are not deleted in the same operation.
 //!
-//! * **Definitivo**: el recorrido por handle de `engine` (apertura exclusiva, identidad, `FileDispositionInfoEx`).
+//! * **Permanent**: `engine` handle traversal (exclusive open, identity check, `FileDispositionInfoEx`).
 //! * **Papelera** (sin lápidas): se abre el elemento en exclusiva, se verifica su identidad y su ruta resuelta (local y
 //!   permitida), se CIERRA el handle y se entrega la RUTA ORIGINAL a `IFileOperation` con un receptor de eventos propio.
 //!   La shell dice, por elemento, el resultado y la ruta real del elemento ya en la Papelera; se abre y se compara su
@@ -20,7 +20,7 @@
 //!   después del recorrido y manda la mayor; es una heurística, no una garantía (la shell decide por su cuenta si cabe).
 //! * **Tres contadores**: "eliminado definitivamente" y "movido a la Papelera" son sumas de tamaños; "liberado ahora" es la
 //!   diferencia MEDIDA del espacio libre de cada volumen antes y después.
-//! * **Simulación** (`dry_run`): hace todo salvo lo destructivo y registra las identidades que habría tocado.
+//! * **Simulation** (`dry_run`): performs everything except destructive actions and records the identities it would affect.
 
 use crate::engine::{self, Event, Mode, Outcome, RootStatus, StatsSnapshot, Unit, UnitSpec};
 use crate::log::LogWriter;

@@ -1,10 +1,10 @@
-//! Capa de Windows del `cleaner`: apertura de objetos por handle, identidad, borrado y renombrado SOBRE EL HANDLE.
+//! Windows layer for `cleaner`: open objects by handle, identify, delete, and rename THROUGH THE HANDLE.
 //!
 //! Es el único módulo del crate con `unsafe` junto a `recycle` (COM) y `process` (lista de procesos). Cada llamada
 //! es una función pequeña con su `// SAFETY:` y el módulo de pruebas las recorre todas sobre un árbol temporal.
 //!
-//! # Principio (PLAN.md §3.7)
-//! Se verifica y se actúa sobre el MISMO handle: nunca "comprobar por ruta y borrar por ruta".
+//! # Principle (PLAN.md §3.7)
+//! Verify and act on the SAME handle: never "check by path and delete by path".
 //! * [`open_path`] abre por ruta SOLO para capturar una identidad o abrir la raíz de una categoría: con
 //!   `FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS`, así que un enlace se abre a sí mismo, no su destino.
 //! * [`open_rel`] es la apertura relativa a un handle (`NtCreateFile` con `RootDirectory`): ninguna ruta se vuelve a
