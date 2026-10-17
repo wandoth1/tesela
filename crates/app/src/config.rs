@@ -3,7 +3,8 @@
 //! valores por defecto) en vez de impedir el arranque.
 
 use std::path::{Path, PathBuf};
-use tesela_ui::{LangPref, Settings, ThemePref};
+use tesela_ui::{LangPref, Settings, ThemePref, UpdatePrefs};
+use tesela_update::Version;
 
 /// Tamaño de ventana por defecto (en puntos lógicos) y mínimo.
 pub const DEFAULT_SIZE: (f32, f32) = (1280.0, 800.0);
@@ -19,6 +20,18 @@ pub struct Config {
     pub window_width: Option<f32>,
     #[serde(default)]
     pub window_height: Option<f32>,
+    /// "Buscar actualizaciones al abrir Tesela". Sin la clave (o en `false`) Tesela no se conecta a nada.
+    #[serde(default)]
+    pub check_updates: Option<bool>,
+    /// Segundos Unix del último intento de comprobación (como mucho una petición cada 24 horas).
+    #[serde(default)]
+    pub update_last_check: Option<u64>,
+    /// Última versión publicada que se supo (solo su etiqueta, `vX.Y.Z`). Una etiqueta ilegible se ignora.
+    #[serde(default, deserialize_with = "tesela_update::deserialize_lenient")]
+    pub update_latest_seen: Option<Version>,
+    /// Versión cuyo aviso se descartó.
+    #[serde(default, deserialize_with = "tesela_update::deserialize_lenient")]
+    pub update_dismissed: Option<Version>,
 }
 
 impl Config {
@@ -27,6 +40,12 @@ impl Config {
         Settings {
             theme: self.theme.unwrap_or(ThemePref::System),
             language: self.language.unwrap_or(LangPref::System),
+            update: UpdatePrefs {
+                check: self.check_updates.unwrap_or(false),
+                last_check: self.update_last_check,
+                latest_seen: self.update_latest_seen,
+                dismissed: self.update_dismissed,
+            },
         }
     }
 
@@ -38,6 +57,19 @@ impl Config {
         }
         if after.language != before.language {
             self.language = Some(after.language);
+        }
+        let (b, a) = (before.update, after.update);
+        if a.check != b.check {
+            self.check_updates = Some(a.check);
+        }
+        if a.last_check != b.last_check {
+            self.update_last_check = a.last_check;
+        }
+        if a.latest_seen != b.latest_seen {
+            self.update_latest_seen = a.latest_seen;
+        }
+        if a.dismissed != b.dismissed {
+            self.update_dismissed = a.dismissed;
         }
     }
 
@@ -180,6 +212,7 @@ mod tests {
             language: Some(LangPref::En),
             window_width: Some(1400.0),
             window_height: Some(900.0),
+            ..Config::default()
         };
         c.save(&path).unwrap();
         assert_eq!(Config::load(&path), c);
@@ -202,6 +235,7 @@ mod tests {
         let session = Settings {
             theme: ThemePref::Dark,
             language: LangPref::En,
+            ..Settings::default()
         };
         let mut c = saved.clone();
         c.apply_changes(session, session);
@@ -241,5 +275,83 @@ mod tests {
         assert_eq!(c.window_size(), (MIN_SIZE.0, 8192.0));
         std::fs::write(&path, "theme = \"naranja\"\n").unwrap();
         assert_eq!(Config::load(&path), Config::default());
+    }
+
+    fn v(major: u32, minor: u32, patch: u32) -> Version {
+        Version {
+            major,
+            minor,
+            patch,
+        }
+    }
+
+    #[test]
+    fn la_comprobacion_de_actualizaciones_esta_desactivada_por_defecto_y_no_deja_rastro() {
+        // Sin archivo, o con un archivo sin esas claves: desactivada, sin fechas ni versiones.
+        let off = Config::default().settings().update;
+        assert_eq!(off, UpdatePrefs::default());
+        assert!(!off.check && off.last_check.is_none());
+        let dir = temp_dir();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "theme = \"dark\"\n").unwrap();
+        assert!(!Config::load(&path).settings().update.check);
+        // Y guardar una configuración sin tocar el ajuste no escribe ninguna clave de la comprobación.
+        let mut c = Config::load(&path);
+        c.apply_changes(Settings::default(), Settings::default());
+        c.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("update"), "{text}");
+    }
+
+    #[test]
+    fn los_ajustes_de_la_comprobacion_van_y_vuelven_y_solo_se_guarda_lo_que_cambia() {
+        let dir = temp_dir();
+        let path = dir.join("Tesela").join("config.toml");
+        let before = Settings::default();
+        let mut after = before;
+        after.update = UpdatePrefs {
+            check: true,
+            last_check: Some(1_800_000_000),
+            latest_seen: Some(v(0, 1, 5)),
+            dismissed: Some(v(0, 1, 5)),
+        };
+        let mut c = Config::default();
+        c.apply_changes(before, after);
+        assert_eq!(c.check_updates, Some(true));
+        assert_eq!(c.update_last_check, Some(1_800_000_000));
+        c.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("update_latest_seen = \"v0.1.5\""), "{text}");
+        let back = Config::load(&path);
+        assert_eq!(back, c);
+        assert_eq!(back.settings().update, after.update);
+        // Solo cambia la fecha del intento: lo demás se queda como estaba.
+        let mut next = after;
+        next.update.last_check = Some(1_800_086_400);
+        let mut c2 = back.clone();
+        c2.apply_changes(after, next);
+        assert_eq!(c2.update_last_check, Some(1_800_086_400));
+        assert_eq!(c2.check_updates, Some(true));
+        // Desactivarlo se guarda como `false`.
+        let mut off = next;
+        off.update.check = false;
+        c2.apply_changes(next, off);
+        assert_eq!(c2.check_updates, Some(false));
+        assert!(!c2.settings().update.check);
+    }
+
+    #[test]
+    fn una_version_guardada_ilegible_se_ignora_sin_perder_el_resto() {
+        let dir = temp_dir();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            "theme = \"dark\"\ncheck_updates = true\nupdate_latest_seen = \"nada\"\nupdate_dismissed = 7\n",
+        )
+        .unwrap();
+        let c = Config::load(&path);
+        assert_eq!(c.theme, Some(ThemePref::Dark), "el resto sigue en pie");
+        assert_eq!(c.check_updates, Some(true));
+        assert_eq!((c.update_latest_seen, c.update_dismissed), (None, None));
     }
 }

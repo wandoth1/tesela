@@ -5,6 +5,16 @@ app-name = Tesela
 settings = Settings
 settings-theme = Theme
 settings-language = Language
+
+# Update check (optional, off by default). What is asked and what is sent is stated honestly.
+settings-update-check = Check for updates when Tesela opens
+settings-update-explain = If you turn this on, Tesela asks GitHub for the latest published version when it opens (at most once a day). The only thing sent is the name "Tesela": no version and no data about your computer. GitHub sees your IP address, as any website does. Nothing is ever downloaded or installed.
+update-available = A new version of Tesela is available: { $v }
+update-view = See what's new
+update-view-hover = Opens that version's page in your browser. Downloads nothing.
+update-dismiss = Dismiss
+update-failed = Could not check for a new version.
+
 about = About Tesela
 about-version = Version { $v }
 about-description = Disk space analyzer for Windows. It shows what takes up space and helps you free it: what can be regenerated is deleted, your files go to the Recycle Bin and system folders are protected.

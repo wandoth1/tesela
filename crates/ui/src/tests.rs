@@ -41,6 +41,7 @@ fn opts(start: StartScreen) -> Options {
         settings: Settings {
             theme: ThemePref::Light,
             language: LangPref::Es,
+            ..Settings::default()
         },
         demo: Some(DemoOptions::default()),
         animate: false,
@@ -48,6 +49,7 @@ fn opts(start: StartScreen) -> Options {
         dry_run: false,
         backend: Some(crate::app::BackendRef(test_backend())),
         isolated: false,
+        update_transport: None,
     }
 }
 

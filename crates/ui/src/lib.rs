@@ -28,11 +28,12 @@ mod recs;
 mod scan;
 pub mod theme;
 mod treepath;
+mod update;
 mod widgets;
 
 pub use app::{
     BackendRef, CleanStart, DemoOptions, LangPref, MapStart, Options, Settings, StartScreen,
-    TeselaUi,
+    TeselaUi, TransportRef, UpdatePrefs,
 };
 pub use i18n::{Lang, Tr};
 pub use theme::ThemePref;
@@ -41,3 +42,5 @@ pub use theme::ThemePref;
 mod testdir;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod update_tests;

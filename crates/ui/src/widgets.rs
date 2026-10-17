@@ -410,6 +410,7 @@ mod tests {
                                 dry_run: false,
                                 history: &[],
                                 modal_open: false,
+                                update: Default::default(),
                                 actions: &mut actions,
                             };
                             button(ui, &mut env, style, None, &label, enabled);

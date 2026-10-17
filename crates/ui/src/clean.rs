@@ -1425,6 +1425,7 @@ mod summary_tests {
             dry_run: false,
             history: &[],
             modal_open: false,
+            update: Default::default(),
             actions: &mut actions,
         };
         let s = Summary {
