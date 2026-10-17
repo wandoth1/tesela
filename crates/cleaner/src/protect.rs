@@ -162,6 +162,10 @@ impl Protection {
 
     /// ¿Está `key` o algún ancestro suyo denegado, sin que una excepción lo levante (ver [`Protection::lifts`])?
     fn is_denied(&self, key: &PathKey) -> bool {
+        // GM-S1: una ruta mal formada (`C:x`, `archivo:flujo`) no se interpreta: se deniega.
+        if !key.is_valid() {
+            return true;
+        }
         let hit = |k: &PathKey| {
             (self.denied.contains(k) || self.is_system_entry(k)) && !self.lifts(key, k)
         };

@@ -280,6 +280,10 @@ fn filetime_to_unix(ft: FILETIME) -> i64 {
 
 /// Lista TODOS los elementos de la Papelera del usuario (todas las unidades). Es lineal en el tamaño de la Papelera
 /// (decenas de segundos con 100 000 elementos, PLAN.md §3.6): quien llama la ejecuta en un hilo de trabajo.
+///
+/// GM-S1: un elemento cuyos metadatos (`$I`) están corruptos (ruta original, fecha o nombre ilegibles) se SALTA y consta que no
+/// se listó; antes un solo `$I` roto abortaba la lista entera y con ella toda la limpieza de la Papelera. Lo que no se lista no
+/// se vacía (se queda donde está). Solo un fallo de la propia enumeración aborta.
 pub fn list_bin() -> Result<Vec<BinItem>> {
     let _com = Com::init()?;
     // SAFETY: COM está inicializado en este hilo; todas las interfaces y cadenas que se obtienen aquí son propias de
@@ -297,32 +301,55 @@ pub fn list_bin() -> Result<Vec<BinItem>> {
                 break;
             }
             let Some(item) = &arr[0] else { break };
-            let id = take_pwstr(item.GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING)?);
-            let name = take_pwstr(item.GetDisplayName(SIGDN_PARENTRELATIVE)?);
-            let item2: IShellItem2 = item.cast()?;
-            let loc = item2.GetProperty(&SCID_ORIGINAL_LOCATION)?;
-            let loc = PropVariantToBSTR(&loc)?;
-            let original_parent = PathBuf::from(OsString::from_wide(&loc));
-            let time_deleted = filetime_to_unix(item2.GetFileTime(&SCID_DATE_DELETED)?);
-            let size = item2.GetUInt64(&PKEY_Size).unwrap_or(0);
-            // Las identidades del `$R` y del `$I`, para volver a comprobarlas al purgar (M3).
-            let data = PathBuf::from(&id);
-            let data_res = identity_result(&data);
-            let no_identity = data_res.as_ref().is_err_and(|c| is_no_identity_error(*c));
-            let data_id = data_res.ok();
-            let meta_id = meta_sibling(&data).and_then(|m| identity_at(&m));
-            out.push(BinItem {
-                id,
-                name,
-                original_parent,
-                time_deleted,
-                size,
-                data_id,
-                meta_id,
-                no_identity,
-            });
+            // SAFETY (llamada): `item` es una interfaz viva de esta enumeración.
+            push_readable(&mut out, read_bin_item(item));
         }
         Ok(out)
+    }
+}
+
+/// Añade el elemento si se pudo leer; si no (su `$I` está corrupto), lo salta (GM-S1). Devuelve si se añadió.
+fn push_readable(out: &mut Vec<BinItem>, item: Result<BinItem>) -> bool {
+    match item {
+        Ok(i) => {
+            out.push(i);
+            true
+        }
+        Err(_) => false,
+    }
+}
+
+/// Lee un elemento enumerado de la Papelera (nombre, origen, fecha, tamaño e identidades del `$R` y del `$I`).
+///
+/// # Safety
+/// `item` debe ser una interfaz viva, y COM debe estar inicializado en el hilo que llama.
+unsafe fn read_bin_item(item: &IShellItem) -> Result<BinItem> {
+    // SAFETY: lo garantiza quien llama; las cadenas se liberan con `take_pwstr` y el resto es RAII de `windows`.
+    unsafe {
+        let id = take_pwstr(item.GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING)?);
+        let name = take_pwstr(item.GetDisplayName(SIGDN_PARENTRELATIVE)?);
+        let item2: IShellItem2 = item.cast()?;
+        let loc = item2.GetProperty(&SCID_ORIGINAL_LOCATION)?;
+        let loc = PropVariantToBSTR(&loc)?;
+        let original_parent = PathBuf::from(OsString::from_wide(&loc));
+        let time_deleted = filetime_to_unix(item2.GetFileTime(&SCID_DATE_DELETED)?);
+        let size = item2.GetUInt64(&PKEY_Size).unwrap_or(0);
+        // Las identidades del `$R` y del `$I`, para volver a comprobarlas al purgar (M3).
+        let data = PathBuf::from(&id);
+        let data_res = identity_result(&data);
+        let no_identity = data_res.as_ref().is_err_and(|c| is_no_identity_error(*c));
+        let data_id = data_res.ok();
+        let meta_id = meta_sibling(&data).and_then(|m| identity_at(&m));
+        Ok(BinItem {
+            id,
+            name,
+            original_parent,
+            time_deleted,
+            size,
+            data_id,
+            meta_id,
+            no_identity,
+        })
     }
 }
 
@@ -2862,6 +2889,24 @@ mod tests {
         assert!(first_match(&mut seen, &b));
         assert!(!first_match(&mut seen, &b));
         assert!(!first_match(&mut seen, &a));
+    }
+
+    /// GM-S1: un elemento de la Papelera con los metadatos corruptos se salta y NO aborta la lista: los de antes y los de
+    /// después se conservan.
+    #[test]
+    fn un_elemento_con_el_i_corrupto_se_salta_sin_abortar_la_lista() {
+        let sb = Sandbox::new();
+        let a = synthetic_bin_item(&sb, "AAAA01", b"a");
+        let c = synthetic_bin_item(&sb, "CCCC01", b"c");
+        let corrupto: Result<BinItem> = Err(ShellError {
+            hresult: 0x8000_4005u32 as i32,
+            detail: "metadatos corruptos".into(),
+        });
+        let mut out = Vec::new();
+        assert!(push_readable(&mut out, Ok(a.clone())));
+        assert!(!push_readable(&mut out, corrupto));
+        assert!(push_readable(&mut out, Ok(c.clone())));
+        assert_eq!(out, vec![a, c]);
     }
 
     /// A-M4 (sin COM): la guarda de un `$R` solo se abre si es el objeto capturado y no está ya pendiente de borrar; y demuestra
