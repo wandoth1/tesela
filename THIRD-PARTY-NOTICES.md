@@ -2364,7 +2364,7 @@ SOFTWARE.
 
 Usada por:
 
-- tesela-ui 0.1.3 (https://github.com/wandoth1/tesela)
+- tesela-ui 0.1.4 (https://github.com/wandoth1/tesela)
 
 ```text
 MIT License
@@ -2588,12 +2588,12 @@ SOFTWARE.
 
 Usada por:
 
-- tesela-app 0.1.3 (https://github.com/wandoth1/tesela)
-- tesela-cleaner 0.1.3 (https://github.com/wandoth1/tesela)
-- tesela-layout 0.1.3 (https://github.com/wandoth1/tesela)
-- tesela-model 0.1.3 (https://github.com/wandoth1/tesela)
-- tesela-scanner 0.1.3 (https://github.com/wandoth1/tesela)
-- tesela-scan 0.1.3 (https://github.com/wandoth1/tesela)
+- tesela-app 0.1.4 (https://github.com/wandoth1/tesela)
+- tesela-cleaner 0.1.4 (https://github.com/wandoth1/tesela)
+- tesela-layout 0.1.4 (https://github.com/wandoth1/tesela)
+- tesela-model 0.1.4 (https://github.com/wandoth1/tesela)
+- tesela-scanner 0.1.4 (https://github.com/wandoth1/tesela)
+- tesela-scan 0.1.4 (https://github.com/wandoth1/tesela)
 - accesskit 0.24.1 (https://github.com/AccessKit/accesskit)
 - accesskit_consumer 0.35.0 (https://github.com/AccessKit/accesskit)
 - accesskit_windows 0.32.1 (https://github.com/AccessKit/accesskit)

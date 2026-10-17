@@ -4,6 +4,42 @@ Formato basado en [Keep a Changelog](https://keepachangelog.com/es-ES/1.1.0/). L
 (`major.minor.patch`, sin sufijos: un MSI no admite `-rc1`). `release.yml` copia la sección de la versión de la etiqueta a las
 notas de la GitHub Release, así que cada versión necesita su sección aquí.
 
+## [0.1.4] - 2026-10-17
+
+Cuarta ronda de correcciones, tras dos auditorías externas de la 0.1.3, y dos mejoras de uso pedidas en las pruebas.
+**Actualiza si usas la limpieza.** Sigue **sin firmar**: Windows SmartScreen puede avisar.
+
+### Añadido
+
+- Botón **Inicio** (y `Alt+Inicio`) en la barra superior de la exploración: vuelve a la pantalla de elegir disco. Está
+  desactivado mientras hay una limpieza en curso.
+- Las unidades de la barra lateral se ven pulsables: se resaltan al pasar el ratón, cambian el cursor y explican que
+  analizan esa unidad.
+
+### Seguridad
+
+- Una carpeta que se envía a la Papelera queda **vigilada** desde antes de medirla hasta el último momento: si algo
+  cambia dentro (también si encoge), no se envía y vuelve a pedir confirmación. Solo se envía con el mismo contenido
+  que aprobaste.
+- El espacio disponible en la Papelera se lee antes y después de medir, y manda la lectura peor.
+- Los enlaces y archivos de nube que hay dentro de una carpeta cuentan contra el espacio de la Papelera.
+- Al aprobar, se rechaza lo que cuelga de un enlace (junction, symlink o volumen montado en una carpeta); las
+  carpetas sincronizadas con la nube (OneDrive) siguen admitidas con su aviso.
+- Vaciar la Papelera salta, con su motivo, las carpetas borradas que llevan enlaces dentro, y vacía el resto. Un
+  elemento de la Papelera ilegible se salta y consta en el registro.
+- Discos montados sin letra y rutas de volumen reconocidas en la protección del sistema y en el análisis.
+- El análisis prioritario ya no sigue enlaces en ningún punto de la ruta ni entra en carpetas de nube.
+- El modo demostración y las herramientas de medición ya no leen tu historial ni preparan una limpieza real.
+- Endurecimiento extra contra DLL plantadas (la carpeta actual sale de la búsqueda).
+
+### Corregido
+
+- Tamaños correctos al eliminar dentro de una carpeta que había encogido; medidas del mapa que no se actualizaban.
+- La herramienta `tesela-scan` acepta rutas con cualquier nombre y no culpa al sistema de espacio que no pudo leer.
+- Instalador: el acceso directo tiene un identificador fijo y el validador del MSI comprueba más cosas.
+- Herramientas del proyecto: la comprobación de privacidad cubre más codificaciones y también autor y committer; las
+  pruebas que lanzan copias del programa solo corren en el CI.
+
 ## [0.1.3] - 2026-10-16
 
 Tercera ronda de correcciones de la limpieza, tras una nueva auditoría externa de la 0.1.2. **Actualiza si usas la
