@@ -43,7 +43,7 @@ def make_pe(machine=0x8664, imports=(), delay=(), pe32=False, delay_old=False, l
     sec += b"\0" * 20
     image_base = 0x400000 if pe32 else 0x140000000
     for n in delay:
-        # `attrs` con el bit 0 = direcciones RVA; sin el (formato antiguo) = direcciones virtuales absolutas.
+        # `attrs` bit 0 means RVA addresses; without it (old format), addresses are absolute virtual addresses.
         # (In PE32+, fields are 32-bit: an absolute address does not fit, so the descriptor is invalid.)
         absolute = image_base + name_rva[n] if pe32 else name_rva[n]
         attrs, name = (0, absolute) if delay_old else (1, name_rva[n])
@@ -61,7 +61,7 @@ def make_pe(machine=0x8664, imports=(), delay=(), pe32=False, delay_old=False, l
         sec += lc
     dbg_off = len(sec)
     if repro is not None:
-        # Una entrada de tipo CODEVIEW (2) y, si `repro`, otra de tipo REPRO (16).
+        # One CODEVIEW (2) entry and, if `repro`, one REPRO (16) entry.
         for kind in [2] + ([16] if repro else []):
             sec += struct.pack("<IIHHIIII", 0, 0, 0, 0, kind, 0, 0, 0)
     dbg_size = len(sec) - dbg_off
@@ -129,14 +129,14 @@ class CheckPe(unittest.TestCase):
         self.assertEqual((m, imp), (0x014C, ["KERNEL32.dll"]))
 
     def test_un_descriptor_diferido_en_formato_antiguo_se_interpreta_y_no_se_ignora(self):
-        # PE32 con descriptor antiguo (direcciones virtuales absolutas): se convierte con la base de la imagen.
+        # PE32 with the old descriptor (absolute virtual addresses): convert using the image base.
         m, imp, dly = check_pe.parse(make_pe(machine=0x014C, imports=["KERNEL32.dll"], delay=["VCRUNTIME140.dll"], pe32=True, delay_old=True))
         self.assertEqual(dly, ["VCRUNTIME140.dll"])
         self.assertEqual(check_pe.forbidden(imp + dly), ["VCRUNTIME140.dll"])
         with Temp() as t:
             old = t.write("old.exe", make_pe(machine=0x014C, imports=["KERNEL32.dll"], delay=["MSVCP140.dll"], pe32=True, delay_old=True))
             self.assertEqual(len(check_pe.check(old, "x86")), 1)
-            # Un descriptor sin el bit de RVA cuya direccion cae por debajo de la base de la imagen: error, NO se ignora.
+            # A descriptor without the RVA bit whose address is below the image base is an error; do not ignore it.
             bad = t.write("bad.exe", make_pe(imports=["KERNEL32.dll"], delay=["a.dll"], delay_old=True))
             problems = check_pe.check(bad, "x64")
             self.assertEqual(len(problems), 1)
@@ -163,13 +163,13 @@ class CheckPe(unittest.TestCase):
             # Also when it appears only in the delay-load table.
             late = t.write("late.exe", make_pe(imports=["KERNEL32.dll"], delay=["VCRUNTIME140.dll"]))
             self.assertEqual(len(check_pe.check(late, "x64")), 1)
-            # Nombres parecidos que NO son del runtime de C.
+            # Similar names that are NOT C runtime libraries.
             fine = t.write("fine.exe", make_pe(imports=["vcruntime.txt.dll.bak", "myvcruntime140.dll", "api-ms-win-core-file-l1-1-0.dll"]))
             self.assertEqual(check_pe.check(fine, "x64"), [])
 
     def test_el_unico_modulo_de_red_admitido_es_winhttp(self):
         with Temp() as t:
-            # winhttp.dll (la comprobacion de actualizaciones) y las DLL normales de la interfaz: bien.
+            # winhttp.dll (update checks) and the normal UI DLLs are allowed.
             ok = t.write("ok.exe", make_pe(imports=["KERNEL32.dll", "winhttp.dll", "WINHTTP.DLL", "dxgi.dll", "user32.dll"]))
             self.assertEqual(check_pe.check(ok, "x64"), [])
             for dll in [
@@ -188,17 +188,17 @@ class CheckPe(unittest.TestCase):
                 "wldap32.dll",
                 "rasapi32.dll",
             ]:
-                # Aunque winhttp.dll este, cualquier OTRO modulo de red se rechaza (import normal o retardado).
+                # Even when winhttp.dll is present, reject every OTHER network module (normal or delay import).
                 for kw in ({"imports": ["KERNEL32.dll", "winhttp.dll", dll]}, {"imports": ["KERNEL32.dll"], "delay": [dll]}):
                     bad = t.write("bad.exe", make_pe(**kw))
                     problems = check_pe.check(bad, "x64")
                     self.assertEqual(len(problems), 1, (dll, kw))
                     self.assertIn("network module", problems[0], dll)
                     self.assertIn(dll, problems[0])
-            # Nombres parecidos que NO son modulos de red prohibidos.
+            # Similar names that are NOT forbidden network modules.
             fine = t.write("fine.exe", make_pe(imports=["KERNEL32.dll", "ws2_32.dll.bak", "myws2_32.dll", "api-ms-win-core-file-l1-1-0.dll"]))
             self.assertEqual(check_pe.check(fine, "x64"), [])
-            # Y el codigo de salida de main.
+            # Also check main's exit code.
             bad = t.write("bad.exe", make_pe(imports=["KERNEL32.dll", "wininet.dll"]))
             self.assertEqual(check_pe.main(["--machine", "x64", ok]), 0)
             self.assertEqual(check_pe.main(["--machine", "x64", bad]), 1)
@@ -224,7 +224,7 @@ class CheckPe(unittest.TestCase):
                 problems = check_pe.check(bad, "x64")
                 self.assertEqual(len(problems), 1, repro)
                 self.assertIn("REPRO", problems[0])
-            # Los dos problemas a la vez, y el runtime de C: tres mensajes.
+            # Both problems plus the C runtime: three messages.
             worse = t.write("worse.exe", make_pe(imports=["VCRUNTIME140.dll"], load_flags=None, repro=False))
             self.assertEqual(len(check_pe.check(worse, "x64")), 3)
 

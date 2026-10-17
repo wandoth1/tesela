@@ -305,11 +305,11 @@ try {
         $path = New-Mutant ('lc-del-' + [guid]::NewGuid().ToString('N').Substring(0, 6)) @("DELETE FROM ``LaunchCondition`` WHERE ``Condition``='$($c[1])'")
         Check ('sin la LaunchCondition de ' + $c[0]) (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*exactamente estas 5 LaunchCondition*')
     }
-    # M2: sin "OR TESELA_PREV_USER<>""" la instalacion por usuario propia dejaria de ganar a la de otra cuenta.
+    # M2: without "OR TESELA_PREV_USER<>""", this user's per-user installation would lose to another account's.
     $noOwn = $MsiExpectedLaunchConditions[2].Replace(' OR TESELA_PREV_USER<>""', '')
     $path = New-Mutant 'lc-noown' @("DELETE FROM ``LaunchCondition`` WHERE ``Condition``='$($MsiExpectedLaunchConditions[2])'", "INSERT INTO ``LaunchCondition`` (``Condition``, ``Description``) VALUES ('$noOwn', '$lcMsg')")
     Check 'LaunchCondition de para todos instalada que bloquea tambien a quien tiene su instalacion por usuario (M2)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*exactamente estas 5 LaunchCondition*')
-    # Que la condicion deje pasar la interfaz completa y las reparaciones: sin "UILevel>=5" la condicion ya no es la exacta.
+    # The condition must allow the full UI and repairs; without "UILevel>=5" it is no longer exact.
     $noUi = $MsiExpectedLaunchConditions[1].Replace(' OR UILevel>=5', '')
     $path = New-Mutant 'lc-nouilevel' @("DELETE FROM ``LaunchCondition`` WHERE ``Condition``='$($MsiExpectedLaunchConditions[1])'", "INSERT INTO ``LaunchCondition`` (``Condition``, ``Description``) VALUES ('$noUi', '$lcMsg')")
     Check 'LaunchCondition de cambio de ambito sin dejar pasar la interfaz completa' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*exactamente estas 5 LaunchCondition*')
@@ -329,8 +329,8 @@ try {
             Check "$a con condicion en $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*$a en $t lleva la condicion*")
         }
     }
-    # FindRelatedProducts ANTES de LaunchConditions en las dos secuencias (si no, la propiedad esta vacia cuando se evalua la
-    # condicion y el bloqueo no hace nada, aunque todas las filas esten).
+    # FindRelatedProducts must precede LaunchConditions in both sequences; otherwise the property is empty when the
+    # condition is evaluated, so the block does nothing even when all rows are present.
     foreach ($t in 'InstallExecuteSequence', 'InstallUISequence') {
         $path = New-Mutant "seq-order-frp-after-$t" @("UPDATE ``$t`` SET ``Sequence``=200 WHERE ``Action``='FindRelatedProducts'")
         Check "FindRelatedProducts (200) despues de LaunchConditions (100) en $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*FindRelatedProducts*antes de LaunchConditions*$t*")
@@ -502,7 +502,7 @@ try {
     $path = New-Mutant 'ui-progress-late' @("UPDATE ``InstallUISequence`` SET ``Sequence``=1400 WHERE ``Action``='ProgressDlg'")
     Check 'ProgressDlg despues de ExecuteAction' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*ProgressDlg tiene que ir antes de ExecuteAction*')
 
-    # --- m6: una clave de registro sin producto no puede dejar un callejon sin salida (se comprueba tesela.exe) --------------------
+    # --- m6: a registry key without a product must not create a dead end (check tesela.exe) ---------------------------------------
     $path = New-Mutant 'exe-no-locator' @('DELETE FROM `RegLocator` WHERE `Signature_`=''PrevUserExe''', 'DELETE FROM `AppSearch` WHERE `Signature_`=''PrevUserExe''', 'DELETE FROM `Signature` WHERE `Signature`=''PrevUserExe''')
     $p = Test-MsiPackage -Path $path -ExpectedVersion $version
     Check 'sin la comprobacion de tesela.exe de la instalacion por usuario' ((Has-Problem $p '*RegLocator tiene 5 busquedas*') -and (Has-Problem $p '*PrevUserExe*'))
@@ -521,7 +521,7 @@ try {
         }
     }
 
-    # --- m2: TODOS los eventos de propiedad y de EndDialog de TODAS las ventanas estan fijados -----------------------------------
+    # --- m2: ALL property and EndDialog events of ALL windows are fixed ------------------------------------------------------------
     $path = New-Mutant 'ev-folder-back' @("INSERT INTO ``ControlEvent`` ($evCols) VALUES ('FolderDlg', 'Back', '[INSTALLFOLDER]', 'C:" + [char]92 + "Windows" + [char]92 + "System32" + [char]92 + "', '1', 5)")
     Check 'un boton Atras que cambia INSTALLFOLDER' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*evento de propiedad NO esperado*FolderDlg|Back|[[]INSTALLFOLDER]*')
     $path = New-Mutant 'ev-cancel-allusers' @("INSERT INTO ``ControlEvent`` ($evCols) VALUES ('CancelDlg', 'Yes', '[ALLUSERS]', '1', '1', 5)")
@@ -537,7 +537,7 @@ try {
     $path = New-Mutant 'ev-folder-next-direct' @('DELETE FROM `ControlEvent` WHERE `Dialog_`=''FolderDlg'' AND `Control_`=''Next'' AND `Event`=''SpawnDialog''')
     Check 'Siguiente de carpeta sin la ventana de carpeta no valida' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*FolderDlg.Next tiene que hacer SetTargetPath*')
 
-    # --- B1/escudo: el boton Instalar de "para todos" lleva el escudo de UAC (ElevationShield) --------------------------------------
+    # --- B1/shield: the all-users Install button shows the UAC shield (ElevationShield) ------------------------------------------
     $path = New-Mutant 'noshield' @('UPDATE `Control` SET `Attributes`=2 WHERE `Dialog_`=''VerifyReadyDlg'' AND `Control`=''InstallElevated''')
     Check 'el boton Instalar de "para todos" sin el escudo de UAC' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*InstallElevated*escudo*')
 
