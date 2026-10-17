@@ -167,6 +167,73 @@ menu-properties = Propiedades
 menu-add-basket = Añadir a la cesta
 menu-unavailable-system = No disponible para este elemento
 path-copied = Ruta copiada
+
+# Selección múltiple: marcar varios elementos y añadirlos juntos a la cesta
+sel-toggle = Seleccionar
+sel-toggle-tip = Modo selección: pulsar un elemento lo marca o lo desmarca, sin tener que mantener Ctrl.
+sel-hint = Ctrl+clic marca varios · Mayús+clic, un rango en la lista · Ctrl+A los marca todos · Esc quita la selección
+sel-hint-mode = Pulsa los elementos para marcarlos · Ctrl+A los marca todos · Esc quita la selección
+sel-count =
+    { $n ->
+        [one] { $count } seleccionado · { $size }
+       *[other] { $count } seleccionados · { $size }
+    }
+sel-count-partial =
+    { $n ->
+        [one] { $count } seleccionado · se añadirían { $size }
+       *[other] { $count } seleccionados · se añadirían { $size }
+    }
+sel-count-only =
+    { $n ->
+        [one] { $count } seleccionado
+       *[other] { $count } seleccionados
+    }
+sel-cannot =
+    { $n ->
+        [one] { $count } no se puede añadir: { $detail }
+       *[other] { $count } no se pueden añadir: { $detail }
+    }
+sel-why-protected =
+    { $n ->
+        [one] { $count } protegido
+       *[other] { $count } protegidos
+    }
+sel-why-in-basket = { $count } ya en la cesta
+sel-why-info =
+    { $n ->
+        [one] { $count } solo informativo o del sistema
+       *[other] { $count } solo informativos o del sistema
+    }
+sel-why-cloud = { $count } solo en la nube
+sel-contents =
+    { $n ->
+        [one] { $count } carpeta conocida: se añade su contenido
+       *[other] { $count } carpetas conocidas: se añade su contenido
+    }
+sel-add = Añadir { $count } a la cesta
+sel-add-none = Añadir selección a la cesta
+sel-add-none-tip = Ninguno de los elementos seleccionados se puede añadir a la cesta: la barra dice por qué.
+sel-add-busy-tip = No se puede añadir mientras se prepara o se ejecuta una limpieza.
+sel-clear = Desmarcar todo
+sel-keys-tip = Espacio marca la fila o la celda activa; Mayús+flechas amplían o reducen el rango en la lista.
+sel-dropped = Se quitó la selección ({ $count })
+sel-added =
+    { $n ->
+        [one] { $count } elemento añadido a la cesta
+       *[other] { $count } elementos añadidos a la cesta
+    }
+sel-added-skipped =
+    { $n ->
+        [one] { $count } no se podía añadir
+       *[other] { $count } no se podían añadir
+    }
+sel-map-count = Seleccionados para la cesta: { $count }.
+sel-map-this = Este elemento está seleccionado para la cesta.
+list-select-all-rows = Seleccionar todas las filas
+menu-sel-this = Seleccionar este elemento
+menu-sel-unthis = Quitar de la selección
+menu-sel-all = Seleccionar todo aquí
+menu-sel-invert = Invertir selección
 list-col-name = Nombre
 list-col-share = Porcentaje
 list-col-size = En disco

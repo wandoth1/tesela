@@ -924,6 +924,36 @@ pub fn tree(variant: Variant) -> Tree {
     })
 }
 
+/// Un árbol de pruebas con `n` carpetas de un archivo cada una colgando de la raíz (para probar la escala de la selección
+/// múltiple y de la cesta). Solo datos sintéticos.
+#[cfg(test)]
+pub(crate) fn flat_tree(n: usize) -> Tree {
+    let mut rng = Rng(0x5CA1_AB1E_0000_0001);
+    let kids = (0..n)
+        .map(|i| {
+            dir(
+                &format!("carpeta-{i:05}"),
+                vec![file("dato.bin", 1_000_000 + rng.next() % 3_000_000, 30)],
+            )
+        })
+        .collect();
+    let spec = Spec::Dir {
+        name: root_name(),
+        kids,
+        flags: flags::DIR,
+        stop: false,
+    };
+    let mut b = TreeBuilder::new();
+    for batch in emit(&spec) {
+        b.add_batch(batch).expect("lote válido");
+    }
+    b.finish(&FinishOptions {
+        now_unix: DEMO_NOW,
+        dedup_hard_links: true,
+        volume_used: None,
+    })
+}
+
 /// Fila de "sitios conocidos" del escaneo simulado: (clave i18n, bytes finales, fracción del escaneo en que acaba). Los
 /// tamaños son los de las carpetas correspondientes del árbol de demostración.
 pub const DEMO_KNOWN_ROWS: [(&str, u64, f32); 6] = [

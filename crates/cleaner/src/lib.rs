@@ -31,7 +31,7 @@ mod testutil;
 pub mod volume;
 
 pub use backend::Backend;
-pub use basket::{AddOutcome, Basket, Source};
+pub use basket::{AddOutcome, Basket, BatchKind, Source};
 pub use engine::{Mode, StatsSnapshot};
 pub use exec::{
     BinReport, ExecError, ExecOptions, ItemReport, ItemStatus, Phase, Progress, RecycleFail,

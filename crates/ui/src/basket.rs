@@ -61,17 +61,28 @@ impl Explore {
         }
     }
 
-    /// Añade `sel` a la cesta (un archivo o carpeta, o el contenido de una carpeta conocida).
-    pub(crate) fn basket_add(&mut self, sel: Sel, env: &Env, now: f64) {
-        let Sel::Node(id) = sel else { return };
+    /// Añade `sel` a la cesta (un archivo o carpeta, o el contenido de una carpeta conocida) y dice si entró. Es el ÚNICO
+    /// camino hacia la cesta desde el mapa y la lista: el menú, el panel de detalles y la selección múltiple pasan por aquí,
+    /// con las mismas comprobaciones (`add_state` y las del propio `Basket`).
+    pub(crate) fn basket_add_one(&mut self, sel: Sel) -> bool {
+        // Con una limpieza en curso la cesta no se toca (los botones ya salen desactivados; esto lo garantiza).
+        if self.flow.busy() {
+            return false;
+        }
+        let Sel::Node(id) = sel else { return false };
         let path = self.tree.path(id);
         let prot = self.protection.clone();
         let out = match self.add_state(sel) {
             AddState::Addable => self.flow.basket.add_path(path, &prot),
             AddState::ContentsOf => self.flow.basket.add_contents_of(path, &prot),
-            _ => return,
+            _ => return false,
         };
-        if matches!(out, AddOutcome::Added { .. }) {
+        matches!(out, AddOutcome::Added { .. })
+    }
+
+    /// Como [`Explore::basket_add_one`], con el aviso "Añadido a la cesta".
+    pub(crate) fn basket_add(&mut self, sel: Sel, env: &Env, now: f64) {
+        if self.basket_add_one(sel) {
             self.toast = Some((env.tr.t("basket-added"), now + 2.0));
         }
     }
@@ -87,11 +98,7 @@ impl Explore {
     /// ¿Está `sel` en la cesta como entrada propia (se puede quitar)?
     pub(crate) fn basket_has_own(&self, sel: Sel) -> bool {
         let Sel::Node(id) = sel else { return false };
-        let path = self.tree.path(id);
-        self.flow.basket.sources().any(|s| match s {
-            Source::Path(p) | Source::ContentsOf(p) => PathKey::new(p) == PathKey::new(&path),
-            _ => false,
-        })
+        self.flow.basket.has_own(&self.node_key(id))
     }
 
     /// Recalcula las recomendaciones si cambió el árbol (o el overlay).
@@ -114,12 +121,22 @@ impl Explore {
     pub(crate) fn recheck_browsers(&mut self, env: &Env) {
         self.browsers_open = env.backend.running_browsers();
         self.recs = None;
+        self.estimate = None;
         self.ensure_recs(env);
     }
 
-    /// Tamaño estimado de la cesta con el árbol (la cifra definitiva la mide el `cleaner` al confirmar).
+    /// Tamaño estimado de la cesta con el árbol (la cifra definitiva la mide el `cleaner` al confirmar). Se recalcula solo
+    /// si cambió la cesta o el árbol (versiones): con decenas de miles de entradas no se puede localizar cada ruta en
+    /// cada fotograma.
     pub(crate) fn basket_estimate(&mut self, env: &Env) -> (usize, u64) {
         self.ensure_recs(env);
+        let stamp = (self.flow.basket.rev(), self.version);
+        if let Some((k, v)) = self.estimate
+            && k == stamp
+        {
+            return v;
+        }
+        self.estimate_computes += 1;
         let recs = self.recs.as_ref().map(|r| r.1.clone()).unwrap_or_default();
         let tree = self.tree.clone();
         let view = self.view();
@@ -135,7 +152,9 @@ impl Explore {
                 Source::EmptyBin => recs.recycle.map_or(0, |r| r.1),
             };
         }
-        (self.flow.basket.len(), bytes)
+        let out = (self.flow.basket.len(), bytes);
+        self.estimate = Some((stamp, out));
+        out
     }
 
     /// Empieza la limpieza de lo que hay en la cesta (aprobación y confirmación).
@@ -193,21 +212,31 @@ impl Explore {
         });
     }
 
-    /// La lista de la cesta agrupada por destino, con las frases de PLAN.md §2.5.
+    /// La lista de la cesta agrupada por destino, con las frases de PLAN.md §2.5. Lo que el usuario añadió ("Tu archivo" y
+    /// "Contenido de") puede ser de decenas de miles de entradas: esa lista se virtualiza (solo se construyen y miden las
+    /// filas que se ven).
     pub(crate) fn basket_window(&mut self, ctx: &egui::Context, env: &mut Env) {
         if !self.basket_open {
+            self.locator_cache = None;
             return;
         }
         if self.flow.basket.is_empty() {
             self.basket_open = false;
+            self.locator_cache = None;
             return;
         }
-        let pal = env.pal;
         self.ensure_recs(env);
         let recs = self.recs.as_ref().map(|r| r.1.clone()).unwrap_or_default();
         let tree = self.tree.clone();
+        // El índice de hermanos del localizador se conserva entre fotogramas mientras la ventana está abierta y no cambian
+        // ni el árbol ni la cesta.
+        let key = (self.version, self.flow.basket.rev());
+        let index = match self.locator_cache.take() {
+            Some((k, idx)) if k == key => idx,
+            _ => Default::default(),
+        };
         let view = self.view();
-        let mut loc = Locator::new(&tree);
+        let mut loc = Locator::with_index(&tree, index);
         let mut remove: Option<Source> = None;
         let mut open = true;
         let title = env.tr.t("basket-window-title");
@@ -218,98 +247,29 @@ impl Explore {
             .resizable(true)
             .default_width(520.0)
             .show(ctx, |ui| {
-                let mut group =
-                    |ui: &mut Ui,
-                     env: &mut Env,
-                     icon: Icon,
-                     head: &str,
-                     phrase: &str,
-                     items: Vec<(Source, String, String, u64)>| {
-                        if items.is_empty() {
-                            return;
-                        }
-                        ui.horizontal(|ui| {
-                            env.icons.show(ui, icon, 18.0, pal.text);
-                            ui.label(
-                                RichText::new(head)
-                                    .font(theme::font_semibold(15.0))
-                                    .color(pal.text),
-                            );
-                        });
-                        ui.label(RichText::new(phrase).size(13.0).color(pal.text_muted));
-                        ui.add_space(4.0);
-                        for (src, name, sub, bytes) in items {
-                            ui.horizontal(|ui| {
-                                ui.set_min_height(28.0);
-                                ui.vertical(|ui| {
-                                    ui.spacing_mut().item_spacing.y = 0.0;
-                                    ui.label(RichText::new(&name).color(pal.text));
-                                    if !sub.is_empty() {
-                                        ui.add(
-                                            egui::Label::new(
-                                                RichText::new(&sub)
-                                                    .size(11.0)
-                                                    .color(pal.text_muted),
-                                            )
-                                            .truncate(),
-                                        );
-                                    }
-                                });
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    let label = env
-                                        .tr
-                                        .ta("basket-remove-item", args!["name" => name.clone()]);
-                                    if widgets::icon_button(ui, env, Icon::Dismiss, &label, true)
-                                        .clicked()
-                                    {
-                                        remove = Some(src.clone());
-                                    }
-                                    ui.label(RichText::new(env.tr.size(bytes)).color(pal.text));
-                                });
-                            });
-                        }
-                        ui.add_space(10.0);
-                    };
-                let mut cats: Vec<(Source, String, String, u64)> = Vec::new();
-                let mut user: Vec<(Source, String, String, u64)> = Vec::new();
-                let mut diag: Vec<(Source, String, String, u64)> = Vec::new();
-                let mut bin: Vec<(Source, String, String, u64)> = Vec::new();
+                let mut cats: Vec<(Source, String, u64)> = Vec::new();
+                let mut recycled_cats: Vec<(Source, String, u64)> = Vec::new();
+                let mut diag: Vec<(Source, String, u64)> = Vec::new();
+                let mut bin: Vec<(Source, String, u64)> = Vec::new();
+                let mut user: Vec<&Source> = Vec::new();
                 for s in self.flow.basket.sources() {
                     match s {
                         Source::Category(id) => {
                             let b = recs.row(*id).map_or(0, |r| r.bytes);
-                            let row = (s.clone(), category_name(env, *id), String::new(), b);
-                            // Informes de errores y volcados: grupo propio (van a la Papelera, pero si no caben se dejan donde
-                            // están: "puedes recuperarlo" no es toda la verdad). Otra categoría con destino Papelera, con lo suyo.
+                            let row = (s.clone(), category_name(env, *id), b);
                             if id.is_diagnostic() {
                                 diag.push(row);
                             } else if category_is_recycled(*id) {
-                                user.push(row);
+                                recycled_cats.push(row);
                             } else {
                                 cats.push(row);
                             }
                         }
-                        Source::Path(p) | Source::ContentsOf(p) => {
-                            let b = loc
-                                .locate(p)
-                                .filter(|n| view.is_visible(*n))
-                                .map_or(0, |n| view.alloc(n));
-                            let base = p.file_name().map_or_else(
-                                || p.display().to_string(),
-                                |n| n.to_string_lossy().into_owned(),
-                            );
-                            let name = if matches!(s, Source::ContentsOf(_)) {
-                                env.tr.ta("basket-contents-of", args!["name" => base])
-                            } else {
-                                base
-                            };
-                            user.push((s.clone(), name, p.display().to_string(), b));
-                        }
+                        Source::Path(_) | Source::ContentsOf(_) => user.push(s),
                         Source::EmptyBin => {
                             bin.push((
                                 s.clone(),
                                 env.tr.t("known-recycle-bin"),
-                                String::new(),
                                 recs.recycle.map_or(0, |r| r.1),
                             ));
                         }
@@ -319,20 +279,78 @@ impl Explore {
                     env.tr.t("confirm-group-permanent"),
                     env.tr.t("basket-phrase-permanent"),
                 );
-                group(ui, env, Icon::DeleteOff, &h1, &p1, cats);
+                if !cats.is_empty() {
+                    basket_head(ui, env, Icon::DeleteOff, &h1, &p1);
+                    for (src, name, bytes) in &cats {
+                        basket_row(ui, env, &mut remove, src, name, "", *bytes);
+                    }
+                    ui.add_space(10.0);
+                }
                 let (h2, p2) = (
                     env.tr.t("confirm-group-recycle"),
                     env.tr.t("basket-phrase-recycle"),
                 );
-                group(ui, env, Icon::Delete, &h2, &p2, user);
-                let (h2d, p2d) = (
-                    env.tr.t("confirm-group-recycle-diag"),
-                    env.tr.t("basket-phrase-recycle-diag"),
-                );
-                group(ui, env, Icon::Delete, &h2d, &p2d, diag);
+                if !user.is_empty() || !recycled_cats.is_empty() {
+                    basket_head(ui, env, Icon::Delete, &h2, &p2);
+                    for (src, name, bytes) in &recycled_cats {
+                        basket_row(ui, env, &mut remove, src, name, "", *bytes);
+                    }
+                    egui::ScrollArea::vertical()
+                        .id_salt("tesela-basket-user")
+                        .max_height(BASKET_ROW_H * 8.0)
+                        .auto_shrink([false, true])
+                        .show_rows(ui, BASKET_ROW_H, user.len(), |ui, range| {
+                            for src in &user[range] {
+                                let (p, contents) = match src {
+                                    Source::Path(p) => (p, false),
+                                    Source::ContentsOf(p) => (p, true),
+                                    _ => continue,
+                                };
+                                let b = loc
+                                    .locate(p)
+                                    .filter(|n| view.is_visible(*n))
+                                    .map_or(0, |n| view.alloc(n));
+                                let base = p.file_name().map_or_else(
+                                    || p.display().to_string(),
+                                    |n| n.to_string_lossy().into_owned(),
+                                );
+                                let name = if contents {
+                                    env.tr.ta("basket-contents-of", args!["name" => base])
+                                } else {
+                                    base
+                                };
+                                basket_row(
+                                    ui,
+                                    env,
+                                    &mut remove,
+                                    src,
+                                    &name,
+                                    &p.display().to_string(),
+                                    b,
+                                );
+                            }
+                        });
+                    ui.add_space(10.0);
+                }
+                if !diag.is_empty() {
+                    let h = env.tr.t("confirm-group-recycle-diag");
+                    let phrase = env.tr.t("basket-phrase-recycle-diag");
+                    basket_head(ui, env, Icon::Delete, &h, &phrase);
+                    for (src, name, bytes) in &diag {
+                        basket_row(ui, env, &mut remove, src, name, "", *bytes);
+                    }
+                    ui.add_space(10.0);
+                }
                 let (h3, p3) = (env.tr.t("confirm-group-bin"), env.tr.t("basket-phrase-bin"));
-                group(ui, env, Icon::BinRecycle, &h3, &p3, bin);
+                if !bin.is_empty() {
+                    basket_head(ui, env, Icon::BinRecycle, &h3, &p3);
+                    for (src, name, bytes) in &bin {
+                        basket_row(ui, env, &mut remove, src, name, "", *bytes);
+                    }
+                    ui.add_space(10.0);
+                }
             });
+        self.locator_cache = Some((key, loc.into_index()));
         if let Some(s) = remove {
             self.flow.basket.remove(&s);
         }
@@ -340,7 +358,60 @@ impl Explore {
     }
 }
 
-/// ¿Va esta categoría a la Papelera (informes de errores, volcados) en vez de borrarse y recrearse sola?
+/// Alto de una fila de la lista de la cesta (nombre, ruta y botón de quitar): fijo, para poder virtualizar la lista.
+const BASKET_ROW_H: f32 = 40.0;
+
+/// Cabecera de un grupo de la cesta: icono, título y la frase de lo que pasará con él.
+fn basket_head(ui: &mut Ui, env: &mut Env, icon: Icon, head: &str, phrase: &str) {
+    let pal = env.pal;
+    ui.horizontal(|ui| {
+        env.icons.show(ui, icon, 18.0, pal.text);
+        ui.label(
+            RichText::new(head)
+                .font(theme::font_semibold(15.0))
+                .color(pal.text),
+        );
+    });
+    ui.label(RichText::new(phrase).size(13.0).color(pal.text_muted));
+    ui.add_space(4.0);
+}
+
+/// Una fila de la cesta: nombre, ruta (si hay), tamaño y el botón de quitarla.
+fn basket_row(
+    ui: &mut Ui,
+    env: &mut Env,
+    remove: &mut Option<Source>,
+    src: &Source,
+    name: &str,
+    sub: &str,
+    bytes: u64,
+) {
+    let pal = env.pal;
+    ui.horizontal(|ui| {
+        ui.set_min_height(BASKET_ROW_H);
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            ui.label(RichText::new(name).color(pal.text));
+            if !sub.is_empty() {
+                ui.add(
+                    egui::Label::new(RichText::new(sub).size(11.0).color(pal.text_muted))
+                        .truncate(),
+                );
+            }
+        });
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let label = env
+                .tr
+                .ta("basket-remove-item", args!["name" => name.to_string()]);
+            if widgets::icon_button(ui, env, Icon::Dismiss, &label, true).clicked() {
+                *remove = Some(src.clone());
+            }
+            ui.label(RichText::new(env.tr.size(bytes)).color(pal.text));
+        });
+    });
+}
+
+/// Whether this category goes to the Recycle Bin instead of being deleted and recreated.
 pub(crate) fn category_is_recycled(id: CategoryId) -> bool {
     rules().get(id).destination == Some(Destination::Recycle)
 }
@@ -695,16 +766,7 @@ impl Explore {
                     || empty = true,
                 );
             }
-            // Informes de errores y volcados de bloqueo: Revisar, con casilla (nunca marcada de salida) y a la Papelera.
-            let mut any = recs.downloads.is_some() || recs.recycle.is_some();
-            for row in recs.diagnostics() {
-                if any {
-                    ui.separator();
-                }
-                any = true;
-                self.review_category_row(ui, env, row.id, row.bytes);
-            }
-            if !any {
+            if recs.downloads.is_none() && recs.recycle.is_none() {
                 ui.label(RichText::new(env.tr.t("recs-review-none")).color(pal.text_muted));
             }
         });
@@ -753,64 +815,6 @@ impl Explore {
                 );
             }
         });
-    }
-}
-
-impl Explore {
-    /// Una categoría de "Revisar" con casilla (informes de errores y volcados de bloqueo): nombre, qué es y qué se pierde,
-    /// tamaño estimado y destino (la Papelera). Marcarla la mete en la cesta; nunca viene marcada.
-    fn review_category_row(&mut self, ui: &mut Ui, env: &mut Env, id: CategoryId, bytes: u64) {
-        let pal = env.pal;
-        let name = category_name(env, id);
-        let why = env.tr.t(match id {
-            CategoryId::WerReports => "rule-wer-reports-why",
-            _ => "rule-crash-dumps-why",
-        });
-        let mut checked = self.flow.basket.contains_category(id);
-        let before = checked;
-        ui.horizontal_top(|ui| {
-            let cb = ui.add_enabled(bytes > 0, egui::Checkbox::without_text(&mut checked));
-            let label = env.tr.ta("recs-include", args!["name" => name.clone()]);
-            cb.widget_info(|| {
-                egui::WidgetInfo::selected(
-                    egui::WidgetType::Checkbox,
-                    bytes > 0,
-                    checked,
-                    label.clone(),
-                )
-            });
-            ui.vertical(|ui| {
-                ui.horizontal(|ui| {
-                    ui.label(
-                        RichText::new(&name)
-                            .font(theme::font_semibold(15.0))
-                            .color(pal.text),
-                    );
-                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        ui.label(
-                            RichText::new(env.tr.size(bytes))
-                                .font(theme::font_semibold(15.0))
-                                .color(pal.text),
-                        );
-                    });
-                });
-                ui.add(
-                    egui::Label::new(RichText::new(&why).size(13.0).color(pal.text_muted)).wrap(),
-                );
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    env.icons.show(ui, Icon::Delete, 13.0, pal.text);
-                    ui.label(
-                        RichText::new(env.tr.t("dest-recycle-diag"))
-                            .size(12.0)
-                            .color(pal.text),
-                    );
-                });
-            });
-        });
-        if checked != before {
-            self.flow.basket.set_category(id, checked);
-        }
     }
 }
 

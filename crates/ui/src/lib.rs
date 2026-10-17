@@ -23,6 +23,7 @@ pub mod i18n;
 pub mod icons;
 mod list;
 pub mod map;
+mod multisel;
 pub mod platform;
 mod recs;
 mod scan;

@@ -284,7 +284,7 @@ mod catalog_tests {
     use super::*;
     use std::collections::BTreeSet;
 
-    const SOURCES: [(&str, &str); 18] = [
+    const SOURCES: [(&str, &str); 19] = [
         ("app.rs", include_str!("app.rs")),
         ("basket.rs", include_str!("basket.rs")),
         ("clean.rs", include_str!("clean.rs")),
@@ -298,6 +298,7 @@ mod catalog_tests {
         ("icons.rs", include_str!("icons.rs")),
         ("list.rs", include_str!("list.rs")),
         ("map.rs", include_str!("map.rs")),
+        ("multisel.rs", include_str!("multisel.rs")),
         ("platform.rs", include_str!("platform.rs")),
         ("recs.rs", include_str!("recs.rs")),
         ("scan.rs", include_str!("scan.rs")),

@@ -8,12 +8,16 @@ use std::path::Path;
 use tesela_cleaner::paths::PathKey;
 use tesela_model::{NodeId, Tree};
 
+/// Índice de un [`Locator`]: por directorio, sus hijos por nombre plegado. Se puede conservar entre fotogramas mientras no
+/// cambie el árbol (ver [`Locator::with_index`] y [`Locator::into_index`]).
+pub type Index = FxHashMap<NodeId, FxHashMap<String, NodeId>>;
+
 /// Localizador de nodos por ruta, con un índice por directorio que se construye al usarlo (varias búsquedas en carpetas
 /// enormes no son cuadráticas).
 pub struct Locator<'a> {
     tree: &'a Tree,
     root: PathKey,
-    index: FxHashMap<NodeId, FxHashMap<String, NodeId>>,
+    index: Index,
 }
 
 impl<'a> Locator<'a> {
@@ -24,6 +28,18 @@ impl<'a> Locator<'a> {
             root,
             index: FxHashMap::default(),
         }
+    }
+
+    /// Un localizador que parte de un índice ya construido (de un fotograma anterior sobre el MISMO árbol).
+    pub fn with_index(tree: &'a Tree, index: Index) -> Locator<'a> {
+        let mut l = Locator::new(tree);
+        l.index = index;
+        l
+    }
+
+    /// El índice construido hasta ahora, para reutilizarlo.
+    pub fn into_index(self) -> Index {
+        self.index
     }
 
     fn child(&mut self, dir: NodeId, folded: &str) -> Option<NodeId> {

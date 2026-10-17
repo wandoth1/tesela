@@ -8,6 +8,7 @@ use crate::describe::{self, Special};
 use crate::explore::{Explore, Sel, node_icon};
 use crate::icons::Icon;
 use crate::map::menu_items;
+use crate::multisel::{CHECK_W, paint_checkbox};
 use crate::theme;
 use crate::widgets;
 use egui::{Align2, CornerRadius, FontId, Rect, Sense, Stroke, Ui, pos2, vec2};
@@ -96,10 +97,13 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
     let n = items.len();
     let total: u64 = ex.view().alloc(ex.root.node).max(1);
     let tree = ex.tree.clone();
+    // Con el modo "Seleccionar" activo o con algo marcado aparece la columna de casillas (y el resto se desplaza).
+    let checks = ex.multi.mode || !ex.multi.is_empty();
+    let off = if checks { CHECK_W } else { 0.0 };
 
     // Cabecera de columnas.
     let (hr, _) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::hover());
-    let cols = columns(hr.width());
+    let cols = columns(hr.width() - off);
     let hdr = |text: String, x: f32, anchor: Align2| {
         ui.painter().text(
             pos2(x, hr.center().y),
@@ -111,7 +115,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
     };
     hdr(
         env.tr.t("list-col-name"),
-        hr.left() + NAME_LEFT,
+        hr.left() + NAME_LEFT + off,
         Align2::LEFT_CENTER,
     );
     if let Some(b) = cols.bar_left {
@@ -135,6 +139,42 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
     }
     ui.painter()
         .hline(hr.x_range(), hr.bottom(), Stroke::new(1.0, pal.border));
+    if checks && n > 0 {
+        // Casilla de la cabecera: marca o desmarca todo lo que se ve (la vía con ratón de "todo menos uno").
+        let marked_here = (0..n).filter(|&i| ex.multi.contains(items.get(i))).count();
+        let all = marked_here == n;
+        let cb = Rect::from_center_size(pos2(hr.left() + 16.0, hr.center().y), vec2(16.0, 16.0));
+        let hit = ui.interact(
+            cb.expand2(vec2(4.0, 6.0)),
+            ui.id().with("casilla-cabecera"),
+            Sense::click(),
+        );
+        let label = env.tr.t("list-select-all-rows");
+        hit.widget_info(|| {
+            egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, all, label.clone())
+        });
+        crate::multisel::paint_checkbox(ui.painter(), env, cb, all);
+        if marked_here > 0 && !all {
+            // Estado mixto: una raya en la casilla.
+            ui.painter().hline(
+                cb.shrink2(vec2(4.0, 0.0)).x_range(),
+                cb.center().y,
+                Stroke::new(2.0, pal.text_muted),
+            );
+        }
+        if hit.has_focus() {
+            widgets::focus_ring(ui.painter(), &pal, cb.expand(3.0), 6);
+        }
+        if hit.clicked() {
+            let ids: Vec<NodeId> = (0..n).map(|i| items.get(i)).collect();
+            if all {
+                ex.multi.remove_all(&ids);
+            } else {
+                ex.multi.add(ids);
+            }
+        }
+        hit.on_hover_text(label);
+    }
 
     if n == 0 {
         ui.add_space(24.0);
@@ -187,6 +227,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
                 ui.scroll_to_rect(rect, None);
             }
             let selected = ex.selection == Some(sel);
+            let marked = ex.multi.contains(id);
             let lower = describe::is_lower_bound(&tree, id);
             let name = describe::display_name(&tree, id, env.tr);
             let size_txt = if lower {
@@ -230,14 +271,27 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
                 }
                 s
             };
+            // Con las casillas visibles la fila es una casilla y su estado ("marcada") lo da `toggled`, no la etiqueta; sin
+            // ellas, el de siempre (`toggled` = elemento activo). El elemento activo se expone siempre como `selected`.
             resp.widget_info(|| {
-                egui::WidgetInfo::selected(
-                    egui::WidgetType::SelectableLabel,
-                    true,
-                    selected,
-                    label.clone(),
-                )
+                if checks {
+                    egui::WidgetInfo::selected(
+                        egui::WidgetType::Checkbox,
+                        true,
+                        marked,
+                        label.clone(),
+                    )
+                } else {
+                    egui::WidgetInfo::selected(
+                        egui::WidgetType::SelectableLabel,
+                        true,
+                        selected,
+                        label.clone(),
+                    )
+                }
             });
+            ui.ctx()
+                .accesskit_node_builder(resp.id, |node| node.set_selected(selected));
             if ui.is_rect_visible(rect) {
                 if selected {
                     ui.painter()
@@ -247,9 +301,26 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
                         CornerRadius::same(2),
                         pal.accent,
                     );
+                } else if marked {
+                    ui.painter().rect_filled(
+                        rect,
+                        CornerRadius::same(6),
+                        crate::multisel::mark_tint(&pal).gamma_multiply(0.45),
+                    );
                 } else if resp.hovered() {
                     ui.painter()
                         .rect_filled(rect, CornerRadius::same(6), pal.surface_alt);
+                }
+                if checks {
+                    paint_checkbox(
+                        ui.painter(),
+                        env,
+                        Rect::from_center_size(
+                            pos2(rect.left() + 16.0, rect.center().y),
+                            vec2(16.0, 16.0),
+                        ),
+                        marked,
+                    );
                 }
                 if resp.has_focus() {
                     widgets::focus_ring(ui.painter(), &pal, rect, 6);
@@ -263,13 +334,13 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
                 };
                 env.icons.paint(
                     ui.painter(),
-                    Rect::from_center_size(pos2(rect.left() + 20.0, cy), vec2(16.0, 16.0)),
+                    Rect::from_center_size(pos2(rect.left() + 20.0 + off, cy), vec2(16.0, 16.0)),
                     icon,
                     icon_col,
                 );
                 let name_rect = widgets::clipped_text(
                     ui.painter(),
-                    pos2(rect.left() + NAME_LEFT, cy),
+                    pos2(rect.left() + NAME_LEFT + off, cy),
                     Align2::LEFT_CENTER,
                     &name,
                     if selected {
@@ -357,7 +428,30 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
             if resp.secondary_clicked() {
                 ex.ctx_target = Some(sel);
             }
-            if resp.double_clicked() {
+            // Selección múltiple. Con el puntero: Mayús+clic marca el rango desde el ancla, Ctrl+clic (o el modo "Seleccionar",
+            // o pulsar la casilla) alterna la fila y un clic normal solo fija el ancla. Con el teclado, Espacio alterna.
+            let mods = ui.input(|i| i.modifiers);
+            if resp.clicked() {
+                if let Some(p) = resp.interact_pointer_pos() {
+                    // Un clic de ratón enfoca la fila: así Espacio y Mayús+flechas funcionan sin pasar por Tab.
+                    resp.request_focus();
+                    let on_check = checks && p.x < rect.left() + off;
+                    if mods.shift {
+                        let order: Vec<NodeId> = (0..n).map(|k| items.get(k)).collect();
+                        ex.marks_range_in(&order, id);
+                    } else if mods.command || ex.multi.mode || on_check {
+                        ex.marks_toggle(sel);
+                    } else {
+                        ex.multi.plain_move(id);
+                    }
+                } else if ui.input(crate::multisel::keyboard_click_toggles) {
+                    // Sin puntero: el clic por defecto de un lector de pantalla o la pulsación de Espacio alternan la marca
+                    // (Intro entra en la carpeta y la autorrepetición de Espacio no vuelve a alternar).
+                    ex.marks_toggle(sel);
+                }
+            }
+            // Con Ctrl o Mayús un doble clic son dos marcas seguidas, no "entrar".
+            if resp.double_clicked() && !(mods.command || mods.shift) {
                 entered = ex.enter(sel);
             }
             let target = ex.ctx_target;
@@ -368,6 +462,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
             });
         }
         // Teclado: con una fila enfocada, ↑/↓ (y Re Pág, Av Pág, Inicio, Fin) mueven la selección y el foco.
+        let shift = ui.input(|i| i.modifiers.shift);
         if let Some(fi) = focused
             && !entered
             && let Some(to) = ui.ctx().input_mut(|i| key_target(i, fi, n))
@@ -375,6 +470,17 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
         {
             ex.selection = Some(Sel::Node(items.get(to)));
             ex.list_focus = Some(items.get(to));
+            if shift {
+                // Mayús+flechas: lo marcado es lo de antes más el rango desde el ancla (la fila de la que se salió, si aún
+                // no hay ancla); con la flecha contraria el rango encoge.
+                if ex.multi.anchor.is_none() {
+                    ex.multi.anchor = Some(items.get(fi));
+                }
+                let order: Vec<NodeId> = (0..n).map(|k| items.get(k)).collect();
+                ex.marks_shift_extend(&order, items.get(to));
+            } else {
+                ex.multi.plain_move(items.get(to));
+            }
             if to < range.start || to >= range.end {
                 ex.scroll_to_selection = true;
             }

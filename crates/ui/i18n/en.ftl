@@ -166,6 +166,45 @@ menu-properties = Properties
 menu-add-basket = Add to basket
 menu-unavailable-system = Not available for this item
 path-copied = Path copied
+
+# Multiple selection: select several items and add them to the basket together
+sel-toggle = Select
+sel-toggle-tip = Selection mode: clicking an item selects or deselects it, with no need to hold Ctrl.
+sel-hint = Ctrl+click selects several · Shift+click selects a range in the list · Ctrl+A selects all · Esc clears the selection
+sel-hint-mode = Click items to select them · Ctrl+A selects all · Esc clears the selection
+sel-count = { $count } selected · { $size }
+sel-count-partial = { $count } selected · { $size } would be added
+sel-count-only = { $count } selected
+sel-cannot = { $count } cannot be added: { $detail }
+sel-why-protected = { $count } protected
+sel-why-in-basket = { $count } already in the basket
+sel-why-info = { $count } info only or system
+sel-why-cloud = { $count } cloud-only
+sel-contents =
+    { $n ->
+        [one] { $count } known folder: its contents are added
+       *[other] { $count } known folders: their contents are added
+    }
+sel-add = Add { $count } to the basket
+sel-add-none = Add selection to the basket
+sel-add-none-tip = None of the selected items can be added to the basket: the bar says why.
+sel-add-busy-tip = Nothing can be added while a clean-up is being prepared or is running.
+sel-clear = Clear selection
+sel-keys-tip = Space selects the active row or cell; Shift+arrows grow or shrink the range in the list.
+sel-dropped = Selection cleared ({ $count })
+sel-added =
+    { $n ->
+        [one] { $count } item added to the basket
+       *[other] { $count } items added to the basket
+    }
+sel-added-skipped = { $count } could not be added
+sel-map-count = Selected for the basket: { $count }.
+sel-map-this = This item is selected for the basket.
+list-select-all-rows = Select all rows
+menu-sel-this = Select this item
+menu-sel-unthis = Remove from the selection
+menu-sel-all = Select everything here
+menu-sel-invert = Invert selection
 list-col-name = Name
 list-col-share = Share
 list-col-size = On disk

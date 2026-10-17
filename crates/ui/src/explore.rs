@@ -110,6 +110,19 @@ pub struct Explore {
     /// El panel de detalles no cabe y se desplaza (con su barra visible).
     pub(crate) details_overflow: bool,
     pub(crate) selection: Option<Sel>,
+    /// Selección múltiple: lo marcado para añadirlo junto a la cesta (hijos de la carpeta actual; ver `multisel`).
+    pub(crate) multi: crate::multisel::Marks,
+    /// La búsqueda (plegada) con la que se ajustaron las marcas por última vez.
+    pub(crate) marks_search: String,
+    /// Marcas que soltó una navegación y todavía no se avisaron (el aviso sale en el siguiente fotograma).
+    pub(crate) marks_dropped: usize,
+    /// Estimación de la cesta (entradas, bytes) con la versión de la cesta y del árbol con que se calculó.
+    pub(crate) estimate: Option<((u64, u64), (usize, u64))>,
+    /// Índice de hermanos del `Locator` de la ventana "Ver" mientras está abierta (con la versión del árbol y la de la cesta
+    /// con que se construyó): cada fotograma solo localiza las filas que se ven, sin reconstruir los índices.
+    pub(crate) locator_cache: Option<((u64, u64), crate::treepath::Index)>,
+    /// Cuántas veces se recalculó la estimación (las pruebas comprueban que no es una vez por fotograma).
+    pub(crate) estimate_computes: u32,
     pub(crate) view: View,
     /// El flujo de limpieza: cesta, confirmación, ejecución y resumen.
     pub(crate) flow: CleanFlow,
@@ -185,6 +198,12 @@ impl Explore {
             sidebar_overflow: false,
             details_overflow: false,
             selection: None,
+            multi: crate::multisel::Marks::default(),
+            marks_search: String::new(),
+            marks_dropped: 0,
+            estimate: None,
+            locator_cache: None,
+            estimate_computes: 0,
             view: View::Map,
             flow: CleanFlow::default(),
             recs: None,
@@ -236,6 +255,23 @@ impl Explore {
         backend: Arc<dyn Backend>,
     ) -> Explore {
         let tree = demo::tree(variant);
+        Explore::demo_from_tree(
+            req,
+            tree,
+            variant == demo::Variant::Stopped,
+            animate,
+            backend,
+        )
+    }
+
+    /// Como [`Explore::demo`] con un árbol dado (las pruebas de escala usan uno con miles de hijos).
+    pub(crate) fn demo_from_tree(
+        req: ScanRequest,
+        tree: Tree,
+        cancelled: bool,
+        animate: bool,
+        backend: Arc<dyn Backend>,
+    ) -> Explore {
         let files = tree.stats().files;
         let volume = req.drive.as_ref().map(|d| (d.total, d.free));
         let volume_scope = req.drive.as_ref().is_none_or(|d| d.volume_scope);
@@ -244,7 +280,7 @@ impl Explore {
             full_volume: true,
             volume,
             volume_scope,
-            cancelled: variant == demo::Variant::Stopped,
+            cancelled,
             approximate: false,
             dir_errors: 0,
             files,
@@ -381,6 +417,8 @@ impl Explore {
         self.map.begin_zoom_out(self.animate, from);
         self.root = target;
         self.selection = select;
+        // Lo marcado habla de la carpeta que se deja: no se arrastra a la nueva.
+        self.drop_marks_for_navigation();
         self.scroll_to_selection = true;
     }
 
@@ -403,6 +441,7 @@ impl Explore {
         }
         self.root = target;
         self.selection = None;
+        self.drop_marks_for_navigation();
         self.scroll_to_selection = true;
         true
     }
@@ -430,7 +469,14 @@ impl Explore {
         self.root = Root::node(id);
         self.group_stack.clear();
         self.selection = None;
+        self.drop_marks_for_navigation();
         self.scroll_to_selection = true;
+    }
+
+    /// Navegar suelta lo marcado (habla de la carpeta que se deja) y lo anota para avisarlo.
+    fn drop_marks_for_navigation(&mut self) {
+        self.marks_dropped += self.multi.len();
+        self.multi.clear();
     }
 
     /// Selecciona (o limpia la selección).
@@ -480,6 +526,8 @@ impl Explore {
         self.search_hits = None;
         self.search_set = None;
         let view = TreeView::new(&self.tree, self.overlay.as_deref());
+        // Lo que ya no existe deja de estar marcado (lo demás se conserva).
+        self.multi.retain(|id| view.is_visible(id));
         if let Some(Sel::Node(id)) = self.selection
             && !view.is_visible(id)
         {
@@ -500,6 +548,7 @@ impl Explore {
             // Una agrupación "Otros" abierta ya no describe lo mismo: se vuelve a la carpeta.
             self.root = Root::node(node);
             self.group_stack.clear();
+            self.multi.clear();
         }
     }
 
@@ -597,6 +646,8 @@ impl Explore {
             .exact_size(56.0)
             .frame(bar_frame(pal.surface))
             .show(ui, |ui| self.toolbar(ui, env));
+        // La búsqueda pudo cambiar en la barra superior: lo marcado que ya no es un acierto deja de estarlo.
+        self.sync_marks_with_search();
         egui::Panel::left("tesela-sidebar")
             .exact_size(232.0)
             .resizable(false)
@@ -627,6 +678,19 @@ impl Explore {
                 )
                 .show(ui, |ui| details::show(ui, env, self));
         }
+        // La barra de selección va siempre (mismo alto) y solo en la columna central, tras los paneles laterales: si
+        // apareciese solo al marcar, el mapa se recolocaría bajo el puntero, y quitar alto a la barra lateral la haría desbordar.
+        if self.view != View::Recommendations {
+            let fill = if self.multi.is_empty() {
+                pal.bg
+            } else {
+                pal.accent_soft
+            };
+            egui::Panel::bottom("tesela-selection")
+                .exact_size(crate::multisel::BAR_H)
+                .frame(bar_frame(fill))
+                .show(ui, |ui| self.selection_bar(ui, env));
+        }
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::new()
@@ -654,12 +718,24 @@ impl Explore {
                 ctx.request_repaint_after(Duration::from_millis(100));
             }
         }
-        // Aviso temporal ("Ruta copiada").
+        // Navegar soltó marcas: un aviso breve (no se pisa otro aviso más reciente de la propia navegación).
+        if self.marks_dropped > 0 {
+            let n = std::mem::take(&mut self.marks_dropped) as u64;
+            let msg = env.tr.ta("sel-dropped", args!["count" => env.tr.int(n)]);
+            self.toast = Some((msg, ctx.input(|i| i.time) + 3.0));
+        }
+        // Aviso temporal ("Ruta copiada"): encima de la barra de la cesta y, si hay, de la barra de selección.
+        let toast_lift = -110.0
+            - if self.view == View::Recommendations {
+                0.0
+            } else {
+                46.0
+            };
         if let Some((msg, until)) = &self.toast {
             let now = ctx.input(|i| i.time);
             if now < *until {
                 egui::Area::new(egui::Id::new("tesela-toast"))
-                    .anchor(egui::Align2::CENTER_BOTTOM, vec2(0.0, -110.0))
+                    .anchor(egui::Align2::CENTER_BOTTOM, vec2(0.0, toast_lift))
                     .order(egui::Order::Tooltip)
                     .show(&ctx, |ui| {
                         egui::Frame::popup(ui.style()).show(ui, |ui| {
@@ -722,6 +798,12 @@ impl Explore {
         if nav && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Backspace)) {
             self.up();
         }
+        // Ctrl+A: marca todo lo que se ve (los aciertos si hay búsqueda). El buscador tiene el suyo (ya salió arriba).
+        if self.view != View::Recommendations
+            && ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::A))
+        {
+            self.marks_all_here();
+        }
         if nav
             && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter))
             && let Some(sel) = self.selection
@@ -729,7 +811,10 @@ impl Explore {
             self.enter(sel);
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
-            if !self.search.is_empty() {
+            // Primero se vacía lo marcado, luego la búsqueda y por último el elemento activo.
+            if self.view != View::Recommendations && !self.multi.is_empty() {
+                self.multi.clear();
+            } else if !self.search.is_empty() {
                 self.search.clear();
             } else {
                 self.selection = None;
