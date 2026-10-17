@@ -802,24 +802,24 @@ pub fn fail_watch_under(root: &Path) -> FailWatchGuard {
     FailWatchGuard(id)
 }
 
-/// Vigilancia de TODO lo que cuelga de un directorio (subárbol) mientras se mide y hasta justo antes de que la shell actúe
-/// (A3-M1). Es un segundo handle del directorio con `ReadDirectoryChangesW` (tamaño, última escritura, altas, bajas y
-/// renombrados de archivos y de directorios). CUALQUIER finalización de la lectura (una notificación, el desbordamiento del
-/// búfer o un error) significa que la medida ya no es cierta: [`DirWatch::changed`] pasa a `true` y no vuelve a `false`. Los
-/// accesos de solo lectura del propio recorrido (atributos, listados) no generan notificaciones con estos filtros.
+/// Watches EVERYTHING beneath a directory (its subtree) while it is measured and until just before the shell acts
+/// (A3-M1). This is a second handle to the directory using `ReadDirectoryChangesW` (size, last write, additions, removals,
+/// and renames of files and directories). ANY completion of the read (a notification, buffer overflow, or error) means
+/// the measurement is no longer valid: [`DirWatch::changed`] becomes `true` and never returns to `false`. Read-only access
+/// by the traversal itself (attributes, listings) does not generate notifications with these filters.
 ///
-/// Límite del sistema (documentado, no oculto): NTFS retrasa las notificaciones de TAMAÑO y de ÚLTIMA ESCRITURA de un archivo
-/// que alguien sigue teniendo abierto hasta que lo cierra o se vuelca la caché; las altas, bajas y renombrados se notifican
-/// al momento. Un escritor que mantenga abierto un archivo y lo agrande puede no notificar dentro de la ventana.
+/// System limitation (documented, not hidden): NTFS delays SIZE and LAST-WRITE notifications for a file that someone still
+/// has open until it is closed or the cache is flushed; additions, removals, and renames are reported immediately. A writer
+/// that keeps a file open and enlarges it may not generate a notification during the monitoring window.
 pub struct DirWatch {
     inner: std::sync::Mutex<Option<Box<WatchInner>>>,
-    /// Hubo un cambio (o la vigilancia falló): no vuelve a `false`.
+    /// A change occurred (or monitoring failed): this never returns to `false`.
     changed: std::sync::atomic::AtomicBool,
 }
 
 impl DirWatch {
-    /// Abre `path` por segunda vez (sin seguir enlaces), exige que sea el directorio de identidad `expect` y arranca la
-    /// vigilancia. Hay que llamarla ANTES de empezar a medir: lo que cambie antes no se vería.
+    /// Opens `path` a second time (without following links), requires it to be the directory with identity `expect`, and
+    /// starts monitoring. Call this BEFORE measuring begins; changes made earlier would not be observed.
     pub fn start(path: &Path, expect: FileIdentity) -> Result<DirWatch, WatchError> {
         #[cfg(test)]
         {
@@ -838,12 +838,12 @@ impl DirWatch {
         if m.identity != expect || !m.is_dir || m.is_reparse() {
             return Err(WatchError::Changed);
         }
-        // SAFETY: sin atributos de seguridad ni nombre; evento de reinicio manual, no señalado.
+        // SAFETY: no security attributes or name; manual-reset, non-signaled event.
         let ev = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
         if ev.is_null() {
             return Err(WatchError::Os(last_error()));
         }
-        // SAFETY: `OVERLAPPED` es un POD (enteros y punteros): todo-ceros es válido.
+        // SAFETY: `OVERLAPPED` is POD (integers and pointers); all-zero is valid.
         let ov: OVERLAPPED = unsafe { std::mem::zeroed() };
         let mut inner = Box::new(WatchInner {
             handle: h,
@@ -857,10 +857,10 @@ impl DirWatch {
             | FILE_NOTIFY_CHANGE_LAST_WRITE
             | FILE_NOTIFY_CHANGE_FILE_NAME
             | FILE_NOTIFY_CHANGE_DIR_NAME;
-        // SAFETY: el handle se abrió con `FILE_LIST_DIRECTORY` y `FILE_FLAG_OVERLAPPED`; `buf` y `ov` viven en la caja, que no
-        // se mueve ni se libera mientras la lectura esté pendiente (`finish_watch` espera a que termine antes de soltarla); el
-        // búfer es de `u32` (alineado a DWORD) y se pasa su tamaño exacto; `lpBytesReturned` es nulo, como exige la llamada
-        // asíncrona.
+        // SAFETY: the handle was opened with `FILE_LIST_DIRECTORY` and `FILE_FLAG_OVERLAPPED`; `buf` and `ov` live in the
+        // box, which is neither moved nor freed while the read is pending (`finish_watch` waits for it to complete before
+        // releasing it); the buffer consists of `u32`s (DWORD-aligned) and its exact size is passed; `lpBytesReturned` is
+        // null, as required for the asynchronous call.
         let ok = unsafe {
             ReadDirectoryChangesW(
                 inner.handle.0,
@@ -883,8 +883,8 @@ impl DirWatch {
         })
     }
 
-    /// ¿Cambió algo desde que arrancó la vigilancia (o falló)? Consulta sin esperar. Tras [`DirWatch::stop`] devuelve lo que
-    /// se supo hasta entonces.
+    /// Did anything change (or fail) since monitoring started? Checks without waiting. After [`DirWatch::stop`], returns
+    /// what was known up to that point.
     pub fn changed(&self) -> bool {
         use std::sync::atomic::Ordering;
         if self.changed.load(Ordering::SeqCst) {
@@ -896,13 +896,13 @@ impl DirWatch {
         };
         if inner.pending {
             let mut n = 0u32;
-            // SAFETY: handle y `ov` válidos de una lectura lanzada con esta misma estructura; `n` es escribible; sin esperar.
+            // SAFETY: `handle` and `ov` are valid for a read started with this same structure; `n` is writable; do not wait.
             let ok = unsafe { GetOverlappedResult(inner.handle.0, &inner.ov, &mut n, 0) };
             if ok == 0 && last_error() == ERROR_IO_INCOMPLETE {
                 return false;
             }
-            // Terminó: con notificaciones (`n > 0`), desbordada (`n == 0`, `ERROR_NOTIFY_ENUM_DIR`) o con un error. En los tres
-            // casos lo que se midió ya no es de fiar.
+            // Completed: with notifications (`n > 0`), overflow (`n == 0`, `ERROR_NOTIFY_ENUM_DIR`), or an error. In all
+            // three cases, the measurement can no longer be trusted.
             inner.pending = false;
             self.changed.store(true, Ordering::SeqCst);
             return true;
@@ -910,8 +910,8 @@ impl DirWatch {
         self.changed.load(Ordering::SeqCst)
     }
 
-    /// Para la vigilancia (cancela la lectura pendiente y suelta el handle). Se llama tras comprobar por última vez, justo
-    /// antes de que la shell mueva el directorio: así no queda un handle con E/S pendiente sobre él.
+    /// Stops monitoring (cancels the pending read and releases the handle). Called after the final check, just before the
+    /// shell moves the directory, so no handle has pending I/O against it.
     pub fn stop(&self) {
         let _ = self.changed();
         let taken = self.inner.lock().unwrap_or_else(|e| e.into_inner()).take();
@@ -948,36 +948,36 @@ impl Drop for DirWatch {
     }
 }
 
-/// Termina una vigilancia: si la lectura sigue pendiente la cancela y ESPERA a que el kernel acabe con el búfer antes de
-/// liberarlo. Devuelve `true` si la lectura había terminado con un cambio real (no por la cancelación). Si el kernel no
-/// termina (no debería), se PIERDE la memoria a propósito: liberar un búfer que el kernel aún puede escribir es peor.
+/// Finishes monitoring: if the read is still pending, cancels it and WAITS for the kernel to finish with the buffer before
+/// releasing it. Returns `true` if the read completed due to a real change (not cancellation). If the kernel does not
+/// finish (it should not happen), the memory is intentionally LEAKED: freeing a buffer the kernel may still write to is worse.
 fn finish_watch(mut inner: Box<WatchInner>) -> bool {
     if !inner.pending {
         return false;
     }
-    // SAFETY: handle y `ov` válidos de la lectura pendiente; cancelar solo esa lectura. Un error (`ERROR_NOT_FOUND`: ya había
-    // terminado) no importa: se espera igual.
+    // SAFETY: `handle` and `ov` are valid for the pending read; cancel only that read. An error (`ERROR_NOT_FOUND`: it had
+    // already completed) does not matter; still wait for completion.
     unsafe { CancelIoEx(inner.handle.0, &inner.ov) };
-    // SAFETY: `event` es el evento de `ov`, vivo.
+    // SAFETY: `event` is the live event referenced by `ov`.
     let waited = unsafe { WaitForSingleObject(inner.event.0, 5_000) };
     if waited != WAIT_OBJECT_0 {
         std::mem::forget(inner);
         return false;
     }
     let mut n = 0u32;
-    // SAFETY: handle y `ov` válidos; la lectura ya terminó (el evento está señalado), así que no espera.
+    // SAFETY: `handle` and `ov` are valid; the read has completed (the event is signaled), so this does not wait.
     let ok = unsafe { GetOverlappedResult(inner.handle.0, &inner.ov, &mut n, 0) };
     inner.pending = false;
-    // Cancelada (`ERROR_OPERATION_ABORTED`): nada cambió. Terminada con éxito o con cualquier otro error: algo pasó.
+    // Cancelled (`ERROR_OPERATION_ABORTED`): nothing changed. Completed successfully or with any other error: something changed.
     !(ok == 0 && last_error() == ERROR_OPERATION_ABORTED)
 }
 
-/// Abre un directorio solo para vigilarlo: listar, leer atributos, compartiéndolo TODO (también `FILE_SHARE_DELETE`, para no
-/// impedir que la shell lo mueva), sin seguir enlaces y para E/S asíncrona.
+/// Opens a directory only for monitoring: listing and reading attributes, sharing it for EVERYTHING (including
+/// `FILE_SHARE_DELETE`, so the shell can move it), without following links, and for asynchronous I/O.
 fn open_dir_for_watch(path: &Path) -> Result<Handle, Win32> {
     let p = wide_long(path);
-    // SAFETY: `p` es una cadena UTF-16 terminada en NUL que vive durante la llamada; el resto son constantes o nulos
-    // permitidos.
+    // SAFETY: `p` is a NUL-terminated UTF-16 string that remains alive for the call; all other arguments are constants or
+    // permitted nulls.
     let h = unsafe {
         CreateFileW(
             p.as_ptr(),

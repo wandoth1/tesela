@@ -1081,8 +1081,8 @@ impl Operation {
 pub enum RecycleMode {
     /// `FOF_NO_UI | FOF_ALLOWUNDO | FOFX_RECYCLEONDELETE`: used by the application.
     Normal,
-    /// Lo mismo más `FOF_WANTNUKEWARNING`: solo existe en las pruebas (§3.7.4). Con `FOF_NO_UI` la shell se queda
-    /// esperando una respuesta que nadie puede dar: la aplicación NUNCA la usa.
+    /// Same as above, plus `FOF_WANTNUKEWARNING`: used only in tests (§3.7.4). With `FOF_NO_UI`, the shell waits for a
+    /// response that no one can provide; the application NEVER uses this combination.
     #[cfg(test)]
     WithNukeWarning,
 }
@@ -1193,8 +1193,8 @@ fn purge_items_flags(
     let mut changed: Vec<&BinItem> = Vec::new();
     let mut unverifiable: Vec<&BinItem> = Vec::new();
     let mut found: Vec<(IShellItem, &BinItem)> = Vec::with_capacity(items.len());
-    // GM-m5: los `id` ya casados con la lista. Si la enumeración de la shell repitiera un elemento, se entregaría dos veces a la
-    // operación y el recuento de los que faltan por casar (`found + changed + unverifiable == by_id.len()`) se adelantaría.
+    // GM-m5: IDs already matched to the list. If shell enumeration repeats an item, it would be submitted to the operation
+    // twice and the count of unmatched items (`found + changed + unverifiable == by_id.len()`) would be incorrect.
     let mut matched: std::collections::HashSet<OsString> = std::collections::HashSet::new();
     // SAFETY: COM is initialized on this thread; all interfaces and strings belong to this function and are
     // released by `windows` RAII or `take_pwstr`.
@@ -1214,8 +1214,8 @@ fn purge_items_flags(
                 && let Some(approved) = by_id.get(&id).copied()
                 && first_match(&mut matched, &id)
             {
-                // M3: el elemento se identifica por `id` (un nombre), pero antes de tocarlo se comprueba que el `$R` y el
-                // `$I` son los mismos objetos que al enumerar.
+                // M3: the item is identified by `id` (a name), but before touching it, verify that `$R` and `$I` are the
+                // same objects as when they were enumerated.
                 match check_bin_item(approved) {
                     BinCheck::Same => found.push((item, approved)),
                     BinCheck::Changed => changed.push(approved),
@@ -1243,11 +1243,11 @@ fn purge_items_flags(
         if cancel.load(Ordering::Relaxed) {
             break;
         }
-        // A-M4: un handle de GUARDA por `$R` del trozo (`DELETE | READ_ATTRIBUTES`, compartiéndolo todo, como al enviar),
-        // abierto JUSTO ANTES de la operación y verificado por su identidad. Medido con la shell real: la purga funciona igual
-        // con ellos abiertos (el `$R` queda "pendiente de borrar" hasta soltarlos). Mientras viven, nadie puede renombrar los
-        // ancestros del `$R` (la carpeta del usuario dentro de `$Recycle.Bin`), y al terminar demuestran si lo que la shell
-        // borró fue de verdad el objeto aprobado (`delete_pending`).
+        // A-M4: one GUARD handle per chunk `$R` (`DELETE | READ_ATTRIBUTES`, sharing everything, as when submitting), opened
+        // IMMEDIATELY BEFORE the operation and verified by identity. Measured with the real shell: purging works the same
+        // with these handles open (`$R` remains "delete-pending" until they are released). While they are open, no one can
+        // rename `$R`'s ancestors (the user's folder inside `$Recycle.Bin`); afterward, they prove whether the shell really
+        // deleted the approved object (`delete_pending`).
         let mut staged: Vec<(&IShellItem, &BinItem, sys::Handle)> = Vec::with_capacity(chunk.len());
         let mut lost: Vec<&BinItem> = Vec::new();
         for (it, bi) in chunk {
@@ -1257,14 +1257,14 @@ fn purge_items_flags(
             }
         }
         if !lost.is_empty() {
-            // Cambiaron entre la enumeración y ahora: no se tocan (constan como "cambiados").
+            // They changed between enumeration and now: leave them untouched (record them as "changed").
             out.changed_bin.extend(lost.iter().map(|i| i.id.clone()));
             obs(PurgeStep::Skipped(&lost));
         }
-        // M2: un `$R` con reparse points dentro (junction, symlink, enlace de WSL, archivo de la nube) se EXCLUYE aquí, antes
-        // de entregar nada: el receptor vetaría el hijo-enlace en `PreDeleteItem` (GM-m5) y un veto corta el lote entero, de
-        // modo que "vaciar" se detendría en ese elemento cada vez. Excluido así, solo él se queda y el resto se purga. El
-        // veto del receptor sigue como última defensa por si el enlace aparece después de esta comprobación.
+        // M2: exclude a `$R` containing reparse points (junction, symlink, WSL link, cloud file) here, before submitting
+        // anything: the receiver would veto the linked child in `PreDeleteItem` (GM-m5), and a veto stops the entire batch,
+        // so "empty" would stop at that item every time. Excluding it here leaves only that item behind and purges the rest.
+        // The receiver's veto remains the last line of defense if a link appears after this check.
         let mut linked: Vec<&BinItem> = Vec::new();
         staged.retain(|(_, bi, _)| {
             if bin_item_has_links(bi) {
@@ -1293,9 +1293,9 @@ fn purge_items_flags(
         for (_, it, _) in &staged {
             crate::engine::test_hooks::before_shell(Path::new(&it.id));
         }
-        // A-M4: el receptor lleva una guarda con las identidades del `$R` y del `$I` de cada elemento: `PreDeleteItem` las
-        // vuelve a comprobar por ruta (sin seguir enlaces) justo antes de que la shell borre cada uno, y veta lo que ya no
-        // es lo capturado (`E_ABORT`: lo que quede del lote no se procesa).
+        // A-M4: the receiver holds guards for each item's `$R` and `$I` identities: `PreDeleteItem` rechecks them by path
+        // (without following links) just before the shell deletes each item, and vetoes anything that no longer matches
+        // what was captured (`E_ABORT`: the rest of the batch is not processed).
         let op = Operation::new(flags, Guard::purge(&chunk_items))?;
         let mut added = 0usize;
         for (it, _, _) in &staged {
@@ -1309,18 +1309,18 @@ fn purge_items_flags(
         }
         let r = op.perform();
         out.any_aborted |= r.any_aborted;
-        // La shell dijo "borrado" con éxito: ¿era el objeto aprobado? Con las guardas aún abiertas, su `delete_pending` lo
-        // demuestra. Si no, la shell borró OTRA cosa con ese nombre (sustituido tras la comprobación del receptor): ya no se
-        // puede deshacer, pero se sabe y se cuenta aparte.
+        // The shell reported "deleted" successfully: was it the approved object? While the guards are still open, its
+        // `delete_pending` state proves it. Otherwise, the shell deleted SOMETHING ELSE with that name (replaced after the
+        // receiver's check); this cannot be undone, but it is detected and counted separately.
         let guards: Vec<(&OsString, &sys::Handle)> =
             staged.iter().map(|(_, i, h)| (&i.id, h)).collect();
         let replaced_ids = replaced_after(&r.events, &guards);
         out.replaced_bin.extend(replaced_ids.iter().cloned());
-        // Las guardas se sueltan YA: hasta entonces el `$R` borrado sigue visible como "pendiente de borrar" y no se podría
-        // comprobar que ha desaparecido (ver `remove_orphan_meta`).
+        // Release the guards NOW: until then, the deleted `$R` remains visible as "delete-pending," so we cannot verify
+        // that it has disappeared (see `remove_orphan_meta`).
         drop(staged);
-        // Medido en Windows 11 (compilación 26300): la shell borra el `$R` pero puede dejar el `$I` (los metadatos del
-        // elemento) huérfano, sea cual sea la bandera. Se quita ese `$I` exacto, con las comprobaciones de abajo.
+        // Observed on Windows 11: the shell deletes `$R` but may leave `$I` (the item's metadata) orphaned,
+        // regardless of the flag. Remove that exact `$I` only after the checks below.
         for e in &r.events {
             if e.succeeded()
                 && !replaced_ids.contains(&e.item)
@@ -1353,8 +1353,8 @@ fn purge_items_flags(
         if let Some(e) = r.error {
             out.error = Some(e);
         }
-        // Un veto significa que algo tocó la Papelera mientras se purgaba: se corta aquí. Los trozos que faltan no se
-        // entregan a la shell (constan como "no procesados" y siguen en la Papelera).
+        // A veto means something touched the Recycle Bin during purging: stop here. Do not submit the remaining chunks to
+        // the shell (record them as "not processed"; they remain in the Recycle Bin).
         if r.sink_aborted {
             out.sink_aborted = true;
             let rest: Vec<(&BinItem, Option<i32>)> = found
@@ -1371,18 +1371,18 @@ fn purge_items_flags(
     Ok(out)
 }
 
-/// `true` la PRIMERA vez que se ve un `id` (GM-m5): los repetidos de la enumeración de la shell no se vuelven a casar.
+/// `true` the FIRST time an `id` is seen (GM-m5): repeated items from shell enumeration are not matched again.
 fn first_match(seen: &mut std::collections::HashSet<OsString>, id: &OsString) -> bool {
     seen.insert(id.clone())
 }
 
-/// Profundidad máxima del recorrido de [`bin_item_has_links`]: más allá no se comprueba y se trata como "con enlaces".
+/// Maximum traversal depth for [`bin_item_has_links`]: do not inspect beyond this depth; treat it as "contains links."
 const MAX_LINK_SCAN_DEPTH: usize = 512;
 
-/// M2: ¿lleva el `$R` de un elemento de la Papelera algún reparse point dentro (junction, symlink, enlace de WSL, archivo de la
-/// nube) o no se pudo comprobar entero? Recorre el `$R` por handles relativos (sin entrar en ningún reparse point). FALLA
-/// CERRADO: cualquier error al abrir o listar, una identidad que no es la capturada o una profundidad excesiva cuentan como
-/// "con enlaces" y el elemento no se purga. Un `$R` archivo está limpio salvo que él mismo sea un reparse point.
+/// M2: Does the Recycle Bin item's `$R` contain a reparse point (junction, symlink, WSL link, cloud file), or could it not
+/// be checked completely? Traverse `$R` through relative handles without entering any reparse point. FAIL CLOSED: any error
+/// opening or listing, an identity that differs from the captured one, or excessive depth counts as "contains links," and
+/// the item is not purged. A file `$R` is clear unless it is itself a reparse point.
 fn bin_item_has_links(item: &BinItem) -> bool {
     fn walk(dir: &sys::Handle, volume: u64, depth: usize) -> bool {
         if depth > MAX_LINK_SCAN_DEPTH {
@@ -1430,7 +1430,7 @@ pub(crate) fn partition_linked<'a>(items: &[&'a BinItem]) -> (Vec<&'a BinItem>, 
     items.iter().copied().partition(|i| !bin_item_has_links(i))
 }
 
-/// Elementos por trozo al purgar (y por vuelta de la cancelación).
+/// Items per purge chunk (and per cancellation interval).
 const PURGE_CHUNK: usize = 500;
 
 /// Tests only: alternate chunk size (0 = normal), to exercise multi-chunk behavior with few items.
@@ -1448,8 +1448,9 @@ fn purge_chunk() -> usize {
     PURGE_CHUNK
 }
 
-/// Abre el handle de guarda del `$R` de un elemento de la lista (ver `purge_items_flags`) y verifica que es el objeto
-/// capturado al enumerar y que no está ya pendiente de borrar. `None` si no se puede (cambió, no se abre...): no se toca.
+/// Opens a guard handle for a list item's `$R` (see `purge_items_flags`) and verifies that it is the object captured during
+/// enumeration and is not already delete-pending. Returns `None` if it cannot be verified (changed, cannot be opened, etc.);
+/// leave it untouched.
 fn open_bin_guard(item: &BinItem) -> Option<sys::Handle> {
     let want = item.data_id?;
     let h = sys::open_path_for_rename(Path::new(&item.id)).ok()?;
@@ -1457,8 +1458,8 @@ fn open_bin_guard(item: &BinItem) -> Option<sys::Handle> {
     (m.identity == want && !m.delete_pending).then_some(h)
 }
 
-/// Los elementos del trozo a los que se atribuye algún veto (R-4): por el `id` del elemento al que pertenece lo vetado
-/// (`Veto::id`), no por la ruta vetada, que al purgar una carpeta de la Papelera es la de un HIJO.
+/// Items in the chunk to which a veto is attributed (R-4): by the `id` of the item that owns the vetoed path (`Veto::id`),
+/// not by the vetoed path itself, which is a CHILD path when purging a Recycle Bin folder.
 pub(crate) fn vetoed_items<'a>(chunk: &[&'a BinItem], vetoes: &[Veto]) -> Vec<&'a BinItem> {
     chunk
         .iter()
@@ -1467,8 +1468,8 @@ pub(crate) fn vetoed_items<'a>(chunk: &[&'a BinItem], vetoes: &[Veto]) -> Vec<&'
         .collect()
 }
 
-/// Elementos con un evento de éxito cuyo objeto aprobado (el de su guarda) NO está pendiente de borrar: la shell borró otra
-/// cosa con ese nombre. `guards` son los `id` de los elementos del trozo con su handle de guarda, aún abierto.
+/// Items with a success event whose approved object (the one held by its guard) is NOT delete-pending: the shell deleted
+/// something else with that name. `guards` contains the IDs of chunk items whose guard handles are still open.
 fn replaced_after(events: &[DeleteEvent], guards: &[(&OsString, &sys::Handle)]) -> Vec<OsString> {
     events
         .iter()
@@ -1483,23 +1484,23 @@ fn replaced_after(events: &[DeleteEvent], guards: &[(&OsString, &sys::Handle)]) 
         .collect()
 }
 
-/// ¿Demuestra la guarda que el objeto aprobado se eliminó? Solo si está pendiente de borrar (el nombre sigue visible
-/// mientras haya handles abiertos). Un error al leer no demuestra nada.
+/// Does the guard prove that the approved object was deleted? Only if it is delete-pending (the name remains visible while
+/// handles are open). A read error proves nothing.
 fn guard_proves_deleted(h: &sys::Handle) -> bool {
     sys::meta(h).is_ok_and(|m| m.delete_pending)
 }
 
-/// Lo que guarda un `$I` (metadatos de un elemento de la Papelera): versión, tamaño, cuándo se borró y ruta original.
+/// Contents of a `$I` (metadata for a Recycle Bin item): version, size, deletion time, and original path.
 #[derive(Debug, PartialEq, Eq)]
 struct MetaInfo {
     version: u64,
     size: u64,
-    /// Momento del borrado (FILETIME), tal como lo guarda la shell en el desplazamiento 16.
+    /// Deletion time (FILETIME), as stored by the shell at offset 16.
     deleted_ft: i64,
     original: PathBuf,
 }
 
-/// Interpreta un `$I` (versión 1: ruta fija de 260 unidades; versión 2: longitud y ruta). `None` si no lo es.
+/// Parses a `$I` (version 1: fixed 260-unit path; version 2: length and path). Returns `None` if it is not valid.
 fn parse_meta(b: &[u8]) -> Option<MetaInfo> {
     let u64_at = |at: usize| Some(u64::from_le_bytes(b.get(at..at + 8)?.try_into().ok()?));
     let version = u64_at(0)?;
@@ -1514,7 +1515,7 @@ fn parse_meta(b: &[u8]) -> Option<MetaInfo> {
         _ => return None,
     };
     let raw = b.get(start..)?;
-    // Un `$I` cortado (menos unidades que las que dice su cabecera) no es de fiar.
+    // A truncated `$I` (fewer units than its header specifies) cannot be trusted.
     if raw.len() < max_units.min(if version == 2 { max_units } else { 1 }) * 2 {
         return None;
     }
@@ -1537,9 +1538,9 @@ fn parse_meta(b: &[u8]) -> Option<MetaInfo> {
     })
 }
 
-/// ¿Es `info` (el `$I` leído) el de `item`, la lista aprobada? Compara TODO lo que el `$I` y la shell comparten: la carpeta
-/// de la que se borró, el nombre (la shell puede ocultar la extensión), el tamaño (cuando la shell lo da: 0 en las carpetas)
-/// y el instante del borrado. `data` es la ruta del `$R` (de él sale la extensión).
+/// Does `info` (the read `$I`) belong to `item`, the approved list entry? Compare EVERYTHING shared by `$I` and the shell:
+/// the folder from which it was deleted, the name (the shell may omit the extension), the size (when provided by the shell;
+/// zero for folders), and deletion time. `data` is the `$R` path (the extension comes from it).
 fn meta_matches(info: &MetaInfo, item: &BinItem, data: &Path) -> bool {
     use crate::paths::PathKey;
     let same_folder = info
@@ -1569,7 +1570,8 @@ fn meta_matches(info: &MetaInfo, item: &BinItem, data: &Path) -> bool {
     same_folder && same_name && same_size && same_time && ext(&info.original) == ext(data)
 }
 
-/// ¿Qué hay en la ruta del `$R`? Distingue "no existe" de "no se pudo saber" (un error de acceso NO es "no existe").
+/// What is at the `$R` path? Distinguishes "does not exist" from "could not determine" (an access error does NOT mean
+/// "does not exist").
 #[derive(Debug, PartialEq, Eq)]
 enum DataState {
     Gone,
@@ -1578,8 +1580,8 @@ enum DataState {
 }
 
 fn classify_data_error(code: sys::Win32) -> DataState {
-    // ERROR_FILE_NOT_FOUND y ERROR_PATH_NOT_FOUND: no existe. Cualquier otro (acceso denegado, uso compartido...): no se
-    // sabe.
+    // ERROR_FILE_NOT_FOUND and ERROR_PATH_NOT_FOUND: does not exist. Any other error (access denied, sharing violation, etc.):
+    // unknown.
     if matches!(code, 2 | 3) {
         DataState::Gone
     } else {
@@ -1594,14 +1596,14 @@ fn data_state(data: &Path) -> DataState {
     }
 }
 
-/// Quita el `$I` que la shell dejó huérfano tras purgar el elemento `item` (cuyo `$R` ya no existe). Es lo único que este
-/// módulo hace por ruta dentro de `$Recycle.Bin`, y solo con TODAS estas condiciones:
-/// * el `$R` (el `id` del elemento) se llama `$R<token>[.ext]` y está en `<unidad>:\$Recycle.Bin\<SID del usuario
-///   actual>\`, y de verdad NO existe (un error de acceso no cuenta como "no existe": ver [`remove_orphan_meta_at`]);
-/// * existe el hermano EXACTO `$I<token>[.ext]`, con la misma identidad que al enumerar.
+/// Removes the `$I` left orphaned by the shell after purging `item` (whose `$R` no longer exists). This module performs
+/// path-based operations inside `$Recycle.Bin` only here, and only when ALL of these conditions hold:
+/// * `$R` (the item's ID) is named `$R<token>[.ext]` and is under `<drive>:\$Recycle.Bin\<current user's SID>\`, and
+///   really does NOT exist (an access error does not count as "does not exist"; see [`remove_orphan_meta_at`]);
+/// * the EXACT sibling `$I<token>[.ext]` exists and has the same identity as during enumeration.
 ///
-/// El resto de comprobaciones (contenido y borrado) están en [`remove_orphan_meta_at`], que no depende de dónde esté la
-/// carpeta y por eso se prueba con archivos sintéticos.
+/// The remaining checks (contents and deletion) are in [`remove_orphan_meta_at`], which does not depend on the folder's
+/// location and can therefore be tested with synthetic files.
 fn remove_orphan_meta(item: &BinItem) -> bool {
     use crate::paths::PathKey;
     let data = PathBuf::from(&item.id);
@@ -1630,12 +1632,12 @@ fn remove_orphan_meta(item: &BinItem) -> bool {
     remove_orphan_meta_at(item, &data, &meta_path)
 }
 
-/// Las condiciones sobre el contenido (M3), con las rutas del `$R` y del `$I` dadas:
-/// * el `$R` no existe de verdad: solo "no encontrado" cuenta; cualquier otro error (acceso, uso compartido...) es
-///   "se desconoce" y el `$I` NO se borra;
-/// * el `$I` es un archivo normal pequeño (sin reparse point) con la MISMA identidad que se capturó al enumerar
-///   (`item.meta_id`), se abre en exclusiva y se lee, se interpreta y se borra por ese mismo handle;
-/// * su contenido coincide con lo aprobado: carpeta de origen, nombre, tamaño (si la shell lo da) y momento del borrado.
+/// Content checks (M3), given the `$R` and `$I` paths:
+/// * `$R` truly does not exist: only "not found" counts; any other error (access, sharing violation, etc.) means "unknown,"
+///   and `$I` is NOT deleted;
+/// * `$I` is a small, regular file (no reparse point) with the SAME identity captured during enumeration (`item.meta_id`);
+///   open it exclusively, then read, parse, and delete it through that same handle;
+/// * its contents match the approved item: source folder, name, size (if provided by the shell), and deletion time.
 fn remove_orphan_meta_at(item: &BinItem, data: &Path, meta_path: &Path) -> bool {
     if data_state(data) != DataState::Gone {
         return false;
@@ -1643,8 +1645,7 @@ fn remove_orphan_meta_at(item: &BinItem, data: &Path, meta_path: &Path) -> bool 
     let Some(want_id) = item.meta_id else {
         return false;
     };
-    // Se abre en EXCLUSIVA primero y se lee, se interpreta y se borra por ese MISMO handle: lo que se lee es lo que se
-    // borra.
+    // Open it EXCLUSIVELY first, then read, parse, and delete it through that SAME handle: what is read is what is deleted.
     let Ok(h) = crate::sys::open_path_exclusive_read(meta_path) else {
         return false;
     };

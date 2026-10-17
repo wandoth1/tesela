@@ -369,7 +369,7 @@ fn adopcion_por_file_id_de_las_rutas_prioritarias() {
                 .find(|p| p.path.ends_with("m"))
                 .unwrap();
             assert_eq!(m.files, 2);
-            // Sin nodos duplicados entre hermanos.
+            // No duplicate nodes among siblings.
             for id in 0..r.tree.len() as u32 {
                 let names: Vec<_> = r
                     .tree
@@ -725,8 +725,8 @@ fn una_ruta_prioritaria_que_es_un_junction_roto_se_descarta_sin_errores() {
 
 #[test]
 fn una_ruta_prioritaria_que_pasa_por_un_junction_en_un_ancestro_se_descarta() {
-    // GM-M1: `enlace\sub` is `real\sub` through a junction. Previously it was canonicalized to the target and accepted as
-    // a priority path (general traversal does NOT follow that junction); now it is validated from the root and discarded.
+    // GM-M1: the fixture path `enlace\sub` resolves to `real\sub` through a junction. Previously it was canonicalized to
+    // the target and accepted as a priority path (general traversal does NOT follow that junction); now it is validated from the root and discarded.
     // The equivalent path without a link still counts, and the scan returns no errors.
     let mut t = TempTree::new();
     t.write("real/sub/f.bin", 10_000);
