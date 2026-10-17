@@ -1,5 +1,7 @@
 //! Prueba de la CLI `tesela-scan` sobre un árbol sintético en `%TEMP%\tesela-test-<uuid>` (nunca sobre un disco real).
 
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -65,6 +67,9 @@ fn run(args: &[&Path]) -> (i32, String, String) {
 
 #[test]
 fn escanea_un_arbol_sintetico_e_imprime_totales_top_y_json() {
+    if !common::process_tests_enabled() {
+        return;
+    }
     let t = TempTree::new();
     t.write("grande/a.bin", 3_000_000);
     t.write("grande/sub/b.bin", 1_000_000);
@@ -117,6 +122,9 @@ fn escanea_un_arbol_sintetico_e_imprime_totales_top_y_json() {
 
 #[test]
 fn top_cero_no_imprime_el_listado_y_el_respaldo_se_indica() {
+    if !common::process_tests_enabled() {
+        return;
+    }
     let t = TempTree::new();
     t.write("x/a.bin", 10_000);
     let (code, out, _) = run(&[
@@ -132,6 +140,9 @@ fn top_cero_no_imprime_el_listado_y_el_respaldo_se_indica() {
 
 #[test]
 fn errores_de_uso_y_de_ruta_dan_codigos_de_salida() {
+    if !common::process_tests_enabled() {
+        return;
+    }
     let (code, _, err) = run(&[]);
     assert_eq!(code, 2);
     assert!(err.contains("falta la ruta"));
@@ -150,6 +161,9 @@ fn errores_de_uso_y_de_ruta_dan_codigos_de_salida() {
 
 #[test]
 fn parar_y_ver_a_los_cero_segundos_da_un_arbol_valido() {
+    if !common::process_tests_enabled() {
+        return;
+    }
     let t = TempTree::new();
     for i in 0..30 {
         t.write(&format!("d{i}/f.bin"), 5000);
@@ -171,6 +185,9 @@ const PREVIO: &str = "contenido previo que no debe perderse";
 
 #[test]
 fn json_no_pisa_un_archivo_existente_y_no_escanea() {
+    if !common::process_tests_enabled() {
+        return;
+    }
     let t = TempTree::new();
     t.write("x/a.bin", 10_000);
     let salida = t.0.join("salida.json");
@@ -193,6 +210,9 @@ fn json_no_pisa_un_archivo_existente_y_no_escanea() {
 
 #[test]
 fn json_con_overwrite_reemplaza_y_sin_el_crea_el_archivo_nuevo() {
+    if !common::process_tests_enabled() {
+        return;
+    }
     let t = TempTree::new();
     t.write("x/a.bin", 10_000);
     let salida = t.0.join("salida.json");
@@ -227,6 +247,9 @@ fn json_con_overwrite_reemplaza_y_sin_el_crea_el_archivo_nuevo() {
 
 #[test]
 fn json_menos_escribe_el_json_por_la_salida_estandar_y_el_informe_por_la_de_errores() {
+    if !common::process_tests_enabled() {
+        return;
+    }
     let t = TempTree::new();
     t.write("x/a.bin", 10_000);
     t.write("x/b.bin", 20_000);
@@ -249,6 +272,9 @@ fn json_menos_escribe_el_json_por_la_salida_estandar_y_el_informe_por_la_de_erro
 
 #[test]
 fn overwrite_sin_json_de_archivo_es_un_error_de_uso() {
+    if !common::process_tests_enabled() {
+        return;
+    }
     let t = TempTree::new();
     let (code, _, err) = run(&[&t.0, Path::new("--overwrite")]);
     assert_eq!(code, 2);
@@ -264,6 +290,9 @@ fn overwrite_sin_json_de_archivo_es_un_error_de_uso() {
 
 #[test]
 fn version_se_imprime_por_la_salida_estandar_y_no_escanea() {
+    if !common::process_tests_enabled() {
+        return;
+    }
     for flag in ["--version", "-V"] {
         let (code, out, err) = run(&[Path::new(flag)]);
         assert_eq!(code, 0, "{err}");
@@ -277,6 +306,9 @@ fn version_se_imprime_por_la_salida_estandar_y_no_escanea() {
 
 #[test]
 fn una_raiz_que_es_un_junction_da_error_claro_y_salida_1() {
+    if !common::process_tests_enabled() {
+        return;
+    }
     let mut t = TempTree::new();
     t.write("destino/a.bin", 10_000);
     let link = t.junction("enlace", "destino");

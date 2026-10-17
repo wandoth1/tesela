@@ -894,6 +894,16 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
     }
 }
 
+/// Celda de nivel 0 desde la que se busca el vecino: la propia, o el padre si es una celda insinuada (nivel 1). Una celda de
+/// nivel 1 sin padre (`NO_CELL`) no tiene a quién subir: se queda en sí misma (no se indexa con `u32::MAX`).
+fn base_cell(level: u8, parent: u32, cur: usize) -> usize {
+    if level == 1 && parent != NO_CELL {
+        parent as usize
+    } else {
+        cur
+    }
+}
+
 /// Celda vecina en una dirección (flechas del teclado): la más cercana cuyo centro queda al otro lado.
 fn neighbor(layout: &Layout, cur: Option<usize>, dx: f32, dy: f32) -> Option<usize> {
     let n0 = layout.stats().level0;
@@ -904,7 +914,7 @@ fn neighbor(layout: &Layout, cur: Option<usize>, dx: f32, dy: f32) -> Option<usi
     // Si la selección es una celda insinuada, se parte de su padre.
     let cur = {
         let c = &layout.cells()[cur];
-        if c.level == 1 { c.parent as usize } else { cur }
+        base_cell(c.level, c.parent, cur)
     };
     let c = layout.cells()[cur].rect;
     let (cx, cy) = (c.x + c.w / 2.0, c.y + c.h / 2.0);
@@ -1245,6 +1255,18 @@ mod tests {
                 params: Params::default(),
             },
         )
+    }
+
+    /// GM-m7: una celda insinuada (nivel 1) sin padre (`NO_CELL`) no se indexa con `u32::MAX`.
+    #[test]
+    fn la_celda_base_del_vecino_respeta_el_padre_ausente() {
+        assert_eq!(base_cell(0, NO_CELL, 4), 4);
+        assert_eq!(base_cell(1, 2, 4), 2, "la insinuada parte de su padre");
+        assert_eq!(
+            base_cell(1, NO_CELL, 4),
+            4,
+            "sin padre se queda en sí misma"
+        );
     }
 
     fn style_of(l: &Layout, st: &[CellStyle], id: NodeId) -> CellStyle {

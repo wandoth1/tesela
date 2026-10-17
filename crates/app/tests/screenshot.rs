@@ -2,6 +2,8 @@
 //! Solo se compila con la feature `capture` (sin ella el binario rechaza `--screenshot`).
 #![cfg(feature = "capture")]
 
+mod common;
+
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -35,6 +37,9 @@ fn run(args: &[&Path]) -> (i32, Vec<u8>) {
 
 #[test]
 fn si_no_puede_crear_la_captura_sale_con_error_y_no_abre_ventana() {
+    if !common::process_tests_enabled() {
+        return;
+    }
     let t = Temp::new();
     // Directorio de destino inexistente.
     let (code, _) = run(&[&t.0.join("no-existe").join("x.png")]);

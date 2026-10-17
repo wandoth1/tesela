@@ -13,7 +13,7 @@ use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken}
 use windows_sys::Win32::UI::Shell::{FOLDERID_Downloads, SHGetKnownFolderPath};
 use windows_sys::core::GUID;
 
-use crate::browser::{BrowserRoots, browser_cache_dirs};
+use crate::browser::{BrowserRoots, browser_cache_dirs_verified};
 
 /// Longitud de una cadena UTF-16 terminada en NUL.
 ///
@@ -143,7 +143,8 @@ fn known_paths_labeled_with(
         v.extend(env_path(var).map(|p| (KnownKind::UserTemp, p)));
     }
     v.extend(env_path("SystemRoot").map(|p| (KnownKind::WindowsTemp, p.join("Temp"))));
-    v.extend(browser_cache_dirs(roots));
+    // Lo que el escáner recorre primero: solo cachés con TODOS sus ancestros reales (el `cleaner` usa las candidatas sin ese filtro).
+    v.extend(browser_cache_dirs_verified(roots));
     v.extend(
         downloads_dir()
             .or_else(|| env_path("USERPROFILE").map(|p| p.join("Downloads")))

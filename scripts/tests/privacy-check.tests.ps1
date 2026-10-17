@@ -756,6 +756,74 @@ try {
     [System.IO.File]::WriteAllBytes($msg, (Join-Nul @('fix: ', 'limpio', "`n")))
     Expect 'mensaje limpio partido por NUL sueltos' $false @('-MessageFile', $msg)
     Remove-Item -LiteralPath $msg -Force
+    # --- GM-M8: SID sin distinguir mayusculas, limite de tamano, BOM acumulados, UTF-8 sin NUL, \\.\UNC\ ----------------------------
+    Reset-Repo
+    Put 'minusculas.txt' ("cuenta " + $sid.ToLowerInvariant() + "`n")
+    Stage-All
+    Expect 'SID en minusculas' $true
+    # El limite de 8 MiB cubre TODAS las rutas: tambien con una marca BOM delante o sin NUL (antes solo lo aplicaba la del binario).
+    $bigText = New-Object byte[] (8MB + 1)
+    for ($k = 0; $k -lt $bigText.Length; $k++) { $bigText[$k] = 0x61 }
+    foreach ($case in @(
+            @('sin BOM', [byte[]]@()),
+            @('con BOM de UTF-8', [byte[]](0xEF, 0xBB, 0xBF)),
+            @('con BOM de UTF-16', [byte[]](0xFF, 0xFE)),
+            @('con BOM de UTF-32', [byte[]](0xFF, 0xFE, 0, 0))
+        )) {
+        Reset-Repo
+        PutBytes 'enorme.txt' ($case[1] + $bigText)
+        Stage-All
+        Expect ('archivo de texto de mas de 8 MiB ' + $case[0] + ' se rechaza') $true
+    }
+    # Un BOM no decide por si solo como se lee el archivo: las decodificaciones se acumulan.
+    Reset-Repo
+    PutBytes 'bom-cruzado.txt' ([byte[]](0xFF, 0xFE) + $utf8.GetBytes("hola $sid`n"))
+    Stage-All
+    Expect 'BOM de UTF-16 delante de un texto UTF-8 con SID' $true
+    Reset-Repo
+    PutBytes 'bom-cruzado.txt' ([byte[]](0xFE, 0xFF) + $utf8.GetBytes("hola $sid`n"))
+    Stage-All
+    Expect 'BOM de UTF-16 BE delante de un texto UTF-8 con SID' $true
+    Reset-Repo
+    PutBytes 'bom-cruzado.txt' ([byte[]](0xEF, 0xBB, 0xBF) + [System.Text.Encoding]::Unicode.GetBytes("hola $sid`n"))
+    Stage-All
+    Expect 'BOM de UTF-8 delante de un texto UTF-16 con SID' $true
+    Reset-Repo
+    PutBytes 'bom-cruzado.txt' ([System.Text.Encoding]::Unicode.GetPreamble() + $utf8.GetBytes("hola`n") + [System.Text.Encoding]::Unicode.GetBytes("`n$sid`n"))
+    Stage-All
+    Expect 'UTF-16 con BOM con un tramo UTF-8 limpio y otro UTF-16 con SID' $true
+    Reset-Repo
+    PutBytes 'bom-limpio.txt' ([byte[]](0xFF, 0xFE) + $utf8.GetBytes("todo limpio`n"))
+    Stage-All
+    Expect 'BOM de UTF-16 delante de un texto UTF-8 limpio' $false
+    Reset-Repo
+    PutBytes 'bom-limpio.txt' ([byte[]](0xEF, 0xBB, 0xBF) + [System.Text.Encoding]::Unicode.GetBytes("todo limpio`n"))
+    Stage-All
+    Expect 'BOM de UTF-8 delante de un texto UTF-16 limpio' $false
+    # El UTF-8 de los bytes SIN NUL: un caracter de varios bytes partido por un NUL suelto (C3 00 B3) solo vuelve a ser la letra si
+    # se quita el NUL ANTES de decodificar. Termino con acento de la lista negra local (se escribe con [char]0x00F3).
+    $oTilde = [string][char]0x00F3
+    $deny = Join-Path $repo '.git\privacy-denylist'
+    [System.IO.File]::WriteAllText($deny, ("canci" + $oTilde + "n`n"), $utf8)
+    Reset-Repo
+    [System.IO.File]::WriteAllText($deny, ("canci" + $oTilde + "n`n"), $utf8)
+    PutBytes 'partido.txt' ([byte[]](0x63, 0x61, 0x6E, 0x63, 0x69, 0xC3, 0x00, 0xB3, 0x6E, 0x0A))
+    Stage-All
+    Expect 'termino con acento partido por un NUL dentro de sus bytes UTF-8' $true
+    Reset-Repo
+    [System.IO.File]::WriteAllText($deny, ("canci" + $oTilde + "n`n"), $utf8)
+    PutBytes 'partido.txt' ([byte[]](0x63, 0x61, 0x6E, 0x63, 0x69, 0xC3, 0x00, 0xA9, 0x6E, 0x0A))
+    Stage-All
+    Expect 'el mismo caso con otra letra acentuada (no es el termino) pasa' $false
+    Remove-Item -LiteralPath $deny -Force -ErrorAction SilentlyContinue
+    # Rutas UNC en las dos formas de espacio de nombres: `\\?\UNC\` y `\\.\UNC\` (construidas sin escribirlas literales).
+    $bsl = [string][char]92
+    foreach ($ns in @('?', '.')) {
+        Reset-Repo
+        Put 'unc.txt' ("ruta " + $bsl + $bsl + $ns + $bsl + 'UNC' + $bsl + 'srv' + $bsl + 'share' + $bsl + "x`n")
+        Stage-All
+        Expect ("ruta UNC verbatim con $ns") $true
+    }
     # Un PNG registrado de docs/img/ sigue permitido (tiene su excepcion propia, antes que la regla de opacos).
     Reset-Repo
     PutBytes $img $png
@@ -850,7 +918,10 @@ try {
     Expect 'before ausente: se revisa toda la historia' $true @('-To', $tip)
     $ghost = 'a' * 40
     Expect 'before que no existe en el clon: se revisa toda la historia' $true @('-From', $ghost, '-To', $tip)
-    Expect 'historia hasta la base (limpia) pasa' $false @('-To', $base)
+    # La historia de este repositorio de pruebas lleva un commit antiguo (`imagen`) que registro su PNG en SU README; con el registro
+    # vigente de `To` (el de `base`, sin la imagen) solo pasa si su hash esta en la lista historica cerrada (aqui, por parametro).
+    Expect 'historia hasta la base (limpia) pasa' $false @('-To', $base, '-LegacyImageSha256', (Sha256Hex $png))
+    Expect 'historia hasta la base: la captura de un commit antiguo ya no esta registrada en To' $true @('-To', $base)
     Expect 'rango: -To con un valor que no es un SHA (sin inyeccion)' $true @('-To', 'HEAD; calc')
     Expect 'rango: -From con un valor que no es un SHA' $true @('-From', '--all', '-To', $tip)
     # Rama con un merge: el blob malo llega por la segunda rama.
@@ -917,6 +988,72 @@ try {
     Stage-All
     New-Commit 'docs: captura con el hash de otra'
     Expect 'el README de To con el hash de otra imagen no vale' $true @('-From', $base, '-To', (Sha 'HEAD'))
+
+    # GM-M8: en modo -To SOLO vale el README del commit `To`. Una imagen registrada en su commit pero cuyo registro se quito despues
+    # ya no pasa (antes la avalaba el README de su propio commit).
+    Reset-Repo
+    Invoke-Git -C $repo checkout -q -f -B desregistrada $base
+    PutBytes $img $png
+    Put 'docs/img/README.md' $readmeOk
+    Stage-All
+    New-Commit 'docs: captura registrada'
+    $regTip = Sha 'HEAD'
+    Put 'docs/img/README.md' "# Capturas`n"
+    Stage-All
+    New-Commit 'docs: se quita el registro'
+    $unregTip = Sha 'HEAD'
+    Expect 'rango: la captura registrada en su commit pasa con To = ese commit' $false @('-From', $base, '-To', $regTip)
+    Expect 'rango: la captura registrada en su commit pero desregistrada en To se rechaza' $true @('-From', $base, '-To', $unregTip)
+
+    # GM-M8: tambien se revisan el autor y el committer (nombre y correo) de cada commit del rango.
+    $prevEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        Reset-Repo
+        Invoke-Git -C $repo checkout -q -f -B autores $base
+        & git -C $repo commit -q --allow-empty --no-verify --author "Ana $sid <ana@example.invalid>" -m 'chore: autor con SID' 2>&1 | Out-Null
+        $authorTip = Sha 'HEAD'
+        & git -C $repo commit -q --allow-empty --no-verify --author "Ana <$($sid.ToLowerInvariant())@example.invalid>" -m 'chore: correo del autor con SID' 2>&1 | Out-Null
+        $authorMailTip = Sha 'HEAD'
+        $env:GIT_COMMITTER_NAME = "Luis $sid"
+        & git -C $repo commit -q --allow-empty --no-verify -m 'chore: committer con SID' 2>&1 | Out-Null
+        $committerTip = Sha 'HEAD'
+        Remove-Item Env:GIT_COMMITTER_NAME -ErrorAction SilentlyContinue
+        $env:GIT_COMMITTER_EMAIL = "$($sid.ToLowerInvariant())@example.invalid"
+        & git -C $repo commit -q --allow-empty --no-verify -m 'chore: correo del committer con SID' 2>&1 | Out-Null
+        $committerMailTip = Sha 'HEAD'
+        Remove-Item Env:GIT_COMMITTER_EMAIL -ErrorAction SilentlyContinue
+        & git -C $repo commit -q --allow-empty --no-verify -m 'chore: ya limpio' 2>&1 | Out-Null
+        $cleanTip = Sha 'HEAD'
+    } finally {
+        Remove-Item Env:GIT_COMMITTER_NAME -ErrorAction SilentlyContinue
+        Remove-Item Env:GIT_COMMITTER_EMAIL -ErrorAction SilentlyContinue
+        $ErrorActionPreference = $prevEap
+    }
+    Expect 'rango: el nombre del autor con un SID se rechaza' $true @('-From', $base, '-To', $authorTip)
+    Expect 'rango: el correo del autor con un SID (minusculas) se rechaza' $true @('-From', $authorTip, '-To', $authorMailTip)
+    Expect 'rango: el nombre del committer con un SID se rechaza' $true @('-From', $authorMailTip, '-To', $committerTip)
+    Expect 'rango: el correo del committer con un SID se rechaza' $true @('-From', $committerTip, '-To', $committerMailTip)
+    Expect 'rango: un commit limpio despues de los malos pasa' $false @('-From', $committerMailTip, '-To', $cleanTip)
+    # R-S8: el hallazgo lleva la etiqueta de su campo (no `mensaje:1..4`) y el cuerpo conserva sus numeros de linea.
+    foreach ($case in @(
+            @($authorTip, $base, 'autor (nombre)'),
+            @($authorMailTip, $authorTip, 'autor (correo)'),
+            @($committerTip, $authorMailTip, 'committer (nombre)'),
+            @($committerMailTip, $committerTip, 'committer (correo)')
+        )) {
+        $script:total++
+        $out = (Run-Check @('-From', $case[1], '-To', $case[0])).Out
+        if ($out -notlike ('*' + $case[2] + ': SID*') -or $out -like '*mensaje:*') { $script:failures.Add("etiqueta del campo $($case[2]): $out") }
+    }
+    Reset-Repo
+    Invoke-Git -C $repo checkout -q -f -B cuerpo $base
+    $prevEap2 = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { & git -C $repo commit -q --allow-empty --no-verify -m "chore: linea 1`n`nlinea 3`n$sid" 2>&1 | Out-Null } finally { $ErrorActionPreference = $prevEap2 }
+    $script:total++
+    $out = (Run-Check @('-From', $base, '-To', (Sha 'HEAD'))).Out
+    if ($out -notlike '*mensaje:4: SID*') { $script:failures.Add("numero de linea del cuerpo (se esperaba mensaje:4): $out") }
 
     # Capturas HISTORICAS de --demo: su hash esta en la lista cerrada del script (solo en modo -To), no en ningun README.
     Reset-Repo

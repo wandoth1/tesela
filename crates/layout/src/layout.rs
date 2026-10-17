@@ -260,7 +260,7 @@ impl Layout {
                 let mut pages: Vec<(usize, usize, u64)> = Vec::new();
                 let mut s = start;
                 while s < sized {
-                    let e = (s + page).min(sized);
+                    let e = s.saturating_add(page).min(sized);
                     let bytes: u64 = (s..e).map(alloc_of).fold(0u64, u64::saturating_add);
                     pages.push((s, e, bytes));
                     s = e;

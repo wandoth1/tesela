@@ -14,15 +14,27 @@
 #![allow(unsafe_code)]
 
 use windows_sys::Win32::System::LibraryLoader::{
-    LOAD_LIBRARY_SEARCH_SYSTEM32, SetDefaultDllDirectories,
+    LOAD_LIBRARY_SEARCH_SYSTEM32, SetDefaultDllDirectories, SetDllDirectoryW,
 };
 
-/// Limita la búsqueda de DLL del proceso a `System32`. Devuelve `false` si Windows lo rechaza (el proceso sigue con el
-/// orden predeterminado: no es un error fatal, pero se pierde el endurecimiento).
+/// Cadena vacía terminada en NUL (UTF-16) para `SetDllDirectoryW`.
+const EMPTY: [u16; 1] = [0];
+
+/// Limita la búsqueda de DLL del proceso a `System32`. Devuelve `false` si Windows rechaza alguna de las dos llamadas (el
+/// proceso sigue con el orden predeterminado en esa parte: no es un error fatal, pero se pierde el endurecimiento).
+///
+/// 1. `SetDllDirectoryW("")` quita el directorio de trabajo actual del orden de búsqueda clásico (el de las cargas que no
+///    usan los indicadores `LOAD_LIBRARY_SEARCH_*`), por si alguna carga no respetase el valor predeterminado del paso 2.
+/// 2. `SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)` fija el valor predeterminado de todas las cargas
+///    posteriores sin ruta ni indicadores.
 pub fn restrict_dll_search() -> bool {
+    // SAFETY: `EMPTY` es una cadena UTF-16 terminada en NUL que vive durante toda la llamada. Llamarla más de una vez es
+    // inofensivo.
+    let no_cwd = unsafe { SetDllDirectoryW(EMPTY.as_ptr()) != 0 };
     // SAFETY: `SetDefaultDllDirectories` solo recibe una máscara de indicadores constante; no hay punteros ni estado
     // compartido. Llamarla más de una vez es inofensivo.
-    unsafe { SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32) != 0 }
+    let system32 = unsafe { SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32) != 0 };
+    no_cwd && system32
 }
 
 #[cfg(test)]
@@ -84,6 +96,18 @@ mod tests {
     /// copia de una DLL legítima del sistema con otro nombre (no ejecuta nada propio); la carpeta se borra al acabar.
     #[test]
     fn la_busqueda_de_dll_se_limita_a_system32() {
+        // Lanza un proceso hijo (copia del ejecutable de pruebas): solo con TESELA_PROCESS_TESTS=1 (el CI la define).
+        if !std::env::var("TESELA_PROCESS_TESTS").is_ok_and(|v| v == "1") {
+            // En CI el salto no puede pasar en silencio (una variable perdida del workflow): falla.
+            assert!(
+                std::env::var_os("CI").is_none(),
+                "CI sin TESELA_PROCESS_TESTS=1: las pruebas con procesos hijo no pueden saltarse en CI (revisa el workflow)"
+            );
+            eprintln!(
+                "pruebas con procesos hijo desactivadas: defina TESELA_PROCESS_TESTS=1 para ejecutar esta prueba"
+            );
+            return;
+        }
         let sys = std::env::var_os("SystemRoot").map(std::path::PathBuf::from);
         let src = sys.map(|s| s.join("System32").join("msimg32.dll"));
         let Some(src) = src.filter(|p| p.exists()) else {
@@ -113,6 +137,34 @@ mod tests {
         assert!(
             text.contains("1 passed"),
             "el hijo no ejecutó la prueba: {text}"
+        );
+    }
+
+    /// GM-S2: el endurecimiento hace las DOS llamadas: quita el directorio de trabajo del orden clásico (`SetDllDirectoryW("")`)
+    /// y fija el valor predeterminado a `System32`. Cambiar el estado del proceso de pruebas afectaría a las demás pruebas
+    /// (por eso el comportamiento real se prueba en un proceso hijo): aquí se vigila que las dos llamadas siguen en el código.
+    #[test]
+    fn el_endurecimiento_quita_tambien_el_directorio_de_trabajo() {
+        let src = include_str!("dll_hardening.rs");
+        let body = &src[src.find("pub fn restrict_dll_search").unwrap()..];
+        let body = &body[..body
+            .find(
+                "
+}
+",
+            )
+            .unwrap()];
+        let cwd = body
+            .find("SetDllDirectoryW(EMPTY.as_ptr())")
+            .expect("SetDllDirectoryW(\"\")");
+        let sys32 = body
+            .find("SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32)")
+            .expect("SetDefaultDllDirectories");
+        assert!(cwd < sys32);
+        assert_eq!(EMPTY, [0u16], "cadena vacía terminada en NUL");
+        assert!(
+            body.contains("no_cwd && system32"),
+            "las dos llamadas cuentan"
         );
     }
 

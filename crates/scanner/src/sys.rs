@@ -24,8 +24,9 @@ use windows_sys::Win32::Storage::FileSystem::{
     FIND_FIRST_EX_LARGE_FETCH, FileAttributeTagInfo, FileBasicInfo, FileIdExtdDirectoryInfo,
     FileIdInfo, FileStandardInfo, FindClose, FindExInfoBasic, FindExSearchNameMatch,
     FindFirstFileExW, FindNextFileW, GetDiskFreeSpaceExW, GetDiskFreeSpaceW,
-    GetFileInformationByHandleEx, GetFinalPathNameByHandleW, GetVolumeInformationByHandleW,
-    OPEN_EXISTING, WIN32_FIND_DATAW,
+    GetFileInformationByHandleEx, GetFinalPathNameByHandleW, GetLongPathNameW,
+    GetVolumeInformationByHandleW, OPEN_EXISTING, VOLUME_NAME_DOS, VOLUME_NAME_GUID,
+    WIN32_FIND_DATAW,
 };
 use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 
@@ -191,12 +192,16 @@ pub fn open_no_follow(path: &Path, access: u32) -> Result<DirHandle, u32> {
 /// Ruta final canónica del handle (`\\?\C:\...`, letras de las carpetas tal como están en el disco y nombres largos),
 /// calculada SOBRE EL HANDLE ya abierto: con un handle de [`open_no_follow`] sobre un enlace da la ruta del propio
 /// enlace, no la de su destino.
-pub fn final_path(h: &DirHandle) -> Result<PathBuf, u32> {
+///
+/// `volume_name` es `VOLUME_NAME_DOS` (letras de unidad y carpetas de montaje) o `VOLUME_NAME_GUID` (`Volume{GUID}`).
+fn final_path_with(h: &DirHandle, volume_name: u32) -> Result<PathBuf, u32> {
     let mut buf = vec![0u16; 512];
     loop {
-        // SAFETY: `h.0` es un handle válido; `buf` es escribible y se pasa su longitud exacta en unidades UTF-16. Flags 0
-        // = `FILE_NAME_NORMALIZED | VOLUME_NAME_DOS`.
-        let n = unsafe { GetFinalPathNameByHandleW(h.0, buf.as_mut_ptr(), buf.len() as u32, 0) };
+        // SAFETY: `h.0` es un handle válido; `buf` es escribible y se pasa su longitud exacta en unidades UTF-16. Los
+        // flags son `FILE_NAME_NORMALIZED` (0) más la forma de volumen pedida.
+        let n = unsafe {
+            GetFinalPathNameByHandleW(h.0, buf.as_mut_ptr(), buf.len() as u32, volume_name)
+        };
         if n == 0 {
             // SAFETY: `GetLastError` no tiene precondiciones.
             return Err(unsafe { GetLastError() });
@@ -217,13 +222,50 @@ pub struct Opened {
     pub path: PathBuf,
 }
 
-/// [`open_no_follow`] con `FILE_READ_ATTRIBUTES` + [`dir_meta`] + [`final_path`]. El llamante mira `meta` (¿es un
+/// [`open_no_follow`] con `FILE_READ_ATTRIBUTES` + [`dir_meta`] + la ruta final del handle (`final_path_with`). El llamante mira `meta` (¿es un
 /// directorio?, ¿un reparse point?) ANTES de usar `path` para recorrer nada.
+///
+/// La ruta es la de DOS (`\\?\C:\...`), salvo en la raíz de un volumen abierto por `\\?\Volume{GUID}\` que NO tiene
+/// letra: su nombre DOS es la carpeta donde está montado, y recorrerla reabriría el directorio de reparse (vacío) del
+/// volumen padre. Ahí se conserva la ruta `\\?\Volume{GUID}\` (ver `paths::choose_root_path`). Si el volumen no tiene
+/// ningún nombre DOS, se usa también la de GUID.
 pub fn open_resolved(path: &Path) -> Result<Opened, u32> {
     let handle = open_no_follow(path, FILE_READ_ATTRIBUTES)?;
     let meta = dir_meta(&handle)?;
-    let path = final_path(&handle)?;
+    let path = match final_path_with(&handle, VOLUME_NAME_DOS) {
+        Ok(dos) => match final_path_with(&handle, VOLUME_NAME_GUID) {
+            Ok(guid) => crate::paths::choose_root_path(dos, &guid),
+            Err(_) => dos,
+        },
+        Err(code) => match final_path_with(&handle, VOLUME_NAME_GUID) {
+            Ok(guid) => crate::paths::volume_guid_root(&guid).ok_or(code)?,
+            Err(_) => return Err(code),
+        },
+    };
     Ok(Opened { handle, meta, path })
+}
+
+/// Forma LARGA (sin nombres 8.3) de `path` (`GetLongPathNameW`), sin abrir ninguna ruta para recorrerla: solo expande
+/// los alias cortos (`PROGRA~1`) de lo que existe. Sirve para que una ruta tomada de una variable de entorno
+/// (`%TEMP%` suele estar en 8.3) se pueda comparar con los nombres del listado. NO sustituye a la validación
+/// componente a componente de `priority`: no resuelve enlaces. Devuelve el código de error de Windows (la ruta no existe...).
+pub fn long_path(path: &Path) -> Result<PathBuf, u32> {
+    let p = with_nul(&wide(path));
+    let mut buf = vec![0u16; 512];
+    loop {
+        // SAFETY: `p` termina en NUL y vive durante la llamada; `buf` es escribible y se pasa su longitud exacta.
+        let n = unsafe { GetLongPathNameW(p.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) };
+        if n == 0 {
+            // SAFETY: `GetLastError` no tiene precondiciones.
+            return Err(unsafe { GetLastError() });
+        }
+        let n = n as usize;
+        if n < buf.len() {
+            return Ok(PathBuf::from(std::ffi::OsString::from_wide(&buf[..n])));
+        }
+        // Búfer corto: `n` es el tamaño necesario, con el NUL final.
+        buf.resize(n + 1, 0);
+    }
 }
 
 /// Datos de una entrada de directorio tal como los da el listado de su padre.
@@ -241,22 +283,36 @@ pub struct EntryInfo {
 /// entrada. Se usa para precrear los ancestros de las rutas prioritarias con EXACTAMENTE los mismos valores que les
 /// daría el recorrido general: el tamaño propio de un directorio que da el listado de su padre puede diferir del que
 /// da `FileStandardInfo` sobre el directorio abierto, y sus `FileId` son los que se comparan al adoptar.
+#[cfg(test)]
 pub fn find_entry(parent: &[u16], name: &[u16]) -> Result<Option<EntryInfo>, u32> {
+    Ok(find_entry_named(parent, name)?.map(|(_, info)| info))
+}
+
+/// [`find_entry`] que además devuelve el nombre EXACTO (mayúsculas y minúsculas del disco) de la entrada encontrada.
+pub fn find_entry_named(
+    parent: &[u16],
+    name: &[u16],
+) -> Result<Option<(Vec<u16>, EntryInfo)>, u32> {
     let h = open_dir(parent, FILE_LIST_DIRECTORY, false)?;
     let mut buf = vec![0u64; BUF_BYTES / 8];
     let wanted = String::from_utf16_lossy(name).to_lowercase();
-    let info = |e: &RawEntry| EntryInfo {
-        attrs: e.attrs,
-        logical: e.logical,
-        alloc: e.alloc.unwrap_or(0),
-        file_id: e.file_id,
-        reparse_tag: e.reparse_tag,
-        mtime_filetime: e.mtime_filetime,
+    let info = |e: &RawEntry| {
+        (
+            e.name.to_vec(),
+            EntryInfo {
+                attrs: e.attrs,
+                logical: e.logical,
+                alloc: e.alloc.unwrap_or(0),
+                file_id: e.file_id,
+                reparse_tag: e.reparse_tag,
+                mtime_filetime: e.mtime_filetime,
+            },
+        )
     };
     // Una carpeta que distingue mayúsculas puede tener hermanos `Temp`, `temp` y `TEMP`: gana siempre la coincidencia
     // EXACTA. La insensible solo vale como respaldo y solo si es única (con varias no se sabe cuál es).
-    let mut exact: Option<EntryInfo> = None;
-    let mut insensitive: Option<EntryInfo> = None;
+    let mut exact: Option<(Vec<u16>, EntryInfo)> = None;
+    let mut insensitive: Option<(Vec<u16>, EntryInfo)> = None;
     let mut insensitive_count = 0u32;
     enum_dir_extd(&h, &mut buf, &mut |e| {
         if e.name == name {
@@ -289,6 +345,17 @@ pub struct RawEntry<'a> {
 
 fn is_dot(name: &[u16]) -> bool {
     name == [b'.' as u16] || name == [b'.' as u16, b'.' as u16]
+}
+
+/// Etiqueta de reparse de una entrada del listado: solo vale con el atributo `REPARSE_POINT`. En
+/// `FILE_ID_EXTD_DIR_INFO` el campo `ReparsePointTag` comparte memoria con `EaSize`: en una entrada que NO es un
+/// reparse point trae el tamaño de sus atributos extendidos, no una etiqueta (y podría parecer una).
+fn entry_reparse_tag(attrs: u32, raw: u32) -> u32 {
+    if attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        raw
+    } else {
+        0
+    }
 }
 
 fn read_u32(b: &[u8], at: usize) -> u32 {
@@ -373,7 +440,7 @@ pub fn enum_dir_extd(
                     logical: read_i64(rec, EOF).max(0) as u64,
                     alloc: Some(read_i64(rec, ALLOC).max(0) as u64),
                     file_id: u128::from_le_bytes(id),
-                    reparse_tag: read_u32(rec, TAG),
+                    reparse_tag: entry_reparse_tag(read_u32(rec, ATTRS), read_u32(rec, TAG)),
                     mtime_filetime: read_i64(rec, MTIME),
                 });
             }
@@ -1103,5 +1170,74 @@ mod tests {
         assert_eq!(o.meta.attrs & FILE_ATTRIBUTE_REPARSE_POINT, 0);
         assert_eq!(dunce::simplified(&o.path), sub);
         assert!(open_resolved(&t.0.join("no existe")).is_err());
+    }
+
+    /// GM-S1: en el listado extendido el campo de la etiqueta de reparse comparte memoria con `EaSize`; solo vale con el
+    /// atributo `REPARSE_POINT`.
+    #[test]
+    fn la_etiqueta_de_reparse_solo_vale_con_el_atributo() {
+        // Un directorio o archivo normal con atributos extendidos (`EaSize` = 0x9000_001A): no es una etiqueta de nube.
+        assert_eq!(entry_reparse_tag(0x10, 0x9000_001A), 0);
+        assert_eq!(entry_reparse_tag(0x20, 0xA000_0003), 0);
+        assert_eq!(entry_reparse_tag(0, 7), 0);
+        // Con el atributo, la etiqueta tal cual.
+        assert_eq!(
+            entry_reparse_tag(0x10 | FILE_ATTRIBUTE_REPARSE_POINT, 0xA000_0003),
+            0xA000_0003
+        );
+        assert_eq!(entry_reparse_tag(FILE_ATTRIBUTE_REPARSE_POINT, 0), 0);
+    }
+
+    #[test]
+    fn el_listado_real_no_da_etiqueta_a_lo_que_no_es_reparse_point() {
+        let mut t = Tmp::new();
+        std::fs::create_dir(t.0.join("real")).unwrap();
+        std::fs::write(t.0.join("a.txt"), b"x").unwrap();
+        let target = t.0.join("real");
+        t.junction("enlace", &target);
+        let h = open_dir(&wide(&t.0), FILE_LIST_DIRECTORY, false).unwrap();
+        let mut buf = vec![0u64; BUF_BYTES / 8];
+        let mut seen = 0;
+        enum_dir_extd(&h, &mut buf, &mut |e| {
+            seen += 1;
+            if e.attrs & FILE_ATTRIBUTE_REPARSE_POINT == 0 {
+                assert_eq!(e.reparse_tag, 0, "{}", String::from_utf16_lossy(e.name));
+            } else {
+                assert_eq!(
+                    e.reparse_tag, 0xA000_0003,
+                    "un junction es un punto de montaje"
+                );
+            }
+        })
+        .unwrap();
+        assert_eq!(seen, 3);
+    }
+
+    #[test]
+    fn find_entry_named_da_el_nombre_exacto_del_disco() {
+        let t = Tmp::new();
+        std::fs::create_dir(t.0.join("Carpeta Mixta")).unwrap();
+        let (name, info) = find_entry_named(&wide(&t.0), &wide(Path::new("CARPETA mixta")))
+            .unwrap()
+            .expect("la encuentra sin distinguir mayúsculas");
+        assert_eq!(String::from_utf16_lossy(&name), "Carpeta Mixta");
+        assert_ne!(info.attrs & 0x10, 0);
+        assert!(
+            find_entry_named(&wide(&t.0), &wide(Path::new("otra")))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn long_path_conserva_una_ruta_larga_y_falla_si_no_existe() {
+        let t = Tmp::new();
+        let sub = t.0.join("Carpeta con nombre largo de verdad");
+        std::fs::create_dir(&sub).unwrap();
+        let long = long_path(&sub).unwrap();
+        assert_eq!(dunce::simplified(&long), sub);
+        // La carpeta temporal tal como la da el entorno (a veces en 8.3) también se expande.
+        assert!(long_path(&std::env::temp_dir()).is_ok());
+        assert_eq!(long_path(&t.0.join("no existe")), Err(2));
     }
 }

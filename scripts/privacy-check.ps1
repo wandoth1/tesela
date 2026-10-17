@@ -134,8 +134,8 @@ if ($Local -and $GenericOnly) {
 # Path = $true: regla ligada a rutas. Se aplica en TODO el repositorio, spike/ incluido; la unica excepcion es la lista CERRADA
 # `$spikePathAllow` (mas abajo). Los corchetes evitan que el script se detecte a si mismo.
 $generic = @(
-    @{ Name = 'SID de Windows'; Path = $false; Pattern = 'S-1-5-21-\d' },
-    @{ Name = 'SID de cuenta AzureAD'; Path = $false; Pattern = 'S-1-12-1-\d' },
+    @{ Name = 'SID de Windows'; Path = $false; Pattern = '(?i)S-1-5-21-\d' },
+    @{ Name = 'SID de cuenta AzureAD'; Path = $false; Pattern = '(?i)S-1-12-1-\d' },
     @{ Name = 'Ruta de perfil real (use <usuario>)'; Path = $true; Pattern = '(?i)(?<![A-Za-z0-9_])[A-Z]:[\\/]{1,2}Users[\\/]{1,2}(?!<usuario>|%|\{|\$|Public\b|Default\b|\*)[^\\/\s''"`]+' },
     @{ Name = 'Ruta de perfil real estilo Unix o WSL'; Path = $true; Pattern = '(?i)(?<![A-Za-z0-9_.])/(mnt/)?[a-z]/Users/(?!<usuario>|Public\b|Default\b)[^/\s''"`]+' },
     @{ Name = 'Ruta absoluta de unidad D: a Z:'; Path = $true; Pattern = '(?i)(?<![A-Za-z0-9_])[D-Z]:[\\/]' },
@@ -147,7 +147,8 @@ $generic = @(
     # Escapada (un literal de Rust, JSON...): cada barra invertida va duplicada, la barra normal no. Hace falta al menos UNA barra
     # invertida duplicada (con solo barras normales ya vale la regla de arriba): dos barras normales al principio con una barra invertida duplicada despues del servidor tambien cuentan.
     @{ Name = 'Ruta UNC de red escapada'; Path = $false; Pattern = '(?<![A-Za-z0-9_\\.:/])(?:(?:\\\\\\\\|\\\\/|/\\\\|//)(?![?.<])[A-Za-z0-9_][A-Za-z0-9_.-]*\\\\|(?:\\\\\\\\|\\\\/|/\\\\)(?![?.<])[A-Za-z0-9_][A-Za-z0-9_.-]*(?:\\\\|[\\/]))[A-Za-z0-9_$]' },
-    @{ Name = 'Ruta UNC verbatim'; Path = $false; Pattern = '(?i)(?:\\\\|[\\/]){2}\?(?:\\\\|[\\/])UNC(?:\\\\|[\\/])[A-Za-z0-9_]' },
+    # `\\?\UNC\` (verbatim) y `\\.\UNC\` (espacio de nombres de dispositivos): las dos formas.
+    @{ Name = 'Ruta UNC verbatim'; Path = $false; Pattern = '(?i)(?:\\\\|[\\/]){2}[?.](?:\\\\|[\\/])UNC(?:\\\\|[\\/])[A-Za-z0-9_]' },
     @{ Name = 'Fabricante o modelo de GPU/CPU/disco'; Path = $false; Pattern = '(?i)\b(N[V]IDIA|Ge[F]orce|R[T]X\s?\d{3,4}\w*|G[T]X\s?\d{3,4}\w*|Rade[o]n|Ry[z]en|Threadrip[p]er|EP[Y]C|X[e]on|Inte[l]\s+Core|Inte[l]\(R\)\s*Core|Core\s+i[3579][ -]|Apple\s+M[1-9]|Sam[s]ung|WD_BL[A]CK|WD\s+Bl[a]ck|Western\s+Dig[i]tal|Sea[g]ate|Kings[t]on|Cruc[i]al|Cors[a]ir|SN8\d\d\w*|H[y]nix|Mic[r]on|Tos[h]iba|SanD[i]sk)\b' },
     @{ Name = 'Antivirus'; Path = $false; Pattern = '(?i)\b(Bitdef[e]nder|Kaspers[k]y|Nor[t]on|McA[f]ee|Av[a]st|AVG\s+Anti\w*|ES[E]T|Malwareby[t]es|Soph[o]s|CrowdStr[i]ke|Sentinel[O]ne|Trend\s*Mi[c]ro|Symant[e]c|F-Se[c]ure|Webr[o]ot|Cylan[c]e|Carbon\s*Bl[a]ck)\b' },
     @{ Name = 'Build de Windows'; Path = $false; Pattern = '(?i)\bbuild\s+(19|2\d)\d{3}\b' },
@@ -166,12 +167,12 @@ if (-not $GenericOnly) {
                 $alt = [regex]::Escape($val.Trim().Replace('\', '/'))
                 $pattern = "(?i)($esc|$alt)"
             } else {
-                # Limites de palabra: ASCII, guion bajo y letras latinas acentuadas (U+00C0-U+024F sin U+00D7 ni U+00F7), NO
+                # Limites de palabra: ASCII (letras y digitos; el guion bajo NO es un limite: `usuario_x` y `x_usuario` cuentan) y letras latinas acentuadas (U+00C0-U+024F sin U+00D7 ni U+00F7), NO
                 # \p{L}\p{N}: en las cadenas UTF-16 de un binario el vecino de una cadena es un par de bytes cualquiera, que casi
                 # siempre es una letra Unicode (CJK...), y con \p{L} el valor pegado a ese vecino no se veria. Un valor como "Ren"
                 # no coincide con una palabra latina con acentos que lo contiene. Coste aceptado y del lado seguro: un valor pegado a
                 # una letra cirilica, griega o CJK SI cuenta como coincidencia.
-                $pattern = "(?i)(?<![0-9A-Za-z_\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u024F])$esc(?![0-9A-Za-z_\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u024F])"
+                $pattern = "(?i)(?<![0-9A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u024F])$esc(?![0-9A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u024F])"
             }
             $localRules += @{ Name = "Valor local de `$env:$($pair[0])"; Path = $false; Pattern = $pattern }
         }
@@ -215,6 +216,16 @@ function ConvertTo-ScanText {
     foreach ($t in $texts) {
         if ($t.IndexOf([char]0) -ge 0) { $extra.Add($t.Replace($nul, '')) }
     }
+    # Ademas, el UTF-8 de los BYTES sin NUL (como leak-scan.ps1): quitar el NUL de un texto ya decodificado no es lo mismo que
+    # quitarlo de los bytes. Un caracter de varios bytes partido por un NUL suelto (`C3 00 A9`) se decodifica como dos U+FFFD
+    # con un U+0000 en medio y asi nunca vuelve a ser la letra; sin el NUL antes de decodificar, si.
+    if ([System.Array]::IndexOf($Bytes, [byte]0) -ge 0) {
+        # Latin-1 es una biyeccion de bytes: quitar los NUL del texto es quitar los bytes NUL (operaciones en bloque, sin recorrer
+        # byte a byte en PowerShell, que en 5.1 es lento con binarios grandes).
+        $latin1 = [System.Text.Encoding]::GetEncoding(28591)
+        $noNulBytes = $latin1.GetBytes($latin1.GetString($Bytes).Replace($nul, ''))
+        $extra.Add([System.Text.Encoding]::UTF8.GetString($noNulBytes))
+    }
     if ($extra.Count -eq 0) { return , @($texts) }
     return , @(@($texts) + $extra.ToArray())
 }
@@ -224,24 +235,39 @@ function ConvertTo-ScanTextCore {
     param([byte[]]$Bytes, [ref]$Reject)
     $Reject.Value = $null
     $n = $Bytes.Length
+    # El limite de tamano va PRIMERO, para todo: con una marca BOM delante (o sin NUL) un archivo enorme se decodificaba entero
+    # varias veces antes de rechazarlo, y un limite que solo cubria una de las rutas se sorteaba con un BOM.
+    if ($n -gt 8MB) { $Reject.Value = 'archivo de mas de 8 MiB (no se puede revisar)'; return $null }
     if ($n -eq 0) { return , @('') }
-    if ($n -ge 3 -and $Bytes[0] -eq 0xEF -and $Bytes[1] -eq 0xBB -and $Bytes[2] -eq 0xBF) { return (Get-TextsWithAnsiFallback $Bytes 3) }
+    # Una marca BOM NO decide por si sola como se lee el archivo: sus decodificaciones se ACUMULAN (el texto segun el BOM) y, ademas,
+    # se sigue con las de siempre (el archivo entero como UTF-8, y las cadenas de un binario si hay NUL). Quien pone un BOM de
+    # UTF-16 delante de un texto UTF-8, o al reves, no esconde nada. (Solo un UTF-8 con BOM y sin NUL se queda con su propia
+    # lectura: ya es la del archivo entero.)
+    $texts = New-Object System.Collections.Generic.List[string]
+    $hasNul = [System.Array]::IndexOf($Bytes, [byte]0) -ge 0
+    if ($n -ge 3 -and $Bytes[0] -eq 0xEF -and $Bytes[1] -eq 0xBB -and $Bytes[2] -eq 0xBF) {
+        foreach ($t in (Get-TextsWithAnsiFallback $Bytes 3)) { $texts.Add($t) }
+        if (-not $hasNul) { return , $texts.ToArray() }
+    }
     # UTF-32 con BOM (el de little endian, FF FE 00 00, empieza como el de UTF-16: se comprueba ANTES).
-    if ($n -ge 4 -and $Bytes[0] -eq 0xFF -and $Bytes[1] -eq 0xFE -and $Bytes[2] -eq 0 -and $Bytes[3] -eq 0) { return , @((New-Object System.Text.UTF32Encoding($false, $false)).GetString($Bytes, 4, (($n - 4) -band -4))) }
-    if ($n -ge 4 -and $Bytes[0] -eq 0 -and $Bytes[1] -eq 0 -and $Bytes[2] -eq 0xFE -and $Bytes[3] -eq 0xFF) { return , @((New-Object System.Text.UTF32Encoding($true, $false)).GetString($Bytes, 4, (($n - 4) -band -4))) }
-    if ($n -ge 2 -and $Bytes[0] -eq 0xFF -and $Bytes[1] -eq 0xFE) { return , @([System.Text.Encoding]::Unicode.GetString($Bytes, 2, $n - 2)) }
-    if ($n -ge 2 -and $Bytes[0] -eq 0xFE -and $Bytes[1] -eq 0xFF) { return , @([System.Text.Encoding]::BigEndianUnicode.GetString($Bytes, 2, $n - 2)) }
+    if ($n -ge 4 -and $Bytes[0] -eq 0xFF -and $Bytes[1] -eq 0xFE -and $Bytes[2] -eq 0 -and $Bytes[3] -eq 0) { $texts.Add((New-Object System.Text.UTF32Encoding($false, $false)).GetString($Bytes, 4, (($n - 4) -band -4))) }
+    elseif ($n -ge 4 -and $Bytes[0] -eq 0 -and $Bytes[1] -eq 0 -and $Bytes[2] -eq 0xFE -and $Bytes[3] -eq 0xFF) { $texts.Add((New-Object System.Text.UTF32Encoding($true, $false)).GetString($Bytes, 4, (($n - 4) -band -4))) }
+    elseif ($n -ge 2 -and $Bytes[0] -eq 0xFF -and $Bytes[1] -eq 0xFE) { $texts.Add([System.Text.Encoding]::Unicode.GetString($Bytes, 2, $n - 2)) }
+    elseif ($n -ge 2 -and $Bytes[0] -eq 0xFE -and $Bytes[1] -eq 0xFF) { $texts.Add([System.Text.Encoding]::BigEndianUnicode.GetString($Bytes, 2, $n - 2)) }
     # UTF-16 sin BOM o binario: cualquier NUL en TODO el archivo (no solo en los primeros 4 KiB: un texto ASCII largo
     # delante no puede esconder lo que viene despues).
-    if ([System.Array]::IndexOf($Bytes, [byte]0) -lt 0) { return (Get-TextsWithAnsiFallback $Bytes 0) }
+    if (-not $hasNul) {
+        foreach ($t in (Get-TextsWithAnsiFallback $Bytes 0)) { $texts.Add($t) }
+        return , $texts.ToArray()
+    }
     # Con NUL y sin BOM: el archivo entero como UTF-8 (las partes de texto con acentos) MAS las cadenas de texto en Latin-1
     # y en UTF-16 (de ambas alineaciones) del resto, en un segundo texto. De cada decodificacion se sacan DOS clases de
     # cadena de 6 o mas caracteres, y se emiten las dos: (1) solo ASCII imprimible: es la de siempre y no la contamina el
     # vecino de la cadena (un par de bytes cualquiera leido como UTF-16 suele ser una letra CJK, que pegada a la cadena haria
     # fallar un `\b`); (2) ASCII mas letras y digitos de cualquier alfabeto (\p{L}\p{N}): con solo la (1), un valor local con
     # acentos (en Latin-1 o en UTF-16 sin BOM) partiria la cadena y no coincidiria con nada.
-    if ($n -gt 8MB) { $Reject.Value = 'binario de mas de 8 MiB (no se puede revisar)'; return $null }
-    $runClasses = @('[\x20-\x7E]{6,}', '[\x20-\x7E\p{L}\p{N}]{6,}')
+    # Cadenas de 2 o mas caracteres (antes 6): un valor local corto (3 letras) o un fragmento suelto no llegaba a formar cadena.
+    $runClasses = @('[\x20-\x7E]{2,}', '[\x20-\x7E\p{L}\p{N}]{2,}')
     $sb = New-Object System.Text.StringBuilder
     $latin = [System.Text.Encoding]::GetEncoding(28591).GetString($Bytes)
     # Latin-1 es una biyeccion de bytes: quitar los NUL del texto es quitar los bytes NUL. Sus cadenas se emiten tambien (un
@@ -253,7 +279,9 @@ function ConvertTo-ScanTextCore {
             foreach ($m in [regex]::Matches($d, $cls)) { [void]$sb.AppendLine($m.Value) }
         }
     }
-    return , @([System.Text.Encoding]::UTF8.GetString($Bytes), $sb.ToString())
+    $texts.Add([System.Text.Encoding]::UTF8.GetString($Bytes))
+    $texts.Add($sb.ToString())
+    return , $texts.ToArray()
 }
 
 function Test-Rules {
@@ -436,10 +464,24 @@ $script:ImgReadmeRef = $null
 # CERRADA: ninguna captura nueva entra por aqui, se registra en el README.
 $legacyDemoImages = @(
     'df18aa75fd3a2318db99a5324cc9b7824042226997f12802199b5173aaa18cbe',
-    '2fb2810bad36cdfe13b36379c8de5c0a6f13eaac38278f58338ba51b78445aa3'
+    '2fb2810bad36cdfe13b36379c8de5c0a6f13eaac38278f58338ba51b78445aa3',
+    # Capturas de --demo de versiones anteriores, que SI estaban registradas en el README de SU commit (e1d1903, c12434b y
+    # 81f1417) y que el README de hoy ya no lista (se sustituyeron por las nuevas). Desde que en modo -To solo vale el README del
+    # commit `To` (un commit intermedio no puede avalar su propia imagen), la historia ya publicada las necesita aqui. Lista
+    # CERRADA: son los hashes de blobs que ya estan en la historia publica y que pasaron la comprobacion estructural; ninguna
+    # captura nueva entra por aqui.
+    'adf4969582fbb559236a8f910d9eb967e8460f655280a148c2860a45c8711938',
+    'a0609c142a2b8391cada1795b200991e9f854b24a5c9b156aed3fd1d747f43b0',
+    'df8dd2a6d419bbe661a161e0c8b0d9002fde9e84d8f0edcbfbddebf41f02ed3c',
+    '53875e4cd8c00b57935cbf10a614a9a3f49430c663aefbeade01cf72ec10067c',
+    'b3a431728b860853484cb70a339f5398fb11165cb3cb46d0193262e96e7f9c66',
+    '1392d5ff921dba0138300cb4755f2edb8333502ba95dfe3e719f44483e43dac1',
+    '64f7d14a990044197b08095f1eb6e8323be322bf178838c4cd0568e3454406bf',
+    '08db178df8af19d6c64480e6f7e0752f3885e9f92b1b3ce9f688dfdb1c6e7cc0',
+    '4114a563bbbf12aa10d8c57cf1138f0df723efa259feea22a0b40a33796ad067'
 )
 $script:RangeMode = $false
-# Modo -To: ademas del README del propio commit, vale el del commit `To` (una captura de --demo pudo registrarse despues).
+# Modo -To: el README que vale es el del commit `To`.
 $script:ImgReadmeExtraRef = $null
 
 function Get-ImgReadme {
@@ -477,8 +519,10 @@ function Test-ImgRegistered {
     # Hay en docs/img/README.md una linea anclada `- <leaf> | sha256: <hash> | ...--demo...` con el SHA-256 de $Bytes.
     # En modo -To se mira el README del commit de la imagen Y el del commit `To`.
     param([string]$Leaf, [byte[]]$Bytes)
-    $readmes = @(Get-ImgReadme)
-    if ($script:ImgReadmeExtraRef) { $readmes += Get-ImgReadmeAt $script:ImgReadmeExtraRef }
+    # En modo -To, SOLO vale el README del commit `To` (el registro vigente): el README del propio commit de la imagen no cuenta
+    # (una imagen se puede haber registrado y desregistrado despues; y un commit intermedio no puede avalarse a si mismo). En
+    # los demas modos, el del disco o el del indice.
+    if ($script:RangeMode) { $readmes = @(Get-ImgReadmeAt $script:ImgReadmeExtraRef) } else { $readmes = @(Get-ImgReadme) }
     $sha = [System.Security.Cryptography.SHA256]::Create()
     try { $hex = ([System.BitConverter]::ToString($sha.ComputeHash($Bytes))).Replace('-', '').ToLowerInvariant() } finally { $sha.Dispose() }
     if ($script:RangeMode -and (($legacyDemoImages + $LegacyImageSha256) -contains $hex)) { return $true }
@@ -617,7 +661,16 @@ if ($To) {
     foreach ($c in $commits) {
         $short = $c.Substring(0, 10)
         $script:ImgReadmeRef = $c
-        # Mensaje completo (cabecera y cuerpo; sin excepcion de tijera ni de lineas con `#`).
+        # Autor y committer (nombre y correo de cada uno), cada campo por separado y con su etiqueta, y el mensaje completo (cabecera
+        # y cuerpo; sin excepcion de tijera ni de lineas con `#`) con sus propios numeros de linea.
+        $people = [System.Text.Encoding]::UTF8.GetString((Invoke-GitBytes "log -1 --format=%an%x00%ae%x00%cn%x00%ce $c" $repoRoot)).TrimEnd("`n").Split([char]0)
+        $personLabels = @('autor (nombre)', 'autor (correo)', 'committer (nombre)', 'committer (correo)')
+        for ($k = 0; $k -lt $personLabels.Count; $k++) {
+            $field = if ($k -lt $people.Count) { $people[$k] } else { '' }
+            $rejectP = $null
+            $personText = ConvertTo-ScanText ([System.Text.Encoding]::UTF8.GetBytes($field)) ([ref]$rejectP)
+            foreach ($hit in (Test-Rules $personText $rules)) { $problems.Add("commit ${short}: $($personLabels[$k]): $($hit[0])") }
+        }
         $reject = $null
         $msgText = ConvertTo-ScanText (Invoke-GitBytes "log -1 --format=%B $c" $repoRoot) ([ref]$reject)
         foreach ($hit in (Test-Rules $msgText $rules)) { $problems.Add("commit ${short}: mensaje:$($hit[1]): $($hit[0])") }

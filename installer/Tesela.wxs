@@ -62,6 +62,12 @@
       huerfanos. No hace falta ninguna accion personalizada. (La busqueda tiene prioridad sobre el valor de la linea de
       comandos: una actualizacion o reparacion se queda donde estaba instalada.)
     -->
+    <!-- SIN Secure="yes" a proposito: no hay interfaz (la fase de interfaz no tiene nada que pasar al servidor) y el paquete es por
+         usuario y sin elevar, donde todas las propiedades publicas llegan a la ejecucion. Marcarla segura solo importaria con
+         una instalacion elevada (AlwaysInstallElevated) o administrada, y entonces dejaria que el valor que escribe el
+         usuario (linea de comandos o HKCU\Software\Tesela\InstallFolder) dirigiera donde escribe el servidor elevado. Sin
+         Secure, ese servidor ignora el valor del cliente y vuelve a hacer la busqueda de registro por su cuenta (AppSearch va
+         tambien en InstallExecuteSequence). msi-validate.ps1 exige que NO este en SecureCustomProperties. -->
     <Property Id="INSTALLFOLDER">
       <RegistrySearch Id="InstallFolderSearch" Root="HKCU" Key="Software\Tesela" Name="InstallFolder" Type="raw" />
     </Property>
@@ -106,9 +112,13 @@
       </Component>
     </ComponentGroup>
 
-    <!-- Acceso directo del menu Inicio del usuario (directamente en Programas, sin carpeta propia). -->
+    <!-- Acceso directo del menu Inicio del usuario (directamente en Programas, sin carpeta propia). GUID FIJO como el de los
+         demas componentes (no cambiarlo: Windows Installer identifica el componente por el entre versiones). MajorUpgrade
+         desinstala la version anterior ENTERA (RemoveExistingProducts, entre InstallValidate e InstallInitialize) antes de
+         instalar la nueva, asi que pasar del GUID que WiX derivaba antes a este no deja ni el acceso directo ni su valor de
+         registro huerfanos. -->
     <ComponentGroup Id="StartMenu" Directory="ProgramMenuFolder">
-      <Component Id="StartMenuShortcut">
+      <Component Id="StartMenuShortcut" Guid="089416B7-8B88-4F2D-9636-96931BE9FCC0">
         <Shortcut
           Id="StartMenuShortcut"
           Name="Tesela"

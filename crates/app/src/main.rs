@@ -58,9 +58,8 @@ fn main() -> eframe::Result {
 
     // La demostración ("nada se lee de tu disco") y las herramientas de medición NO leen ni guardan la configuración: valores por
     // defecto en memoria, nada bajo %APPDATA%.
-    let tool_mode =
-        cli.bench_hover.is_some() || cli.screenshot.is_some() || cli.idle_memory.is_some();
-    let isolated = cli.demo || tool_mode;
+    let tool_mode = cli.tool_mode();
+    let isolated = cli.isolated();
     let session = config::Session::new(isolated);
     let persist = session.persists();
     let config::Session {
@@ -130,6 +129,8 @@ fn main() -> eframe::Result {
         start,
         dry_run: cli.dry_run,
         backend: None,
+        // Demostración y herramientas de medición: nada se lee del disco del usuario (ni historial ni raíces de limpieza).
+        isolated,
     };
     let scan = cli.scan.clone();
     let wait_explore = scan.is_some();

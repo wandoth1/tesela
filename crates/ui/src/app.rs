@@ -130,6 +130,10 @@ pub struct Options {
     pub dry_run: bool,
     /// Sustituye al respaldo por defecto (las pruebas inyectan el suyo).
     pub backend: Option<BackendRef>,
+    /// Sesión AISLADA (las herramientas de medición `--idle-memory` y `--bench-hover`, con o sin `--demo`): no se lee
+    /// nada del disco del usuario. Sin historial de limpiezas y con un respaldo INERTE (sin raíces de limpieza ni carpeta
+    /// de datos: ni `SHGetKnownFolderPath` para las raíces, ni `%LOCALAPPDATA%\Tesela\history.jsonl`).
+    pub isolated: bool,
 }
 
 impl Default for Options {
@@ -141,6 +145,7 @@ impl Default for Options {
             start: StartScreen::Home,
             dry_run: false,
             backend: None,
+            isolated: false,
         }
     }
 }
@@ -208,6 +213,8 @@ pub struct TeselaUi {
     animate: bool,
     backend: Arc<dyn Backend>,
     dry_run: bool,
+    /// Sesión aislada: ni historial ni respaldo real (ver [`Options::isolated`]).
+    isolated: bool,
     history: Vec<tesela_cleaner::HistoryEntry>,
     drives: Vec<DriveInfo>,
     drives_rx: Option<Receiver<Vec<DriveInfo>>>,
@@ -240,8 +247,9 @@ impl TeselaUi {
                 .backend
                 .clone()
                 .map(|b| b.0)
-                .unwrap_or_else(|| default_backend(opts.demo.is_some())),
-            dry_run: opts.dry_run,
+                .unwrap_or_else(|| default_backend(opts.demo.is_some(), opts.isolated)),
+            dry_run: effective_dry_run(opts.dry_run, opts.isolated, opts.demo.is_some()),
+            isolated: opts.isolated,
             history: Vec::new(),
             drives: Vec::new(),
             drives_rx: None,
@@ -311,10 +319,7 @@ impl TeselaUi {
 
     /// Vuelve a leer el historial de limpiezas (la demostración no lo tiene: nunca escribe nada).
     fn reload_history(&mut self) {
-        self.history = match (self.demo.is_some(), self.backend.data_dir()) {
-            (false, Some(dir)) => tesela_cleaner::log::history_load(&dir),
-            _ => Vec::new(),
-        };
+        self.history = load_history(self.demo.is_some(), self.isolated, self.backend.data_dir());
     }
 
     fn demo_request(&self) -> ScanRequest {
@@ -527,7 +532,8 @@ impl TeselaUi {
                 }
                 Action::ShowAbout => self.about.open = true,
                 Action::ClearHistory => {
-                    if let Some(dir) = self.backend.data_dir() {
+                    // Una sesión aislada no toca nada del disco del usuario.
+                    if let Some(dir) = self.backend.data_dir().filter(|_| !self.isolated) {
                         let _ = tesela_cleaner::log::history_clear(&dir);
                     }
                     self.history.clear();
@@ -636,11 +642,40 @@ impl TeselaUi {
     }
 }
 
-/// El respaldo por defecto: el `cleaner` real (raíces de `SHGetKnownFolderPath`), o el simulado en la demostración.
-fn default_backend(demo: bool) -> Arc<dyn Backend> {
+/// ¿Modo simulación efectivo? Una sesión aislada que NO es la demostración (las herramientas de medición sin `--demo`) es siempre
+/// una simulación: su respaldo inerte tiene la protección vacía y solo no borra nada porque no tiene carpeta de datos (sin
+/// registro, la limpieza no se ejecuta); la simulación lo garantiza por sí misma (defensa en profundidad). La demostración
+/// NO cambia (su respaldo simulado bifurca por `dry_run` y los resúmenes y las capturas del README dependen de ello).
+fn effective_dry_run(dry_run: bool, isolated: bool, demo: bool) -> bool {
+    dry_run || (isolated && !demo)
+}
+
+/// El historial de limpiezas que se enseña: el de la carpeta de datos del respaldo, salvo en la demostración y en una
+/// sesión aislada, que no leen nada del disco (la demostración nunca tiene carpeta de datos; el aislamiento lo garantiza
+/// aunque el respaldo la tenga).
+fn load_history(
+    demo: bool,
+    isolated: bool,
+    data_dir: Option<PathBuf>,
+) -> Vec<tesela_cleaner::HistoryEntry> {
+    match data_dir {
+        Some(dir) if !demo && !isolated => tesela_cleaner::log::history_load(&dir),
+        _ => Vec::new(),
+    }
+}
+
+/// El respaldo por defecto: el `cleaner` real (raíces de `SHGetKnownFolderPath`), el simulado en la demostración, o uno
+/// INERTE en una sesión aislada (`Roots::default()`: sin raíces de limpieza, sin descargas y sin carpeta de datos, así que
+/// no consulta las carpetas conocidas ni lee ni escribe el historial).
+fn default_backend(demo: bool, isolated: bool) -> Arc<dyn Backend> {
     if demo {
         return Arc::new(crate::demo_backend::DemoBackend::new(
             std::time::Duration::from_millis(1600),
+        ));
+    }
+    if isolated {
+        return Arc::new(tesela_cleaner::Cleaner::new(
+            tesela_cleaner::Roots::default(),
         ));
     }
     let exe_dir = std::env::current_exe()
@@ -657,4 +692,71 @@ pub(crate) fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testdir::TestDir;
+
+    fn entry() -> tesela_cleaner::HistoryEntry {
+        tesela_cleaner::HistoryEntry {
+            unix: 1,
+            drive: b'C',
+            used: 2,
+            freed_now: 3,
+            to_bin: 4,
+        }
+    }
+
+    #[test]
+    fn una_sesion_aislada_no_lee_el_historial_aunque_haya_carpeta_de_datos() {
+        let t = TestDir::new();
+        tesela_cleaner::log::history_append(t.path(), &entry()).unwrap();
+        // Normal: se lee.
+        assert_eq!(
+            load_history(false, false, Some(t.path().to_path_buf())).len(),
+            1
+        );
+        // GM-M4: aislada (`--idle-memory`/`--bench-hover` sin `--demo`) o demostración: nada.
+        assert!(load_history(false, true, Some(t.path().to_path_buf())).is_empty());
+        assert!(load_history(true, false, Some(t.path().to_path_buf())).is_empty());
+        assert!(load_history(true, true, Some(t.path().to_path_buf())).is_empty());
+        // Sin carpeta de datos tampoco hay historial.
+        assert!(load_history(false, false, None).is_empty());
+    }
+
+    #[test]
+    fn el_respaldo_de_una_sesion_aislada_es_inerte() {
+        // GM-M4: sin raíces de limpieza, sin descargas, sin carpeta de datos (ni historial ni registros) y sin `from_system`.
+        let b = default_backend(false, true);
+        assert!(!b.is_demo());
+        assert_eq!(b.data_dir(), None);
+        assert_eq!(b.downloads_dir(), None);
+        for id in tesela_cleaner::CategoryId::ALL {
+            assert!(b.category_roots(id).is_empty(), "{id:?}");
+            assert!(b.unavailable_roots(id).is_empty(), "{id:?}");
+        }
+        // La demostración sigue siendo la simulada, y por defecto el respaldo real tiene su carpeta de datos.
+        assert!(default_backend(true, true).is_demo());
+        assert!(default_backend(true, false).is_demo());
+    }
+
+    #[test]
+    fn la_sesion_aislada_sin_demo_es_siempre_una_simulacion_y_la_demo_no_cambia() {
+        // R-S1: herramientas de medición sin `--demo` (aisladas, sin demostración): simulación forzada.
+        assert!(effective_dry_run(false, true, false));
+        assert!(effective_dry_run(true, true, false));
+        // La demostración (aislada, con demo) y el uso normal respetan `--dry-run` tal cual.
+        assert!(!effective_dry_run(false, true, true));
+        assert!(effective_dry_run(true, true, true));
+        assert!(!effective_dry_run(false, false, false));
+        assert!(effective_dry_run(true, false, false));
+        assert!(!effective_dry_run(false, false, true));
+    }
+
+    #[test]
+    fn por_defecto_la_sesion_no_es_aislada() {
+        assert!(!Options::default().isolated);
+    }
 }

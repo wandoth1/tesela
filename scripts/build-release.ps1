@@ -62,15 +62,18 @@ $sysroot = (& rustc --print sysroot).Trim()
 $rustupHome = $env:RUSTUP_HOME
 if (-not $rustupHome) { $rustupHome = Join-Path $env:USERPROFILE '.rustup' }
 
+# rustc aplica los remaps DE EL ULTIMO AL PRIMERO (gana el ultimo que coincide): el mas especifico va despues. El sysroot cuelga
+# de RUSTUP_HOME, asi que `/rust-toolchain` va DESPUES de `/rustup` (si no, todo el sysroot saldria como `/rustup/toolchains/...`).
 $remaps = @(
     @($repo, '/tesela'),
     @($cargoHome, '/cargo'),
-    @($sysroot, '/rust-toolchain'),
-    @($rustupHome, '/rustup')
+    @($rustupHome, '/rustup'),
+    @($sysroot, '/rust-toolchain')
 )
 $flags = New-Object System.Collections.Generic.List[string]
 foreach ($r in $remaps) {
-    foreach ($form in @($r[0], $r[0].Replace('\', '/'))) {
+    # La ruta tal cual, con `/` y con `\` (la que da git, la de cargo y la de Windows no tienen por que coincidir).
+    foreach ($form in @($r[0], $r[0].Replace('\', '/'), $r[0].Replace('/', '\')) | Select-Object -Unique) {
         if ($form) { $flags.Add("--remap-path-prefix=$form=$($r[1])") }
     }
 }

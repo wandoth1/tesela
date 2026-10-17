@@ -133,6 +133,20 @@ class ExtractIcoTests(unittest.TestCase):
             with self.assertRaises(extract_ico.PeError, msg=f"corte en {cut}"):
                 extract_ico.extract(pe[:cut])
 
+    def test_un_rva_en_el_relleno_virtual_de_la_seccion_no_se_lee_del_archivo(self):
+        # GM-m10: la seccion ocupa mas en memoria (vsize) que en el archivo (rsize): un RVA en esa cola no tiene bytes en el
+        # archivo y no puede traducirse a un desplazamiento (leeria lo que venga detras).
+        a = b"x" * 8
+        pe = bytearray(make_pe({3: {1: a}, 14: {1: group_icon([(16, 16, 1, a)])}}))
+        sec_hdr = 0x40 + 4 + 20 + (112 + 16 * 8)  # cabecera de la unica seccion (PE32+)
+        rsize = struct.unpack_from("<I", pe, sec_hdr + 16)[0]
+        struct.pack_into("<I", pe, sec_hdr + 8, rsize + 0x1000)  # vsize mayor que rsize
+        pe += b"\0" * 0x1000  # y bytes tras la seccion, para que un desplazamiento sin comprobar caiga DENTRO del archivo
+        dd = 0x40 + 4 + 20 + 112
+        struct.pack_into("<I", pe, dd + 8 * 2, SECTION_RVA + rsize + 0x10)  # el directorio de recursos, en la cola virtual
+        with self.assertRaisesRegex(extract_ico.PeError, "datos de la seccion"):
+            extract_ico.extract(bytes(pe))
+
     def test_no_es_un_pe(self):
         with self.assertRaises(extract_ico.PeError):
             extract_ico.extract(b"nada" * 40)

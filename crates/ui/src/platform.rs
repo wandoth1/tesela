@@ -12,7 +12,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW,
 };
 use windows_sys::Win32::System::Com::{
-    COINIT_APARTMENTTHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize,
+    COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoTaskMemFree, CoUninitialize,
 };
 use windows_sys::Win32::System::Diagnostics::Debug::{SEM_FAILCRITICALERRORS, SetThreadErrorMode};
 use windows_sys::Win32::UI::Shell::Common::ITEMIDLIST;
@@ -280,6 +280,11 @@ pub fn show_properties_async(path: PathBuf) -> std::thread::JoinHandle<bool> {
     })
 }
 
+/// Indicadores de `ShellExecuteExW` para abrir la Papelera: sin interfaz de error (`NO_UI`) y SÍNCRONO (`NOASYNC`): con COM
+/// inicializado en el hilo, la shell termina la petición antes de que el hilo acabe (sin él, un hilo que termina puede
+/// dejar la petición a medias).
+const RECYCLE_BIN_MASK: u32 = SEE_MASK_FLAG_NO_UI | SEE_MASK_NOASYNC;
+
 /// Verbo y destino de la petición a la shell (UTF-16 con NUL final). La llamada en sí abre una ventana del Explorador y
 /// no se puede ejecutar en las pruebas: esta parte, que decide QUÉ se pide, sí se prueba.
 fn recycle_bin_request() -> (Vec<u16>, Vec<u16>) {
@@ -291,16 +296,28 @@ fn recycle_bin_request() -> (Vec<u16>, Vec<u16>) {
 pub fn open_recycle_bin() {
     std::thread::spawn(|| {
         let (verb, file) = recycle_bin_request();
+        // `COINIT_DISABLE_OLE1DDE`: la combinación que recomienda la documentación de `ShellExecuteExW` (sin el soporte de DDE de OLE1).
+        // SAFETY: `CoInitializeEx` no recibe punteros (nulo = reservado) y se empareja con `CoUninitialize` solo si tuvo éxito.
+        let hr = unsafe {
+            CoInitializeEx(
+                std::ptr::null(),
+                (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as u32,
+            )
+        };
         // SAFETY: `SHELLEXECUTEINFOW` es una estructura de enteros y punteros para la que todo cero es un valor válido
         // (punteros nulos); se rellenan a continuación los campos que usa esta llamada.
         let mut info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
         info.cbSize = size_of::<SHELLEXECUTEINFOW>() as u32;
-        info.fMask = SEE_MASK_FLAG_NO_UI;
+        info.fMask = RECYCLE_BIN_MASK;
         info.lpVerb = verb.as_ptr();
         info.lpFile = file.as_ptr();
         info.nShow = SW_SHOW;
         // SAFETY: `info` está completa y sus cadenas (`verb`, `file`, terminadas en NUL) viven durante la llamada.
         unsafe { ShellExecuteExW(&mut info) };
+        if hr >= 0 {
+            // SAFETY: la llamada anterior inicializó COM en ESTE hilo.
+            unsafe { CoUninitialize() };
+        }
     });
 }
 
@@ -596,6 +613,17 @@ mod tests {
     use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle, RawWindowHandle};
     use std::os::windows::ffi::OsStringExt;
     use windows_sys::Win32::UI::WindowsAndMessaging::GetDesktopWindow;
+
+    #[test]
+    fn abrir_la_papelera_pide_sincrono_y_sin_interfaz_de_error() {
+        // GM-m7: la petición lleva SEE_MASK_NOASYNC (con CoInitializeEx/CoUninitialize en el hilo) y NO_UI.
+        assert_eq!(RECYCLE_BIN_MASK & SEE_MASK_NOASYNC, SEE_MASK_NOASYNC);
+        assert_eq!(RECYCLE_BIN_MASK & SEE_MASK_FLAG_NO_UI, SEE_MASK_FLAG_NO_UI);
+        let src = include_str!("platform.rs");
+        let body = &src[src.find("pub fn open_recycle_bin").unwrap()..];
+        let body = &body[..body.find("\n}\n").unwrap()];
+        assert!(body.contains("CoInitializeEx") && body.contains("CoUninitialize"));
+    }
 
     #[test]
     fn la_ventana_padre_entrega_su_hwnd_al_selector_de_carpeta() {

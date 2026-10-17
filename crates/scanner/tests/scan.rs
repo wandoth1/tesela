@@ -726,6 +726,36 @@ fn una_ruta_prioritaria_que_es_un_junction_roto_se_descarta_sin_errores() {
 }
 
 #[test]
+fn una_ruta_prioritaria_que_pasa_por_un_junction_en_un_ancestro_se_descarta() {
+    // GM-M1: `enlace\sub` es `real\sub` pasando por un junction. Antes se canonizaba hacia el destino y se aceptaba como
+    // prioritaria (el recorrido general NO sigue ese junction); ahora se valida desde la raíz y se descarta. La ruta
+    // equivalente sin enlace sí cuenta, y el escaneo no da errores.
+    let mut t = TempTree::new();
+    t.write("real/sub/f.bin", 10_000);
+    t.write("real/otra/g.bin", 10_000);
+    t.junction("enlace", "real");
+    settle(&t);
+    let mut o = opts(&t);
+    o.priority_paths = Some(vec![t.path("enlace/sub"), t.path("real/otra")]);
+    let r = scan(o).unwrap();
+    r.tree.check_invariants().unwrap();
+    assert!(
+        r.summary.errors_by_code.is_empty(),
+        "{:?}",
+        r.summary.errors_by_code
+    );
+    let paths: Vec<_> = r
+        .summary
+        .priority
+        .iter()
+        .map(|p| dunce::simplified(&p.path).to_path_buf())
+        .collect();
+    assert_eq!(paths, vec![t.long_root().join("real").join("otra")]);
+    assert!(r.summary.priority.iter().all(|p| p.done));
+    assert_eq!(r.tree.stats().reparse_dirs, 1);
+}
+
+#[test]
 fn una_raiz_junction_se_rechaza_escrita_de_cualquier_forma() {
     // Barra final, mayúsculas, barras `/`, prefijo `\\?\`, `\.` final y el nombre corto 8.3 del propio enlace: el último
     // componente es SIEMPRE el enlace y se rechaza, nunca se resuelve a su destino. (Solo carpetas propias de `%TEMP%`.)

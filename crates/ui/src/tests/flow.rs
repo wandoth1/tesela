@@ -528,3 +528,113 @@ fn cerrar_la_ventana_durante_la_ejecucion_desde_el_escaneo_tambien_se_bloquea() 
             >= 1
     );
 }
+
+/// UX-2: el botón "Inicio" de la barra superior (a la izquierda de "Subir un nivel") vuelve a la pantalla de elegir disco.
+#[test]
+fn el_boton_inicio_vuelve_a_la_pantalla_de_inicio() {
+    for en in [false, true] {
+        let mut o = opts(user_folder());
+        if en {
+            o.settings.language = LangPref::En;
+        }
+        let mut h = harness(o);
+        let (home, up) = if en {
+            ("Home", "Up one level")
+        } else {
+            ("Inicio", "Subir un nivel")
+        };
+        assert_eq!(h.state().ui().screen_name(), "explore");
+        // A la izquierda de "Subir un nivel" y sin pisarlo.
+        let (rh, ru) = (h.get_by_label(home).rect(), h.get_by_label(up).rect());
+        assert!(rh.right() <= ru.left(), "{rh:?} {ru:?}");
+        assert!((rh.center().y - ru.center().y).abs() < 1.0);
+        h.get_by_label(home).click();
+        h.run_steps(4);
+        assert_eq!(h.state().ui().screen_name(), "home", "en: {en}");
+        h.get_by_label(if en {
+            "Which drive do you want to check?"
+        } else {
+            "¿Qué disco quieres revisar?"
+        });
+    }
+}
+
+/// UX-2: Alt+Inicio hace lo mismo; Inicio a secas sigue siendo la navegación de la lista (no sale de la exploración).
+#[test]
+fn alt_inicio_vuelve_a_la_pantalla_de_inicio_e_inicio_a_secas_no() {
+    let mut h = harness(opts(user_folder()));
+    h.key_press(Key::Home);
+    h.run_steps(4);
+    assert_eq!(h.state().ui().screen_name(), "explore");
+    h.key_press_modifiers(Modifiers::ALT, Key::Home);
+    h.run_steps(4);
+    assert_eq!(h.state().ui().screen_name(), "home");
+}
+
+/// UX-2: con la ventana mínima (960 x 600) el botón nuevo no se solapa con nada de la barra superior.
+#[test]
+fn con_la_ventana_minima_el_boton_inicio_no_se_solapa_en_la_barra_superior() {
+    for en in [false, true] {
+        let mut o = opts(user_folder());
+        if en {
+            o.settings.language = LangPref::En;
+        }
+        let h = harness_sized(o, vec2(960.0, 600.0));
+        let (home, up) = if en {
+            ("Home", "Up one level")
+        } else {
+            ("Inicio", "Subir un nivel")
+        };
+        let mut rects = vec![
+            (home.to_string(), h.get_by_label(home).rect()),
+            (up.to_string(), h.get_by_label(up).rect()),
+        ];
+        for t in ["Buscar", "Ir a "] {
+            if let Some(n) = h
+                .query_all_by_label_contains(t)
+                .find(|n| n.rect().height() > 1.0)
+            {
+                rects.push((t.to_string(), n.rect()));
+            }
+        }
+        for (i, (a, ra)) in rects.iter().enumerate() {
+            assert!(
+                ra.left() >= -0.5 && ra.right() <= 960.5,
+                "{a} fuera: {ra:?}"
+            );
+            for (b, rb) in &rects[i + 1..] {
+                assert!(
+                    !ra.intersects(*rb),
+                    "en: {en}: `{a}` y `{b}` se solapan: {ra:?} {rb:?}"
+                );
+            }
+        }
+    }
+}
+
+/// UX-2: con una limpieza en curso, "Inicio" está deshabilitado y Alt+Inicio no hace nada (como el cierre de la ventana).
+#[test]
+fn con_una_limpieza_en_curso_inicio_esta_deshabilitado() {
+    let be = std::sync::Arc::new(crate::demo_backend::DemoBackend::new(
+        std::time::Duration::from_millis(1500),
+    ));
+    let mut o = clean_opts(CleanStart::Recommendations);
+    o.backend = Some(crate::app::BackendRef(be));
+    let mut h = harness(o);
+    h.run_steps(3);
+    // Sin limpiar: habilitado.
+    assert!(!h.get_by_label("Inicio").accesskit_node().is_disabled());
+    h.get_by_label_contains("Limpiar lo seguro").click();
+    assert!(wait_contains(&mut h, "Revisa antes de limpiar"));
+    h.get_by_label_contains("Liberar ").click();
+    assert!(wait_contains(&mut h, "Limpiando"));
+    assert!(explore(&h).flow.is_running());
+    assert!(h.get_by_label("Inicio").accesskit_node().is_disabled());
+    h.key_press_modifiers(Modifiers::ALT, Key::Home);
+    h.run_steps(3);
+    assert!(
+        explore(&h).flow.is_running(),
+        "Alt+Inicio no debe salir durante la limpieza"
+    );
+    assert_eq!(h.state().ui().screen_name(), "explore");
+}

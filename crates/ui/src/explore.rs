@@ -353,6 +353,11 @@ impl Explore {
 
     // --- Navegación ---------------------------------------------------------------------------------------------
 
+    /// ¿Se puede volver a la pantalla de inicio? No mientras se ejecuta una limpieza (como el cierre de la ventana).
+    pub(crate) fn can_go_home(&self) -> bool {
+        !self.flow.is_running()
+    }
+
     /// ¿Se puede subir un nivel?
     pub fn can_up(&self) -> bool {
         self.root.is_group() || self.root.node != 0
@@ -696,6 +701,11 @@ impl Explore {
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F5)) {
             env.actions.push(Action::Rescan);
         }
+        // Alt+Inicio: a la pantalla de inicio (no choca con Inicio a secas, que va a la primera fila de la lista: aquí el
+        // atajo exige Alt). Con una limpieza en curso no hace nada, igual que el botón.
+        if ctx.input_mut(|i| i.consume_key(Modifiers::ALT, Key::Home)) && self.can_go_home() {
+            env.actions.push(Action::GoHome);
+        }
         if self.search_focused {
             return;
         }
@@ -730,6 +740,12 @@ impl Explore {
     fn toolbar(&mut self, ui: &mut Ui, env: &mut Env) {
         let pal = env.pal;
         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+            // Inicio: la pantalla "¿Qué disco quieres revisar?" (con "Analizar una carpeta…"). A la izquierda de "Subir".
+            let home_label = env.tr.t("go-home");
+            if widgets::icon_button(ui, env, Icon::Home, &home_label, self.can_go_home()).clicked()
+            {
+                env.actions.push(Action::GoHome);
+            }
             let up_label = env.tr.t("up-level");
             if widgets::icon_button(ui, env, Icon::ArrowUp, &up_label, self.can_up()).clicked() {
                 self.up();
@@ -875,6 +891,9 @@ impl Explore {
             let selected = Some(d.letter) == cur;
             let title = drive_title(env, d);
             let used = d.used_percent();
+            // Hueco para el fondo de "al pasar el puntero": se rellena cuando se sabe si la fila está bajo el puntero (la
+            // respuesta se calcula DESPUÉS de dibujar el contenido) y queda por debajo de él.
+            let hover_bg = ui.painter().add(egui::Shape::Noop);
             let resp = egui::Frame::new()
                 .fill(if selected {
                     pal.accent_soft
@@ -912,15 +931,35 @@ impl Explore {
             resp.widget_info(|| {
                 egui::WidgetInfo::selected(
                     egui::WidgetType::Button,
-                    true,
+                    // La unidad actual no es pulsable: el lector de pantalla no la anuncia como botón habilitado.
+                    drive_row_is_interactive(selected),
                     selected,
                     env.tr.ta("analyze-drive", args!["name" => title.clone()]),
                 )
             });
+            // Solo las unidades que NO son la actual se pueden pulsar: se iluminan al pasar el puntero (como los elementos de
+            // la barra lateral), cambian el cursor y explican qué hacen. La actual no tiene estado de "pasar el puntero".
+            let resp = if drive_row_is_interactive(selected) {
+                if resp.hovered() {
+                    ui.painter().set(
+                        hover_bg,
+                        egui::epaint::RectShape::filled(
+                            resp.rect,
+                            CornerRadius::same(8),
+                            pal.accent_soft,
+                        ),
+                    );
+                    ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+                }
+                resp.on_hover_text(env.tr.ta("analyze-drive", args!["name" => title.clone()]))
+            } else {
+                resp
+            };
             if resp.has_focus() {
                 widgets::focus_ring(ui.painter(), &pal, resp.rect, 8);
             }
-            if resp.clicked() && !selected {
+            // `clicked` también se activa con Intro y Espacio cuando la fila tiene el foco.
+            if resp.clicked() && drive_row_is_interactive(selected) {
                 env.actions.push(Action::StartScan(ScanRequest {
                     root: d.root(),
                     label: title.clone(),
@@ -1166,6 +1205,11 @@ fn legend_cell(
     if let Some(t) = tip {
         r.response.on_hover_text(t);
     }
+}
+
+/// ¿Se puede pulsar la fila de esta unidad en la barra lateral? Solo si NO es la unidad que ya se está explorando.
+pub(crate) fn drive_row_is_interactive(selected: bool) -> bool {
+    !selected
 }
 
 /// Elemento de la barra lateral. Devuelve `true` si se pulsó (y está habilitado).

@@ -5,6 +5,8 @@
 //! predeterminado, que mira la carpeta del `.exe` ANTES que `System32`: un `dxgi.dll` vacío al lado hace que el proceso ni
 //! arranque (código de salida distinto de 0 antes de llegar a `main`). Con la bandera arranca y sale con 0.
 
+mod common;
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -33,6 +35,9 @@ impl Drop for Tmp {
 
 #[test]
 fn archivos_con_nombre_de_dll_junto_al_exe_no_impiden_arrancar() {
+    if !common::process_tests_enabled() {
+        return;
+    }
     let dir = std::env::temp_dir().join(format!("tesela-test-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&dir).unwrap();
     let tmp = Tmp(dir);
@@ -82,11 +87,19 @@ fn paints(exe: &std::path::Path) -> bool {
 /// no hay nada que comparar y la prueba se omite.
 #[test]
 fn con_dll_falsas_junto_al_exe_la_ventana_abre_y_pinta() {
+    if !common::process_tests_enabled() {
+        return;
+    }
     let control = Tmp(std::env::temp_dir().join(format!("tesela-test-{}", uuid::Uuid::new_v4())));
     std::fs::create_dir(&control.0).unwrap();
     let control_exe = control.0.join("tesela-control.exe");
     std::fs::copy(env!("CARGO_BIN_EXE_tesela"), &control_exe).unwrap();
     if !paints(&control_exe) {
+        // En CI no se omite: sin esto, un runner sin escritorio gráfico dejaría la prueba en verde sin comprobar nada.
+        assert!(
+            std::env::var_os("CI").is_none(),
+            "en CI el control (sin archivos falsos) tiene que abrir y pintar la ventana: la prueba no puede omitirse"
+        );
         eprintln!("sin ventana que pinte en este entorno (el control tampoco): se omite");
         return;
     }

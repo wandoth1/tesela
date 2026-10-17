@@ -22,6 +22,9 @@ pub(crate) const NO_PRIO: u16 = u16::MAX;
 /// 124 = nivel inválido).
 const UNSUPPORTED_CODES: [u32; 4] = [87, 1, 50, 124];
 
+/// `ERROR_ARITHMETIC_OVERFLOW`: el contador de ids provisionales se agotó.
+const ERROR_ARITHMETIC_OVERFLOW: u32 = 534;
+
 /// Un directorio por procesar.
 pub(crate) struct Task {
     /// Ruta con prefijo `\\?\` y sin NUL final.
@@ -295,6 +298,11 @@ pub(crate) fn process_dir(
     }
     let n = st.entries.len();
     let base = sh.reserve_ids(n as u32);
+    if sh.id_overflow.load(Ordering::SeqCst) {
+        // Los ids provisionales se agotaron (el escaneo ya está cancelado y se marcará como tal): este directorio no
+        // entrega lote, porque sus ids habrían dado la vuelta y chocarían con los de otros nodos.
+        return Err(ERROR_ARITHMETIC_OVERFLOW);
+    }
     let mut batch = Batch::listing_with_capacity(task.id, base, n, st.names.len());
     let mut stats = DirStats::default();
     let adopt = sh.adopt.get().filter(|m| !m.is_empty());
@@ -670,6 +678,40 @@ mod tests {
         sh.reserve_ids(10);
         assert!(sh.id_overflow.load(Ordering::SeqCst));
         assert!(sh.cancel.load(Ordering::SeqCst));
+    }
+
+    /// GM-m3: con los ids agotados `process_dir` no entrega ningún lote (sus ids darían la vuelta y chocarían con otros).
+    #[test]
+    fn con_los_ids_agotados_no_se_entrega_ningun_lote() {
+        let dir = std::env::temp_dir().join(format!("tesela-test-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join("a.txt"), b"x").unwrap();
+        std::fs::write(dir.join("b.txt"), b"y").unwrap();
+        let sh = shared();
+        let (tx, rx) = crossbeam_channel::unbounded::<Batch>();
+        let task = Task {
+            path: sys::wide(&dir),
+            id: 0,
+            tag: 0,
+            prio: NO_PRIO,
+            claim: false,
+            cloud: false,
+        };
+        let mut st = WorkerState::new();
+        // Con ids de sobra entrega su lote.
+        assert!(process_dir(&sh, &tx, &task, true, &mut st).is_ok());
+        assert!(rx.try_recv().is_ok());
+        // Con el contador al borde: error, bandera de agotamiento, cancelación y ni un lote.
+        sh.ids.store(u32::MAX - 1, Ordering::SeqCst);
+        let mut st = WorkerState::new();
+        assert_eq!(
+            process_dir(&sh, &tx, &task, true, &mut st).err(),
+            Some(ERROR_ARITHMETIC_OVERFLOW)
+        );
+        assert!(sh.id_overflow.load(Ordering::SeqCst) && sh.cancel.load(Ordering::SeqCst));
+        assert!(rx.try_recv().is_err(), "no se entrega ningún lote");
+        assert!(st.children.is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -122,10 +122,16 @@ jobs:
         run: cargo test -p tesela-app --features capture --locked --test screenshot
         env:
           RUSTFLAGS: -D warnings -C target-feature=+crt-static
+          # Esta prueba lanza tesela.exe como proceso hijo: solo corre con TESELA_PROCESS_TESTS=1 (ver el README).
+          TESELA_PROCESS_TESTS: "1"
       - name: Tests
         run: cargo test --workspace --locked
         env:
           RUSTFLAGS: -D warnings -C target-feature=+crt-static
+          # Las pruebas que lanzan procesos hijo (copias de tesela.exe y tesela-scan.exe, archivos con nombre de DLL junto a
+          # ellos, ventanas) solo corren con esta variable: un antivirus de escritorio puede bloquear ese patrón. Aquí, en un
+          # runner efímero, SIEMPRE se ejecutan (README, Desarrollo).
+          TESELA_PROCESS_TESTS: "1"
       # Release sin rutas de la máquina en los binarios (y comprobación de que no las llevan), con el runtime de C
       # enlazado de forma estática (.cargo/config.toml): el script exige tesela.exe y tesela-scan.exe y falla si algún
       # .exe importa VCRUNTIME*, MSVCP* o api-ms-win-crt-*.
@@ -176,8 +182,9 @@ jobs:
       - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
           tool: cargo-deny@0.20.2
+      # `--locked`: se comprueba EXACTAMENTE lo que fija Cargo.lock (sin resolver de nuevo las dependencias).
       - name: cargo deny
-        run: cargo deny check
+        run: cargo deny --locked check
 
   # La versión mínima de Rust (la que fija egui) tiene que seguir compilando.
   msrv:

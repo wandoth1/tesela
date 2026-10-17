@@ -21,6 +21,7 @@ mod dll_hardening;
 mod memory;
 
 use serde_json::json;
+use std::ffi::OsString;
 use std::fs::OpenOptions;
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
@@ -37,6 +38,7 @@ enum JsonTarget {
     File(PathBuf),
 }
 
+#[derive(Debug)]
 struct Args {
     root: PathBuf,
     threads: usize,
@@ -55,7 +57,10 @@ const USAGE: &str = "uso: tesela-scan <ruta> [--threads N] [--top N] [--json arc
   --json -         escribe el JSON por la salida estandar (el informe legible va a la de errores)
   --overwrite      con --json archivo: reemplaza el archivo si ya existe";
 
-fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
+/// Interpreta los argumentos. Llegan como `OsString` (`args_os`): una ruta con caracteres que no son Unicode válido (un
+/// nombre de carpeta con un sustituto desparejado, por ejemplo) no puede hacer que el programa entre en pánico ni que se
+/// pierda; las opciones y sus valores numéricos sí tienen que ser Unicode.
+fn parse_args(mut it: impl Iterator<Item = OsString>) -> Result<Args, String> {
     let mut a = Args {
         root: PathBuf::new(),
         threads: tesela_scanner::default_threads(),
@@ -69,13 +74,23 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
         verbose: false,
     };
     let mut have_root = false;
-    let num = |flag: &str, v: Option<String>| -> Result<u64, String> {
+    let num = |flag: &str, v: Option<OsString>| -> Result<u64, String> {
         v.ok_or_else(|| format!("{flag} necesita un valor"))?
-            .parse()
-            .map_err(|_| format!("{flag}: no es un número"))
+            .to_str()
+            .and_then(|s| s.parse().ok())
+            .ok_or_else(|| format!("{flag}: no es un número"))
     };
     while let Some(arg) = it.next() {
-        match arg.as_str() {
+        // Una ruta (o cualquier argumento) que no es Unicode válido no es una opción: se trata como la ruta a escanear.
+        let Some(text) = arg.to_str() else {
+            if have_root {
+                return Err("solo se admite una ruta".into());
+            }
+            a.root = arg.into();
+            have_root = true;
+            continue;
+        };
+        match text {
             "--threads" => a.threads = num("--threads", it.next())?.max(1) as usize,
             "--top" => a.top = num("--top", it.next())? as usize,
             "--json" => {
@@ -98,11 +113,11 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
             "--verbose" => a.verbose = true,
             "-h" | "--help" => return Err(String::new()),
             s if s.starts_with("--") => return Err(format!("opción desconocida: {s}")),
-            s => {
+            _ => {
                 if have_root {
                     return Err("solo se admite una ruta".into());
                 }
-                a.root = s.into();
+                a.root = arg.into();
                 have_root = true;
             }
         }
@@ -114,6 +129,19 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
         return Err("--overwrite solo tiene sentido con --json <archivo>".into());
     }
     Ok(a)
+}
+
+/// ¿Tiene sentido imprimir el "espacio no explicado"? Solo en un escaneo TERMINADO de un volumen completo, con las cifras
+/// del VOLUMEN (no las de una cuota), sin directorios sin recorrer y sin error al construir el árbol: con cualquiera de
+/// ellos el residuo (usado − escaneado) mezclaría lo que falta por recorrer con lo realmente inexplicado.
+fn unexplained_applies(
+    full_volume: bool,
+    cancelled: bool,
+    volume_scope: bool,
+    incomplete_dirs: u64,
+    build_error: bool,
+) -> bool {
+    full_volume && !cancelled && volume_scope && incomplete_dirs == 0 && !build_error
 }
 
 /// Tamaño legible con la unidad que corresponda (B, KiB, MiB, GiB o TiB).
@@ -248,7 +276,13 @@ fn report(out: &mut dyn Write, args: &Args, r: &ScanResult, mem: Option<(u64, u6
                     gib(v.available)
                 );
             }
-            if s.full_volume && !s.cancelled {
+            if unexplained_applies(
+                s.full_volume,
+                s.cancelled,
+                v.volume_scope,
+                st.incomplete_dirs,
+                s.build_error.is_some(),
+            ) {
                 let pct = if used > 0 {
                     st.unexplained_alloc as f64 * 100.0 / used as f64
                 } else {
@@ -478,11 +512,17 @@ fn main() -> ExitCode {
     // LO PRIMERO: la búsqueda de DLL se limita a System32 (ver `dll_hardening`).
     let _ = dll_hardening::restrict_dll_search();
     // `--version` (o `-V`) como primer argumento: imprime la version por la salida estandar y sale (sin escanear).
-    if matches!(std::env::args().nth(1).as_deref(), Some("--version" | "-V")) {
+    if matches!(
+        std::env::args_os()
+            .nth(1)
+            .as_deref()
+            .and_then(|a| a.to_str()),
+        Some("--version" | "-V")
+    ) {
         println!("tesela-scan {}", env!("CARGO_PKG_VERSION"));
         return ExitCode::SUCCESS;
     }
-    let args = match parse_args(std::env::args().skip(1)) {
+    let args = match parse_args(std::env::args_os().skip(1)) {
         Ok(a) => a,
         Err(msg) => {
             if !msg.is_empty() {
@@ -572,4 +612,73 @@ fn main() -> ExitCode {
         }
     }
     ExitCode::SUCCESS
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::os::windows::ffi::OsStringExt;
+
+    fn parse(args: &[&str]) -> Result<Args, String> {
+        parse_args(args.iter().map(OsString::from))
+    }
+
+    #[test]
+    fn el_espacio_no_explicado_solo_sale_con_un_escaneo_completo_del_volumen() {
+        assert!(unexplained_applies(true, false, true, 0, false));
+        // Cada condición por separado lo apaga (GM-m8).
+        assert!(
+            !unexplained_applies(false, false, true, 0, false),
+            "no es un volumen entero"
+        );
+        assert!(!unexplained_applies(true, true, true, 0, false), "detenido");
+        assert!(
+            !unexplained_applies(true, false, false, 0, false),
+            "cifras de la cuota, no del volumen"
+        );
+        assert!(
+            !unexplained_applies(true, false, true, 1, false),
+            "directorios sin recorrer"
+        );
+        assert!(
+            !unexplained_applies(true, false, true, 0, true),
+            "error al construir el árbol"
+        );
+    }
+
+    #[test]
+    fn una_ruta_que_no_es_unicode_valido_se_conserva_y_no_provoca_panico() {
+        // Un sustituto desparejado (U+D800) es un nombre válido en NTFS y no es UTF-8/Unicode válido.
+        let raw = OsString::from_wide(&[b'C' as u16, b':' as u16, 0x5C, 0xD800, b'x' as u16]);
+        assert!(raw.to_str().is_none());
+        let a = parse_args([raw.clone(), OsString::from("--top"), OsString::from("3")].into_iter())
+            .unwrap();
+        assert_eq!(a.root.as_os_str(), raw.as_os_str());
+        assert_eq!(a.top, 3);
+        // También como valor de `--json`, y una segunda ruta sigue siendo un error de uso.
+        let a =
+            parse_args([OsString::from("X"), OsString::from("--json"), raw.clone()].into_iter())
+                .unwrap();
+        assert_eq!(a.json, Some(JsonTarget::File(PathBuf::from(raw.clone()))));
+        assert!(parse_args([OsString::from("X"), raw].into_iter()).is_err());
+    }
+
+    #[test]
+    fn los_argumentos_normales_se_siguen_interpretando() {
+        let a = parse(&["C:/x", "--threads", "3", "--top", "0", "--mem", "--verbose"]).unwrap();
+        assert_eq!((a.threads, a.top, a.mem, a.verbose), (3, 0, true, true));
+        assert!(parse(&[]).is_err());
+        assert!(
+            parse(&["x", "--top", "no"])
+                .unwrap_err()
+                .contains("no es un número")
+        );
+        assert!(parse(&["x", "--cosa"]).unwrap_err().contains("desconocida"));
+        assert!(parse(&["x", "--overwrite"]).is_err());
+        assert_eq!(
+            parse(&["x", "--json", "-"]).unwrap().json,
+            Some(JsonTarget::Stdout)
+        );
+        assert_eq!(parse(&["--help"]).unwrap_err(), "");
+    }
 }

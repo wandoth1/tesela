@@ -25,6 +25,7 @@ rescan = Reescanear (F5)
 search = Buscar
 search-hint = Buscar…  Ctrl+F
 up-level = Subir un nivel
+go-home = Inicio
 go-to-folder = Ir a { $name }
 next-version = Disponible en la próxima versión
 next-version-v02 = Disponible en la versión 0.2

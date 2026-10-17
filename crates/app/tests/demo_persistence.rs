@@ -3,6 +3,8 @@
 //! cuando `Shell::on_exit` guardaría la configuración) y la carpeta tiene que seguir VACÍA.
 #![allow(unsafe_code)]
 
+mod common;
+
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::time::{Duration, Instant};
@@ -75,6 +77,9 @@ fn wait_for_window(child: &mut Child, limit: Duration) -> Option<HWND> {
 
 #[test]
 fn una_sesion_de_demostracion_no_deja_nada_en_appdata() {
+    if !common::process_tests_enabled() {
+        return;
+    }
     let dir = Tmp(std::env::temp_dir().join(format!("tesela-test-{}", uuid::Uuid::new_v4())));
     let (roaming, local) = (dir.0.join("Roaming"), dir.0.join("Local"));
     std::fs::create_dir_all(&roaming).unwrap();
@@ -131,6 +136,9 @@ fn una_sesion_de_demostracion_no_deja_nada_en_appdata() {
 /// del historial).
 #[test]
 fn las_herramientas_de_medicion_no_dejan_nada_en_appdata() {
+    if !common::process_tests_enabled() {
+        return;
+    }
     let casos: [&[&str]; 3] = [
         &["--demo", "--idle-memory", "1"],
         &["--demo", "--bench-hover", "1"],

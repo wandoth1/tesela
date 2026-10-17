@@ -39,6 +39,11 @@ impl<'a> Locator<'a> {
         idx.get(folded).copied()
     }
 
+    /// ¿Está `path` dentro de la ruta que se escaneó (o es ella)? Sin mirar si existe en el árbol.
+    pub fn covers(&self, path: &Path) -> bool {
+        PathKey::new(path).is_same_or_under(&self.root)
+    }
+
     /// El nodo de `path` si cuelga de la raíz escaneada y existe en el árbol.
     pub fn locate(&mut self, path: &Path) -> Option<NodeId> {
         let key = PathKey::new(path);
@@ -82,5 +87,10 @@ mod tests {
         assert_eq!(loc.locate(Path::new(&root)), Some(0));
         assert_eq!(loc.locate(Path::new(&format!("{root}Users\\nadie"))), None);
         assert_eq!(loc.locate(Path::new(&["Z", ":", "\\fuera"].concat())), None);
+        // `covers` no mira el árbol: solo si la ruta cuelga de lo escaneado.
+        assert!(loc.covers(Path::new(&root)));
+        assert!(loc.covers(Path::new(&format!("{root}Users\\nadie"))));
+        assert!(loc.covers(Path::new(&upper)));
+        assert!(!loc.covers(Path::new(&["Z", ":", "\\fuera"].concat())));
     }
 }

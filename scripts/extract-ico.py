@@ -72,12 +72,16 @@ def _extract(data):
         s = opt + opt_size + 40 * i
         _check(data, s, 40)
         vsize, va, rsize, raw = struct.unpack_from("<IIII", data, s + 8)
-        sections.append((va, max(vsize, rsize), raw))
+        sections.append((va, max(vsize, rsize), raw, rsize))
 
     def rva_to_off(rva):
-        for va, size, raw in sections:
+        for va, size, raw, rsize in sections:
             if va <= rva < va + size:
-                return raw + (rva - va)
+                delta = rva - va
+                # Entre `rsize` y `vsize` no hay bytes en el archivo (relleno de ceros en memoria).
+                if delta >= rsize:
+                    raise PeError("RVA fuera de los datos de la seccion en el archivo")
+                return raw + delta
         raise PeError("RVA fuera de las secciones")
 
     base = rva_to_off(res_rva)

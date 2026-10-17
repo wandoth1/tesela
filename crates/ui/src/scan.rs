@@ -128,6 +128,18 @@ pub struct ScanScreen {
     cleaned: Vec<tesela_cleaner::Removed>,
 }
 
+/// Una limpieza lanzada durante el escaneo acaba de quitar cosas del disco: se anotan para el árbol final y se DESCARTAN las
+/// medidas de las categorías seguras (eran de antes de limpiar: el titular y "Limpiar lo seguro" no pueden seguir ofreciendo
+/// lo que ya no está). `update_measures` vuelve a medir cada fila terminada en el siguiente dibujo.
+fn absorb_removed(
+    measures: &mut HashMap<CategoryId, Measure>,
+    cleaned: &mut Vec<tesela_cleaner::Removed>,
+    removed: Vec<tesela_cleaner::Removed>,
+) {
+    cleaned.extend(removed);
+    measures.clear();
+}
+
 /// La medida de una categoría segura.
 enum Measure {
     Computing(crossbeam_channel::Receiver<Plan>),
@@ -346,7 +358,7 @@ impl ScanScreen {
         self.flow.poll(ctx, &self.backend, false);
         for ev in self.flow.take_events() {
             let FlowEvent::Removed(v) = ev;
-            self.cleaned.extend(v);
+            absorb_removed(&mut self.measures, &mut self.cleaned, v);
         }
         let hold = self.flow.busy() || self.flow.in_summary();
         if let Kind::Starting(s) = &self.kind {
@@ -1227,6 +1239,37 @@ pub(crate) mod test_hooks {
             .filter(|p| cancelled.iter().any(|c| Arc::ptr_eq(c, p)))
             .count();
         (started.len(), n)
+    }
+}
+
+#[cfg(test)]
+mod removed_tests {
+    use super::*;
+
+    #[test]
+    fn tras_limpiar_durante_el_escaneo_se_descartan_las_medidas_viejas() {
+        let mut measures = HashMap::new();
+        measures.insert(CategoryId::UserTemp, Measure::Done(5_000));
+        let (_tx, rx) = crossbeam_channel::bounded(1);
+        measures.insert(CategoryId::WindowsTemp, Measure::Computing(rx));
+        let mut cleaned = Vec::new();
+        let r = tesela_cleaner::Removed {
+            path: "x".into(),
+            is_dir: false,
+            removed: true,
+            bytes: 5_000,
+            logical: 5_000,
+            files: 1,
+        };
+        absorb_removed(&mut measures, &mut cleaned, vec![r.clone()]);
+        assert!(
+            measures.is_empty(),
+            "las medidas de antes de limpiar no valen"
+        );
+        assert_eq!(cleaned, vec![r.clone()]);
+        // Se acumulan entre limpiezas.
+        absorb_removed(&mut measures, &mut cleaned, vec![r.clone()]);
+        assert_eq!(cleaned.len(), 2);
     }
 }
 
