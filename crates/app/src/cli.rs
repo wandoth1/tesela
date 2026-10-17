@@ -21,6 +21,7 @@ Opciones de --demo:
                                pantalla inicial (por defecto home); recs, confirm y summary son del flujo de limpieza
   --open <carpeta/carpeta>     entra por esas carpetas (con map o list)
   --select <nombre>            deja seleccionado ese elemento de la carpeta (con map o list)
+  --mark <nombre>              marca un elemento visible de la carpeta para la barra de selección; se puede repetir
   --progress <0..1>            fraccion fija del escaneo simulado (con --screen scan)
 
 Opciones generales:
@@ -63,6 +64,7 @@ pub struct Cli {
     pub progress: Option<f32>,
     pub open: Vec<String>,
     pub select: Option<String>,
+    pub marks: Vec<String>,
     pub scan: Option<PathBuf>,
     /// Modo simulacion: la limpieza no toca nada.
     pub dry_run: bool,
@@ -140,6 +142,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
                     .collect()
             }
             "--select" => cli.select = Some(need(&mut it, "--select")?),
+            "--mark" => cli.marks.push(need(&mut it, "--mark")?),
             "--scan" => cli.scan = Some(PathBuf::from(need(&mut it, "--scan")?)),
             "--theme" => {
                 cli.theme = Some(match need(&mut it, "--theme")?.as_str() {
@@ -198,16 +201,20 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
         || cli.screen != Screen::Home
         || cli.progress.is_some()
         || !cli.open.is_empty()
-        || cli.select.is_some())
+        || cli.select.is_some()
+        || !cli.marks.is_empty())
         && !cli.demo
     {
         return Err(
-            "--stopped, --stress, --screen, --progress, --open y --select solo tienen sentido con --demo"
+            "--stopped, --stress, --screen, --progress, --open, --select y --mark solo tienen sentido con --demo"
                 .into(),
         );
     }
     if cli.screenshot.is_some() && !cli.demo {
         return Err("--screenshot solo se admite con --demo: una captura de un disco real mostraría datos del equipo".into());
+    }
+    if !cli.marks.is_empty() && !matches!(cli.screen, Screen::Map | Screen::List) {
+        return Err("--mark necesita --screen map o --screen list".into());
     }
     if cli.overwrite && cli.screenshot.is_none() {
         return Err("--overwrite solo tiene sentido con --screenshot".into());
@@ -249,6 +256,18 @@ mod tests {
         assert_eq!(c.size, Some((1280.0, 800.0)));
         let c = p("--demo --screen scan --progress 0.4").unwrap();
         assert_eq!((c.screen, c.progress), (Screen::Scan, Some(0.4)));
+        let c = p("--demo --screen map --mark Descargas --mark Proyectos").unwrap();
+        assert_eq!(c.marks, ["Descargas", "Proyectos"]);
+        assert!(
+            p("--mark Descargas --screen map")
+                .unwrap_err()
+                .contains("--demo")
+        );
+        assert!(
+            p("--demo --mark Descargas")
+                .unwrap_err()
+                .contains("--screen map")
+        );
     }
 
     #[test]

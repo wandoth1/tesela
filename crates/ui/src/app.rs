@@ -126,6 +126,8 @@ pub struct MapStart {
     pub open: Vec<String>,
     /// Elemento seleccionado dentro de esa carpeta (por nombre).
     pub select: Option<String>,
+    /// Items marked in the current folder for a deterministic demo screenshot.
+    pub marks: Vec<String>,
 }
 
 /// El respaldo de la limpieza (el `cleaner` real o el simulado de `--demo`).

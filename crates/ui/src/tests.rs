@@ -75,6 +75,7 @@ fn user_folder() -> StartScreen {
         list: false,
         open: vec!["Users".into(), crate::demo::USER.into()],
         select: None,
+        marks: vec![],
     })
 }
 
@@ -302,6 +303,7 @@ fn las_carpetas_incompletas_llevan_el_minimo_y_el_aviso() {
         list: true,
         open: vec![],
         select: None,
+        marks: vec![],
     })));
     // Variante detenida: se construye explícitamente.
     drop(h);
@@ -309,6 +311,7 @@ fn las_carpetas_incompletas_llevan_el_minimo_y_el_aviso() {
         list: true,
         open: vec![],
         select: Some("Windows".into()),
+        marks: vec![],
     }));
     o.demo = Some(DemoOptions {
         stopped: true,
@@ -332,6 +335,7 @@ fn onedrive_lleva_el_aviso_de_la_nube() {
         list: false,
         open: vec!["Users".into(), crate::demo::USER.into()],
         select: Some("OneDrive".into()),
+        marks: vec![],
     })));
     h.get_by_label_contains("Archivos de la nube");
 }
@@ -484,6 +488,7 @@ fn la_lista_es_accesible_con_nombre_tamano_porcentaje_y_archivos() {
         list: true,
         open: vec!["Users".into(), crate::demo::USER.into()],
         select: None,
+        marks: vec![],
     })));
     let row = h.get_by_label_contains("Vídeos, ");
     let label = row.accesskit_node().label().unwrap();
@@ -498,6 +503,7 @@ fn la_busqueda_filtra_la_lista() {
         list: true,
         open: vec!["Users".into(), crate::demo::USER.into()],
         select: None,
+        marks: vec![],
     })));
     assert!(h.query_by_label_contains("Descargas, ").is_some());
     h.get_by_label("Buscar").focus();
@@ -527,6 +533,7 @@ fn el_menu_contextual_ofrece_las_acciones_y_anadir_a_la_cesta_esta_activo() {
         list: true,
         open: vec!["Users".into(), crate::demo::USER.into()],
         select: None,
+        marks: vec![],
     })));
     let row = h.get_by_label_contains("Proyectos, ");
     row.click_secondary();
@@ -1301,6 +1308,7 @@ fn list_start() -> StartScreen {
         list: true,
         open: vec!["Users".into(), crate::demo::USER.into()],
         select: None,
+        marks: vec![],
     })
 }
 

@@ -118,6 +118,7 @@ fn main() -> eframe::Result {
             list: cli.screen == Screen::List,
             open: cli.open.clone(),
             select: cli.select.clone(),
+            marks: cli.marks.clone(),
         }),
         _ => StartScreen::Home,
     };

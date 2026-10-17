@@ -306,6 +306,19 @@ impl Explore {
         {
             self.selection = Some(Sel::Node(id));
         }
+        if !start.marks.is_empty() {
+            let marked = self
+                .shown_children()
+                .into_iter()
+                .filter(|&id| {
+                    start
+                        .marks
+                        .iter()
+                        .any(|name| self.tree.name_lossy(id) == name.as_str())
+                })
+                .collect::<Vec<_>>();
+            self.multi.add(marked);
+        }
         if start.list {
             self.view = View::List;
         }

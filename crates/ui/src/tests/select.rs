@@ -637,6 +637,7 @@ fn descargas_start() -> StartScreen {
         list: true,
         open: vec!["Users".into(), crate::demo::USER.into(), "Descargas".into()],
         select: None,
+        marks: vec![],
     })
 }
 
