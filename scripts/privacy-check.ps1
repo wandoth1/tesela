@@ -220,9 +220,11 @@ function ConvertTo-ScanText {
     # quitarlo de los bytes. Un caracter de varios bytes partido por un NUL suelto (`C3 00 A9`) se decodifica como dos U+FFFD
     # con un U+0000 en medio y asi nunca vuelve a ser la letra; sin el NUL antes de decodificar, si.
     if ([System.Array]::IndexOf($Bytes, [byte]0) -ge 0) {
-        $kept = New-Object System.IO.MemoryStream
-        foreach ($b in $Bytes) { if ($b -ne 0) { $kept.WriteByte($b) } }
-        $extra.Add([System.Text.Encoding]::UTF8.GetString($kept.ToArray()))
+        # Latin-1 es una biyeccion de bytes: quitar los NUL del texto es quitar los bytes NUL (operaciones en bloque, sin recorrer
+        # byte a byte en PowerShell, que en 5.1 es lento con binarios grandes).
+        $latin1 = [System.Text.Encoding]::GetEncoding(28591)
+        $noNulBytes = $latin1.GetBytes($latin1.GetString($Bytes).Replace($nul, ''))
+        $extra.Add([System.Text.Encoding]::UTF8.GetString($noNulBytes))
     }
     if ($extra.Count -eq 0) { return , @($texts) }
     return , @(@($texts) + $extra.ToArray())
