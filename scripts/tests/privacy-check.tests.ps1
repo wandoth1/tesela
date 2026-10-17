@@ -1,15 +1,14 @@
 <#
 .SYNOPSIS
-  Pruebas de scripts/privacy-check.ps1 sobre un repositorio de pruebas en %TEMP%\tesela-test-<uuid>.
+  Tests for scripts/privacy-check.ps1 using a test repository under %TEMP%\tesela-test-<uuid>.
 
 .DESCRIPTION
-  Crea un repositorio git desechable, copia el script y comprueba que los fixtures "malos" hacen fallar al check y los
-  "buenos" lo pasan, en modo staging, -All, -GenericOnly y -MessageFile. Los fixtures malos viven en hexadecimal en
-  `fixtures.json` (contienen justo lo que el check rechaza, y asi este directorio se puede revisar como el resto del
-  repositorio).
+  Creates a disposable Git repository, copies the script, and checks that "bad" fixtures fail and "good" fixtures pass
+  in staging, -All, -GenericOnly, and -MessageFile modes. Bad fixtures are stored as hexadecimal in `fixtures.json`
+  (they contain exactly what the checker rejects, so this directory can be reviewed like the rest of the repository).
 
 .PARAMETER Shell
-  Ejecutable con el que se lanza privacy-check.ps1: `pwsh` (por defecto) o `powershell` (Windows PowerShell 5.1).
+  Executable used to run privacy-check.ps1: `pwsh` (default) or `powershell` (Windows PowerShell 5.1).
 
 .EXAMPLE
   pwsh -File scripts/tests/privacy-check.tests.ps1
@@ -20,7 +19,7 @@ param([string]$Shell = 'pwsh')
 
 $ErrorActionPreference = 'Stop'
 $srcScript = Join-Path (Split-Path -Parent $PSScriptRoot) 'privacy-check.ps1'
-if (-not (Test-Path -LiteralPath $srcScript)) { throw "no encuentro $srcScript" }
+if (-not (Test-Path -LiteralPath $srcScript)) { throw "cannot find $srcScript" }
 
 function Decode([string]$Hex) {
     $bytes = New-Object byte[] ($Hex.Length / 2)

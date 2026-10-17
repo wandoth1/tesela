@@ -1,13 +1,13 @@
 <#
 .SYNOPSIS
-  Prueba la LOGICA del MSI de Tesela (condiciones de lanzamiento, acciones de la carpeta, del ambito, del idioma y del
-  escritorio, y los eventos de las ventanas de ambito y de carpeta) con una SESION de Windows Installer SIN INSTALAR NADA.
+  Test Tesela MSI LOGIC (launch conditions, directory, scope, language, and desktop actions, plus scope and directory
+  dialog events) in a Windows Installer SESSION WITHOUT INSTALLING ANYTHING.
 
 .DESCRIPTION
-  Abre el MSI con `Installer.OpenPackage(ruta, 1)` (el 1 = ignorar el estado de la maquina): crea una sesion con las propiedades
-  del paquete, sin ejecutar ninguna secuencia, sin msiexec, sin interfaz y sin pedir administrador. Sobre esa sesion, con
-  propiedades SINTETICAS (nunca lee el registro ni las carpetas reales), usa el evaluador de condiciones del propio Windows
-  Installer (`EvaluateCondition`) y ejecuta las acciones de tipo 51 con `DoAction` (solo fijan propiedades). Con eso:
+  Opens the MSI with `Installer.OpenPackage(path, 1)` (1 = ignore machine state), creating a session with package
+  properties without running a sequence, msiexec, UI, or requesting administrator rights. Using SYNTHETIC properties
+  (never reads the registry or real directories), it calls Windows Installer's condition evaluator (`EvaluateCondition`)
+  and runs type 51 actions with `DoAction` (they only set properties). It then:
 
     * recorre las secuencias (las filas de InstallExecuteSequence y de InstallUISequence, en orden de numero) y comprueba la
       carpeta, el ambito, el escritorio y el idioma que salen en cada caso, y que las condiciones de lanzamiento dejan pasar o
@@ -15,14 +15,14 @@
     * recorre los eventos de control de los botones Siguiente de las ventanas de ambito y de carpeta como lo haria la
       interfaz (condiciones evaluadas por Windows Installer, valores formateados) y comprueba el contexto (ALLUSERS,
       MSIINSTALLPERUSER) y la carpeta que dejan, el aviso de carpeta protegida y el bloqueo de Siguiente;
-    * comprueba que los textos en espanol sobreviven a la tabla (acentos) y que el idioma se elige bien.
+    * checks that Spanish UI strings (including accents) survive the MSI tables and that the language is selected correctly.
 
-  Lo que NO sustituye: la interfaz real (dibujo, orden de tabulacion, comportamiento de los controles), el comportamiento del
-  motor al cambiar ALLUSERS en mitad de la interfaz ni nada que dependa de instalar de verdad (eso lo hacen
-  scripts/tests/msi-install.tests.ps1, en el CI, y una persona).
+  Does NOT replace testing the real UI (rendering, tab order, control behavior), the engine's behavior when ALLUSERS
+  changes mid-UI, or anything that requires a real installation (covered by scripts/tests/msi-install.tests.ps1 in CI
+  and by a person).
 
 .PARAMETER Msi
-  El MSI recien construido por scripts/build-msi.ps1.
+  The MSI just built by scripts/build-msi.ps1.
 
 .EXAMPLE
   pwsh -File scripts/tests/msi-logic.tests.ps1 -Msi <target>/dist/tesela-0.1.4-x64.msi
@@ -38,7 +38,7 @@ $ErrorActionPreference = 'Stop'
 $Msi = [System.IO.Path]::GetFullPath($Msi)
 if (-not (Test-Path -LiteralPath $Msi -PathType Leaf)) { throw "no existe el MSI: $Msi" }
 
-# Trabaja sobre una COPIA en %TEMP% (la sesion no modifica el MSI, pero asi nunca se toca el original).
+# Work on a COPY under %TEMP% (the session does not modify the MSI, but this ensures the original is never touched).
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ('tesela-logic-' + [guid]::NewGuid().ToString())
 New-Item -ItemType Directory -Path $tmp | Out-Null
 $copy = Join-Path $tmp 'logic.msi'
@@ -53,10 +53,10 @@ function Check([string]$Case, [bool]$Condition, [string]$Detail = '') {
 
 $installer = New-Object -ComObject WindowsInstaller.Installer
 
-# --- Sesion -----------------------------------------------------------------------------------------------------------------------
+# --- Session ---------------------------------------------------------------------------------------------------------------------
 $script:current = $null
 function Close-Session {
-    # Windows Installer solo admite UNA sesion abierta por proceso: se suelta la anterior antes de abrir otra.
+    # Windows Installer allows only ONE open session per process: release the previous one before opening another.
     if ($null -ne $script:current) {
         try { [void][System.Runtime.InteropServices.Marshal]::FinalReleaseComObject($script:current) } catch { }
         $script:current = $null
@@ -65,7 +65,7 @@ function Close-Session {
     [System.GC]::WaitForPendingFinalizers()
 }
 function New-Session {
-    # [string] e [int]: pasar el resultado de Join-Path tal cual da DISP_E_TYPEMISMATCH.
+    # [string] and [int]: passing the Join-Path result directly causes DISP_E_TYPEMISMATCH.
     Close-Session
     $script:current = [System.__ComObject].InvokeMember('OpenPackage', 'InvokeMethod', $null, $installer, @([string]$copy, [int]1))
     return $script:current
@@ -73,7 +73,7 @@ function New-Session {
 function Get-Prop($S, [string]$Name) { return [string][System.__ComObject].InvokeMember('Property', 'GetProperty', $null, $S, @($Name)) }
 function Set-Prop($S, [string]$Name, [string]$Value) { [System.__ComObject].InvokeMember('Property', 'SetProperty', $null, $S, @($Name, $Value)) | Out-Null }
 function Test-Cond($S, [string]$Condition) {
-    # 0 = falso, 1 = verdadero, 2 = sin condicion, 3 = error de sintaxis. Una condicion vacia es verdadera.
+    # 0 = false, 1 = true, 2 = no condition, 3 = syntax error. An empty condition is true.
     if ([string]::IsNullOrEmpty($Condition)) { return $true }
     $r = [int][System.__ComObject].InvokeMember('EvaluateCondition', 'InvokeMethod', $null, $S, @($Condition))
     if ($r -ge 2) { throw "la condicion no se pudo evaluar (codigo $r): $Condition" }
@@ -84,12 +84,12 @@ function Invoke-Action($S, [string]$Name) {
     if ($r -ne 1) { throw "la accion $Name devolvio $r" }
 }
 function Format-Arg($S, [string]$Arg) {
-    # `[Propiedad]` -> su valor; `{}` -> vacio (borra la propiedad).
+    # `[Property]` -> its value; `{}` -> empty (clears the property).
     if ($Arg -ceq '{}') { return '' }
     return [regex]::Replace($Arg, '\[([A-Za-z0-9_]+)\]', { param($m) Get-Prop $S $m.Groups[1].Value })
 }
 
-# --- Tablas del MSI (leidas una vez) -----------------------------------------------------------------------------------------------
+# --- MSI tables (read once) -------------------------------------------------------------------------------------------------------
 $db = Open-MsiDatabase $copy
 try {
     $seqRows = @{}
@@ -101,9 +101,9 @@ try {
     $launch = @(Get-MsiRows $db 'SELECT `Condition`, `Description` FROM `LaunchCondition`' 2 | ForEach-Object { [pscustomobject]@{ Condition = $_[0]; Message = $_[1] } })
 } finally { Close-Msi $db }
 
-# --- Simulacion de una secuencia y de los botones -------------------------------------------------------------------------------------
-# El perfil es SINTETICO (nunca el real). Las carpetas del sistema salen de las variables de entorno, como en el MSI (en el contexto por
-# usuario Windows Installer redirige ProgramFilesFolder al perfil, por eso el MSI no usa esa propiedad).
+# --- Simulate a sequence and dialog buttons ---------------------------------------------------------------------------------------
+# The profile is SYNTHETIC (never the real one). System directories come from environment variables, as in the MSI. In
+# per-user context Windows Installer redirects ProgramFilesFolder to the profile, which is why the MSI does not use it.
 $synthetic = @{ LocalAppDataFolder = 'C:\Synth\Local\' }
 $userDefault = 'C:\Synth\Local\Programs\Tesela\'
 $pf64 = $env:ProgramW6432
@@ -114,29 +114,28 @@ $machineDefault = $pf64 + '\Tesela\'
 $unc = '\' * 2   # prefijo de ruta de red, construido en vez de escrito (privacy-check rechaza rutas de red literales)
 
 function New-Case([hashtable]$Props) {
-    # Sesion nueva con las carpetas sinteticas y las propiedades del caso. Todas las demas, las del paquete.
+    # New session with synthetic directories and case-specific properties. All other properties come from the package.
     $s = New-Session
     foreach ($k in $synthetic.Keys) { Set-Prop $s $k $synthetic[$k] }
     foreach ($k in $Props.Keys) { Set-Prop $s $k ([string]$Props[$k]) }
-    # Una instalacion previa de verdad tiene tesela.exe en su carpeta (lo que comprueban TESELA_PREV_*_EXE); un caso puede fijar
-    # TESELA_PREV_USER_EXE='' para probar una clave de registro SIN producto.
+    # A real previous install has tesela.exe in its directory (checked by TESELA_PREV_*_EXE); a case can set
+    # TESELA_PREV_USER_EXE='' to test a registry key with NO product.
     foreach ($pair in @(@('TESELA_PREV_USER', 'TESELA_PREV_USER_EXE'), @('TESELA_PREV_MACHINE', 'TESELA_PREV_MACHINE_EXE'))) {
         if ($Props.ContainsKey($pair[0]) -and $Props[$pair[0]] -and -not $Props.ContainsKey($pair[1])) { Set-Prop $s $pair[1] ([string]$Props[$pair[0]] + 'tesela.exe') }
     }
     return $s
 }
 function New-UiCase([hashtable]$Props) {
-    # El estado en el que estan las propiedades cuando se abren las ventanas: las acciones del principio de la secuencia que fijan las
-    # carpetas por defecto y las protegidas (TESELA_DEFAULT_*, TESELA_PF64, TESELA_WIN) ya se han ejecutado. Las demas
-    # propiedades (ambito elegido, carpeta, instalaciones previas) son las del caso.
+    # Property state when dialogs open: startup actions that set default and protected directories (TESELA_DEFAULT_*,
+    # TESELA_PF64, TESELA_WIN) have already run. Other properties (selected scope, directory, previous installs) come from the case.
     $s = New-Case $Props
     foreach ($a in 'TeselaSetDefaultUser', 'TeselaSetDefaultMachine', 'TeselaSetProtected64', 'TeselaSetProtectedWin') { Invoke-Action $s $a }
     return $s
 }
 function Invoke-Sequence($S, [string]$Table, [switch]$IncludeAfterLaunch) {
-    # Ejecuta las acciones `Tesela*` (que no son de texto) con su condicion, en orden de numero. Las anteriores a
-    # LaunchConditions (100) primero; luego devuelve cuales de las condiciones de lanzamiento PASAN (lista de booleanos en el
-    # orden de la tabla LaunchCondition) y, si se pide, ejecuta las posteriores (ambito y idioma de la interfaz).
+    # Run non-text `Tesela*` actions whose conditions are true, in sequence order. Run actions before LaunchConditions
+    # (sequence 100) first; then return which launch conditions PASS (booleans in LaunchCondition table order) and, when
+    # requested, run later actions (UI scope and language).
     $rows = @($seqRows[$Table] | Where-Object { $_.Action -clike 'Tesela*' -and $_.Action -cnotlike 'TeselaEs_*' } | Sort-Object Sequence)
     foreach ($r in ($rows | Where-Object { $_.Sequence -lt 100 })) { if (Test-Cond $S $r.Condition) { Invoke-Action $S $r.Action } }
     $lc = @($launch | ForEach-Object { Test-Cond $S $_.Condition })
@@ -146,8 +145,8 @@ function Invoke-Sequence($S, [string]$Table, [switch]$IncludeAfterLaunch) {
     return , $lc
 }
 function Invoke-Button($S, [string]$Dialog, [string]$Control) {
-    # Los eventos del boton, en orden: cada uno con su condicion evaluada por Windows Installer. Devuelve el texto de los eventos
-    # de ventana (NewDialog:X, SpawnDialog:X, ...) que se habrian ejecutado; los de propiedad cambian la sesion.
+    # Button events in order, each with its condition evaluated by Windows Installer. Return the dialog events
+    # (NewDialog:X, SpawnDialog:X, ...) that would run; property events update the session.
     $done = New-Object System.Collections.Generic.List[string]
     foreach ($e in ($events | Where-Object { $_.Dialog -ceq $Dialog -and $_.Control -ceq $Control } | Sort-Object Order)) {
         if (-not (Test-Cond $S $e.Condition)) { continue }
@@ -164,8 +163,7 @@ function Test-ControlCond($S, [string]$Dialog, [string]$Control, [string]$Action
 function Join-Bool([bool[]]$b) { return (($b | ForEach-Object { if ($_) { 'P' } else { 'X' } }) -join '') }
 
 try {
-    # Orden de las condiciones de lanzamiento en la tabla (para leer los resultados): la que bloquea versiones posteriores y
-    # las tres del ambito.
+    # Launch condition table order (for reading results): the newer-version block followed by the three scope checks.
     $lcNames = @($launch | ForEach-Object {
             if ($_.Condition -ceq 'NOT WIX_DOWNGRADE_DETECTED') { 'downgrade' }
             elseif ($_.Condition -clike '*TESELA_PREV_USER=""') { 'user->machine' }
@@ -181,7 +179,7 @@ try {
         return ($bad | Sort-Object) -join ','
     }
 
-    # === 1. Condiciones de lanzamiento sin interfaz (UILevel 2): quien las bloquea ===========================================
+    # === 1. Launch conditions without UI (UILevel 2): what blocks installation ========================================
     $lcCases = @(
         @{ Name = 'por usuario, sin instalacion previa: todo pasa'; Props = @{ UILevel = 2 }; Fails = '' },
         @{ Name = 'para todos (ALLUSERS=1), sin instalacion previa: todo pasa'; Props = @{ UILevel = 2; ALLUSERS = 1; MSIINSTALLPERUSER = '' }; Fails = '' },
@@ -221,14 +219,14 @@ try {
     )
     foreach ($c in $lcCases) {
         $s = New-Case $c.Props
-        # La carpeta por defecto la fija la accion (si INSTALLFOLDER no viene fijada): se ejecuta la secuencia del servidor.
+        # The action sets the default directory (if INSTALLFOLDER is not preset): run the server sequence.
         $res = Invoke-Sequence $s 'InstallExecuteSequence'
         Check ("condiciones de lanzamiento: " + $c.Name) ((Get-LcFailures $res) -ceq $c.Fails) "bloquean: '$(Get-LcFailures $res)', se esperaba '$($c.Fails)'"
     }
 
-    # Regresion: con las carpetas REALES de la sesion (no las sinteticas), la carpeta por defecto por usuario NO cuenta como protegida. En
-    # el contexto por usuario Windows Installer redirige ProgramFilesFolder / ProgramFiles64Folder a %LOCALAPPDATA%\Programs\, y si el MSI
-    # las usara para detectar las carpetas protegidas, la carpeta por defecto del perfil quedaria bloqueada.
+    # Regression: with the session's REAL directories (not synthetic ones), the per-user default directory must NOT be
+    # considered protected. In per-user context Windows Installer redirects ProgramFilesFolder / ProgramFiles64Folder to
+    # %LOCALAPPDATA%\Programs\; if the MSI used those properties to detect protected directories, the profile default would be blocked.
     $real = New-Session
     $realLc = Invoke-Sequence $real 'InstallExecuteSequence'
     $realFolder = Get-Prop $real 'INSTALLFOLDER'
@@ -236,7 +234,7 @@ try {
     Check 'con las carpetas reales de la sesion, la carpeta por defecto por usuario es LocalAppData\Programs\Tesela\' ($realFolder -ceq ((Get-Prop $real 'LocalAppDataFolder') + 'Programs\Tesela\'))
     Check 'en el contexto por usuario ProgramFiles64Folder esta redirigida al perfil (y por eso el MSI usa las variables de entorno)' ((Get-Prop $real 'ProgramFiles64Folder') -ceq ((Get-Prop $real 'LocalAppDataFolder') + 'Programs\')) 'si esto falla, Windows Installer ya no redirige: se puede simplificar el MSI'
 
-    # === 2. Carpeta, ambito y escritorio en la secuencia del servidor (/qn) ====================================================
+    # === 2. Directory, scope, and desktop shortcut in the server sequence (/qn) =======================================
     $seqCases = @(
         @{ Name = 'por usuario, sin nada: carpeta por usuario'; Props = @{ UILevel = 2 }; Expect = @{ INSTALLFOLDER = $userDefault; DESKTOPSHORTCUT = '' } },
         @{ Name = 'ALLUSERS=1: carpeta de Program Files'; Props = @{ UILevel = 2; ALLUSERS = 1; MSIINSTALLPERUSER = '' }; Expect = @{ INSTALLFOLDER = $machineDefault } },
@@ -262,7 +260,7 @@ try {
             Check ("secuencia del servidor: $($c.Name) [$k]") ((Get-Prop $s $k) -ceq $c.Expect[$k]) "es '$(Get-Prop $s $k)', se esperaba '$($c.Expect[$k])'"
         }
     }
-    # Con interfaz (secuencia de interfaz): el escritorio recordado SI marca la casilla de partida; el ambito se preelige.
+    # With UI (UI sequence): a remembered desktop shortcut DOES check the box by default; scope is preselected.
     $uiCases = @(
         @{ Name = 'escritorio recordado: la casilla parte marcada'; Props = @{ UILevel = 5; TESELA_PREV_USER = 'C:\Prev\'; TESELA_PREV_DESKTOP_USER = '1' }; Expect = @{ DESKTOPSHORTCUT = '1'; TESELA_SCOPE = 'user'; INSTALLFOLDER = 'C:\Prev\' } },
         @{ Name = 'sin instalacion previa: ambito por usuario preelegido'; Props = @{ UILevel = 5 }; Expect = @{ TESELA_SCOPE = 'user'; DESKTOPSHORTCUT = '' } },
@@ -279,7 +277,7 @@ try {
         }
     }
 
-    # === 3. Idioma ===============================================================================================================
+    # === 3. Language =============================================================================================================
     $langCases = @(
         @(3082, '', 'es'), @(1034, '', 'es'), @(2058, '', 'es'), @(11274, '', 'es'), @(22538, '', 'es'), @(23562, '', 'es'),
         @(1033, '', 'en'), @(2057, '', 'en'), @(1036, '', 'en'), @(1031, '', 'en'), @(1027, '', 'en'),
@@ -290,7 +288,7 @@ try {
         [void](Invoke-Sequence $s 'InstallUISequence' -IncludeAfterLaunch)
         Check "idioma: UserLanguageID=$($c[0]) TESELA_LANG='$($c[1])' -> $($c[2])" ((Get-Prop $s 'TESELA_LANG') -ceq $c[2]) "es '$(Get-Prop $s 'TESELA_LANG')'"
     }
-    # Los textos en espanol: la accion fija la propiedad y los acentos sobreviven a la tabla (pagina de codigos del paquete).
+    # Spanish UI strings: the action sets the property, and accented characters survive the package code page.
     $s = New-Case @{ UILevel = 5 }
     $before = Get-Prop $s 'TxWelcomeTitle'
     Invoke-Action $s 'TeselaEs_TxWelcomeTitle'
@@ -307,7 +305,7 @@ try {
     Invoke-Action $sEn 'TeselaEs_TxScopeHonest'
     Check 'el texto honesto del ambito (espanol) dice que NO da mas permisos' ((Get-Prop $sEn 'TxScopeHonest') -clike '*NO da a Tesela m*permisos para limpiar*')
 
-    # === 4. Ventana de ambito: Siguiente =========================================================================================
+    # === 4. Scope dialog: Next ================================================================================================
     $scopeCases = @(
         @{ Name = 'por usuario, carpeta por defecto: se queda'; Props = @{ TESELA_SCOPE = 'user'; INSTALLFOLDER = $userDefault }; Expect = @{ ALLUSERS = '2'; MSIINSTALLPERUSER = '1'; INSTALLFOLDER = $userDefault }; Disabled = $false },
         @{ Name = 'para todos, carpeta por defecto por usuario: pasa a la de Program Files'; Props = @{ TESELA_SCOPE = 'machine'; INSTALLFOLDER = $userDefault }; Expect = @{ ALLUSERS = '1'; MSIINSTALLPERUSER = ''; INSTALLFOLDER = $machineDefault }; Disabled = $false },
@@ -335,7 +333,7 @@ try {
             }
         }
     }
-    # Los avisos de la ventana de ambito.
+    # Scope dialog warnings.
     $s = New-UiCase @{ TESELA_SCOPE = 'machine'; TESELA_PREV_USER = 'C:\A\' }
     Check 'ventana de ambito: aviso "ya esta instalada por usuario" al elegir para todos' ((Test-ControlCond $s 'ScopeDlg' 'ConflictUser' 'Show') -and -not (Test-ControlCond $s 'ScopeDlg' 'ConflictMachine' 'Show'))
     $s = New-UiCase @{ TESELA_SCOPE = 'user'; TESELA_PREV_MACHINE = 'C:\B\' }
@@ -346,7 +344,7 @@ try {
     $s = New-UiCase @{ TESELA_SCOPE = 'user' }
     Check 'ventana de ambito: sin conflicto no sale ningun aviso' (-not (Test-ControlCond $s 'ScopeDlg' 'ConflictMachine' 'Show') -and -not (Test-ControlCond $s 'ScopeDlg' 'ConflictUser' 'Show'))
 
-    # === 5. Ventana de carpeta: Siguiente y avisos ================================================================================
+    # === 5. Directory dialog: Next and warnings ============================================================================
     $folderCases = @(
         @{ Name = 'carpeta del perfil, por usuario'; Props = @{ TESELA_SCOPE = 'user'; INSTALLFOLDER = $userDefault }; Result = 'NewDialog:VerifyReadyDlg'; Protected = $false },
         @{ Name = 'otra unidad, por usuario'; Props = @{ TESELA_SCOPE = 'user'; INSTALLFOLDER = 'C:\Mis programas\Tesela\' }; Result = 'NewDialog:VerifyReadyDlg'; Protected = $false },
@@ -379,12 +377,12 @@ try {
     Check 'ventana de carpeta: sin instalacion previa el campo y Examinar estan activos y no hay nota' (-not (Test-ControlCond $s 'FolderDlg' 'FolderEdit' 'Disable') -and -not (Test-ControlCond $s 'FolderDlg' 'ChangeFolder' 'Disable') -and -not (Test-ControlCond $s 'FolderDlg' 'FolderFixed' 'Show'))
     $s = New-UiCase @{ TESELA_SCOPE = 'machine'; TESELA_PREV_USER = 'C:\A\' }
     Check 'ventana de carpeta: una instalacion previa del OTRO ambito no fija la carpeta' (-not (Test-ControlCond $s 'FolderDlg' 'FolderEdit' 'Disable'))
-    # El boton Examinar: pone _BrowseProperty en INSTALLFOLDER y abre el dialogo nativo.
+    # Browse button: sets _BrowseProperty to INSTALLFOLDER and opens the native dialog.
     $s = New-UiCase @{ TESELA_SCOPE = 'user' }
     $done = Invoke-Button $s 'FolderDlg' 'ChangeFolder'
     Check 'Examinar abre el dialogo nativo sobre INSTALLFOLDER' ((($done -join ',') -ceq 'SpawnDialog:BrowseDlg') -and (Get-Prop $s '_BrowseProperty') -ceq 'INSTALLFOLDER')
 
-    # === 6. Ventana de listo y de fin ===============================================================================================
+    # === 6. Ready and completion dialogs =====================================================================================
     $s = New-Case @{ TESELA_SCOPE = 'machine'; DESKTOPSHORTCUT = '1'; WIX_UPGRADE_DETECTED = '{X}' }
     Check 'ventana de listo: para todos, con escritorio y actualizacion' ((Test-ControlCond $s 'VerifyReadyDlg' 'ScopeMachine' 'Show') -and -not (Test-ControlCond $s 'VerifyReadyDlg' 'ScopeUser' 'Show') -and (Test-ControlCond $s 'VerifyReadyDlg' 'Desktop' 'Show') -and (Test-ControlCond $s 'VerifyReadyDlg' 'Upgrade' 'Show'))
     $s = New-Case @{ TESELA_SCOPE = 'user' }
@@ -400,7 +398,7 @@ try {
     $s = New-Case @{ REINSTALL = 'ALL' }
     Check 'ventana de fin: al reparar muestra el titulo de reparada' ((Test-ControlCond $s 'ExitDialog' 'TitleRepaired' 'Show') -and -not (Test-ControlCond $s 'ExitDialog' 'TitleInstalled' 'Show'))
 } finally {
-    # La sesion tiene el MSI abierto: se suelta antes de borrar la copia.
+    # The session has the MSI open: release it before deleting the copy.
     Close-Session
     $leaf = Split-Path -Leaf $tmp
     if ($leaf -like 'tesela-logic-*' -and (Split-Path -Parent $tmp) -eq [System.IO.Path]::GetTempPath().TrimEnd('\')) {

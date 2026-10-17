@@ -1,36 +1,37 @@
 <#
 .SYNOPSIS
-  Una FASE de la prueba de instalacion del MSI como USUARIO ESTANDAR (sin privilegios, sin elevacion). La lanza
-  scripts/tests/msi-install.tests.ps1 en el runner de GitHub Actions, con un usuario local desechable; no se usa a mano.
+  One PHASE of the MSI installation test as a STANDARD USER (no privileges or elevation). Launched by
+  scripts/tests/msi-install.tests.ps1 on a GitHub Actions runner with a disposable local user; do not run manually.
 
 .DESCRIPTION
-  Corre COMO ese usuario (Start-Process -Credential -LoadUserProfile). Se niega a correr si el proceso es administrador o si no esta la marca
-  que crea msi-install.tests.ps1 (solo en un runner de GitHub Actions). Hace UNA fase, instala o desinstala de verdad con msiexec /qn (sin interfaz) y escribe el resultado, una linea por
-  comprobacion, en -ResultFile (el usuario administrador del runner no ve su HKCU ni su perfil, por eso lo cuenta el propio usuario):
+  Runs AS that user (Start-Process -Credential -LoadUserProfile). Refuses to run if the process is an administrator or
+  the marker created by msi-install.tests.ps1 is missing (only created on a GitHub Actions runner). Runs ONE phase,
+  performs a real install or uninstall with msiexec /qn (no UI), and writes one result line per check to -ResultFile
+  (the runner administrator cannot see this user's HKCU or profile, so the user reports its own state):
       ok|<texto>
       FAIL|<texto>|<detalle>
       INFO|<texto>
-  Fases:
-    machine-attempt  `ALLUSERS=1 /qn` como estandar: tiene que FALLAR (no hay quien conceda administrador) y no dejar nada en
-                     Program Files ni en HKLM. Con un limite de tiempo: si Windows esperase un consentimiento que no puede mostrar
-                     en una sesion sin escritorio, se corta y se anota como INFO (no se da por pasada).
-    user-install     instalar por usuario por defecto: tiene que terminar con 0, en %LOCALAPPDATA%\Programs\Tesela, con su menu Inicio y
-                     su HKCU, sin tocar Program Files ni HKLM.
-    user-upgrade     actualizar la instalacion por usuario con otro MSI (otro ProductCode, misma version). Se usa cuando OTRA cuenta
-                     ha instalado para todos entre medias (M2): la suya manda y tiene que poder actualizarla.
-    user-uninstall   desinstalar sin restos.
+  Phases:
+    machine-attempt  `ALLUSERS=1 /qn` as standard user: must FAIL (no one can grant administrator rights) and leave nothing
+                     in Program Files or HKLM. Has a timeout: if Windows waits for consent it cannot display in a headless
+                     session, the process is stopped and recorded as INFO (not counted as passed).
+    user-install     install per-user by default: must exit 0 under %LOCALAPPDATA%\Programs\Tesela, with its Start menu
+                     entry and HKCU state, without touching Program Files or HKLM.
+    user-upgrade     upgrade the per-user install with another MSI (different ProductCode, same version). Used when ANOTHER
+                     account installs per-machine in between (M2): the current user's install wins and must be upgradeable.
+    user-uninstall   uninstall without leftovers.
 
 .PARAMETER Phase
-  Una de las fases de arriba.
+  One of the phases above.
 
 .PARAMETER Shared
-  Carpeta compartida con el administrador (el usuario puede escribir en ella).
+  Directory shared with the administrator (the user can write to it).
 
 .PARAMETER Msi
-  El MSI de la fase (no hace falta en user-uninstall).
+  The MSI for this phase (not needed for user-uninstall).
 
 .PARAMETER ResultFile
-  Donde se escriben las lineas de resultado.
+  Where result lines are written.
 #>
 [CmdletBinding()]
 param(

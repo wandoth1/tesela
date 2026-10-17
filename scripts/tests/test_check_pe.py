@@ -1,4 +1,4 @@
-"""Pruebas de scripts/check-pe.py con PE sintéticos construidos aquí (sin binarios reales ni datos del equipo).
+"""Tests for scripts/check-pe.py using synthetic PEs built here (no real binaries or machine data).
 
     python -I -m unittest discover -s scripts/tests -p "test_*.py"
 """
@@ -21,11 +21,11 @@ FILE_ALIGN = 0x200
 
 
 def make_pe(machine=0x8664, imports=(), delay=(), pe32=False, delay_old=False, load_flags=0x800, repro=True, vsize_extra=0):
-    """Un PE mínimo: una sección con la tabla de imports (y la de carga retardada) y los nombres de las DLL.
+    """A minimal PE: one section with the import (and delay-load) tables and DLL names.
 
-    `load_flags`: `DependentLoadFlags` del directorio de configuración de carga (None = sin directorio). `repro`: lleva una
-    entrada de depuración REPRO. `vsize_extra`: bytes de relleno virtual (sin datos en el archivo) tras los de la sección."""
-    # Datos de la sección: [descriptores de import][terminador][descriptores de delay][terminador][nombres]
+    `load_flags`: `DependentLoadFlags` in the load configuration directory (None = no directory). `repro`: include a
+    REPRO debug entry. `vsize_extra`: virtual padding bytes (no file data) after the section data."""
+    # Section data: [import descriptors][terminator][delay descriptors][terminator][names]
     n_imp = len(imports)
     n_del = len(delay)
     imp_off = 0
@@ -44,13 +44,13 @@ def make_pe(machine=0x8664, imports=(), delay=(), pe32=False, delay_old=False, l
     image_base = 0x400000 if pe32 else 0x140000000
     for n in delay:
         # `attrs` con el bit 0 = direcciones RVA; sin el (formato antiguo) = direcciones virtuales absolutas.
-        # (En PE32+ los campos son de 32 bits: una direccion absoluta no cabe, y el descriptor es inválido.)
+        # (In PE32+, fields are 32-bit: an absolute address does not fit, so the descriptor is invalid.)
         absolute = image_base + name_rva[n] if pe32 else name_rva[n]
         attrs, name = (0, absolute) if delay_old else (1, name_rva[n])
         sec += struct.pack("<IIIIIIII", attrs, name, 0, 0, 0, 0, 0, 0)
     sec += b"\0" * 32
     sec += names
-    # Directorio de configuración de carga (con `Size` que cubre `DependentLoadFlags`) y directorio de depuración.
+    # Load configuration directory (with `Size` covering `DependentLoadFlags`) and debug directory.
     sec = bytearray(bytes(sec).ljust((len(sec) + 7) // 8 * 8, b"\0"))
     lc_off = len(sec)
     lc_field = 0x36 if pe32 else 0x4E
@@ -160,7 +160,7 @@ class CheckPe(unittest.TestCase):
                 problems = check_pe.check(bad, "x64")
                 self.assertEqual(len(problems), 1, dll)
                 self.assertIn("runtime de C", problems[0], dll)
-            # También si solo aparece en la carga retardada.
+            # Also when it appears only in the delay-load table.
             late = t.write("late.exe", make_pe(imports=["KERNEL32.dll"], delay=["VCRUNTIME140.dll"]))
             self.assertEqual(len(check_pe.check(late, "x64")), 1)
             # Nombres parecidos que NO son del runtime de C.
@@ -209,16 +209,16 @@ class CheckPe(unittest.TestCase):
             self.assertEqual(check_pe.check(ok, "x64"), [])
             info = check_pe.parse_info(make_pe(imports=["KERNEL32.dll"]))
             self.assertEqual((info["load_flags"], info["repro"]), (0x800, True))
-            # PE32 (el campo está en otro desplazamiento).
+            # PE32 (the field is at a different offset).
             pe32 = t.write("pe32.exe", make_pe(machine=0x014C, imports=["KERNEL32.dll"], pe32=True))
             self.assertEqual(check_pe.check(pe32, "x86"), [])
-            # Sin el directorio de configuración de carga, o con otros flags (0x1000 = DEFAULT_DIRS, 0 = ninguno).
+            # Without the load configuration directory, or with other flags (0x1000 = DEFAULT_DIRS, 0 = none).
             for flags in (None, 0, 0x1000, 0x400):
                 bad = t.write("bad.exe", make_pe(imports=["KERNEL32.dll"], load_flags=flags))
                 problems = check_pe.check(bad, "x64")
                 self.assertEqual(len(problems), 1, flags)
                 self.assertIn("DependentLoadFlags", problems[0])
-            # Sin la entrada REPRO (con o sin directorio de depuración).
+            # Without the REPRO entry (with or without a debug directory).
             for repro in (False, None):
                 bad = t.write("bad.exe", make_pe(imports=["KERNEL32.dll"], repro=repro))
                 problems = check_pe.check(bad, "x64")
@@ -229,10 +229,10 @@ class CheckPe(unittest.TestCase):
             self.assertEqual(len(check_pe.check(worse, "x64")), 3)
 
     def test_un_rva_en_el_relleno_virtual_de_la_seccion_no_se_lee_del_archivo(self):
-        # La sección ocupa más en memoria que en el archivo: un RVA en esa cola no tiene bytes en el archivo y no puede
-        # leerse de lo que venga después (antes devolvía un desplazamiento fuera de la sección).
+        # The section is larger in memory than in the file: an RVA in that tail has no file bytes and must not read
+        # whatever follows it (previously this returned an offset outside the section).
         data = bytearray(make_pe(imports=["KERNEL32.dll"], vsize_extra=0x1000))
-        # El descriptor de imports apunta a un nombre en la cola virtual: SECTION_RVA + 0x400 (la sección tiene 0x200 en el archivo).
+        # The import descriptor points to a name in the virtual tail: SECTION_RVA + 0x400 (the file section is 0x200 bytes).
         struct.pack_into("<I", data, 0x400 + 12, SECTION_RVA + 0x400)
         with self.assertRaises(check_pe.PeError):
             check_pe.parse(bytes(data))
@@ -272,7 +272,7 @@ class CheckPe(unittest.TestCase):
             self.assertEqual(check_pe.main(["--machine", "arm64", ok]), 1)
 
     def test_lee_un_ejecutable_real_del_sistema(self):
-        # El propio intérprete es un PE real: se parsea y trae KERNEL32.
+        # The interpreter itself is a real PE: it parses successfully and imports KERNEL32.
         with open(sys.executable, "rb") as f:
             machine, imports, _ = check_pe.parse(f.read())
         self.assertIn(machine, check_pe.MACHINES.values())

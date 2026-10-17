@@ -1,15 +1,15 @@
 <#
 .SYNOPSIS
-  Prueba de INSTALACION del MSI de Tesela (instalar, actualizar, reparar, desinstalar, para todos, cambio de ambito...) sin
-  interfaz (/qn). SOLO corre en un runner de GitHub Actions: instala y desinstala de verdad.
+  Test Tesela MSI installation (install, upgrade, repair, uninstall, per-machine install, scope changes...) without a
+  UI (/qn). Runs ONLY on a GitHub Actions runner: it performs real installations and uninstalls.
 
 .DESCRIPTION
-  El job `msi` de .github/workflows/ci.yml la lanza despues de construir el MSI y de bajar la v0.1.4 publicada (verificada con
-  `gh attestation verify`). El runner es un administrador con la sesion elevada y desechable. En una maquina de desarrollo se
-  NIEGA a correr (comprueba GITHUB_ACTIONS y RUNNER_ENVIRONMENT=github-hosted): la prueba de instalacion en local se hace a
-  mano, avisando al usuario, nunca desde un agente.
+  The `msi` job in .github/workflows/ci.yml runs this after building the MSI and downloading the published v0.1.4
+  (verified with `gh attestation verify`). The runner is a disposable administrator with an elevated session. This test
+  REFUSES to run on a development machine (checks GITHUB_ACTIONS and RUNNER_ENVIRONMENT=github-hosted); local installation
+  testing is done manually with the user's awareness, never by an agent.
 
-  Escenarios (cada uno deja la maquina como estaba y lo comprueba):
+  Scenarios (each restores the machine to its prior state and verifies it):
     1. Por usuario, sin interfaz, por defecto: archivos en %LOCALAPPDATA%\Programs\Tesela, acceso directo del menu Inicio del
        usuario, NADA en HKLM ni en Program Files, sin acceso directo en el escritorio, `--version`, un solo producto y una sola
        entrada en Aplicaciones instaladas; reparar (restaura un archivo borrado); desinstalar sin restos.
@@ -30,22 +30,21 @@
        scripts/tests/msi-install-standard.tests.ps1 lanzado COMO ese usuario, sin elevar: `ALLUSERS=1 /qn` tiene que fallar y no dejar
        nada; instalar por usuario tiene que terminar con 0 en su perfil sin tocar Program Files ni HKLM; y, con otra cuenta (el
        administrador) que instala para todos entre medias, su instalacion por usuario se puede actualizar (la suya gana) y desinstalar.
-    Una prueba omitida NO cuenta como pasada: se lista aparte, hay un minimo de escenarios y de comprobaciones, y con una version
-    posterior a la v0.1.4 publicada no puede quedar ninguna omitida. El resumen del job vuelca las lineas MSI_LUA de los registros de
-    msiexec (como decidio el motor el ambito y la elevacion).
+    A skipped test does NOT count as passed: skips are listed separately, minimum scenario and check counts are enforced,
+    and no scenario may be skipped after a version newer than published v0.1.4. The job summary includes MSI_LUA lines
+    from msiexec logs (how the installer engine chose scope and elevation).
 
-  Lo que NO prueba (no se puede sin una persona): la interfaz (ventanas), la peticion de administrador (UAC) al pulsar Instalar en
-  "para todos" (el runner no tiene escritorio interactivo), y las propiedades seguras con un usuario estandar que da las credenciales de
-  OTRO administrador.
+  NOT tested (requires a person): the UI dialogs, the administrator (UAC) prompt when selecting "for everyone" (the runner
+  has no interactive desktop), and secure properties when a standard user enters credentials for ANOTHER administrator.
 
 .PARAMETER NewMsi
-  El MSI recien construido por scripts/build-msi.ps1.
+  The MSI just built by scripts/build-msi.ps1.
 
 .PARAMETER OldMsi
-  El MSI de la v0.1.4 publicada (descargado y verificado antes).
+  The published v0.1.4 MSI (downloaded and verified beforehand).
 
 .PARAMETER WorkDir
-  Carpeta de trabajo para registros y carpetas personalizadas (por defecto, una nueva en RUNNER_TEMP). No puede tener espacios.
+  Working directory for logs and custom install directories (defaults to a new directory in RUNNER_TEMP). Must not contain spaces.
 #>
 [CmdletBinding()]
 param(
