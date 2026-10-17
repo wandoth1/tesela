@@ -61,17 +61,24 @@ impl Explore {
         }
     }
 
-    /// Añade `sel` a la cesta (un archivo o carpeta, o el contenido de una carpeta conocida).
-    pub(crate) fn basket_add(&mut self, sel: Sel, env: &Env, now: f64) {
-        let Sel::Node(id) = sel else { return };
+    /// Añade `sel` a la cesta (un archivo o carpeta, o el contenido de una carpeta conocida) y dice si entró. Es el ÚNICO
+    /// camino hacia la cesta desde el mapa y la lista: el menú, el panel de detalles y la selección múltiple pasan por aquí,
+    /// con las mismas comprobaciones (`add_state` y las del propio `Basket`).
+    pub(crate) fn basket_add_one(&mut self, sel: Sel) -> bool {
+        let Sel::Node(id) = sel else { return false };
         let path = self.tree.path(id);
         let prot = self.protection.clone();
         let out = match self.add_state(sel) {
             AddState::Addable => self.flow.basket.add_path(path, &prot),
             AddState::ContentsOf => self.flow.basket.add_contents_of(path, &prot),
-            _ => return,
+            _ => return false,
         };
-        if matches!(out, AddOutcome::Added { .. }) {
+        matches!(out, AddOutcome::Added { .. })
+    }
+
+    /// Como [`Explore::basket_add_one`], con el aviso "Añadido a la cesta".
+    pub(crate) fn basket_add(&mut self, sel: Sel, env: &Env, now: f64) {
+        if self.basket_add_one(sel) {
             self.toast = Some((env.tr.t("basket-added"), now + 2.0));
         }
     }

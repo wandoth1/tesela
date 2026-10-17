@@ -110,6 +110,8 @@ pub struct Explore {
     /// El panel de detalles no cabe y se desplaza (con su barra visible).
     pub(crate) details_overflow: bool,
     pub(crate) selection: Option<Sel>,
+    /// Selección múltiple: lo marcado para añadirlo junto a la cesta (hijos de la carpeta actual; ver `multisel`).
+    pub(crate) multi: crate::multisel::Marks,
     pub(crate) view: View,
     /// El flujo de limpieza: cesta, confirmación, ejecución y resumen.
     pub(crate) flow: CleanFlow,
@@ -185,6 +187,7 @@ impl Explore {
             sidebar_overflow: false,
             details_overflow: false,
             selection: None,
+            multi: crate::multisel::Marks::default(),
             view: View::Map,
             flow: CleanFlow::default(),
             recs: None,
@@ -381,6 +384,8 @@ impl Explore {
         self.map.begin_zoom_out(self.animate, from);
         self.root = target;
         self.selection = select;
+        // Lo marcado habla de la carpeta que se deja: no se arrastra a la nueva.
+        self.multi.clear();
         self.scroll_to_selection = true;
     }
 
@@ -403,6 +408,7 @@ impl Explore {
         }
         self.root = target;
         self.selection = None;
+        self.multi.clear();
         self.scroll_to_selection = true;
         true
     }
@@ -430,6 +436,7 @@ impl Explore {
         self.root = Root::node(id);
         self.group_stack.clear();
         self.selection = None;
+        self.multi.clear();
         self.scroll_to_selection = true;
     }
 
@@ -480,6 +487,8 @@ impl Explore {
         self.search_hits = None;
         self.search_set = None;
         let view = TreeView::new(&self.tree, self.overlay.as_deref());
+        // Lo que ya no existe deja de estar marcado (lo demás se conserva).
+        self.multi.retain(|id| view.is_visible(id));
         if let Some(Sel::Node(id)) = self.selection
             && !view.is_visible(id)
         {
@@ -500,6 +509,7 @@ impl Explore {
             // Una agrupación "Otros" abierta ya no describe lo mismo: se vuelve a la carpeta.
             self.root = Root::node(node);
             self.group_stack.clear();
+            self.multi.clear();
         }
     }
 
@@ -593,6 +603,18 @@ impl Explore {
             .exact_size(56.0)
             .frame(bar_frame(pal.surface))
             .show(ui, |ui| self.basket_bar(ui, env));
+        // La barra de selección va siempre (mismo alto): si solo apareciese al marcar, el mapa se recolocaría bajo el puntero.
+        if self.view != View::Recommendations {
+            let fill = if self.multi.is_empty() {
+                pal.bg
+            } else {
+                pal.accent_soft
+            };
+            egui::Panel::bottom("tesela-selection")
+                .exact_size(crate::multisel::BAR_H)
+                .frame(bar_frame(fill))
+                .show(ui, |ui| self.selection_bar(ui, env));
+        }
         egui::Panel::top("tesela-toolbar")
             .exact_size(56.0)
             .frame(bar_frame(pal.surface))
@@ -659,7 +681,7 @@ impl Explore {
             let now = ctx.input(|i| i.time);
             if now < *until {
                 egui::Area::new(egui::Id::new("tesela-toast"))
-                    .anchor(egui::Align2::CENTER_BOTTOM, vec2(0.0, -110.0))
+                    .anchor(egui::Align2::CENTER_BOTTOM, vec2(0.0, -156.0))
                     .order(egui::Order::Tooltip)
                     .show(&ctx, |ui| {
                         egui::Frame::popup(ui.style()).show(ui, |ui| {
@@ -722,6 +744,12 @@ impl Explore {
         if nav && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Backspace)) {
             self.up();
         }
+        // Ctrl+A: marca todo lo que se ve (los aciertos si hay búsqueda). El buscador tiene el suyo (ya salió arriba).
+        if self.view != View::Recommendations
+            && ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::A))
+        {
+            self.marks_all_here();
+        }
         if nav
             && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter))
             && let Some(sel) = self.selection
@@ -729,7 +757,10 @@ impl Explore {
             self.enter(sel);
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
-            if !self.search.is_empty() {
+            // Primero se vacía lo marcado, luego la búsqueda y por último el elemento activo.
+            if self.view != View::Recommendations && !self.multi.is_empty() {
+                self.multi.clear();
+            } else if !self.search.is_empty() {
                 self.search.clear();
             } else {
                 self.selection = None;
