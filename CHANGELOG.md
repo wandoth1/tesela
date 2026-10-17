@@ -40,6 +40,10 @@ the confirmation, especially any permanent-deletion warning. The binaries remain
   copy without silently changing scope.
 - Confirmation now shows the size of items awaiting permanent-deletion consent instead of suggesting that the basket holds
   zero bytes.
+- A `.pst` added inside an approved folder after confirmation is now skipped unless local-mail permanent deletion was
+  explicitly acknowledged. The check applies to each file when the folder is traversed.
+- A diagnostic folder temporarily unavailable during approval can no longer lose its permanent-deletion veto; the veto uses
+  fixed known-folder paths and is checked again during execution.
 
 ## [0.1.4] - 2026-10-17
 
