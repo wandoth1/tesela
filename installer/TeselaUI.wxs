@@ -64,13 +64,13 @@
     <Property Id="TxUp" Value="Up" />
     <Property Id="TxNewFolderBtn" Value="New folder" />
     <Property Id="TxWelcomeTitle" Value="Welcome to the Tesela setup" />
-    <Property Id="TxWelcomeBody" Value="This wizard installs Tesela, a visual disk space analyzer and cleaner. You will choose who it is installed for and in which folder. It takes less than a minute." />
+    <Property Id="TxWelcomeBody" Value="This wizard installs Tesela, a visual disk space analyzer and cleaner. You will choose who it is installed for and in which folder." />
     <Property Id="TxWelcomeUpgrade" Value="A version of Tesela is already installed. This setup replaces it. Your settings and cleaning history are kept." />
     <Property Id="TxScopeTitle" Value="Who is Tesela for?" />
     <Property Id="TxScopeUser" Value="Only for me (recommended)" />
     <Property Id="TxScopeUserNote" Value="No administrator permission needed. It is installed in your user profile." />
     <Property Id="TxScopeMachine" Value="For all users of this computer" />
-    <Property Id="TxScopeMachineNote" Value="Windows asks for administrator permission when you press Install. It is installed in Program Files, so every account on this PC can open Tesela." />
+    <Property Id="TxScopeMachineNote" Value="Windows will ask for administrator permission to continue. It is installed in Program Files, so every account on this PC can open Tesela." />
     <Property Id="TxScopeHonest" Value="Installing for all users does NOT give Tesela more permissions to clean. Tesela always runs with normal permissions and refuses to clean if it is started as administrator. This is a safety decision." />
     <Property Id="TxConflictUser" Value="Tesela is already installed only for your user, and Windows cannot change the scope in an update. Uninstall that version first (Settings, Apps, Installed apps) and run this setup again." />
     <Property Id="TxConflictMachine" Value="Tesela is already installed for all users, and Windows cannot change the scope in an update. Uninstall that version first (it needs administrator permission) and run this setup again." />
@@ -80,12 +80,12 @@
     <Property Id="TxFolderProtected" Value="This folder is protected by Windows. Installing here needs administrator permission, and this installation is only for you. Choose a folder inside your user profile, or go back and choose the all-users option." />
     <Property Id="TxDesktopCheck" Value="Create a shortcut on the desktop" />
     <Property Id="TxInvalidDirTitle" Value="Invalid folder" />
-    <Property Id="TxInvalidDirBody" Value="The folder is not valid, or this installation cannot write to it. Enter a full path (for example C:\Tesela) in a place where you can write." />
+    <Property Id="TxInvalidDirBody" Value="The folder is not valid, or this installation cannot write to it. Enter the full path of a folder inside your user profile, one that only you can modify (no /, .., ? or network paths)." />
     <Property Id="TxReadyTitle" Value="Ready to install" />
     <Property Id="TxReadyIntro" Value="Check the choices below. Press Install to continue, or Back to change something." />
     <Property Id="TxReadyFolder" Value="Folder:" />
     <Property Id="TxReadyScopeUser" Value="Installed for: only for you." />
-    <Property Id="TxReadyScopeMachine" Value="Installed for: all users. Windows will ask for administrator permission." />
+    <Property Id="TxReadyScopeMachine" Value="Installed for: all users. Windows will ask for administrator permission to continue." />
     <Property Id="TxReadyDesktop" Value="A shortcut will be created on the desktop." />
     <Property Id="TxMaintTitle" Value="Repair or uninstall Tesela" />
     <Property Id="TxMaintBody" Value="Tesela is already installed. Choose what to do. Uninstalling keeps your settings and cleaning history." />
@@ -100,9 +100,9 @@
     <Property Id="TxExitPin" Value="To pin Tesela to the taskbar: Start menu, right-click Tesela, Pin to taskbar. Windows does not let installers do this for you." />
     <Property Id="TxExitRemovedBody" Value="Your settings and cleaning history were not deleted." />
     <Property Id="TxFatalTitle" Value="Setup was interrupted" />
-    <Property Id="TxFatalBody" Value="Tesela setup ended before it finished and the changes were undone. Run the setup again. If it fails again, report it at github.com/wandoth1/tesela/issues" />
+    <Property Id="TxFatalBody" Value="Tesela setup ended before it finished. If you saw a permissions error, run the setup again and choose Only for me, or start it as administrator. If it fails again, report it at github.com/wandoth1/tesela/issues" />
     <Property Id="TxUserExitTitle" Value="Setup was cancelled" />
-    <Property Id="TxUserExitBody" Value="Tesela setup was cancelled and the changes were undone. Run the setup again whenever you want." />
+    <Property Id="TxUserExitBody" Value="Tesela setup was cancelled. You can run it again whenever you want." />
     <Property Id="TxCancelBody" Value="Are you sure you want to cancel the Tesela setup?" />
     <Property Id="TxBrowseTitle" Value="Choose folder" />
     <Property Id="TxBrowseLookIn" Value="Look in:" />
@@ -134,13 +134,13 @@
     <CustomAction Id="TeselaEs_TxUp" Property="TxUp" Value="Arriba" Execute="immediate" />
     <CustomAction Id="TeselaEs_TxNewFolderBtn" Property="TxNewFolderBtn" Value="Carpeta nueva" Execute="immediate" />
     <CustomAction Id="TeselaEs_TxWelcomeTitle" Property="TxWelcomeTitle" Value="Bienvenido a la instalación de Tesela" Execute="immediate" />
-    <CustomAction Id="TeselaEs_TxWelcomeBody" Property="TxWelcomeBody" Value="Este asistente instala Tesela, un analizador y limpiador visual del espacio en disco. Elegirás para quién se instala y en qué carpeta. Tarda menos de un minuto." Execute="immediate" />
+    <CustomAction Id="TeselaEs_TxWelcomeBody" Property="TxWelcomeBody" Value="Este asistente instala Tesela, un analizador y limpiador visual del espacio en disco. Elegirás para quién se instala y en qué carpeta." Execute="immediate" />
     <CustomAction Id="TeselaEs_TxWelcomeUpgrade" Property="TxWelcomeUpgrade" Value="Ya hay una versión de Tesela instalada. Esta instalación la sustituye. Tu configuración y tu historial de limpieza se conservan." Execute="immediate" />
     <CustomAction Id="TeselaEs_TxScopeTitle" Property="TxScopeTitle" Value="¿Para quién es Tesela?" Execute="immediate" />
     <CustomAction Id="TeselaEs_TxScopeUser" Property="TxScopeUser" Value="Solo para mí (recomendado)" Execute="immediate" />
     <CustomAction Id="TeselaEs_TxScopeUserNote" Property="TxScopeUserNote" Value="No hace falta ser administrador. Se instala en tu perfil de usuario." Execute="immediate" />
     <CustomAction Id="TeselaEs_TxScopeMachine" Property="TxScopeMachine" Value="Para todos los usuarios de este equipo" Execute="immediate" />
-    <CustomAction Id="TeselaEs_TxScopeMachineNote" Property="TxScopeMachineNote" Value="Windows pide permiso de administrador al pulsar Instalar. Se instala en Archivos de programa y todas las cuentas de este equipo podrán abrir Tesela." Execute="immediate" />
+    <CustomAction Id="TeselaEs_TxScopeMachineNote" Property="TxScopeMachineNote" Value="Windows pedirá permiso de administrador para continuar. Se instala en Archivos de programa y todas las cuentas de este equipo podrán abrir Tesela." Execute="immediate" />
     <CustomAction Id="TeselaEs_TxScopeHonest" Property="TxScopeHonest" Value="Instalar para todos NO da a Tesela más permisos para limpiar. Tesela siempre se ejecuta con permisos normales y se niega a limpiar si se ejecuta como administrador. Es una decisión de seguridad." Execute="immediate" />
     <CustomAction Id="TeselaEs_TxConflictUser" Property="TxConflictUser" Value="Tesela ya está instalada solo para tu usuario y Windows no puede cambiar el ámbito al actualizar. Desinstala antes esa versión (Configuración, Aplicaciones, Aplicaciones instaladas) y vuelve a ejecutar esta instalación." Execute="immediate" />
     <CustomAction Id="TeselaEs_TxConflictMachine" Property="TxConflictMachine" Value="Tesela ya está instalada para todos los usuarios y Windows no puede cambiar el ámbito al actualizar. Desinstala antes esa versión (requiere permiso de administrador) y vuelve a ejecutar esta instalación." Execute="immediate" />
@@ -150,12 +150,12 @@
     <CustomAction Id="TeselaEs_TxFolderProtected" Property="TxFolderProtected" Value="Esta carpeta está protegida por Windows. Instalar aquí exige permisos de administrador y esta instalación es solo para ti. Elige una carpeta de tu perfil de usuario o vuelve atrás y elige la opción para todos los usuarios." Execute="immediate" />
     <CustomAction Id="TeselaEs_TxDesktopCheck" Property="TxDesktopCheck" Value="Crear un acceso directo en el escritorio" Execute="immediate" />
     <CustomAction Id="TeselaEs_TxInvalidDirTitle" Property="TxInvalidDirTitle" Value="Carpeta no válida" Execute="immediate" />
-    <CustomAction Id="TeselaEs_TxInvalidDirBody" Property="TxInvalidDirBody" Value="La carpeta no es válida o esta instalación no puede escribir en ella. Escribe una ruta completa (por ejemplo C:\Tesela) en un lugar donde puedas escribir." Execute="immediate" />
+    <CustomAction Id="TeselaEs_TxInvalidDirBody" Property="TxInvalidDirBody" Value="La carpeta no es válida o esta instalación no puede escribir en ella. Escribe la ruta completa de una carpeta de tu perfil de usuario, que solo tú puedas modificar (sin /, .., ? ni rutas de red)." Execute="immediate" />
     <CustomAction Id="TeselaEs_TxReadyTitle" Property="TxReadyTitle" Value="Listo para instalar" Execute="immediate" />
     <CustomAction Id="TeselaEs_TxReadyIntro" Property="TxReadyIntro" Value="Revisa las opciones. Pulsa Instalar para continuar o Atrás para cambiar algo." Execute="immediate" />
     <CustomAction Id="TeselaEs_TxReadyFolder" Property="TxReadyFolder" Value="Carpeta:" Execute="immediate" />
     <CustomAction Id="TeselaEs_TxReadyScopeUser" Property="TxReadyScopeUser" Value="Instalada para: solo tu usuario." Execute="immediate" />
-    <CustomAction Id="TeselaEs_TxReadyScopeMachine" Property="TxReadyScopeMachine" Value="Instalada para: todos los usuarios. Windows pedirá permiso de administrador." Execute="immediate" />
+    <CustomAction Id="TeselaEs_TxReadyScopeMachine" Property="TxReadyScopeMachine" Value="Instalada para: todos los usuarios. Windows pedirá permiso de administrador para continuar." Execute="immediate" />
     <CustomAction Id="TeselaEs_TxReadyDesktop" Property="TxReadyDesktop" Value="Se creará un acceso directo en el escritorio." Execute="immediate" />
     <CustomAction Id="TeselaEs_TxMaintTitle" Property="TxMaintTitle" Value="Reparar o desinstalar Tesela" Execute="immediate" />
     <CustomAction Id="TeselaEs_TxMaintBody" Property="TxMaintBody" Value="Tesela ya está instalada. Elige qué hacer. Desinstalar conserva tu configuración y tu historial de limpieza." Execute="immediate" />
@@ -170,9 +170,9 @@
     <CustomAction Id="TeselaEs_TxExitPin" Property="TxExitPin" Value="Para anclar Tesela a la barra de tareas: menú Inicio, clic derecho en Tesela, Anclar a la barra de tareas. Windows no permite que un instalador lo haga por ti." Execute="immediate" />
     <CustomAction Id="TeselaEs_TxExitRemovedBody" Property="TxExitRemovedBody" Value="No se han borrado tu configuración ni tu historial de limpieza." Execute="immediate" />
     <CustomAction Id="TeselaEs_TxFatalTitle" Property="TxFatalTitle" Value="La instalación se interrumpió" Execute="immediate" />
-    <CustomAction Id="TeselaEs_TxFatalBody" Property="TxFatalBody" Value="La instalación de Tesela terminó antes de acabar y se deshicieron los cambios. Vuelve a ejecutarla. Si falla otra vez, cuéntalo en github.com/wandoth1/tesela/issues" Execute="immediate" />
+    <CustomAction Id="TeselaEs_TxFatalBody" Property="TxFatalBody" Value="La instalación de Tesela se cerró antes de terminar. Si viste un error de permisos, vuelve a abrirla y elige «Solo para mí», o ejecútala como administrador. Si falla otra vez, cuéntalo en github.com/wandoth1/tesela/issues" Execute="immediate" />
     <CustomAction Id="TeselaEs_TxUserExitTitle" Property="TxUserExitTitle" Value="Instalación cancelada" Execute="immediate" />
-    <CustomAction Id="TeselaEs_TxUserExitBody" Property="TxUserExitBody" Value="Se canceló la instalación de Tesela y se deshicieron los cambios. Vuelve a ejecutarla cuando quieras." Execute="immediate" />
+    <CustomAction Id="TeselaEs_TxUserExitBody" Property="TxUserExitBody" Value="Se canceló la instalación de Tesela. Puedes volver a ejecutarla cuando quieras." Execute="immediate" />
     <CustomAction Id="TeselaEs_TxCancelBody" Property="TxCancelBody" Value="¿Seguro que quieres cancelar la instalación de Tesela?" Execute="immediate" />
     <CustomAction Id="TeselaEs_TxBrowseTitle" Property="TxBrowseTitle" Value="Elegir carpeta" Execute="immediate" />
     <CustomAction Id="TeselaEs_TxBrowseLookIn" Property="TxBrowseLookIn" Value="Buscar en:" Execute="immediate" />
@@ -316,13 +316,13 @@
       <Control Id="Honest" Type="Text" X="20" Y="155" Width="330" Height="44" Transparent="yes" NoPrefix="yes" Text="[TxScopeHonest]" />
       <Control Id="ConflictUser" Type="Text" X="20" Y="200" Width="330" Height="33" Transparent="yes" NoPrefix="yes" Hidden="yes" Text="{\TeselaBold}[TxConflictUser]" ShowCondition="TESELA_SCOPE=&quot;machine&quot; AND TESELA_PREV_USER&lt;&gt;&quot;&quot;">
       </Control>
-      <Control Id="ConflictMachine" Type="Text" X="20" Y="200" Width="330" Height="33" Transparent="yes" NoPrefix="yes" Hidden="yes" Text="{\TeselaBold}[TxConflictMachine]" ShowCondition="TESELA_SCOPE=&quot;user&quot; AND TESELA_PREV_MACHINE&lt;&gt;&quot;&quot;">
+      <Control Id="ConflictMachine" Type="Text" X="20" Y="200" Width="330" Height="33" Transparent="yes" NoPrefix="yes" Hidden="yes" Text="{\TeselaBold}[TxConflictMachine]" ShowCondition="TESELA_SCOPE=&quot;user&quot; AND TESELA_PREV_MACHINE&lt;&gt;&quot;&quot; AND TESELA_PREV_USER=&quot;&quot;">
       </Control>
       <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
       <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="[TxBack]">
         <Publish Event="NewDialog" Value="WelcomeDlg" />
       </Control>
-      <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="[TxNext]" DisableCondition="(TESELA_SCOPE=&quot;machine&quot; AND TESELA_PREV_USER&lt;&gt;&quot;&quot;) OR (TESELA_SCOPE=&quot;user&quot; AND TESELA_PREV_MACHINE&lt;&gt;&quot;&quot;)">
+      <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="[TxNext]" DisableCondition="(TESELA_SCOPE=&quot;machine&quot; AND TESELA_PREV_USER&lt;&gt;&quot;&quot;) OR (TESELA_SCOPE=&quot;user&quot; AND TESELA_PREV_MACHINE&lt;&gt;&quot;&quot; AND TESELA_PREV_USER=&quot;&quot;)">
         <!-- Contexto: para todos = ALLUSERS=1 y MSIINSTALLPERUSER vacio; solo para mi = ALLUSERS=2 y MSIINSTALLPERUSER=1. -->
         <Publish Property="ALLUSERS" Value="1" Order="1" Condition='TESELA_SCOPE="machine"' />
         <Publish Property="MSIINSTALLPERUSER" Value="{}" Order="2" Condition='TESELA_SCOPE="machine"' />
@@ -354,7 +354,7 @@
       </Control>
       <Control Id="FolderFixed" Type="Text" X="20" Y="88" Width="330" Height="22" Transparent="yes" NoPrefix="yes" Hidden="yes" Text="[TxFolderFixed]" ShowCondition="(TESELA_SCOPE=&quot;user&quot; AND TESELA_PREV_USER&lt;&gt;&quot;&quot;) OR (TESELA_SCOPE=&quot;machine&quot; AND TESELA_PREV_MACHINE&lt;&gt;&quot;&quot;)">
       </Control>
-      <Control Id="FolderProtected" Type="Text" X="20" Y="114" Width="330" Height="44" Transparent="yes" NoPrefix="yes" Hidden="yes" Text="{\TeselaBold}[TxFolderProtected]" ShowCondition="TESELA_SCOPE=&quot;user&quot; AND (INSTALLFOLDER~&lt;&lt;TESELA_PF64 OR INSTALLFOLDER~&lt;&lt;TESELA_PF32 OR INSTALLFOLDER~&lt;&lt;TESELA_WIN)">
+      <Control Id="FolderProtected" Type="Text" X="20" Y="114" Width="330" Height="44" Transparent="yes" NoPrefix="yes" Hidden="yes" Text="{\TeselaBold}[TxFolderProtected]" ShowCondition="TESELA_SCOPE=&quot;user&quot; AND (INSTALLFOLDER~&lt;&lt;TESELA_PF64 OR INSTALLFOLDER~&lt;&lt;TESELA_WIN)">
       </Control>
       <Control Id="DesktopShortcut" Type="CheckBox" X="20" Y="170" Width="330" Height="18" Property="DESKTOPSHORTCUT" CheckBoxValue="1" Text="[TxDesktopCheck]" />
       <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
@@ -363,8 +363,13 @@
       </Control>
       <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="[TxNext]">
         <Publish Event="SetTargetPath" Value="INSTALLFOLDER" Order="1" />
-        <Publish Event="NewDialog" Value="VerifyReadyDlg" Order="2" Condition="(INSTALLFOLDER&gt;&lt;&quot;:\&quot; OR INSTALLFOLDER&lt;&lt;&quot;\\&quot;) AND NOT (TESELA_SCOPE=&quot;user&quot; AND (INSTALLFOLDER~&lt;&lt;TESELA_PF64 OR INSTALLFOLDER~&lt;&lt;TESELA_PF32 OR INSTALLFOLDER~&lt;&lt;TESELA_WIN))" />
-        <Publish Event="SpawnDialog" Value="InvalidDirDlg" Order="3" Condition="NOT ((INSTALLFOLDER&gt;&lt;&quot;:\&quot; OR INSTALLFOLDER&lt;&lt;&quot;\\&quot;) AND NOT (TESELA_SCOPE=&quot;user&quot; AND (INSTALLFOLDER~&lt;&lt;TESELA_PF64 OR INSTALLFOLDER~&lt;&lt;TESELA_PF32 OR INSTALLFOLDER~&lt;&lt;TESELA_WIN)))" />
+        <!-- La ruta se da por buena (TESELA_FOLDER_OK=1) si es completa con unidad y sin "/", "..", "?" ni ruta de red; y se
+             retira si en "solo para mi" cae en un sitio protegido. Va en dos pasos porque una condicion admite 255 caracteres. -->
+        <Publish Property="TESELA_FOLDER_OK" Value="{}" Order="2" />
+        <Publish Property="TESELA_FOLDER_OK" Value="1" Order="3" Condition="INSTALLFOLDER&gt;&lt;&quot;:\&quot; AND NOT (INSTALLFOLDER&lt;&lt;&quot;\\&quot; OR INSTALLFOLDER&gt;&lt;&quot;/&quot; OR INSTALLFOLDER&gt;&lt;&quot;..&quot; OR INSTALLFOLDER&gt;&lt;&quot;?&quot;)" />
+        <Publish Property="TESELA_FOLDER_OK" Value="{}" Order="4" Condition="TESELA_SCOPE=&quot;user&quot; AND (INSTALLFOLDER~&lt;&lt;TESELA_PF64 OR INSTALLFOLDER~&lt;&lt;TESELA_WIN)" />
+        <Publish Event="NewDialog" Value="VerifyReadyDlg" Order="5" Condition="TESELA_FOLDER_OK=1" />
+        <Publish Event="SpawnDialog" Value="InvalidDirDlg" Order="6" Condition="NOT TESELA_FOLDER_OK" />
       </Control>
       <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="[TxCancel]">
         <Publish Event="SpawnDialog" Value="CancelDlg" />
@@ -421,7 +426,12 @@
       <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17" Text="[TxBack]">
         <Publish Event="NewDialog" Value="FolderDlg" />
       </Control>
-      <Control Id="Install" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="[TxInstall]">
+      <Control Id="Install" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="[TxInstall]" HideCondition="TESELA_SCOPE=&quot;machine&quot;">
+        <Publish Event="SpawnWaitDialog" Value="WaitForCostingDlg" Order="1" Condition="CostingComplete=1" />
+        <Publish Event="EndDialog" Value="Return" Order="2" />
+      </Control>
+      <!-- Con "para todos", el boton lleva el escudo de UAC (ElevationShield): Windows pedira administrador. -->
+      <Control Id="InstallElevated" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" ElevationShield="yes" Text="[TxInstall]" Hidden="yes" ShowCondition="TESELA_SCOPE=&quot;machine&quot;">
         <Publish Event="SpawnWaitDialog" Value="WaitForCostingDlg" Order="1" Condition="CostingComplete=1" />
         <Publish Event="EndDialog" Value="Return" Order="2" />
       </Control>

@@ -118,14 +118,19 @@ function New-Case([hashtable]$Props) {
     $s = New-Session
     foreach ($k in $synthetic.Keys) { Set-Prop $s $k $synthetic[$k] }
     foreach ($k in $Props.Keys) { Set-Prop $s $k ([string]$Props[$k]) }
+    # Una instalacion previa de verdad tiene tesela.exe en su carpeta (lo que comprueban TESELA_PREV_*_EXE); un caso puede fijar
+    # TESELA_PREV_USER_EXE='' para probar una clave de registro SIN producto.
+    foreach ($pair in @(@('TESELA_PREV_USER', 'TESELA_PREV_USER_EXE'), @('TESELA_PREV_MACHINE', 'TESELA_PREV_MACHINE_EXE'))) {
+        if ($Props.ContainsKey($pair[0]) -and $Props[$pair[0]] -and -not $Props.ContainsKey($pair[1])) { Set-Prop $s $pair[1] ([string]$Props[$pair[0]] + 'tesela.exe') }
+    }
     return $s
 }
 function New-UiCase([hashtable]$Props) {
     # El estado en el que estan las propiedades cuando se abren las ventanas: las acciones del principio de la secuencia que fijan las
-    # carpetas por defecto y las protegidas (TESELA_DEFAULT_*, TESELA_PF64, TESELA_PF32, TESELA_WIN) ya se han ejecutado. Las demas
+    # carpetas por defecto y las protegidas (TESELA_DEFAULT_*, TESELA_PF64, TESELA_WIN) ya se han ejecutado. Las demas
     # propiedades (ambito elegido, carpeta, instalaciones previas) son las del caso.
     $s = New-Case $Props
-    foreach ($a in 'TeselaSetDefaultUser', 'TeselaSetDefaultMachine', 'TeselaSetProtected64', 'TeselaSetProtected32', 'TeselaSetProtectedWin') { Invoke-Action $s $a }
+    foreach ($a in 'TeselaSetDefaultUser', 'TeselaSetDefaultMachine', 'TeselaSetProtected64', 'TeselaSetProtectedWin') { Invoke-Action $s $a }
     return $s
 }
 function Invoke-Sequence($S, [string]$Table, [switch]$IncludeAfterLaunch) {
@@ -164,11 +169,12 @@ try {
     $lcNames = @($launch | ForEach-Object {
             if ($_.Condition -ceq 'NOT WIX_DOWNGRADE_DETECTED') { 'downgrade' }
             elseif ($_.Condition -clike '*TESELA_PREV_USER=""') { 'user->machine' }
-            elseif ($_.Condition -clike '*TESELA_PREV_MACHINE=""') { 'machine->user' }
+            elseif ($_.Condition -clike '*TESELA_PREV_MACHINE=""*') { 'machine->user' }
             elseif ($_.Condition -clike '*TESELA_WIN*') { 'protected' }
+            elseif ($_.Condition -clike '*INSTALLFOLDER><":*') { 'format' }
             else { 'desconocida' }
         })
-    Check "las cuatro condiciones de lanzamiento se reconocen ($($lcNames -join ', '))" ((($lcNames | Sort-Object) -join ',') -ceq 'downgrade,machine->user,protected,user->machine')
+    Check "las cinco condiciones de lanzamiento se reconocen ($($lcNames -join ', '))" ((($lcNames | Sort-Object) -join ',') -ceq 'downgrade,format,machine->user,protected,user->machine')
     function Get-LcFailures($Result) {
         $bad = @()
         for ($i = 0; $i -lt $lcNames.Count; $i++) { if (-not $Result[$i]) { $bad += $lcNames[$i] } }
@@ -184,7 +190,10 @@ try {
         @{ Name = 'para todos (ALLUSERS=1) sobre una instalacion por usuario: BLOQUEA'; Props = @{ UILevel = 2; ALLUSERS = 1; MSIINSTALLPERUSER = ''; TESELA_PREV_USER = 'C:\Prev\' }; Fails = 'user->machine' },
         @{ Name = 'ALLUSERS=2 con MSIINSTALLPERUSER vacio (para todos) sobre una instalacion por usuario: BLOQUEA'; Props = @{ UILevel = 2; ALLUSERS = 2; MSIINSTALLPERUSER = ''; TESELA_PREV_USER = 'C:\Prev\' }; Fails = 'user->machine' },
         @{ Name = 'por usuario sobre una instalacion para todos: BLOQUEA'; Props = @{ UILevel = 2; TESELA_PREV_MACHINE = 'C:\PrevM\' }; Fails = 'machine->user' },
-        @{ Name = 'con las dos instalaciones previas: por usuario bloquea una y para todos la otra'; Props = @{ UILevel = 2; TESELA_PREV_USER = 'C:\Prev\'; TESELA_PREV_MACHINE = 'C:\PrevM\' }; Fails = 'machine->user' },
+        @{ Name = 'M2: con las dos (la suya por usuario y la de otra cuenta para todos), por usuario PUEDE actualizar la suya'; Props = @{ UILevel = 2; TESELA_PREV_USER = 'C:\Prev\'; TESELA_PREV_MACHINE = 'C:\PrevM\' }; Fails = '' },
+        @{ Name = 'con las dos, pedir para todos (ALLUSERS=1) sigue bloqueado por la suya por usuario'; Props = @{ UILevel = 2; ALLUSERS = 1; MSIINSTALLPERUSER = ''; TESELA_PREV_USER = 'C:\Prev\'; TESELA_PREV_MACHINE = 'C:\PrevM\' }; Fails = 'user->machine' },
+        @{ Name = 'm6: una clave de HKCU sin tesela.exe (restos) NO bloquea pasar a para todos'; Props = @{ UILevel = 2; ALLUSERS = 1; MSIINSTALLPERUSER = ''; TESELA_PREV_USER = 'C:\Resto\'; TESELA_PREV_USER_EXE = '' }; Fails = '' },
+        @{ Name = 'm6: una clave de HKLM sin tesela.exe (restos) NO bloquea la instalacion por usuario'; Props = @{ UILevel = 2; TESELA_PREV_MACHINE = 'C:\Resto\'; TESELA_PREV_MACHINE_EXE = '' }; Fails = '' },
         @{ Name = 'con interfaz completa (UILevel 5) las ventanas avisan: no bloquea'; Props = @{ UILevel = 5; ALLUSERS = 1; MSIINSTALLPERUSER = ''; TESELA_PREV_USER = 'C:\Prev\' }; Fails = '' },
         @{ Name = 'reparar o desinstalar (Installed) nunca se bloquea por el ambito'; Props = @{ UILevel = 2; Installed = '00:00:00'; ALLUSERS = 1; MSIINSTALLPERUSER = ''; TESELA_PREV_USER = 'C:\Prev\' }; Fails = '' },
         @{ Name = 'una version posterior instalada bloquea la bajada'; Props = @{ UILevel = 2; WIX_DOWNGRADE_DETECTED = '{11111111-2222-3333-4444-555555555555}' }; Fails = 'downgrade' },
@@ -196,7 +205,19 @@ try {
         @{ Name = 'carpeta de Program Files para todos (ALLUSERS=1): pasa'; Props = @{ UILevel = 2; ALLUSERS = 1; MSIINSTALLPERUSER = ''; INSTALLFOLDER = $machineDefault }; Fails = '' },
         @{ Name = 'carpeta del perfil por usuario: pasa'; Props = @{ UILevel = 2; INSTALLFOLDER = 'C:\Synth\Local\Programs\Tesela\' }; Fails = '' },
         @{ Name = 'otra unidad por usuario: pasa'; Props = @{ UILevel = 2; INSTALLFOLDER = 'C:\Mis programas\Tesela\' }; Fails = '' },
-        @{ Name = 'Program Files2 NO es Program Files (la comparacion lleva la barra final): pasa'; Props = @{ UILevel = 2; INSTALLFOLDER = ($pf64 + '2\Tesela\') }; Fails = '' }
+        @{ Name = 'm1: Program Files SIN barra final: BLOQUEA'; Props = @{ UILevel = 2; INSTALLFOLDER = $pf64 }; Fails = 'protected' },
+        @{ Name = 'm1: Windows SIN barra final: BLOQUEA'; Props = @{ UILevel = 2; INSTALLFOLDER = $winDir }; Fails = 'protected' },
+        @{ Name = 'm1: Program Files (Arm) (ARM64): BLOQUEA'; Props = @{ UILevel = 2; INSTALLFOLDER = ($pf64 + ' (Arm)\Tesela\') }; Fails = 'protected' },
+        @{ Name = 'm1: Program Files en mayusculas: BLOQUEA'; Props = @{ UILevel = 2; INSTALLFOLDER = ($pf64.ToUpperInvariant() + '\TESELA\') }; Fails = 'protected' },
+        @{ Name = 'm1 (coste aceptado): una carpeta cuyo NOMBRE empieza por Program Files (Program Files2) tambien se trata como protegida'; Props = @{ UILevel = 2; INSTALLFOLDER = ($pf64 + '2\Tesela\') }; Fails = 'protected' },
+        @{ Name = 'm1: barras normales (C:/Program Files/...): formato no valido'; Props = @{ UILevel = 2; INSTALLFOLDER = ($pf64.Replace('\', '/') + '/Tesela/') }; Fails = 'format' },
+        @{ Name = 'm1: con .. (C:\Datos\x\..\..\Program Files): formato no valido'; Props = @{ UILevel = 2; INSTALLFOLDER = 'C:\Datos\Uno\..\..\Program Files\Tesela\' }; Fails = 'format' },
+        @{ Name = 'm1: ruta con prefijo ?: formato no valido'; Props = @{ UILevel = 2; INSTALLFOLDER = ($unc + '?\C:\Program Files\Tesela\') }; Fails = 'format' },
+        @{ Name = 'm1: ruta de red (UNC): formato no valido'; Props = @{ UILevel = 2; INSTALLFOLDER = ($unc + 'localhost\C$\Program Files\Tesela\') }; Fails = 'format' },
+        @{ Name = 'm1: ruta relativa: formato no valido'; Props = @{ UILevel = 2; INSTALLFOLDER = 'Tesela' }; Fails = 'format' },
+        @{ Name = 'm1: tambien se valida el formato para todos (ALLUSERS=1) con /'; Props = @{ UILevel = 2; ALLUSERS = 1; MSIINSTALLPERUSER = ''; INSTALLFOLDER = 'C:/Tesela/' }; Fails = 'format' },
+        @{ Name = 'm1 (limite documentado): el nombre corto 8.3 (C:\PROGRA~1) NO se detecta sin codigo'; Props = @{ UILevel = 2; INSTALLFOLDER = 'C:\PROGRA~1\Tesela\' }; Fails = '' },
+        @{ Name = 'el formato de la ruta no se exige al reparar o desinstalar (Installed)'; Props = @{ UILevel = 2; Installed = '00:00:00'; INSTALLFOLDER = 'C:/Tesela/' }; Fails = '' }
     )
     foreach ($c in $lcCases) {
         $s = New-Case $c.Props
@@ -224,11 +245,14 @@ try {
         @{ Name = 'actualizacion por usuario: se queda en la carpeta anterior aunque se pida otra'; Props = @{ UILevel = 2; TESELA_PREV_USER = 'C:\Anterior\'; INSTALLFOLDER = 'C:\Otra\' }; Expect = @{ INSTALLFOLDER = 'C:\Anterior\' } },
         @{ Name = 'actualizacion para todos: se queda en la carpeta anterior'; Props = @{ UILevel = 2; ALLUSERS = 1; MSIINSTALLPERUSER = ''; TESELA_PREV_MACHINE = 'C:\AnteriorM\' }; Expect = @{ INSTALLFOLDER = 'C:\AnteriorM\' } },
         @{ Name = 'la carpeta anterior de OTRO ambito no se usa'; Props = @{ UILevel = 2; TESELA_PREV_MACHINE = 'C:\AnteriorM\' }; Expect = @{ INSTALLFOLDER = $userDefault } },
-        @{ Name = 'escritorio recordado (HKCU) sin interfaz: se mantiene'; Props = @{ UILevel = 2; TESELA_PREV_DESKTOP_USER = '1' }; Expect = @{ DESKTOPSHORTCUT = '1' } },
-        @{ Name = 'escritorio recordado (HKLM) sin interfaz: se mantiene'; Props = @{ UILevel = 2; ALLUSERS = 1; MSIINSTALLPERUSER = ''; TESELA_PREV_DESKTOP_MACHINE = '1' }; Expect = @{ DESKTOPSHORTCUT = '1' } },
-        @{ Name = 'DESKTOPSHORTCUT=0 explicito manda sobre lo recordado'; Props = @{ UILevel = 2; TESELA_PREV_DESKTOP_USER = '1'; DESKTOPSHORTCUT = '0' }; Expect = @{ DESKTOPSHORTCUT = '0' } },
+        @{ Name = 'escritorio recordado (HKCU) sin interfaz: se mantiene'; Props = @{ UILevel = 2; TESELA_PREV_USER = 'C:\Prev\'; TESELA_PREV_DESKTOP_USER = '1' }; Expect = @{ DESKTOPSHORTCUT = '1' } },
+        @{ Name = 'm6: marca de escritorio de una clave SIN producto (sin tesela.exe): no se recuerda'; Props = @{ UILevel = 2; TESELA_PREV_USER = 'C:\Resto\'; TESELA_PREV_USER_EXE = ''; TESELA_PREV_DESKTOP_USER = '1' }; Expect = @{ DESKTOPSHORTCUT = ''; INSTALLFOLDER = $userDefault } },
+        @{ Name = 'm6: una clave de carpeta SIN tesela.exe no fija la carpeta de la instalacion (se vacia y vale la de por defecto)'; Props = @{ UILevel = 2; TESELA_PREV_USER = 'C:\Resto\'; TESELA_PREV_USER_EXE = '' }; Expect = @{ INSTALLFOLDER = $userDefault; TESELA_PREV_USER = '' } },
+        @{ Name = 'm6: igual para una clave de HKLM sin tesela.exe (para todos)'; Props = @{ UILevel = 2; ALLUSERS = 1; MSIINSTALLPERUSER = ''; TESELA_PREV_MACHINE = 'C:\Resto\'; TESELA_PREV_MACHINE_EXE = '' }; Expect = @{ INSTALLFOLDER = $machineDefault; TESELA_PREV_MACHINE = '' } },
+        @{ Name = 'escritorio recordado (HKLM) sin interfaz: se mantiene'; Props = @{ UILevel = 2; ALLUSERS = 1; MSIINSTALLPERUSER = ''; TESELA_PREV_MACHINE = 'C:\PrevM\'; TESELA_PREV_DESKTOP_MACHINE = '1' }; Expect = @{ DESKTOPSHORTCUT = '1' } },
+        @{ Name = 'DESKTOPSHORTCUT=0 explicito manda sobre lo recordado'; Props = @{ UILevel = 2; TESELA_PREV_USER = 'C:\Prev\'; TESELA_PREV_DESKTOP_USER = '1'; DESKTOPSHORTCUT = '0' }; Expect = @{ DESKTOPSHORTCUT = '0' } },
         @{ Name = 'DESKTOPSHORTCUT=1 explicito se respeta sin nada recordado'; Props = @{ UILevel = 2; DESKTOPSHORTCUT = '1' }; Expect = @{ DESKTOPSHORTCUT = '1' } },
-        @{ Name = 'con interfaz completa el servidor NO vuelve a marcar la casilla que el usuario desmarco'; Props = @{ UILevel = 5; TESELA_PREV_DESKTOP_USER = '1' }; Expect = @{ DESKTOPSHORTCUT = '' } },
+        @{ Name = 'con interfaz completa el servidor NO vuelve a marcar la casilla que el usuario desmarco'; Props = @{ UILevel = 5; TESELA_PREV_USER = 'C:\Prev\'; TESELA_PREV_DESKTOP_USER = '1' }; Expect = @{ DESKTOPSHORTCUT = '' } },
         @{ Name = 'sin escritorio recordado ni pedido: no hay acceso directo'; Props = @{ UILevel = 2 }; Expect = @{ DESKTOPSHORTCUT = '' } }
     )
     foreach ($c in $seqCases) {
@@ -240,7 +264,7 @@ try {
     }
     # Con interfaz (secuencia de interfaz): el escritorio recordado SI marca la casilla de partida; el ambito se preelige.
     $uiCases = @(
-        @{ Name = 'escritorio recordado: la casilla parte marcada'; Props = @{ UILevel = 5; TESELA_PREV_DESKTOP_USER = '1' }; Expect = @{ DESKTOPSHORTCUT = '1'; TESELA_SCOPE = 'user'; INSTALLFOLDER = $userDefault } },
+        @{ Name = 'escritorio recordado: la casilla parte marcada'; Props = @{ UILevel = 5; TESELA_PREV_USER = 'C:\Prev\'; TESELA_PREV_DESKTOP_USER = '1' }; Expect = @{ DESKTOPSHORTCUT = '1'; TESELA_SCOPE = 'user'; INSTALLFOLDER = 'C:\Prev\' } },
         @{ Name = 'sin instalacion previa: ambito por usuario preelegido'; Props = @{ UILevel = 5 }; Expect = @{ TESELA_SCOPE = 'user'; DESKTOPSHORTCUT = '' } },
         @{ Name = 'instalacion previa para todos: ambito para todos preelegido'; Props = @{ UILevel = 5; TESELA_PREV_MACHINE = 'C:\AnteriorM\' }; Expect = @{ TESELA_SCOPE = 'machine' } },
         @{ Name = 'instalacion previa por usuario: ambito por usuario preelegido'; Props = @{ UILevel = 5; TESELA_PREV_USER = 'C:\Anterior\' }; Expect = @{ TESELA_SCOPE = 'user'; INSTALLFOLDER = 'C:\Anterior\' } },
@@ -296,7 +320,7 @@ try {
         @{ Name = 'para todos sobre una instalacion para todos: usa la carpeta de esa instalacion'; Props = @{ TESELA_SCOPE = 'machine'; TESELA_PREV_MACHINE = 'C:\AnteriorM\'; INSTALLFOLDER = $userDefault }; Expect = @{ ALLUSERS = '1'; INSTALLFOLDER = 'C:\AnteriorM\' }; Disabled = $false },
         @{ Name = 'para todos sobre una instalacion por usuario: Siguiente DESACTIVADO'; Props = @{ TESELA_SCOPE = 'machine'; TESELA_PREV_USER = 'C:\Anterior\' }; Expect = @{}; Disabled = $true },
         @{ Name = 'por usuario sobre una instalacion para todos: Siguiente DESACTIVADO'; Props = @{ TESELA_SCOPE = 'user'; TESELA_PREV_MACHINE = 'C:\AnteriorM\' }; Expect = @{}; Disabled = $true },
-        @{ Name = 'por usuario con las dos instalaciones: Siguiente DESACTIVADO'; Props = @{ TESELA_SCOPE = 'user'; TESELA_PREV_USER = 'C:\A\'; TESELA_PREV_MACHINE = 'C:\B\' }; Expect = @{}; Disabled = $true },
+        @{ Name = 'M2: por usuario con las dos instalaciones (la suya por usuario y otra para todos): Siguiente ACTIVO, la suya gana'; Props = @{ TESELA_SCOPE = 'user'; TESELA_PREV_USER = 'C:\A\'; TESELA_PREV_MACHINE = 'C:\B\' }; Expect = @{ ALLUSERS = '2'; INSTALLFOLDER = 'C:\A\' }; Disabled = $false },
         @{ Name = 'para todos con las dos instalaciones: Siguiente DESACTIVADO'; Props = @{ TESELA_SCOPE = 'machine'; TESELA_PREV_USER = 'C:\A\'; TESELA_PREV_MACHINE = 'C:\B\' }; Expect = @{}; Disabled = $true }
     )
     foreach ($c in $scopeCases) {
@@ -317,17 +341,27 @@ try {
     $s = New-UiCase @{ TESELA_SCOPE = 'user'; TESELA_PREV_MACHINE = 'C:\B\' }
     Check 'ventana de ambito: aviso "ya esta instalada para todos" al elegir por usuario' ((Test-ControlCond $s 'ScopeDlg' 'ConflictMachine' 'Show') -and -not (Test-ControlCond $s 'ScopeDlg' 'ConflictUser' 'Show'))
     $s = New-UiCase @{ TESELA_SCOPE = 'user' }
+    $s = New-UiCase @{ TESELA_SCOPE = 'user'; TESELA_PREV_USER = 'C:\A\'; TESELA_PREV_MACHINE = 'C:\B\' }
+    Check 'ventana de ambito: M2, con la suya por usuario no sale el aviso de para todos' (-not (Test-ControlCond $s 'ScopeDlg' 'ConflictMachine' 'Show') -and -not (Test-ControlCond $s 'ScopeDlg' 'ConflictUser' 'Show'))
+    $s = New-UiCase @{ TESELA_SCOPE = 'user' }
     Check 'ventana de ambito: sin conflicto no sale ningun aviso' (-not (Test-ControlCond $s 'ScopeDlg' 'ConflictMachine' 'Show') -and -not (Test-ControlCond $s 'ScopeDlg' 'ConflictUser' 'Show'))
 
     # === 5. Ventana de carpeta: Siguiente y avisos ================================================================================
     $folderCases = @(
         @{ Name = 'carpeta del perfil, por usuario'; Props = @{ TESELA_SCOPE = 'user'; INSTALLFOLDER = $userDefault }; Result = 'NewDialog:VerifyReadyDlg'; Protected = $false },
         @{ Name = 'otra unidad, por usuario'; Props = @{ TESELA_SCOPE = 'user'; INSTALLFOLDER = 'C:\Mis programas\Tesela\' }; Result = 'NewDialog:VerifyReadyDlg'; Protected = $false },
-        @{ Name = 'ruta de red (UNC), por usuario'; Props = @{ TESELA_SCOPE = 'user'; INSTALLFOLDER = ($unc + 'servidor\recurso\Tesela\') }; Result = 'NewDialog:VerifyReadyDlg'; Protected = $false },
+        @{ Name = 'ruta de red (UNC), por usuario: ya no se admite (se esquivaria el aviso de carpeta protegida con un recurso administrativo)'; Props = @{ TESELA_SCOPE = 'user'; INSTALLFOLDER = ($unc + 'servidor\recurso\Tesela\') }; Result = 'SpawnDialog:InvalidDirDlg'; Protected = $false },
         @{ Name = 'Program Files, para todos'; Props = @{ TESELA_SCOPE = 'machine'; INSTALLFOLDER = $machineDefault }; Result = 'NewDialog:VerifyReadyDlg'; Protected = $false },
         @{ Name = 'Program Files, por usuario: carpeta no valida y aviso'; Props = @{ TESELA_SCOPE = 'user'; INSTALLFOLDER = $machineDefault }; Result = 'SpawnDialog:InvalidDirDlg'; Protected = $true },
         @{ Name = 'Program Files (x86), por usuario: carpeta no valida y aviso'; Props = @{ TESELA_SCOPE = 'user'; INSTALLFOLDER = ($pf32 + '\Tesela\') }; Result = 'SpawnDialog:InvalidDirDlg'; Protected = $true },
         @{ Name = 'Windows, por usuario: carpeta no valida y aviso'; Props = @{ TESELA_SCOPE = 'user'; INSTALLFOLDER = ($winDir + '\Tesela\') }; Result = 'SpawnDialog:InvalidDirDlg'; Protected = $true },
+        @{ Name = 'm1: Program Files sin barra final, por usuario'; Props = @{ TESELA_SCOPE = 'user'; INSTALLFOLDER = $pf64 }; Result = 'SpawnDialog:InvalidDirDlg'; Protected = $true },
+        @{ Name = 'm1: Program Files (Arm), por usuario'; Props = @{ TESELA_SCOPE = 'user'; INSTALLFOLDER = ($pf64 + ' (Arm)\Tesela\') }; Result = 'SpawnDialog:InvalidDirDlg'; Protected = $true },
+        @{ Name = 'm1: Program Files en mayusculas, por usuario'; Props = @{ TESELA_SCOPE = 'user'; INSTALLFOLDER = ($pf64.ToUpperInvariant() + '\X\') }; Result = 'SpawnDialog:InvalidDirDlg'; Protected = $true },
+        @{ Name = 'm1: barras normales: carpeta no valida'; Props = @{ TESELA_SCOPE = 'user'; INSTALLFOLDER = 'C:/Datos/x/Tesela/' }; Result = 'SpawnDialog:InvalidDirDlg'; Protected = $false },
+        @{ Name = 'm1: con ..: carpeta no valida'; Props = @{ TESELA_SCOPE = 'user'; INSTALLFOLDER = 'C:\Datos\..\Tesela\' }; Result = 'SpawnDialog:InvalidDirDlg'; Protected = $false },
+        @{ Name = 'm1: con ? (prefijo de ruta larga): carpeta no valida'; Props = @{ TESELA_SCOPE = 'user'; INSTALLFOLDER = ($unc + '?\C:\Tesela\') }; Result = 'SpawnDialog:InvalidDirDlg'; Protected = $false },
+        @{ Name = 'm1: tambien para todos se rechaza el formato raro'; Props = @{ TESELA_SCOPE = 'machine'; INSTALLFOLDER = 'C:/Tesela/' }; Result = 'SpawnDialog:InvalidDirDlg'; Protected = $false },
         @{ Name = 'Program Files, por usuario CON administrador (Privileged): tambien carpeta no valida y aviso'; Props = @{ TESELA_SCOPE = 'user'; Privileged = 1; INSTALLFOLDER = $machineDefault }; Result = 'SpawnDialog:InvalidDirDlg'; Protected = $true },
         @{ Name = 'ruta relativa: carpeta no valida'; Props = @{ TESELA_SCOPE = 'user'; INSTALLFOLDER = 'Tesela' }; Result = 'SpawnDialog:InvalidDirDlg'; Protected = $false },
         @{ Name = 'solo un nombre de unidad sin barra: carpeta no valida'; Props = @{ TESELA_SCOPE = 'user'; INSTALLFOLDER = 'C:' }; Result = 'SpawnDialog:InvalidDirDlg'; Protected = $false },
@@ -355,6 +389,10 @@ try {
     Check 'ventana de listo: para todos, con escritorio y actualizacion' ((Test-ControlCond $s 'VerifyReadyDlg' 'ScopeMachine' 'Show') -and -not (Test-ControlCond $s 'VerifyReadyDlg' 'ScopeUser' 'Show') -and (Test-ControlCond $s 'VerifyReadyDlg' 'Desktop' 'Show') -and (Test-ControlCond $s 'VerifyReadyDlg' 'Upgrade' 'Show'))
     $s = New-Case @{ TESELA_SCOPE = 'user' }
     Check 'ventana de listo: por usuario, sin escritorio ni actualizacion' ((Test-ControlCond $s 'VerifyReadyDlg' 'ScopeUser' 'Show') -and -not (Test-ControlCond $s 'VerifyReadyDlg' 'Desktop' 'Show') -and -not (Test-ControlCond $s 'VerifyReadyDlg' 'Upgrade' 'Show'))
+    $s = New-Case @{ TESELA_SCOPE = 'machine' }
+    Check 'ventana de listo: para todos se muestra el boton Instalar CON el escudo de UAC y se oculta el normal' ((Test-ControlCond $s 'VerifyReadyDlg' 'InstallElevated' 'Show') -and (Test-ControlCond $s 'VerifyReadyDlg' 'Install' 'Hide'))
+    $s = New-Case @{ TESELA_SCOPE = 'user' }
+    Check 'ventana de listo: por usuario se muestra el boton Instalar normal (sin escudo)' (-not (Test-ControlCond $s 'VerifyReadyDlg' 'InstallElevated' 'Show') -and -not (Test-ControlCond $s 'VerifyReadyDlg' 'Install' 'Hide'))
     $s = New-Case @{}
     Check 'ventana de fin: instalacion nueva muestra el titulo de instalada, el inicio y la linea de anclar' ((Test-ControlCond $s 'ExitDialog' 'TitleInstalled' 'Show') -and (Test-ControlCond $s 'ExitDialog' 'Pin' 'Show') -and -not (Test-ControlCond $s 'ExitDialog' 'TitleRemoved' 'Show'))
     $s = New-Case @{ REMOVE = 'ALL' }

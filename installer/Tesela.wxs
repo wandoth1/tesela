@@ -11,15 +11,17 @@
   Decisiones (PLAN.md §1 y §3.11, ronda 14):
     * AMBITO DUAL: "solo para mi" (por defecto, sin administrador, %LOCALAPPDATA%\Programs\Tesela) o "para todos los usuarios"
       (pide administrador, Program Files\Tesela). Es el mecanismo estandar de Windows Installer para un paquete de doble
-      proposito: ALLUSERS=2 y MSIINSTALLPERUSER=1 (por usuario salvo que se pida otra cosa), claves de registro en HKMU y
-      carpetas calculadas por ambito. Elegir "para todos" NO da a Tesela mas permisos para limpiar: Tesela siempre corre con
-      permisos normales y se niega a limpiar si se ejecuta como administrador (decision de seguridad E1).
-    * NO se usa Scope="perUserOrMachine" a proposito: WiX 5.0.2 define ALLUSERS=2 y MSIINSTALLPERUSER=1 con el, pero NO marca
-      el paquete como "no hace falta elevar" (bit 8 del Summary Information; con Scope="perUser" si). Sin ese bit Windows pide
-      administrador nada mas abrir el MSI, tambien para la instalacion por usuario. Aqui se compila con Scope="perUser" (bit 8
-      puesto, sin ALLUSERS) y se declaran las dos propiedades a mano: el resultado en las tablas es el mismo que el del modo
-      dual y no hace falta tocar el MSI despues de compilarlo. msi-validate.ps1 exige las tres cosas (ALLUSERS=2,
-      MSIINSTALLPERUSER=1 y el bit 8).
+      proposito, el que declara Scope="perUserOrMachine" en WiX 5: ALLUSERS=2 y MSIINSTALLPERUSER=1 (por usuario salvo que se
+      pida otra cosa), claves de registro en HKMU y carpetas calculadas por ambito. Elegir "para todos" NO da a Tesela mas
+      permisos para limpiar: Tesela siempre corre con permisos normales y se niega a limpiar si se ejecuta como administrador
+      (decision de seguridad E1).
+    * El paquete NO se declara "compatible con UAC / no hace falta elevar" (bit 8 del contador de palabras del Summary Information):
+      un paquete de doble modo no puede llevarlo. Con el bit, Windows Installer trata el paquete como UAC-compatible, ignora
+      MSIINSTALLPERUSER y no pide credenciales al elegir "para todos" (error 1925). Sin el, la peticion de administrador sale
+      DESPUES de la interfaz, al empezar la instalacion para todos, y la instalacion por usuario no eleva nunca (el motor tiene
+      su propia rama para eso: "dual mode package ... installed in Per-User mode. No elevation is required"). WiX 5.0.2 con
+      Scope="perUserOrMachine" da exactamente eso (contador de palabras 2, sin ALLUSERS/MSIINSTALLPERUSER marcadas como seguras).
+      msi-validate.ps1 exige: bit 8 limpio, ALLUSERS=2 y MSIINSTALLPERUSER=1.
     * SIN CODIGO PROPIO: no hay DLL ni ejecutables (ni tabla Binary), no se usa WixToolset.UI.wixext (sus ventanas WixUI_*
       meten acciones personalizadas con DLL). Las unicas acciones personalizadas son de tipo 51 (fijan una propiedad) y de
       tipo 35 (fijan una carpeta); msi-validate.ps1 las compara una a una. La interfaz esta en installer/TeselaUI.wxs.
@@ -49,7 +51,7 @@
     Manufacturer="Tesela contributors"
     Version="$(Version)"
     UpgradeCode="7E8F4B67-A7D4-415B-9F8F-2E0B88AA88BB"
-    Scope="perUser"
+    Scope="perUserOrMachine"
     Language="1033"
     Compressed="yes">
 
@@ -73,13 +75,12 @@
     <Property Id="ARPNOMODIFY" Value="1" />
 
     <!--
-      Ambito. ALLUSERS=2 + MSIINSTALLPERUSER=1 = por usuario salvo que se pida otra cosa (ver la cabecera). `ALLUSERS=1` en la
-      linea de comandos (o la ventana de ambito) da la instalacion para todos. Las dos son SEGURAS: en una instalacion
-      elevada por un usuario que no es administrador, Windows Installer solo traspasa al servidor las propiedades seguras, y
-      sin estas dos el servidor no sabria que el ambito elegido es "para todos".
+      Ambito: Scope="perUserOrMachine" de arriba define ALLUSERS=2 y MSIINSTALLPERUSER=1 (por usuario salvo que se pida otra
+      cosa). `ALLUSERS=1` en la linea de comandos (o la ventana de ambito) da la instalacion para todos. Ninguna de las dos es
+      Secure a proposito: ALLUSERS es de las propiedades que Windows Installer pasa SIEMPRE al servidor (lista de "propiedades
+      publicas restringidas"), y MSIINSTALLPERUSER solo se lee con ALLUSERS=2; para "para todos" la interfaz fija ALLUSERS=1.
+      Por eso la unica forma documentada de pedir "para todos" sin interfaz es ALLUSERS=1.
     -->
-    <Property Id="ALLUSERS" Value="2" Secure="yes" />
-    <Property Id="MSIINSTALLPERUSER" Value="1" Secure="yes" />
 
     <!--
       PROPIEDADES SEGURAS (revierte la decision R-S3 de la v0.1.4, que dejaba INSTALLFOLDER sin Secure).
@@ -95,7 +96,7 @@
       compara con una lista de sitios protegidos solo para dar un aviso, no como barrera. Quien tenga esa directiva activa ya
       tiene un problema mayor que este instalador. Sin Secure, "para todos" con interfaz no funcionaria, y la
       alternativa (una accion personalizada que releyera el valor) esta prohibida por la regla de no llevar codigo.
-      msi-validate.ps1 exige que las dos esten en SecureCustomProperties.
+      msi-validate.ps1 exige exactamente estas dos (y las de MajorUpgrade) en SecureCustomProperties.
     -->
     <Property Id="INSTALLFOLDER" Secure="yes" />
     <Property Id="DESKTOPSHORTCUT" Secure="yes" />
@@ -119,6 +120,23 @@
     <Property Id="TESELA_PREV_DESKTOP_MACHINE">
       <RegistrySearch Id="PrevMachineDesktop" Root="HKLM" Key="Software\Tesela" Name="DesktopShortcut" Type="raw" />
     </Property>
+    <!--
+      Una clave sin producto NO cuenta (restos de versiones antiguas, un registro de Windows Installer limpiado a mano, la carpeta
+      borrada sin desinstalar): ademas del valor, tiene que existir tesela.exe en la carpeta recordada. Es otra busqueda de
+      registro con un FileSearch, sin codigo; AppSearch las procesa por orden alfabetico de la propiedad, y _EXE va despues de
+      su carpeta. Si el archivo no esta, las acciones TeselaStale* de abajo vacian TESELA_PREV_USER / TESELA_PREV_MACHINE y la
+      clave se ignora (no bloquea el cambio de ambito ni fija una carpeta que ya no existe).
+    -->
+    <Property Id="TESELA_PREV_USER_EXE">
+      <RegistrySearch Id="PrevUserExe" Root="HKCU" Key="Software\Tesela" Name="InstallFolder" Type="directory">
+        <FileSearch Name="tesela.exe" />
+      </RegistrySearch>
+    </Property>
+    <Property Id="TESELA_PREV_MACHINE_EXE">
+      <RegistrySearch Id="PrevMachineExe" Root="HKLM" Key="Software\Tesela" Name="InstallFolder" Type="directory">
+        <FileSearch Name="tesela.exe" />
+      </RegistrySearch>
+    </Property>
 
     <!--
       Arbol de carpetas. INSTALLFOLDER cuelga de TARGETDIR y su ruta REAL la fijan las acciones de tipo 51 de abajo (la propiedad
@@ -139,72 +157,86 @@
     <!-- OJO: en el contexto POR USUARIO (el de partida: MSIINSTALLPERUSER=1) Windows Installer REDIRIGE [ProgramFilesFolder] y
          [ProgramFiles64Folder] a %LOCALAPPDATA%\Programs\ (comprobado con una sesion del propio paquete). Por eso la carpeta de
          "para todos" y las carpetas protegidas NO salen de esas propiedades sino de las variables de entorno del sistema
-         (%ProgramW6432%; Program Files (x86) es esa misma carpeta con " (x86)": ICE03 no admite los parentesis de
-         %ProgramFiles(x86)% dentro de [%...]), que no dependen del contexto; [WindowsFolder] no se redirige. Con las propiedades,
-         la carpeta por defecto del perfil habria contado como "protegida" y se habria bloqueado la instalacion por usuario. -->
+         (%ProgramW6432%, %SystemRoot%), que no dependen del contexto.
+         Carpetas protegidas: se compara por PREFIJO y SIN barra final (`C:\Program Files`, `C:\WINDOWS`), de modo que cubre
+         `C:\Program Files`, `C:\Program Files\X`, `C:\Program Files (x86)\X` y `C:\Program Files (Arm)\X` (ARM64), sin barra
+         final y sin distinguir mayusculas. Coste aceptado: una carpeta cuyo NOMBRE empiece igual (`C:\Program Files2`,
+         `C:\Windows.old`) tambien se trata como protegida. Es un aviso, no una barrera (ver README). -->
+    <CustomAction Id="TeselaStaleUser" Property="TESELA_PREV_USER" Value="" Execute="immediate" />
+    <CustomAction Id="TeselaStaleMachine" Property="TESELA_PREV_MACHINE" Value="" Execute="immediate" />
     <CustomAction Id="TeselaSetDefaultUser" Property="TESELA_DEFAULT_USER" Value="[LocalAppDataFolder]Programs\Tesela\" Execute="immediate" />
     <CustomAction Id="TeselaSetDefaultMachine" Property="TESELA_DEFAULT_MACHINE" Value="[%ProgramW6432]\Tesela\" Execute="immediate" />
-    <CustomAction Id="TeselaSetProtected64" Property="TESELA_PF64" Value="[%ProgramW6432]\" Execute="immediate" />
-    <CustomAction Id="TeselaSetProtected32" Property="TESELA_PF32" Value="[%ProgramW6432] (x86)\" Execute="immediate" />
-    <CustomAction Id="TeselaSetProtectedWin" Property="TESELA_WIN" Value="[WindowsFolder]" Execute="immediate" />
+    <CustomAction Id="TeselaSetProtected64" Property="TESELA_PF64" Value="[%ProgramW6432]" Execute="immediate" />
+    <CustomAction Id="TeselaSetProtectedWin" Property="TESELA_WIN" Value="[%SystemRoot]" Execute="immediate" />
     <CustomAction Id="TeselaFolderPrevUser" Property="INSTALLFOLDER" Value="[TESELA_PREV_USER]" Execute="immediate" />
     <CustomAction Id="TeselaFolderPrevMachine" Property="INSTALLFOLDER" Value="[TESELA_PREV_MACHINE]" Execute="immediate" />
     <CustomAction Id="TeselaFolderDefaultUser" Property="INSTALLFOLDER" Value="[TESELA_DEFAULT_USER]" Execute="immediate" />
     <CustomAction Id="TeselaFolderDefaultMachine" Property="INSTALLFOLDER" Value="[TESELA_DEFAULT_MACHINE]" Execute="immediate" />
     <!-- Acceso directo del escritorio: se recuerda. Si DESKTOPSHORTCUT no viene fijado (vacio) y la instalacion anterior lo
-         tenia, se mantiene. Un valor explicito (DESKTOPSHORTCUT=0, o la casilla de la interfaz) manda. Solo cuando NO hay
-         interfaz completa (UILevel < 5) en la secuencia del servidor: con interfaz, la casilla ya parte del valor recordado
-         y el servidor NO debe volver a ponerlo si el usuario la desmarco. -->
+         tenia (y existe: tesela.exe en su carpeta), se mantiene. Un valor explicito (DESKTOPSHORTCUT=0, o la casilla de la
+         interfaz) manda. Solo cuando NO hay interfaz completa (UILevel < 5) en la secuencia del servidor: con interfaz, la casilla
+         ya parte del valor recordado y el servidor NO debe volver a ponerlo si el usuario la desmarco. -->
     <CustomAction Id="TeselaRememberDesktop" Property="DESKTOPSHORTCUT" Value="1" Execute="immediate" />
 
-    <!-- Desde cuando se aplican (tras AppSearch, que rellena TESELA_PREV_*, y antes de LaunchConditions y de CostInitialize). -->
+    <!-- Desde cuando se aplican (tras AppSearch, que rellena TESELA_PREV_*, y antes de LaunchConditions y de CostInitialize).
+         Primero se descartan las claves sin producto. -->
     <InstallUISequence>
-      <Custom Action="TeselaSetDefaultUser" Sequence="51" />
-      <Custom Action="TeselaSetDefaultMachine" Sequence="52" />
-      <Custom Action="TeselaSetProtected64" Sequence="53" />
-      <Custom Action="TeselaSetProtected32" Sequence="54" />
-      <Custom Action="TeselaSetProtectedWin" Sequence="55" />
-      <Custom Action="TeselaFolderPrevUser" Sequence="56" Condition="TESELA_PREV_USER&lt;&gt;&quot;&quot; AND NOT (ALLUSERS=1 OR (ALLUSERS=2 AND NOT MSIINSTALLPERUSER))" />
-      <Custom Action="TeselaFolderPrevMachine" Sequence="57" Condition="TESELA_PREV_MACHINE&lt;&gt;&quot;&quot; AND (ALLUSERS=1 OR (ALLUSERS=2 AND NOT MSIINSTALLPERUSER))" />
-      <Custom Action="TeselaFolderDefaultUser" Sequence="58" Condition="INSTALLFOLDER=&quot;&quot; AND NOT (ALLUSERS=1 OR (ALLUSERS=2 AND NOT MSIINSTALLPERUSER))" />
-      <Custom Action="TeselaFolderDefaultMachine" Sequence="59" Condition="INSTALLFOLDER=&quot;&quot; AND (ALLUSERS=1 OR (ALLUSERS=2 AND NOT MSIINSTALLPERUSER))" />
-      <Custom Action="TeselaRememberDesktop" Sequence="60" Condition="DESKTOPSHORTCUT=&quot;&quot; AND (TESELA_PREV_DESKTOP_USER=&quot;1&quot; OR TESELA_PREV_DESKTOP_MACHINE=&quot;1&quot;)" />
+      <Custom Action="TeselaStaleUser" Sequence="51" Condition="TESELA_PREV_USER&lt;&gt;&quot;&quot; AND TESELA_PREV_USER_EXE=&quot;&quot;" />
+      <Custom Action="TeselaStaleMachine" Sequence="52" Condition="TESELA_PREV_MACHINE&lt;&gt;&quot;&quot; AND TESELA_PREV_MACHINE_EXE=&quot;&quot;" />
+      <Custom Action="TeselaSetDefaultUser" Sequence="53" />
+      <Custom Action="TeselaSetDefaultMachine" Sequence="54" />
+      <Custom Action="TeselaSetProtected64" Sequence="55" />
+      <Custom Action="TeselaSetProtectedWin" Sequence="56" />
+      <Custom Action="TeselaFolderPrevUser" Sequence="57" Condition="TESELA_PREV_USER&lt;&gt;&quot;&quot; AND NOT (ALLUSERS=1 OR (ALLUSERS=2 AND NOT MSIINSTALLPERUSER))" />
+      <Custom Action="TeselaFolderPrevMachine" Sequence="58" Condition="TESELA_PREV_MACHINE&lt;&gt;&quot;&quot; AND (ALLUSERS=1 OR (ALLUSERS=2 AND NOT MSIINSTALLPERUSER))" />
+      <Custom Action="TeselaFolderDefaultUser" Sequence="59" Condition="INSTALLFOLDER=&quot;&quot; AND NOT (ALLUSERS=1 OR (ALLUSERS=2 AND NOT MSIINSTALLPERUSER))" />
+      <Custom Action="TeselaFolderDefaultMachine" Sequence="60" Condition="INSTALLFOLDER=&quot;&quot; AND (ALLUSERS=1 OR (ALLUSERS=2 AND NOT MSIINSTALLPERUSER))" />
+      <Custom Action="TeselaRememberDesktop" Sequence="61" Condition="DESKTOPSHORTCUT=&quot;&quot; AND ((TESELA_PREV_DESKTOP_USER=&quot;1&quot; AND TESELA_PREV_USER&lt;&gt;&quot;&quot;) OR (TESELA_PREV_DESKTOP_MACHINE=&quot;1&quot; AND TESELA_PREV_MACHINE&lt;&gt;&quot;&quot;))" />
     </InstallUISequence>
     <InstallExecuteSequence>
-      <Custom Action="TeselaSetDefaultUser" Sequence="51" />
-      <Custom Action="TeselaSetDefaultMachine" Sequence="52" />
-      <Custom Action="TeselaSetProtected64" Sequence="53" />
-      <Custom Action="TeselaSetProtected32" Sequence="54" />
-      <Custom Action="TeselaSetProtectedWin" Sequence="55" />
-      <Custom Action="TeselaFolderPrevUser" Sequence="56" Condition="TESELA_PREV_USER&lt;&gt;&quot;&quot; AND NOT (ALLUSERS=1 OR (ALLUSERS=2 AND NOT MSIINSTALLPERUSER))" />
-      <Custom Action="TeselaFolderPrevMachine" Sequence="57" Condition="TESELA_PREV_MACHINE&lt;&gt;&quot;&quot; AND (ALLUSERS=1 OR (ALLUSERS=2 AND NOT MSIINSTALLPERUSER))" />
-      <Custom Action="TeselaFolderDefaultUser" Sequence="58" Condition="INSTALLFOLDER=&quot;&quot; AND NOT (ALLUSERS=1 OR (ALLUSERS=2 AND NOT MSIINSTALLPERUSER))" />
-      <Custom Action="TeselaFolderDefaultMachine" Sequence="59" Condition="INSTALLFOLDER=&quot;&quot; AND (ALLUSERS=1 OR (ALLUSERS=2 AND NOT MSIINSTALLPERUSER))" />
-      <Custom Action="TeselaRememberDesktop" Sequence="60" Condition="UILevel&lt;5 AND DESKTOPSHORTCUT=&quot;&quot; AND (TESELA_PREV_DESKTOP_USER=&quot;1&quot; OR TESELA_PREV_DESKTOP_MACHINE=&quot;1&quot;)" />
+      <Custom Action="TeselaStaleUser" Sequence="51" Condition="TESELA_PREV_USER&lt;&gt;&quot;&quot; AND TESELA_PREV_USER_EXE=&quot;&quot;" />
+      <Custom Action="TeselaStaleMachine" Sequence="52" Condition="TESELA_PREV_MACHINE&lt;&gt;&quot;&quot; AND TESELA_PREV_MACHINE_EXE=&quot;&quot;" />
+      <Custom Action="TeselaSetDefaultUser" Sequence="53" />
+      <Custom Action="TeselaSetDefaultMachine" Sequence="54" />
+      <Custom Action="TeselaSetProtected64" Sequence="55" />
+      <Custom Action="TeselaSetProtectedWin" Sequence="56" />
+      <Custom Action="TeselaFolderPrevUser" Sequence="57" Condition="TESELA_PREV_USER&lt;&gt;&quot;&quot; AND NOT (ALLUSERS=1 OR (ALLUSERS=2 AND NOT MSIINSTALLPERUSER))" />
+      <Custom Action="TeselaFolderPrevMachine" Sequence="58" Condition="TESELA_PREV_MACHINE&lt;&gt;&quot;&quot; AND (ALLUSERS=1 OR (ALLUSERS=2 AND NOT MSIINSTALLPERUSER))" />
+      <Custom Action="TeselaFolderDefaultUser" Sequence="59" Condition="INSTALLFOLDER=&quot;&quot; AND NOT (ALLUSERS=1 OR (ALLUSERS=2 AND NOT MSIINSTALLPERUSER))" />
+      <Custom Action="TeselaFolderDefaultMachine" Sequence="60" Condition="INSTALLFOLDER=&quot;&quot; AND (ALLUSERS=1 OR (ALLUSERS=2 AND NOT MSIINSTALLPERUSER))" />
+      <Custom Action="TeselaRememberDesktop" Sequence="61" Condition="UILevel&lt;5 AND DESKTOPSHORTCUT=&quot;&quot; AND ((TESELA_PREV_DESKTOP_USER=&quot;1&quot; AND TESELA_PREV_USER&lt;&gt;&quot;&quot;) OR (TESELA_PREV_DESKTOP_MACHINE=&quot;1&quot; AND TESELA_PREV_MACHINE&lt;&gt;&quot;&quot;))" />
     </InstallExecuteSequence>
 
     <!--
-      Condiciones de lanzamiento (ademas de la del bloqueo de versiones anteriores que anade MajorUpgrade). Las tres dejan
-      pasar siempre una reparacion o desinstalacion (Installed) y TODA instalacion con la interfaz completa (UILevel 5):
-      con interfaz son las propias ventanas las que avisan y no dejan seguir (la ventana de ambito y la de carpeta), y estas
-      condiciones se evaluan ANTES de que el usuario elija. Sin interfaz (/qn, /qb) no hay nadie a quien avisar y mandan ellas.
+      Condiciones de lanzamiento (ademas de la del bloqueo de versiones anteriores que anade MajorUpgrade). Dejan pasar siempre
+      una reparacion o desinstalacion (Installed) y TODA instalacion con la interfaz completa (UILevel 5): con interfaz son las
+      propias ventanas las que avisan y no dejan seguir (la ventana de ambito y la de carpeta), y estas condiciones se evaluan
+      ANTES de que el usuario elija. Sin interfaz (/qn, /qb) no hay nadie a quien avisar y mandan ellas.
       "Instalacion para todos" = ALLUSERS=1, o ALLUSERS=2 con MSIINSTALLPERUSER vacio.
-      La carpeta protegida (Archivos de programa, Windows) se rechaza en "solo para mi" para QUIEN SEA, administrador incluido: no se
-      usa la propiedad Privileged: segun la documentacion de Windows Installer vale lo mismo que AdminUser (el USUARIO es administrador),
-      no que el proceso este elevado, y un administrador sin elevar tampoco puede escribir en Archivos de programa (acabaria en un 1603
-      sin explicacion). Ademas, en "solo para mi" una carpeta de Archivos de programa es un error de eleccion: lo suyo es "para todos"
-      (ALLUSERS=1).
+      * Cambio de ambito: de por usuario a para todos se bloquea siempre que ESTE usuario tenga la suya. De para todos a por
+        usuario se bloquea solo si ESTE usuario no tiene ya una por usuario: la suya manda y puede actualizarla aunque otra
+        cuenta haya instalado para todos.
+      * La carpeta protegida (Archivos de programa, Windows) se rechaza en "solo para mi" para QUIEN SEA, administrador incluido:
+        no se usa la propiedad Privileged (segun la documentacion de Windows Installer vale lo mismo que AdminUser: el USUARIO es
+        administrador, no que el proceso este elevado, y un administrador sin elevar tampoco puede escribir en Archivos de
+        programa). Ademas, en "solo para mi" una carpeta de Archivos de programa es un error de eleccion: lo suyo es "para todos".
+      * Formato de la ruta: tiene que ser completa con unidad (C:\...) y sin "/", "..", "?" ni ruta de red (\\): sin ello el aviso de
+        carpeta protegida se esquivaria con `C:/Program Files/X`, `C:\x\..\Program Files`, `?\C:\...` con prefijo de ruta larga o un recurso administrativo de red (C$). Los
+        nombres cortos 8.3 (`C:\PROGRA~1`) NO se detectan sin codigo; es un aviso, no una barrera.
       Los mensajes van en espanol e ingles juntos (no hay forma de elegir idioma aqui sin acciones personalizadas).
     -->
     <Launch
       Condition="Installed OR UILevel&gt;=5 OR NOT (ALLUSERS=1 OR (ALLUSERS=2 AND NOT MSIINSTALLPERUSER)) OR TESELA_PREV_USER=&quot;&quot;"
       Message="Tesela ya está instalada solo para tu usuario: desinstálala antes de instalarla para todos los usuarios. / Tesela is already installed for your user only: uninstall it before installing it for all users." />
     <Launch
-      Condition="Installed OR UILevel&gt;=5 OR (ALLUSERS=1 OR (ALLUSERS=2 AND NOT MSIINSTALLPERUSER)) OR TESELA_PREV_MACHINE=&quot;&quot;"
+      Condition="Installed OR UILevel&gt;=5 OR (ALLUSERS=1 OR (ALLUSERS=2 AND NOT MSIINSTALLPERUSER)) OR TESELA_PREV_MACHINE=&quot;&quot; OR TESELA_PREV_USER&lt;&gt;&quot;&quot;"
       Message="Tesela ya está instalada para todos los usuarios: actualízala con ALLUSERS=1 o desinstálala antes de cambiar de ámbito. / Tesela is already installed for all users: update it with ALLUSERS=1 or uninstall it before changing scope." />
     <Launch
-      Condition="Installed OR UILevel&gt;=5 OR ALLUSERS=1 OR (ALLUSERS=2 AND NOT MSIINSTALLPERUSER) OR NOT (INSTALLFOLDER~&lt;&lt;TESELA_PF64 OR INSTALLFOLDER~&lt;&lt;TESELA_PF32 OR INSTALLFOLDER~&lt;&lt;TESELA_WIN)"
+      Condition="Installed OR UILevel&gt;=5 OR ALLUSERS=1 OR (ALLUSERS=2 AND NOT MSIINSTALLPERUSER) OR NOT (INSTALLFOLDER~&lt;&lt;TESELA_PF64 OR INSTALLFOLDER~&lt;&lt;TESELA_WIN)"
       Message="INSTALLFOLDER está en un sitio protegido y esta instalación es solo para tu usuario: elige otra carpeta o usa ALLUSERS=1. / INSTALLFOLDER is in a protected location and this install is for your user only: choose another folder or use ALLUSERS=1." />
+    <Launch
+      Condition="Installed OR UILevel&gt;=5 OR (INSTALLFOLDER&gt;&lt;&quot;:\&quot; AND NOT (INSTALLFOLDER&lt;&lt;&quot;\\&quot; OR INSTALLFOLDER&gt;&lt;&quot;/&quot; OR INSTALLFOLDER&gt;&lt;&quot;..&quot; OR INSTALLFOLDER&gt;&lt;&quot;?&quot;))"
+      Message="INSTALLFOLDER tiene que ser una ruta completa con unidad (C:\Carpeta), sin /, .., ? ni ruta de red. / INSTALLFOLDER must be a full path with a drive letter (C:\Folder), without /, .., ? or a network path." />
 
     <!--
       Un componente por archivo. Cada componente lleva como KeyPath un valor de HKMU (HKCU en la instalacion por usuario, HKLM

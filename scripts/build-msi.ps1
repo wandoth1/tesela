@@ -67,8 +67,8 @@ $WixVersion = '5.0.2'
 #     HKMU (HKCU por usuario, HKLM para todos), que ICE57 no sabe resolver. Es el diseno estandar de un paquete de doble
 #     proposito (el acceso directo y su KeyPath van siempre en el mismo contexto: el del usuario o el comun del equipo).
 $AcceptedIce = @(
-    @{ Pattern = '\bICE61\b' },
-    @{ Pattern = "\bICE57\b.*Component '(StartMenuShortcut|DesktopShortcut)'" }
+    @{ Pattern = ': warning WIX1076: ICE61: This product should remove only older versions of itself\. The Maximum version is not less than the current product\.' },
+    @{ Pattern = ": error WIX0204: ICE57: Component '(StartMenuShortcut|DesktopShortcut)' has both per-user data and a keypath that can be either per-user or per-machine\.$" }
 )
 
 . (Join-Path $PSScriptRoot 'leak-scan.ps1')
@@ -192,7 +192,7 @@ try {
     foreach ($line in $iceOut) {
         if (-not $line.Trim()) { continue }
         $accepted = $false
-        foreach ($i in $AcceptedIce) { if ($line -match $i.Pattern) { $accepted = $true } }
+        foreach ($i in $AcceptedIce) { if ($line.TrimEnd() -match $i.Pattern) { $accepted = $true } }
         if ($accepted) {
             if ($line -match ' error ') { $acceptedErrors++ }
             Write-Host "  (aceptado) $($line.Substring([Math]::Max(0, $line.IndexOf('warning'))))"
@@ -200,7 +200,8 @@ try {
     }
     # Un codigo de salida distinto de 0 solo se tolera si lo explican avisos ACEPTADOS que ICE da como error (ICE57 de los accesos
     # directos): con cualquier otra causa, o sin ninguna linea, es un fallo.
-    if (($iceCode -ne 0 -and $acceptedErrors -eq 0) -or $bad.Count -gt 0) {
+    # ... y solo si son EXACTAMENTE los dos esperados (los componentes de los dos accesos directos).
+    if (($iceCode -ne 0 -and $acceptedErrors -ne 2) -or $bad.Count -gt 0) {
         $bad | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
         throw "wix msi validate: codigo $iceCode, $($bad.Count) mensajes sin aceptar"
     }

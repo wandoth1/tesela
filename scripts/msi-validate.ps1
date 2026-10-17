@@ -12,24 +12,27 @@
       de la interfaz (Dialog, Control, ControlEvent...), y NINGUNA otra (Binary, Environment, ServiceInstall, Class, Extension,
       ProgId, Verb, TypeLib, MIME, IniFile, Error, ...: son un fallo, tengan filas o no);
     * version, UpgradeCode fijo, nombre y editor, propiedades de Aplicaciones instaladas, y la lista cerrada de propiedades;
-    * AMBITO DUAL: ALLUSERS=2 y MSIINSTALLPERUSER=1 (por usuario salvo que se pida otra cosa) y el bit "no hace falta elevar" del
-      Summary Information (sin el, Windows pide administrador al abrir el MSI, tambien para instalar por usuario);
+    * AMBITO DUAL (Scope="perUserOrMachine"): ALLUSERS=2 y MSIINSTALLPERUSER=1 (por usuario salvo que se pida otra cosa) y el bit
+      "no hace falta elevar" del Summary Information LIMPIO: con el bit el motor trata el paquete como compatible con UAC, ignora
+      MSIINSTALLPERUSER y "para todos" no pide administrador (error 1925);
     * exactamente los 5 archivos esperados;
     * registro SOLO en HKMU (raiz -1) \Software\Tesela, con los 8 valores esperados; RemoveFile con UNA sola fila (la carpeta
       de instalacion, solo si queda vacia), sin nombre de archivo;
-    * las cuatro busquedas de registro de instalaciones previas (HKCU y HKLM, InstallFolder y DesktopShortcut, tipo 18);
+    * las seis busquedas de registro de instalaciones previas (HKCU y HKLM: InstallFolder y DesktopShortcut, tipo 18, y la
+      comprobacion de que tesela.exe existe en la carpeta recordada, tipo 16 con su fila de Signature): una clave sin producto no cuenta;
     * el arbol de carpetas EXACTO ($MsiExpectedDirectories) y los componentes (carpeta, GUID fijo, atributos, condicion);
     * dos accesos directos (menu Inicio y escritorio, sin argumentos y con WkDir = INSTALLFOLDER) y un icono;
-    * PROPIEDADES SEGURAS (ver installer/Tesela.wxs): SecureCustomProperties es EXACTAMENTE ALLUSERS, DESKTOPSHORTCUT,
-      INSTALLFOLDER, MSIINSTALLPERUSER, WIX_DOWNGRADE_DETECTED y WIX_UPGRADE_DETECTED; INSTALLFOLDER y DESKTOPSHORTCUT sin valor
+    * PROPIEDADES SEGURAS (ver installer/Tesela.wxs): SecureCustomProperties es EXACTAMENTE DESKTOPSHORTCUT,
+      INSTALLFOLDER, WIX_DOWNGRADE_DETECTED y WIX_UPGRADE_DETECTED (ALLUSERS ya pasa siempre al servidor y MSIINSTALLPERUSER solo se
+      lee con ALLUSERS=2); INSTALLFOLDER y DESKTOPSHORTCUT sin valor
       por defecto (la casilla del escritorio parte DESMARCADA);
     * SIN CODIGO: la tabla CustomAction es EXACTAMENTE la lista esperada (todas de tipo 51, fijar una propiedad; el tipo 35,
       fijar una carpeta, tambien se admitiria pero no se usa) mas una accion `TeselaEs_<Texto>` por cada texto de la interfaz;
       nada de DLL, ejecutables ni Binary. Las filas de InstallUISequence e InstallExecuteSequence de esas acciones (accion,
       condicion y numero) son las esperadas;
     * MajorUpgrade y bloqueo de versiones anteriores, con valores exactos (ver $MsiExpectedUpgradeRows);
-    * CUATRO LaunchCondition exactas: el bloqueo de versiones posteriores y las tres del ambito (cambio de ambito en las dos
-      direcciones y carpeta protegida en una instalacion por usuario), con mensaje;
+    * CINCO LaunchCondition exactas: el bloqueo de versiones posteriores, las del ambito (cambio de ambito en las dos direcciones,
+      con la instalacion por usuario propia ganando) y las de la carpeta (protegida en una instalacion por usuario, y formato de ruta), con mensaje;
     * LA INTERFAZ: las ventanas esperadas, solo tipos de control sin imagen, solo eventos de control NATIVOS (NewDialog,
       SpawnDialog, EndDialog, SetTargetPath, Reinstall...) y las propiedades que pueden cambiar las ventanas, cada NewDialog /
       SpawnDialog apunta a una ventana que existe, las filas de la ventana de ambito y de carpeta fijadas una a una, y cada
@@ -112,26 +115,32 @@ $MsiExpectedRegistry = @(
 # Las dos acciones de carpeta recuerdan donde se instalo: InstallFolder; el acceso directo del escritorio se recuerda con su
 # propio valor DesktopShortcut="1" (que es KeyPath del componente: aparece y desaparece con el).
 
-# Busquedas de registro de instalaciones previas: raiz 1 = HKCU, 2 = HKLM; tipo 18 = 2 (valor crudo) + 16 (vista de 64 bits).
+# Busquedas de registro de instalaciones previas: raiz 1 = HKCU, 2 = HKLM; tipo 18 = 2 (valor crudo) + 16 (vista de 64 bits). Las dos
+# *Exe comprueban que tesela.exe EXISTE en la carpeta recordada (tipo 16 = directorio en la vista de 64 bits, con una fila de la tabla
+# Signature que busca tesela.exe): una clave sin producto (restos de versiones antiguas) no cuenta.
 $MsiExpectedRegLocators = @(
-    @{ Id = 'PrevUserFolder'; Root = '1'; Name = 'InstallFolder'; Property = 'TESELA_PREV_USER' },
-    @{ Id = 'PrevMachineFolder'; Root = '2'; Name = 'InstallFolder'; Property = 'TESELA_PREV_MACHINE' },
-    @{ Id = 'PrevUserDesktop'; Root = '1'; Name = 'DesktopShortcut'; Property = 'TESELA_PREV_DESKTOP_USER' },
-    @{ Id = 'PrevMachineDesktop'; Root = '2'; Name = 'DesktopShortcut'; Property = 'TESELA_PREV_DESKTOP_MACHINE' }
+    @{ Id = 'PrevUserFolder'; Root = '1'; Name = 'InstallFolder'; Property = 'TESELA_PREV_USER'; Type = '18'; File = $null },
+    @{ Id = 'PrevMachineFolder'; Root = '2'; Name = 'InstallFolder'; Property = 'TESELA_PREV_MACHINE'; Type = '18'; File = $null },
+    @{ Id = 'PrevUserDesktop'; Root = '1'; Name = 'DesktopShortcut'; Property = 'TESELA_PREV_DESKTOP_USER'; Type = '18'; File = $null },
+    @{ Id = 'PrevMachineDesktop'; Root = '2'; Name = 'DesktopShortcut'; Property = 'TESELA_PREV_DESKTOP_MACHINE'; Type = '18'; File = $null },
+    @{ Id = 'PrevUserExe'; Root = '1'; Name = 'InstallFolder'; Property = 'TESELA_PREV_USER_EXE'; Type = '16'; File = 'tesela.exe' },
+    @{ Id = 'PrevMachineExe'; Root = '2'; Name = 'InstallFolder'; Property = 'TESELA_PREV_MACHINE_EXE'; Type = '16'; File = 'tesela.exe' }
 )
 
 # Condiciones de lanzamiento EXACTAS (la primera la anade MajorUpgrade). "Para todos" = ALLUSERS=1, o ALLUSERS=2 con
-# MSIINSTALLPERUSER vacio. Las tres ultimas dejan pasar siempre Installed (reparar/desinstalar) y la interfaz completa (UILevel 5:
-# las propias ventanas avisan y no dejan seguir). Ver installer/Tesela.wxs.
+# MSIINSTALLPERUSER vacio. Las cuatro ultimas dejan pasar siempre Installed (reparar/desinstalar) y la interfaz completa (UILevel 5:
+# las propias ventanas avisan y no dejan seguir). La 3 (para todos instalada, por usuario pedido) no bloquea si ESTE usuario ya tiene
+# su instalacion por usuario: la suya gana. La 5 exige una ruta completa con unidad y sin /, .., ? ni ruta de red. Ver installer/Tesela.wxs.
 $MsiExpectedLaunchConditions = @(
     'NOT WIX_DOWNGRADE_DETECTED',
     'Installed OR UILevel>=5 OR NOT (ALLUSERS=1 OR (ALLUSERS=2 AND NOT MSIINSTALLPERUSER)) OR TESELA_PREV_USER=""',
-    'Installed OR UILevel>=5 OR (ALLUSERS=1 OR (ALLUSERS=2 AND NOT MSIINSTALLPERUSER)) OR TESELA_PREV_MACHINE=""',
-    'Installed OR UILevel>=5 OR ALLUSERS=1 OR (ALLUSERS=2 AND NOT MSIINSTALLPERUSER) OR NOT (INSTALLFOLDER~<<TESELA_PF64 OR INSTALLFOLDER~<<TESELA_PF32 OR INSTALLFOLDER~<<TESELA_WIN)'
+    'Installed OR UILevel>=5 OR (ALLUSERS=1 OR (ALLUSERS=2 AND NOT MSIINSTALLPERUSER)) OR TESELA_PREV_MACHINE="" OR TESELA_PREV_USER<>""',
+    'Installed OR UILevel>=5 OR ALLUSERS=1 OR (ALLUSERS=2 AND NOT MSIINSTALLPERUSER) OR NOT (INSTALLFOLDER~<<TESELA_PF64 OR INSTALLFOLDER~<<TESELA_WIN)',
+    'Installed OR UILevel>=5 OR (INSTALLFOLDER><":\" AND NOT (INSTALLFOLDER<<"\\" OR INSTALLFOLDER><"/" OR INSTALLFOLDER><".." OR INSTALLFOLDER><"?"))'
 )
 
 # Propiedades seguras: las que de verdad llegan al servidor en una instalacion elevada. EXACTAMENTE estas.
-$MsiExpectedSecure = @('ALLUSERS', 'DESKTOPSHORTCUT', 'INSTALLFOLDER', 'MSIINSTALLPERUSER', 'WIX_DOWNGRADE_DETECTED', 'WIX_UPGRADE_DETECTED')
+$MsiExpectedSecure = @('DESKTOPSHORTCUT', 'INSTALLFOLDER', 'WIX_DOWNGRADE_DETECTED', 'WIX_UPGRADE_DETECTED')
 # Propiedades que SI pueden estar en la tabla Property (ademas de las que empiezan por `Tx`: los textos en ingles).
 $MsiAllowedProperties = @(
     'UpgradeCode', 'ARPPRODUCTICON', 'ARPURLINFOABOUT', 'ARPHELPLINK', 'ARPNOMODIFY', 'ALLUSERS', 'MSIINSTALLPERUSER', 'Manufacturer',
@@ -151,11 +160,12 @@ $MsiAllowedTables = @(
 # --- Acciones personalizadas: SOLO de tipo 51 (fijar una propiedad) o 35 (fijar una carpeta). Estas son las de la logica
 # (ambito, carpeta, escritorio, idioma); las de los textos son `TeselaEs_<Texto>` y se validan aparte. -------------------------
 $MsiExpectedCustomActions = @(
+    @{ Action = 'TeselaStaleUser'; Type = '51'; Source = 'TESELA_PREV_USER'; Target = '' },
+    @{ Action = 'TeselaStaleMachine'; Type = '51'; Source = 'TESELA_PREV_MACHINE'; Target = '' },
     @{ Action = 'TeselaSetDefaultUser'; Type = '51'; Source = 'TESELA_DEFAULT_USER'; Target = '[LocalAppDataFolder]Programs\Tesela\' },
     @{ Action = 'TeselaSetDefaultMachine'; Type = '51'; Source = 'TESELA_DEFAULT_MACHINE'; Target = '[%ProgramW6432]\Tesela\' },
-    @{ Action = 'TeselaSetProtected64'; Type = '51'; Source = 'TESELA_PF64'; Target = '[%ProgramW6432]\' },
-    @{ Action = 'TeselaSetProtected32'; Type = '51'; Source = 'TESELA_PF32'; Target = '[%ProgramW6432] (x86)\' },
-    @{ Action = 'TeselaSetProtectedWin'; Type = '51'; Source = 'TESELA_WIN'; Target = '[WindowsFolder]' },
+    @{ Action = 'TeselaSetProtected64'; Type = '51'; Source = 'TESELA_PF64'; Target = '[%ProgramW6432]' },
+    @{ Action = 'TeselaSetProtectedWin'; Type = '51'; Source = 'TESELA_WIN'; Target = '[%SystemRoot]' },
     @{ Action = 'TeselaFolderPrevUser'; Type = '51'; Source = 'INSTALLFOLDER'; Target = '[TESELA_PREV_USER]' },
     @{ Action = 'TeselaFolderPrevMachine'; Type = '51'; Source = 'INSTALLFOLDER'; Target = '[TESELA_PREV_MACHINE]' },
     @{ Action = 'TeselaFolderDefaultUser'; Type = '51'; Source = 'INSTALLFOLDER'; Target = '[TESELA_DEFAULT_USER]' },
@@ -174,19 +184,20 @@ $MsiAllowedCustomActionTypes = @('51', '35')
 # interfaz completa (UILevel<5): con interfaz, la casilla ya parte del valor recordado y el servidor no debe volver a ponerlo si
 # el usuario la desmarco. `Sequence` entre CostFinalize (1000) y MigrateFeatureStates (1200) para lo de la interfaz.
 $MsiCtxMachine = '(ALLUSERS=1 OR (ALLUSERS=2 AND NOT MSIINSTALLPERUSER))'
-$MsiRememberCond = 'DESKTOPSHORTCUT="" AND (TESELA_PREV_DESKTOP_USER="1" OR TESELA_PREV_DESKTOP_MACHINE="1")'
+$MsiRememberCond = 'DESKTOPSHORTCUT="" AND ((TESELA_PREV_DESKTOP_USER="1" AND TESELA_PREV_USER<>"") OR (TESELA_PREV_DESKTOP_MACHINE="1" AND TESELA_PREV_MACHINE<>""))'
 $MsiExpectedLogicRows = @(
-    @{ Action = 'TeselaSetDefaultUser'; Seq = 51; Cond = ''; Where = 'both' },
-    @{ Action = 'TeselaSetDefaultMachine'; Seq = 52; Cond = ''; Where = 'both' },
-    @{ Action = 'TeselaSetProtected64'; Seq = 53; Cond = ''; Where = 'both' },
-    @{ Action = 'TeselaSetProtected32'; Seq = 54; Cond = ''; Where = 'both' },
-    @{ Action = 'TeselaSetProtectedWin'; Seq = 55; Cond = ''; Where = 'both' },
-    @{ Action = 'TeselaFolderPrevUser'; Seq = 56; Cond = ('TESELA_PREV_USER<>"" AND NOT ' + $MsiCtxMachine); Where = 'both' },
-    @{ Action = 'TeselaFolderPrevMachine'; Seq = 57; Cond = ('TESELA_PREV_MACHINE<>"" AND ' + $MsiCtxMachine); Where = 'both' },
-    @{ Action = 'TeselaFolderDefaultUser'; Seq = 58; Cond = ('INSTALLFOLDER="" AND NOT ' + $MsiCtxMachine); Where = 'both' },
-    @{ Action = 'TeselaFolderDefaultMachine'; Seq = 59; Cond = ('INSTALLFOLDER="" AND ' + $MsiCtxMachine); Where = 'both' },
-    @{ Action = 'TeselaRememberDesktop'; Seq = 60; Cond = $MsiRememberCond; Where = 'ui' },
-    @{ Action = 'TeselaRememberDesktop'; Seq = 60; Cond = ('UILevel<5 AND ' + $MsiRememberCond); Where = 'exec' },
+    @{ Action = 'TeselaStaleUser'; Seq = 51; Cond = 'TESELA_PREV_USER<>"" AND TESELA_PREV_USER_EXE=""'; Where = 'both' },
+    @{ Action = 'TeselaStaleMachine'; Seq = 52; Cond = 'TESELA_PREV_MACHINE<>"" AND TESELA_PREV_MACHINE_EXE=""'; Where = 'both' },
+    @{ Action = 'TeselaSetDefaultUser'; Seq = 53; Cond = ''; Where = 'both' },
+    @{ Action = 'TeselaSetDefaultMachine'; Seq = 54; Cond = ''; Where = 'both' },
+    @{ Action = 'TeselaSetProtected64'; Seq = 55; Cond = ''; Where = 'both' },
+    @{ Action = 'TeselaSetProtectedWin'; Seq = 56; Cond = ''; Where = 'both' },
+    @{ Action = 'TeselaFolderPrevUser'; Seq = 57; Cond = ('TESELA_PREV_USER<>"" AND NOT ' + $MsiCtxMachine); Where = 'both' },
+    @{ Action = 'TeselaFolderPrevMachine'; Seq = 58; Cond = ('TESELA_PREV_MACHINE<>"" AND ' + $MsiCtxMachine); Where = 'both' },
+    @{ Action = 'TeselaFolderDefaultUser'; Seq = 59; Cond = ('INSTALLFOLDER="" AND NOT ' + $MsiCtxMachine); Where = 'both' },
+    @{ Action = 'TeselaFolderDefaultMachine'; Seq = 60; Cond = ('INSTALLFOLDER="" AND ' + $MsiCtxMachine); Where = 'both' },
+    @{ Action = 'TeselaRememberDesktop'; Seq = 61; Cond = $MsiRememberCond; Where = 'ui' },
+    @{ Action = 'TeselaRememberDesktop'; Seq = 61; Cond = ('UILevel<5 AND ' + $MsiRememberCond); Where = 'exec' },
     @{ Action = 'TeselaScopeMachine'; Seq = 1001; Cond = 'TESELA_SCOPE="user" AND (ALLUSERS=1 OR (TESELA_PREV_MACHINE<>"" AND TESELA_PREV_USER=""))'; Where = 'ui' },
     @{ Action = 'TeselaLangEn'; Seq = 1006; Cond = 'TESELA_LANG=""'; Where = 'ui' }
 )
@@ -206,7 +217,7 @@ $MsiAllowedControlTypes = @('Text', 'Line', 'PushButton', 'PathEdit', 'CheckBox'
 $MsiAllowedControlEvents = @('NewDialog', 'SpawnDialog', 'SpawnWaitDialog', 'EndDialog', 'SetTargetPath', 'DirectoryListUp', 'DirectoryListNew',
     'Reset', 'Reinstall', 'ReinstallMode', 'Remove', 'RMShutdownAndRestart')
 # Propiedades que las ventanas pueden cambiar con un evento `[Propiedad]`.
-$MsiAllowedPublishedProperties = @('ALLUSERS', 'MSIINSTALLPERUSER', 'INSTALLFOLDER', '_BrowseProperty')
+$MsiAllowedPublishedProperties = @('ALLUSERS', 'MSIINSTALLPERUSER', 'INSTALLFOLDER', '_BrowseProperty', 'TESELA_FOLDER_OK')
 $MsiAllowedEndDialogValues = @('Return', 'Exit', 'Retry', 'Ignore', 'ErrorYes', 'ErrorNo', 'ErrorAbort', 'ErrorCancel', 'ErrorIgnore', 'ErrorOk', 'ErrorRetry')
 $MsiAllowedSetTargetPath = @('INSTALLFOLDER', '[_BrowseProperty]')
 $MsiExpectedEventMappings = @('BrowseDlg|DirectoryCombo|IgnoreChange|IgnoreChange', 'ProgressDlg|ActionText|ActionText|Text',
@@ -229,7 +240,25 @@ $MsiExpectedScopeEvents = @(
     'ScopeDlg|Next|NewDialog|FolderDlg|1|9',
     'FolderDlg|Next|SetTargetPath|INSTALLFOLDER|1|1'
 )
-$MsiExpectedScopeDisable = '(TESELA_SCOPE="machine" AND TESELA_PREV_USER<>"") OR (TESELA_SCOPE="user" AND TESELA_PREV_MACHINE<>"")'
+$MsiExpectedScopeDisable = '(TESELA_SCOPE="machine" AND TESELA_PREV_USER<>"") OR (TESELA_SCOPE="user" AND TESELA_PREV_MACHINE<>"" AND TESELA_PREV_USER="")'
+# TODOS los eventos de propiedad (`[X]`) de TODAS las ventanas, exactos: ningun otro boton puede cambiar el ambito, la carpeta ni nada.
+# Dialog|Control|Evento|Argumento|Condicion|Orden
+$MsiFolderValid = 'INSTALLFOLDER><":\" AND NOT (INSTALLFOLDER<<"\\" OR INSTALLFOLDER><"/" OR INSTALLFOLDER><".." OR INSTALLFOLDER><"?")'
+$MsiExpectedPropertyEvents = @(
+    $MsiExpectedScopeEvents | Where-Object { $_ -clike 'ScopeDlg|Next|[[]*' }
+    'FolderDlg|ChangeFolder|[_BrowseProperty]|INSTALLFOLDER|1|1',
+    'FolderDlg|Next|[TESELA_FOLDER_OK]|{}|1|2',
+    ('FolderDlg|Next|[TESELA_FOLDER_OK]|1|' + $MsiFolderValid + '|3'),
+    'FolderDlg|Next|[TESELA_FOLDER_OK]|{}|TESELA_SCOPE="user" AND (INSTALLFOLDER~<<TESELA_PF64 OR INSTALLFOLDER~<<TESELA_WIN)|4'
+)
+# TODOS los EndDialog (Dialogo|Boton|Valor), exactos: un EndDialog de mas en la bienvenida se saltaria todas las ventanas.
+$MsiExpectedEndDialogs = @(
+    'ErrorDlg|Y|ErrorYes', 'ErrorDlg|A|ErrorAbort', 'ErrorDlg|C|ErrorCancel', 'ErrorDlg|I|ErrorIgnore', 'ErrorDlg|N|ErrorNo', 'ErrorDlg|O|ErrorOk',
+    'ErrorDlg|R|ErrorRetry', 'InvalidDirDlg|OK|Return', 'BrowseDlg|OK|Return', 'BrowseDlg|Cancel|Return', 'VerifyReadyDlg|Install|Return',
+    'VerifyReadyDlg|InstallElevated|Return', 'WaitForCostingDlg|Return|Exit', 'MaintenanceDlg|Repair|Return', 'MaintenanceDlg|Remove|Return',
+    'ExitDialog|Finish|Return', 'FatalError|Finish|Exit', 'UserExit|Finish|Exit', 'CancelDlg|Yes|Exit', 'CancelDlg|No|Return',
+    'FilesInUse|Retry|Retry', 'FilesInUse|Ignore|Ignore', 'FilesInUse|Exit|Exit', 'MsiRMFilesInUse|OK|Return', 'MsiRMFilesInUse|Cancel|Exit'
+)
 
 function Open-MsiDatabase {
     # Abre el MSI. $Write = $false: solo lectura (lo que usa build-msi.ps1). Las pruebas abren COPIAS en modo escritura.
@@ -298,7 +327,7 @@ function Test-MsiUserInterface {
     if ($Props['ErrorDialog'] -cne 'ErrorDlg') { $Problems.Add("la propiedad ErrorDialog es '$($Props['ErrorDialog'])', se esperaba 'ErrorDlg'") }
 
     # Controles: solo tipos sin imagen. Textos referenciados: `[Tx...]`.
-    $ctl = @(Get-MsiRows $Msi 'SELECT `Dialog_`, `Control`, `Type`, `Property`, `Text` FROM `Control`' 5)
+    $ctl = @(Get-MsiRows $Msi 'SELECT `Dialog_`, `Control`, `Type`, `Property`, `Text`, `Attributes` FROM `Control`' 6)
     $referenced = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::Ordinal)
     foreach ($c in $ctl) {
         if ($MsiAllowedControlTypes -cnotcontains $c[2]) { $Problems.Add("control no permitido: $($c[0]).$($c[1]) es de tipo $($c[2]) (solo controles sin imagen)") }
@@ -314,6 +343,9 @@ function Test-MsiUserInterface {
     foreach ($r in $rb) {
         foreach ($m in [regex]::Matches($r[2], '\[([A-Za-z0-9_]+)\]')) { if ($m.Groups[1].Value -clike 'Tx*') { [void]$referenced.Add($m.Groups[1].Value) } }
     }
+    # El boton Instalar de "para todos" lleva el escudo de UAC (ElevationShield, 0x00800000): Windows pedira administrador al seguir.
+    $shield = @($ctl | Where-Object { $_[0] -ceq 'VerifyReadyDlg' -and $_[1] -ceq 'InstallElevated' })
+    if ($shield.Count -cne 1 -or (([int]$shield[0][5]) -band 8388608) -eq 0) { $Problems.Add('VerifyReadyDlg.InstallElevated (el boton Instalar de "para todos") tiene que llevar el escudo de UAC (ElevationShield)') }
     # La casilla del escritorio: propiedad DESKTOPSHORTCUT con valor 1.
     $cb = @(Get-MsiRows $Msi 'SELECT `Property`, `Value` FROM `CheckBox`' 2)
     if ($cb.Count -cne 1 -or $cb[0][0] -cne 'DESKTOPSHORTCUT' -or $cb[0][1] -cne '1') {
@@ -347,10 +379,18 @@ function Test-MsiUserInterface {
     foreach ($x in $MsiExpectedScopeEvents) { if ($got -cnotcontains $x) { $Problems.Add("falta el evento de la interfaz: $x") } }
     $scopeNext = @($ev | Where-Object { $_[0] -ceq 'ScopeDlg' -and $_[1] -ceq 'Next' })
     if ($scopeNext.Count -cne 9) { $Problems.Add("ScopeDlg.Next tiene que tener 9 eventos; tiene $($scopeNext.Count)") }
-    # FolderDlg.Next: SetTargetPath (1), NewDialog VerifyReadyDlg (2) y SpawnDialog InvalidDirDlg (3).
+    # TODOS los eventos de propiedad de TODAS las ventanas: exactamente los esperados (ni uno mas, ni uno menos).
+    $propEvents = @($ev | Where-Object { $_[2] -cmatch '^\[.+\]$' } | ForEach-Object { $_ -join '|' })
+    foreach ($x in $MsiExpectedPropertyEvents) { if ($propEvents -cnotcontains $x) { $Problems.Add("falta el evento de propiedad esperado: $x") } }
+    foreach ($x in $propEvents) { if ($MsiExpectedPropertyEvents -cnotcontains $x) { $Problems.Add("evento de propiedad NO esperado (una ventana cambia una propiedad que no debe): $x") } }
+    # TODOS los EndDialog: exactamente los esperados.
+    $ends = @($ev | Where-Object { $_[2] -ceq 'EndDialog' } | ForEach-Object { "$($_[0])|$($_[1])|$($_[3])" })
+    foreach ($x in $MsiExpectedEndDialogs) { if ($ends -cnotcontains $x) { $Problems.Add("falta el EndDialog esperado: $x") } }
+    foreach ($x in $ends) { if ($MsiExpectedEndDialogs -cnotcontains $x) { $Problems.Add("EndDialog NO esperado (cerraria una ventana donde no toca): $x") } }
+    # FolderDlg.Next: SetTargetPath (1), la bandera TESELA_FOLDER_OK (2-4), NewDialog VerifyReadyDlg (5) y SpawnDialog InvalidDirDlg (6).
     $fn = @($ev | Where-Object { $_[0] -ceq 'FolderDlg' -and $_[1] -ceq 'Next' } | Sort-Object { [int]$_[5] })
-    if ($fn.Count -cne 3 -or $fn[0][2] -cne 'SetTargetPath' -or $fn[1][2] -cne 'NewDialog' -or $fn[1][3] -cne 'VerifyReadyDlg' -or $fn[2][2] -cne 'SpawnDialog' -or $fn[2][3] -cne 'InvalidDirDlg') {
-        $Problems.Add('FolderDlg.Next tiene que hacer SetTargetPath, luego NewDialog VerifyReadyDlg y luego SpawnDialog InvalidDirDlg')
+    if ($fn.Count -cne 6 -or $fn[0][2] -cne 'SetTargetPath' -or $fn[4][2] -cne 'NewDialog' -or $fn[4][3] -cne 'VerifyReadyDlg' -or $fn[4][4] -cne 'TESELA_FOLDER_OK=1' -or $fn[5][2] -cne 'SpawnDialog' -or $fn[5][3] -cne 'InvalidDirDlg' -or $fn[5][4] -cne 'NOT TESELA_FOLDER_OK') {
+        $Problems.Add('FolderDlg.Next tiene que hacer SetTargetPath, calcular TESELA_FOLDER_OK, abrir VerifyReadyDlg si es 1 y abrir InvalidDirDlg si no')
     }
     # Examinar usa el dialogo nativo (PathEdit, DirectoryCombo y DirectoryList sobre _BrowseProperty).
     $browse = @($ctl | Where-Object { $_[0] -ceq 'BrowseDlg' -and @('PathEdit', 'DirectoryCombo', 'DirectoryList') -ccontains $_[2] })
@@ -429,11 +469,10 @@ function Test-MsiPackage {
 
         # AMBITO DUAL: por usuario por defecto (ALLUSERS=2 y MSIINSTALLPERUSER=1; ALLUSERS=1 en la linea de comandos da la
         # instalacion para todos) y, en el Summary Information, el bit 3 del contador de palabras ("no hace falta elevar").
-        # Sin ese bit Windows pide administrador nada mas abrir el MSI, tambien para la instalacion por usuario.
         $allUsers = $props['ALLUSERS']
         if (-not ($allUsers -ceq '2' -and $props['MSIINSTALLPERUSER'] -ceq '1')) { $problems.Add("no es por usuario por defecto: ALLUSERS='$allUsers' MSIINSTALLPERUSER='$($props['MSIINSTALLPERUSER'])' (se esperaba 2 y 1)") }
         $wordCount = [int](Get-MsiSummaryProperty $msi 15)
-        if (($wordCount -band 8) -ceq 0) { $problems.Add("el Summary Information no declara 'no hace falta elevar' (contador de palabras = $wordCount)") }
+        if (($wordCount -band 8) -cne 0) { $problems.Add("el Summary Information declara 'no hace falta elevar' (bit 8 del contador de palabras = $wordCount): un paquete de doble modo no puede llevarlo, el motor ignora MSIINSTALLPERUSER y 'para todos' no pediria administrador (error 1925)") }
         # La carpeta y la casilla del escritorio parten SIN valor: por usuario y desmarcada por defecto.
         foreach ($p in 'INSTALLFOLDER', 'DESKTOPSHORTCUT') {
             if ($props.ContainsKey($p) -and $props[$p] -cne '') { $problems.Add("la propiedad $p tiene un valor por defecto en la tabla Property ('$($props[$p])'): tiene que partir vacia") }
@@ -618,9 +657,9 @@ function Test-MsiPackage {
         if ($app.Count -cne $MsiExpectedRegLocators.Count) { $problems.Add("AppSearch tiene $($app.Count) filas, se esperaban $($MsiExpectedRegLocators.Count)") }
         foreach ($e in $MsiExpectedRegLocators) {
             $l = @($loc | Where-Object { $_[0] -ceq $e.Id })
-            # Type 18 = 2 (valor crudo, raw) + 16 (vista de 64 bits: el paquete es x64).
-            if ($l.Count -cne 1 -or $l[0][1] -cne $e.Root -or $l[0][2] -cne $MsiExpectedRegistryKey -or $l[0][3] -cne $e.Name -or $l[0][4] -cne '18') {
-                $problems.Add("se esperaba UNA busqueda de registro $($e.Id): raiz $($e.Root), Software\Tesela, valor $($e.Name), tipo 18")
+            # Type 18 = 2 (valor crudo, raw) + 16 (vista de 64 bits: el paquete es x64); 16 = directorio (con tesela.exe) en la vista de 64 bits.
+            if ($l.Count -cne 1 -or $l[0][1] -cne $e.Root -or $l[0][2] -cne $MsiExpectedRegistryKey -or $l[0][3] -cne $e.Name -or $l[0][4] -cne $e.Type) {
+                $problems.Add("se esperaba UNA busqueda de registro $($e.Id): raiz $($e.Root), Software" + [char]92 + "Tesela, valor $($e.Name), tipo $($e.Type)")
             }
             $a = @($app | Where-Object { $_[1] -ceq $e.Id })
             if ($a.Count -cne 1 -or $a[0][0] -cne $e.Property) { $problems.Add("AppSearch tiene que asignar $($e.Property) con la busqueda $($e.Id)") }
@@ -636,10 +675,15 @@ function Test-MsiPackage {
                 $problems.Add("AppSearch (secuencia $($seq[$t]['AppSearch'][2])) tiene que ir antes de CostFinalize (secuencia $($seq[$t]['CostFinalize'][2])) en ${t}")
             }
         }
-        # Sin busquedas de archivos ni de carpetas: la tabla Signature (si existe) esta vacia. RegLocator no usa filas de
-        # Signature; una fila de mas seria una busqueda que el .wxs no declara.
-        $sig = @(Get-MsiRows $msi 'SELECT `Signature` FROM `Signature`' 1)
-        if ($sig.Count -cne 0) { $problems.Add("la tabla Signature tiene $($sig.Count) filas, tiene que estar vacia (busquedas de archivos o carpetas no declaradas)") }
+        # La tabla Signature solo lleva las dos filas de comprobacion de tesela.exe (PrevUserExe y PrevMachineExe); ninguna busqueda
+        # de archivo o carpeta mas.
+        $sig = @(Get-MsiRows $msi 'SELECT `Signature`, `FileName`, `MinVersion`, `MaxVersion`, `MinSize`, `MaxSize`, `MinDate`, `MaxDate`, `Languages` FROM `Signature`' 9)
+        $sigWant = @($MsiExpectedRegLocators | Where-Object { $_.File })
+        if ($sig.Count -cne $sigWant.Count) { $problems.Add("la tabla Signature tiene $($sig.Count) filas, tiene que tener exactamente $($sigWant.Count) (la comprobacion de tesela.exe)") }
+        foreach ($e in $sigWant) {
+            $s = @($sig | Where-Object { $_[0] -ceq $e.Id })
+            if ($s.Count -cne 1 -or $s[0][1] -cne $e.File -or (($s[0][2..8] -join '') -cne '')) { $problems.Add("Signature $($e.Id) tiene que buscar solo el archivo $($e.File) (sin version, tamano ni fecha)") }
+        }
 
         # Filas de las secuencias de las acciones de la logica (accion, condicion y numero exactos) y su orden respecto a las
         # acciones estandar: despues de AppSearch (rellena TESELA_PREV_*), antes de LaunchConditions (las condiciones de
