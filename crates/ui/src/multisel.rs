@@ -323,11 +323,22 @@ impl Explore {
         Some(cur)
     }
 
+    /// ¿Se puede alternar la marca de `id`? Tiene que colgar de lo que se ve y, con una búsqueda activa, o ser un acierto o
+    /// estar ya marcado (desmarcar siempre se puede): así no se marca nunca lo que la lista no enseña.
+    pub(crate) fn can_toggle_mark(&mut self, id: NodeId) -> bool {
+        let Some(c) = self.child_of_root(id) else {
+            return false;
+        };
+        self.multi.contains(c) || self.search_set().is_none_or(|hits| hits.contains(&c))
+    }
+
     /// Marca o desmarca un elemento (una agrupación "Otros" marca o desmarca todos sus elementos).
     pub(crate) fn marks_toggle(&mut self, sel: Sel) {
         match sel {
             Sel::Node(id) => {
-                if let Some(c) = self.child_of_root(id) {
+                if self.can_toggle_mark(id)
+                    && let Some(c) = self.child_of_root(id)
+                {
                     self.multi.toggle(c);
                 }
             }

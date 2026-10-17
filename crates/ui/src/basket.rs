@@ -65,6 +65,10 @@ impl Explore {
     /// camino hacia la cesta desde el mapa y la lista: el menú, el panel de detalles y la selección múltiple pasan por aquí,
     /// con las mismas comprobaciones (`add_state` y las del propio `Basket`).
     pub(crate) fn basket_add_one(&mut self, sel: Sel) -> bool {
+        // Con una limpieza en curso la cesta no se toca (los botones ya salen desactivados; esto lo garantiza).
+        if self.flow.busy() {
+            return false;
+        }
         let Sel::Node(id) = sel else { return false };
         let path = self.tree.path(id);
         let prot = self.protection.clone();
@@ -94,11 +98,7 @@ impl Explore {
     /// ¿Está `sel` en la cesta como entrada propia (se puede quitar)?
     pub(crate) fn basket_has_own(&self, sel: Sel) -> bool {
         let Sel::Node(id) = sel else { return false };
-        let path = self.tree.path(id);
-        self.flow.basket.sources().any(|s| match s {
-            Source::Path(p) | Source::ContentsOf(p) => PathKey::new(p) == PathKey::new(&path),
-            _ => false,
-        })
+        self.flow.basket.has_own(&self.node_key(id))
     }
 
     /// Recalcula las recomendaciones si cambió el árbol (o el overlay).
@@ -217,17 +217,26 @@ impl Explore {
     /// filas que se ven).
     pub(crate) fn basket_window(&mut self, ctx: &egui::Context, env: &mut Env) {
         if !self.basket_open {
+            self.locator_cache = None;
             return;
         }
         if self.flow.basket.is_empty() {
             self.basket_open = false;
+            self.locator_cache = None;
             return;
         }
         self.ensure_recs(env);
         let recs = self.recs.as_ref().map(|r| r.1.clone()).unwrap_or_default();
         let tree = self.tree.clone();
+        // El índice de hermanos del localizador se conserva entre fotogramas mientras la ventana está abierta y no cambian
+        // ni el árbol ni la cesta.
+        let key = (self.version, self.flow.basket.rev());
+        let index = match self.locator_cache.take() {
+            Some((k, idx)) if k == key => idx,
+            _ => Default::default(),
+        };
         let view = self.view();
-        let mut loc = Locator::new(&tree);
+        let mut loc = Locator::with_index(&tree, index);
         let mut remove: Option<Source> = None;
         let mut open = true;
         let title = env.tr.t("basket-window-title");
@@ -320,6 +329,7 @@ impl Explore {
                     ui.add_space(10.0);
                 }
             });
+        self.locator_cache = Some((key, loc.into_index()));
         if let Some(s) = remove {
             self.flow.basket.remove(&s);
         }

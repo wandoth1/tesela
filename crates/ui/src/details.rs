@@ -292,9 +292,12 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
 
             // Acciones.
             ui.add_space(4.0);
+            // Con una limpieza en curso no se añade nada (con la misma pista que la barra de selección).
+            let busy = ex.flow.busy();
+            let busy_hint = busy.then_some("sel-add-busy-tip");
             let (label, enabled, hint) = match state {
-                AddState::Addable => (env.tr.t("menu-add-basket"), true, None),
-                AddState::ContentsOf => (env.tr.t("menu-add-contents-short"), true, None),
+                AddState::Addable => (env.tr.t("menu-add-basket"), !busy, busy_hint),
+                AddState::ContentsOf => (env.tr.t("menu-add-contents-short"), !busy, busy_hint),
                 AddState::InBasket if ex.basket_has_own(sel) => {
                     (env.tr.t("menu-remove-basket"), true, None)
                 }

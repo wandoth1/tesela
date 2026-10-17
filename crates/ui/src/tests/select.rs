@@ -752,6 +752,56 @@ fn con_una_limpieza_en_curso_anadir_esta_desactivado_y_no_hace_nada() {
         "con la limpieza en curso no se toca nada"
     );
     assert_eq!(explore(&h).flow.basket.len(), before);
+    // El icono de la cesta del panel de detalles también queda desactivado, y el camino único a la cesta no añade.
+    explore_mut(&mut h).select(Some(Sel::Node(id)));
+    h.run_steps(3);
+    assert!(
+        h.get_by_label("Añadir a la cesta")
+            .accesskit_node()
+            .is_disabled()
+    );
+    assert!(!explore_mut(&mut h).basket_add_one(Sel::Node(id)));
+    assert_eq!(explore(&h).flow.basket.len(), before);
+}
+
+#[test]
+fn con_una_busqueda_activa_no_se_marca_lo_que_no_es_acierto_pero_se_puede_desmarcar() {
+    let mut h = harness(opts(user_folder()));
+    let (v, d) = (kid(&h, "Vídeos"), kid(&h, "Descargas"));
+    explore_mut(&mut h).search = "desc".into();
+    h.run_steps(3);
+    // Por API, con Ctrl+clic en el mapa (la celda sigue ahí, velada) y con Espacio sobre el elemento activo.
+    explore_mut(&mut h).marks_toggle(Sel::Node(v));
+    assert!(explore(&h).multi.is_empty());
+    let vi = explore(&h)
+        .map
+        .layout
+        .as_ref()
+        .unwrap()
+        .cell_of_node(v)
+        .unwrap();
+    let c = rect_of_cell(&h, vi);
+    click_at_mods(
+        &mut h,
+        Pos2::new(c.center().x, c.min.y + 6.0),
+        Modifiers::COMMAND,
+    );
+    assert!(explore(&h).multi.is_empty(), "Ctrl+clic en un no acierto");
+    // Se deja pasar el tiempo de doble clic: dos clics seguidos en la misma celda serían "entrar".
+    h.run_steps(30);
+    let p = cell_center(&h, "Vídeos");
+    click_at(&mut h, p);
+    h.key_press(Key::Space);
+    h.run_steps(3);
+    assert!(explore(&h).multi.is_empty(), "Espacio sobre un no acierto");
+    // El menú tampoco lo ofrece para un no acierto, y sí para un acierto.
+    assert!(!explore_mut(&mut h).can_toggle_mark(v));
+    assert!(explore_mut(&mut h).can_toggle_mark(d));
+    // Un acierto se marca y se desmarca.
+    explore_mut(&mut h).marks_toggle(Sel::Node(d));
+    assert_eq!(marked(&h), vec![d]);
+    explore_mut(&mut h).marks_toggle(Sel::Node(d));
+    assert!(explore(&h).multi.is_empty());
 }
 
 #[test]
@@ -820,4 +870,9 @@ fn con_miles_de_hijos_anadir_va_por_lotes_y_la_cesta_llena_no_recalcula_cada_fot
     h.run_steps(3);
     let rows = h.query_all_by_label_contains("Quitar carpeta-").count();
     assert!((1..80).contains(&rows), "{rows} filas construidas");
+    // El índice del localizador se conserva mientras la ventana está abierta y se suelta al cerrarla.
+    assert!(explore(&h).locator_cache.is_some());
+    explore_mut(&mut h).basket_open = false;
+    h.run_steps(2);
+    assert!(explore(&h).locator_cache.is_none());
 }

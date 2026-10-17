@@ -1279,19 +1279,26 @@ pub(crate) fn menu_items(ui: &mut Ui, env: &mut Env, ex: &mut Explore, sel: Sel)
         ui.add_enabled(false, egui::Button::new(label))
             .on_disabled_hover_text(tr.t(why));
     };
+    // Mientras se prepara o se ejecuta una limpieza la cesta no se toca: "Añadir" queda desactivado con la misma pista que
+    // la barra de selección.
+    let busy = ex.flow.busy();
+    let add_button = |ui: &mut Ui, label: String| {
+        let b = ui.add_enabled(!busy, egui::Button::new(label));
+        if busy {
+            b.clone().on_disabled_hover_text(tr.t("sel-add-busy-tip"));
+        }
+        b.clicked()
+    };
     match state {
         AddState::Addable => {
-            if ui.button(tr.t("menu-add-basket")).clicked() {
+            if add_button(ui, tr.t("menu-add-basket")) {
                 ex.basket_add(sel, env, now);
                 ui.close();
             }
         }
         AddState::ContentsOf => {
             let name = describe::display_name(&tree, node, tr);
-            if ui
-                .button(tr.ta("menu-add-contents", args!["name" => name]))
-                .clicked()
-            {
+            if add_button(ui, tr.ta("menu-add-contents", args!["name" => name])) {
                 ex.basket_add(sel, env, now);
                 ui.close();
             }
@@ -1315,7 +1322,11 @@ pub(crate) fn menu_items(ui: &mut Ui, env: &mut Env, ex: &mut Explore, sel: Sel)
     let (target, marked) = match sel {
         Sel::Node(id) => {
             let c = ex.child_of_root(id);
-            (c.is_some(), c.is_some_and(|c| ex.multi.contains(c)))
+            // Con una búsqueda activa lo que no es un acierto no se puede marcar (desmarcar sí).
+            (
+                ex.can_toggle_mark(id),
+                c.is_some_and(|c| ex.multi.contains(c)),
+            )
         }
         Sel::Group(o) => (true, ex.others_all_marked(o)),
     };

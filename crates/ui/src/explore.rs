@@ -118,6 +118,9 @@ pub struct Explore {
     pub(crate) marks_dropped: usize,
     /// Estimación de la cesta (entradas, bytes) con la versión de la cesta y del árbol con que se calculó.
     pub(crate) estimate: Option<((u64, u64), (usize, u64))>,
+    /// Índice de hermanos del `Locator` de la ventana "Ver" mientras está abierta (con la versión del árbol y la de la cesta
+    /// con que se construyó): cada fotograma solo localiza las filas que se ven, sin reconstruir los índices.
+    pub(crate) locator_cache: Option<((u64, u64), crate::treepath::Index)>,
     /// Cuántas veces se recalculó la estimación (las pruebas comprueban que no es una vez por fotograma).
     pub(crate) estimate_computes: u32,
     pub(crate) view: View,
@@ -199,6 +202,7 @@ impl Explore {
             marks_search: String::new(),
             marks_dropped: 0,
             estimate: None,
+            locator_cache: None,
             estimate_computes: 0,
             view: View::Map,
             flow: CleanFlow::default(),

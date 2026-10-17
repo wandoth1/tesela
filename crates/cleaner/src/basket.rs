@@ -188,6 +188,12 @@ impl Basket {
         covered_by(&self.paths, &self.contents, key)
     }
 
+    /// ¿Hay una entrada PROPIA (de ruta o "Contenido de") exactamente en `key`, que se pueda quitar? A diferencia de
+    /// [`Basket::covers`] no mira los ancestros. O(log n) con los índices.
+    pub fn has_own(&self, key: &PathKey) -> bool {
+        self.paths.contains(key) || self.contents.contains(key)
+    }
+
     /// ¿Está "Contenido de X" en la cesta para la carpeta `key`?
     pub fn has_contents_of(&self, key: &PathKey) -> bool {
         self.contents.contains(key)
@@ -270,8 +276,10 @@ impl Basket {
     /// mismo resultado que añadirlas una a una en orden, pero en una sola pasada: los índices se consultan por clave y la
     /// absorción de lo que ya había se hace al final, una vez. Devuelve un resultado por elemento, en el mismo orden.
     ///
-    /// No hace falta que los elementos del lote sean hermanos: si uno cuelga de otro del mismo lote, queda como
-    /// `AlreadyCovered` (la cesta nunca guarda un elemento y su ancestro).
+    /// No hace falta que los elementos del lote sean hermanos, y la cesta final es la misma sea cual sea el orden. Lo único
+    /// que difiere de añadir uno a uno es el resultado INDIVIDUAL de un elemento que cuelga de otro del mismo lote: sale
+    /// `AlreadyCovered` aunque vaya antes que su ancestro (uno a uno saldría `Added` y luego quedaría absorbido), porque
+    /// la cesta nunca guarda un elemento y su ancestro.
     pub fn add_batch(
         &mut self,
         items: Vec<(PathBuf, BatchKind)>,
@@ -564,7 +572,11 @@ mod tests {
             (p(r"C:\datos"), BatchKind::ContentsOf),
             (p(&format!("{sep}{sep}srv{sep}c${sep}x")), BatchKind::Path),
             (p(r"C:\Users\<usuario>\Videos\viaje"), BatchKind::Path),
+            // Un descendiente ANTES que su ancestro en el mismo lote: uno a uno entra y luego lo absorbe el ancestro.
+            (p(r"C:\datos\d\x.bin"), BatchKind::Path),
+            (p(r"C:\datos\d"), BatchKind::Path),
         ];
+        let nested_first = items.len() - 2;
         let mut one = Basket::new();
         seed(&mut one);
         let expect: Vec<AddOutcome> = items
@@ -580,7 +592,12 @@ mod tests {
         let got = batch.add_batch(items, &pr);
         assert_ne!(batch.rev(), rev, "el lote cambia la versión");
         // Mismos rechazos y mismos "ya cubierta"; en lo añadido solo puede variar el recuento de absorbidos.
-        for (g, e) in got.iter().zip(&expect) {
+        assert_eq!(got[nested_first], AddOutcome::AlreadyCovered);
+        assert!(matches!(expect[nested_first], AddOutcome::Added { .. }));
+        for (i, (g, e)) in got.iter().zip(&expect).enumerate() {
+            if i == nested_first {
+                continue;
+            }
             assert_eq!(
                 std::mem::discriminant(g),
                 std::mem::discriminant(e),
@@ -627,6 +644,13 @@ mod tests {
         b.add_contents_of(p(r"C:\Users\<usuario>\Videos"), &pr);
         let v = PathKey::new(&p(r"C:\Users\<usuario>\Videos"));
         assert!(b.has_contents_of(&v) && !b.covers(&v));
+        assert!(b.has_own(&v) && !b.has_own(&v.join("viaje")));
+        b.add_path(p(r"C:\datos\a\x.bin"), &pr);
+        let x = PathKey::new(&p(r"C:\datos\a\x.bin"));
+        assert!(b.has_own(&x), "una entrada de ruta es propia");
+        assert!(!b.has_own(&PathKey::new(&p(r"C:\datos\a\x.bin\hijo"))));
+        b.remove(&Source::Path(p(r"C:\datos\a\x.bin")));
+        assert!(!b.has_own(&x));
         assert!(b.covers(&v.join("viaje")));
         b.clear();
         assert!(!b.has_contents_of(&v) && !b.covers(&v.join("viaje")));
