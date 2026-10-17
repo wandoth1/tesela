@@ -76,7 +76,7 @@ scan-known-title = Sitios donde suele haber archivos temporales
 scan-known-sum = Hasta { $size } en candidatos de bajo riesgo (se comprueba al limpiar)
 scan-known-note = Es una estimación, no un mínimo garantizado, y solo cuenta lo de bajo riesgo: temporales de más de 7 días y cachés de navegador. Qué se borra y qué va a la Papelera te lo enseñamos antes de limpiar, y la cifra real se mide al limpiar.
 scan-known-excluded = Descargas y la Papelera son datos tuyos: se muestran, pero no cuentan en la cifra de arriba.
-scan-known-excluded-diag = Los informes de errores y los volcados de bloqueo sirven para diagnosticar fallos: tampoco cuentan en la cifra de arriba.
+scan-known-excluded-diag = Los informes de errores y los volcados de bloqueo sirven para diagnosticar fallos: se muestran, pero no cuentan en la cifra de arriba.
 risk-review-tag = Revisar
 scan-clean-safe = Limpiar lo seguro
 scan-checking = Revisando { $done } de { $total } sitios conocidos…
@@ -266,8 +266,8 @@ rule-user-temp-why = Archivos temporales sin modificar en la última semana (má
 rule-windows-temp-why = Archivos temporales de Windows sin modificar en la última semana (más de 7 días). Los recientes se dejan por si un instalador los está usando.
 rule-downloads-why = Archivos tuyos: míralos y elige. Nada de aquí se marca solo.
 rule-recycle-bin-why = Vaciarla es definitivo. Solo se vacía lo que hay al confirmar; lo que entre después no se toca.
-rule-wer-reports-why = Informes que Windows guarda cuando un programa falla, ya enviados o en cola. Sirven para diagnosticar el fallo y el soporte de un programa puede pedirlos: si los borras, los pierdes. Solo se tocan los de más de 7 días. Van a la Papelera y no se marcan solos: cada uno guarda un fallo concreto y no se puede regenerar.
-rule-crash-dumps-why = Volcados de memoria de programas que se cerraron por un fallo (carpeta CrashDumps, que suele existir solo si se activó esa función de Windows). Pueden ocupar mucho y son lo que pide un desarrollador para entender el fallo: si los borras, los pierdes. Solo se tocan los de más de 7 días. Van a la Papelera y no se marcan solos: cada uno guarda un fallo concreto y no se puede regenerar.
+rule-wer-reports-why = Informes que Windows guarda cuando un programa falla, ya enviados o en cola. Sirven para diagnosticar el fallo y el soporte de un programa puede pedirlos. Solo se ofrecen carpetas sin cambios en más de 7 días. Van a la Papelera, nunca se borran definitivamente (si no caben, se dejan donde están) y no se marcan solos: cada uno guarda un fallo concreto y no se puede regenerar.
+rule-crash-dumps-why = Volcados de memoria de programas que se cerraron por un fallo (carpeta CrashDumps, que suele existir solo si se activó esa función de Windows). Pueden ocupar mucho y son lo que pide un desarrollador para entender el fallo. Solo se ofrecen los que llevan más de 7 días sin cambios. Van a la Papelera, nunca se borran definitivamente (si no caben, se dejan donde están) y no se marcan solos: cada uno guarda un fallo concreto y no se puede regenerar.
 
 # Confirmación
 confirm-title = Revisa antes de limpiar
@@ -302,6 +302,17 @@ confirm-more =
     }
 confirm-group-unfit = Se eliminará definitivamente porque no se puede enviar a la Papelera
 confirm-unfit-capacity-hint = Para poder enviarlo a la Papelera: abre las propiedades de la Papelera de reciclaje y fija un tamaño máximo para la unidad.
+confirm-group-kept = No caben en la Papelera: se dejan donde están
+confirm-kept-note = No caben en la Papelera; no se borran definitivamente porque sirven para diagnosticar fallos.
+confirm-diag-note = Cada informe o volcado guarda un fallo concreto y no se vuelve a crear; puede ser lo que pida el soporte de un programa. El espacio se libera de verdad al vaciar la Papelera.
+confirm-diag-many = Son { $count } informes o volcados y van a la Papelera de uno en uno: puede tardar varios minutos. Puedes cancelar cuando quieras; lo que ya se haya enviado se queda en la Papelera.
+confirm-young =
+    { $n ->
+        [one] { $count } informe o volcado se deja donde está: algo de él se modificó hace menos de 7 días.
+       *[other] { $count } informes o volcados se dejan donde están: algo de ellos se modificó hace menos de 7 días.
+    }
+reject-young = modificado hace menos de 7 días
+dest-recycle-diag = Va a la Papelera · si no cabe, se deja donde está
 confirm-unfit-check = Entiendo que esto no se podrá recuperar
 confirm-unfit-note = Sin marcar la casilla, estos elementos no se tocan.
 unfit-no-bin = la unidad no tiene Papelera

@@ -790,7 +790,26 @@ fn confirm_groups(ui: &mut Ui, env: &mut Env, c: &mut Confirm, plan: &Plan) {
             );
         }
         ui.add_space(4.0);
-        note_line(ui, &pal, &env.tr.t("confirm-recycle-note"), false);
+        // "Son archivos tuyos" solo si hay archivos tuyos: los informes y los volcados tienen su propia nota.
+        let is_diag = |i: &&PlanItem| i.category.is_some_and(CategoryId::is_diagnostic);
+        if rec.iter().any(|i| !is_diag(i)) {
+            note_line(ui, &pal, &env.tr.t("confirm-recycle-note"), false);
+        }
+        if rec.iter().any(is_diag) {
+            note_line(ui, &pal, &env.tr.t("confirm-diag-note"), false);
+        }
+        // m-1: una operación de la Papelera por carpeta; con muchas, tarda (se puede cancelar).
+        if let Some(n) = plan.many_diagnostic_items() {
+            note_line(
+                ui,
+                &pal,
+                &env.tr.ta(
+                    "confirm-diag-many",
+                    args!["n" => n as u64, "count" => env.tr.int(n as u64)],
+                ),
+                true,
+            );
+        }
         ui.add_space(16.0);
     }
     // 4. Lo que no cabe en la Papelera: grupo ámbar con su casilla.
@@ -845,6 +864,56 @@ fn confirm_groups(ui: &mut Ui, env: &mut Env, c: &mut Confirm, plan: &Plan) {
             });
         ui.add_space(16.0);
     }
+    // 4b. Lo que no cabe y NUNCA se borra definitivamente (informes, volcados): se deja donde está, sin casilla.
+    let kept: Vec<&PlanItem> = plan.kept_unfit_items().collect();
+    if !kept.is_empty() {
+        let sum: u64 = kept.iter().map(|i| i.bytes()).sum();
+        group_header(
+            ui,
+            env,
+            Icon::Warning,
+            &env.tr.t("confirm-group-kept"),
+            &env.tr.size(sum),
+        );
+        ui.add_space(4.0);
+        let shown = if c.show_all {
+            kept.len()
+        } else {
+            kept.len().min(5)
+        };
+        for it in &kept[..shown] {
+            let why = match it.fit {
+                Fit::Unfit(r) => env.tr.t(unfit_reason_key(r)),
+                Fit::Fits => String::new(),
+            };
+            let chip = it.category.map(|id| crate::basket::category_name(env, id));
+            row(
+                ui,
+                &pal,
+                &item_name(env, it),
+                chip.as_deref(),
+                &env.tr.size(it.bytes()),
+                Some(&why),
+                Some(&it.path.display().to_string()),
+            );
+        }
+        if shown < kept.len() {
+            let more = (kept.len() - shown) as u64;
+            ui.label(
+                RichText::new(env.tr.ta(
+                    "confirm-more",
+                    args!["n" => more, "count" => env.tr.int(more)],
+                ))
+                .size(13.0)
+                .color(pal.text_muted),
+            );
+        }
+        if has_capacity_unknown(kept.iter().map(|i| i.fit)) {
+            note_line(ui, &pal, &env.tr.t("confirm-unfit-capacity-hint"), false);
+        }
+        note_line(ui, &pal, &env.tr.t("confirm-kept-note"), true);
+        ui.add_space(16.0);
+    }
     // 5. Avisos: enlaces duros, nube, protegidos, rechazados.
     let (shared_n, shared_b) = plan.shared_total();
     if shared_n > 0 {
@@ -873,8 +942,21 @@ fn confirm_groups(ui: &mut Ui, env: &mut Env, c: &mut Confirm, plan: &Plan) {
         };
         note_line(ui, &pal, &text, false);
     }
-    if !plan.rejected.is_empty() {
-        let n = plan.rejected.len() as u64;
+    // m-2: lo que se deja por reciente tiene su propio aviso (no es "cambió, no existe o está protegido").
+    let young = plan.young_count() as u64;
+    if young > 0 {
+        note_line(
+            ui,
+            &pal,
+            &env.tr.ta(
+                "confirm-young",
+                args!["n" => young, "count" => env.tr.int(young)],
+            ),
+            false,
+        );
+    }
+    let n = plan.rejected.len() as u64 - young;
+    if n > 0 {
         note_line(
             ui,
             &pal,
@@ -884,38 +966,47 @@ fn confirm_groups(ui: &mut Ui, env: &mut Env, c: &mut Confirm, plan: &Plan) {
             ),
             true,
         );
-        if c.show_all {
-            for r in plan.rejected.iter().take(30) {
-                let why = match r.reason {
-                    RejectReason::Incomplete(k) => env.tr.ta(
-                        "reject-incomplete",
-                        args!["n" => k, "count" => env.tr.int(k)],
-                    ),
-                    RejectReason::Missing => env.tr.t("reject-missing"),
-                    RejectReason::AccessDenied => env.tr.t("reject-denied"),
-                    RejectReason::NoIdentity => env.tr.t("reject-identity"),
-                    RejectReason::Reparse => env.tr.t("reject-reparse"),
-                    RejectReason::ReparseAncestor => env.tr.t("reject-reparse-ancestor"),
-                    RejectReason::OutsideLocalAppData => env.tr.t("reject-outside-local"),
-                    RejectReason::Protected(Verdict::Denied) => env.tr.t("reject-protected"),
-                    RejectReason::Protected(_) => env.tr.t("reject-untouchable"),
-                    RejectReason::NotLocal => env.tr.t("reject-not-local"),
-                    RejectReason::Other(_) => env.tr.t("reject-other"),
-                };
-                let name = r.path.file_name().map_or_else(
-                    || r.path.display().to_string(),
-                    |n| n.to_string_lossy().into_owned(),
-                );
-                row(
-                    ui,
-                    &pal,
-                    &name,
-                    None,
-                    &why,
-                    None,
-                    Some(&r.path.display().to_string()),
-                );
-            }
+    }
+    if !plan.rejected.is_empty() && c.show_all {
+        let others = plan
+            .rejected
+            .iter()
+            .filter(|r| r.reason != RejectReason::Young);
+        let youngs = plan
+            .rejected
+            .iter()
+            .filter(|r| r.reason == RejectReason::Young);
+        for r in others.chain(youngs).take(30) {
+            let why = match r.reason {
+                RejectReason::Incomplete(k) => env.tr.ta(
+                    "reject-incomplete",
+                    args!["n" => k, "count" => env.tr.int(k)],
+                ),
+                RejectReason::Missing => env.tr.t("reject-missing"),
+                RejectReason::AccessDenied => env.tr.t("reject-denied"),
+                RejectReason::NoIdentity => env.tr.t("reject-identity"),
+                RejectReason::Reparse => env.tr.t("reject-reparse"),
+                RejectReason::ReparseAncestor => env.tr.t("reject-reparse-ancestor"),
+                RejectReason::OutsideLocalAppData => env.tr.t("reject-outside-local"),
+                RejectReason::Protected(Verdict::Denied) => env.tr.t("reject-protected"),
+                RejectReason::Protected(_) => env.tr.t("reject-untouchable"),
+                RejectReason::NotLocal => env.tr.t("reject-not-local"),
+                RejectReason::Young => env.tr.t("reject-young"),
+                RejectReason::Other(_) => env.tr.t("reject-other"),
+            };
+            let name = r.path.file_name().map_or_else(
+                || r.path.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            );
+            row(
+                ui,
+                &pal,
+                &name,
+                None,
+                &why,
+                None,
+                Some(&r.path.display().to_string()),
+            );
         }
     }
 }
@@ -946,9 +1037,10 @@ fn recycle_row(ui: &mut Ui, env: &mut Env, it: &PlanItem) {
 }
 
 /// Para los archivos y carpetas del usuario ("Tu archivo"): "en <carpeta padre>" y la ruta completa (para el ratón). Las
-/// categorías con regla se llaman por su nombre conocido y no lo necesitan.
+/// categorías con regla se llaman por su nombre conocido y no lo necesitan; los informes y los volcados (cada elemento es una
+/// carpeta o un archivo concreto) llevan también su carpeta y la ruta completa.
 fn folder_hint(env: &Env, it: &PlanItem) -> (Option<String>, Option<String>) {
-    if it.category.is_some() {
+    if it.category.is_some_and(|c| !c.is_diagnostic()) {
         return (None, None);
     }
     let folder = it.path.parent().map(|p| {

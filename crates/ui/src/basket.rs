@@ -792,7 +792,7 @@ impl Explore {
                 ui.horizontal(|ui| {
                     env.icons.show(ui, Icon::Delete, 13.0, pal.text);
                     ui.label(
-                        RichText::new(env.tr.t("basket-phrase-recycle"))
+                        RichText::new(env.tr.t("dest-recycle-diag"))
                             .size(12.0)
                             .color(pal.text),
                     );

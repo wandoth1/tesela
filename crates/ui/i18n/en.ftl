@@ -75,7 +75,7 @@ scan-known-title = Places where temporary files usually pile up
 scan-known-sum = Up to { $size } in low-risk candidates (checked when cleaning)
 scan-known-note = This is an estimate, not a guaranteed minimum, and it only counts low-risk items: temporary files older than 7 days and browser caches. We show you what is deleted and what goes to the Recycle Bin before cleaning, and the real figure is measured when cleaning.
 scan-known-excluded = Downloads and the Recycle Bin are your own data: they are shown, but not counted in the figure above.
-scan-known-excluded-diag = Error reports and crash dumps help diagnose failures: they are not counted in the figure above either.
+scan-known-excluded-diag = Error reports and crash dumps help diagnose failures: they are shown, but not counted in the figure above.
 risk-review-tag = Review
 scan-clean-safe = Clean the safe stuff
 scan-checking = Checking { $done } of { $total } known places…
@@ -265,8 +265,8 @@ rule-user-temp-why = Temporary files not modified in the last week (older than 7
 rule-windows-temp-why = Windows temporary files not modified in the last week (older than 7 days). Recent ones are left in case an installer is using them.
 rule-downloads-why = Your own files: look at them and choose. Nothing here is checked automatically.
 rule-recycle-bin-why = Emptying it is permanent. Only what is in it when you confirm is emptied; what arrives later is not touched.
-rule-wer-reports-why = Reports Windows saves when a program fails, already sent or queued. They help diagnose the failure and a program's support may ask for them: if you delete them, they are gone. Only those older than 7 days are touched. They go to the Recycle Bin and are never ticked for you: each one records a specific failure and cannot be regenerated.
-rule-crash-dumps-why = Memory dumps of programs that closed because of a crash (the CrashDumps folder, which usually exists only if that Windows feature was turned on). They can be large and are what a developer asks for to understand the failure: if you delete them, they are gone. Only those older than 7 days are touched. They go to the Recycle Bin and are never ticked for you: each one records a specific failure and cannot be regenerated.
+rule-wer-reports-why = Reports Windows saves when a program fails, already sent or queued. They help diagnose the failure and a program's support may ask for them. Only folders unchanged for more than 7 days are offered. They go to the Recycle Bin, are never deleted permanently (if they do not fit, they are left alone) and are never ticked for you: each one records a specific failure and cannot be regenerated.
+rule-crash-dumps-why = Memory dumps of programs that closed because of a crash (the CrashDumps folder, which usually exists only if that Windows feature was turned on). They can be large and are what a developer asks for to understand the failure. Only those unchanged for more than 7 days are offered. They go to the Recycle Bin, are never deleted permanently (if they do not fit, they are left alone) and are never ticked for you: each one records a specific failure and cannot be regenerated.
 
 # Confirmation
 confirm-title = Review before cleaning
@@ -301,6 +301,17 @@ confirm-more =
     }
 confirm-group-unfit = Will be deleted permanently because it cannot be sent to the Recycle Bin
 confirm-unfit-capacity-hint = To be able to send it to the Recycle Bin: open the Recycle Bin properties and set a maximum size for the drive.
+confirm-group-kept = They do not fit in the Recycle Bin: left where they are
+confirm-kept-note = They do not fit in the Recycle Bin; they are not deleted permanently because they help diagnose failures.
+confirm-diag-note = Each report or dump records a specific failure and is not recreated; a program's support may ask for it. The space is only really freed when you empty the Recycle Bin.
+confirm-diag-many = That is { $count } reports or dumps, sent to the Recycle Bin one at a time: it may take several minutes. You can cancel at any time; what was already sent stays in the Recycle Bin.
+confirm-young =
+    { $n ->
+        [one] { $count } report or dump is left alone: something in it was modified less than 7 days ago.
+       *[other] { $count } reports or dumps are left alone: something in them was modified less than 7 days ago.
+    }
+reject-young = modified less than 7 days ago
+dest-recycle-diag = Goes to the Recycle Bin · if it does not fit, it is left alone
 confirm-unfit-check = I understand this cannot be recovered
 confirm-unfit-note = Without checking the box, these items are not touched.
 unfit-no-bin = the drive has no Recycle Bin
