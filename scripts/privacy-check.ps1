@@ -578,7 +578,7 @@ function Get-OpaqueFormat {
         $chunk = [System.Text.Encoding]::GetEncoding(28591).GetString($Bytes, $start, $tail)
         $sig = ([char]0x50).ToString() + ([char]0x4B).ToString() + ([char]5).ToString() + ([char]6).ToString()
         $at = $chunk.LastIndexOf($sig, [System.StringComparison]::Ordinal)
-        if ($at -ge 0 -and ($at + 22) -le $chunk.Length) { return 'ZIP (registro de fin)' }
+        if ($at -ge 0 -and ($at + 22) -le $chunk.Length) { return 'ZIP (end-of-central-directory record)' }
     }
     # bzip2: "BZh", level 1-9, and the first block's pi marker (avoid matching text that merely starts with "BZh").
     if ($Bytes.Length -ge 10 -and $Bytes[0] -eq 0x42 -and $Bytes[1] -eq 0x5A -and $Bytes[2] -eq 0x68 -and $Bytes[3] -ge 0x31 -and $Bytes[3] -le 0x39) {
