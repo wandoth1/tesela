@@ -110,14 +110,14 @@ if ($dotnet) {
             $r = Run-Install @('-Version', '5.0.2', '-ToolPath', $tp, '-NupkgPath', $cached)
             Check "paquete real intacto: se instala desde el archivo verificado ($($r.Code))" ($r.Code -eq 0 -and (Test-Path -LiteralPath (Join-Path $tp 'wix.exe')))
             $r = Run-Install @('-Version', '5.0.2', '-ToolPath', $tp)
-            Check 'una segunda ejecucion detecta la instalacion existente y no reinstala' ($r.Code -eq 0 -and $r.Out -like '*ya esta instalado*')
+            Check 'una segunda ejecucion detecta la instalacion existente y no reinstala' ($r.Code -eq 0 -and $r.Out -like '*is already installed*')
             # Ya hay un WiX 5.0.2 instalado pero con OTRO contenido (el .nupkg del almacen no es el fijado): la comprobacion POSTERIOR lo
             # rechaza. Se manipula la copia de la carpeta de herramientas temporal, nunca el WiX global.
             $store = Join-Path $tp '.store/wix/5.0.2/wix/5.0.2/wix.5.0.2.nupkg'
             Check 'la instalacion de prueba tiene su .nupkg en el almacen' (Test-Path -LiteralPath $store)
             [System.IO.File]::WriteAllBytes($store, [byte[]](9, 8, 7, 6, 5))
             $r = Run-Install @('-Version', '5.0.2', '-ToolPath', $tp)
-            Check "WiX ya instalado con un paquete de otro contenido: falla ($($r.Code))" ($r.Code -ne 0 -and $r.Out -like '*SHA-512*instalado*')
+            Check "WiX ya instalado con un paquete de otro contenido: falla ($($r.Code))" ($r.Code -ne 0 -and $r.Out -like '*SHA-512*installed*')
         } else {
             Write-Host 'wix-version.tests: sin el paquete WiX 5.0.2 en el almacen local, se omiten las pruebas de instalacion real'
         }

@@ -1,46 +1,46 @@
 <#
 .SYNOPSIS
-  Compila el workspace en release SIN rutas de esta maquina en los binarios y lo comprueba.
+  Builds the workspace in release mode WITHOUT machine-specific paths in the binaries, then checks them.
 
 .DESCRIPTION
-  Los panics y la depuracion de las dependencias incrustan rutas absolutas (el registro de cargo bajo el perfil del
-  usuario, el repositorio, el toolchain). `--remap-path-prefix` las sustituye, pero el prefijo a sustituir depende de la
-  maquina y no se puede escribir en `.cargo/config.toml` (no admite variables ni expansion de rutas) ni versionar: este
-  script lo calcula EN TIEMPO DE EJECUCION y lo pasa con CARGO_ENCODED_RUSTFLAGS (que admite espacios en las rutas).
-  `trim-paths` de cargo sigue siendo inestable, por eso no se usa.
+  Panics and dependency debug information embed absolute paths (Cargo's registry under the user's profile,
+  the repository, and the toolchain). `--remap-path-prefix` replaces them, but the prefix depends on the machine and
+  cannot be stored in `.cargo/config.toml` (it does not support variables or path expansion) or committed. This script
+  calculates it AT RUNTIME and passes it through CARGO_ENCODED_RUSTFLAGS (which supports spaces in paths).
+  Cargo's `trim-paths` is still unstable, so it is not used.
 
-  CARGO_ENCODED_RUSTFLAGS tiene prioridad sobre `target.<cfg>.rustflags` de `.cargo/config.toml` (no se combinan), asi que
-  el enlace estatico del runtime de C (`-Ctarget-feature=+crt-static`, que el config tambien fija para los builds de
-  desarrollo) se repite aqui (y `/Brepro`, ver abajo): sin el, el release importaria VCRUNTIME140.dll y las `api-ms-win-crt-*`. En Windows 10/11 el
-  UCRT es del sistema; se enlaza estatico para no depender del runtime de VC++ redistribuible (el instalador es por
-  usuario y sin administrador). La validacion de abajo lo comprueba.
+  CARGO_ENCODED_RUSTFLAGS takes precedence over `target.<cfg>.rustflags` in `.cargo/config.toml` (they are not combined), so
+  static linking of the C runtime (`-Ctarget-feature=+crt-static`, also set in the config for
+  development builds) is repeated here (as is `/Brepro`, see below): without it, the release would import VCRUNTIME140.dll and `api-ms-win-crt-*`. On Windows 10/11, the
+  UCRT is part of the system; it is statically linked to avoid depending on the redistributable VC++ runtime (the
+  installer is per-user and does not require administrator rights). The validation below checks this.
 
-  Los ejecutables que se comprueban salen de la salida JSON de Cargo (`--message-format=json`, campo `executable` de
-  cada `compiler-artifact`), no de un listado de la carpeta: asi no se aprueban 0 binarios, los de otra arquitectura ni
-  uno antiguo que quedo de otra compilacion. Se exige EXACTAMENTE el conjunto esperado (`-ExpectedExes`, por defecto
-  `tesela.exe` y `tesela-scan.exe`) y se falla si falta alguno, si aparece otro, o si en la carpeta de release queda un
-  .exe que esta compilacion no ha producido.
+  The executables being checked come from Cargo's JSON output (`--message-format=json`, the `executable` field of each
+  `compiler-artifact`), rather than a directory listing. This prevents accepting zero binaries, binaries for another
+  architecture, or a stale binary from an earlier build. EXACTLY the expected set is required (`-ExpectedExes`, by
+  default `tesela.exe` and `tesela-scan.exe`); the script fails if any are missing, another appears, or the release
+  directory contains an .exe not produced by this build.
 
-  Despues de compilar:
-    1. busca en cada .exe (ASCII y UTF-16, con ambas barras `\` y `/`) los valores locales -nombre de usuario, nombre del
-       equipo, perfil, repositorio, CARGO_HOME y toolchain- leidos del entorno, y falla si aparece alguno. Nunca se
-       escriben (ver scripts/leak-scan.ps1);
-    2. con `scripts/check-pe.py` (Python, solo biblioteca estandar) lee la tabla de imports PE de cada .exe y falla si
-       aparece `VCRUNTIME*.dll`, `MSVCP*.dll` o `api-ms-win-crt-*.dll` o si la arquitectura no es la esperada.
+  After the build:
+    1. searches each .exe (ASCII and UTF-16, with both `\` and `/`) for local values read from the environment—user name,
+       computer name, profile, repository, CARGO_HOME, and toolchain—and fails if any are found. They are never written
+       (see scripts/leak-scan.ps1);
+    2. uses `scripts/check-pe.py` (Python standard library only) to read each .exe's PE import table and fails if it
+       contains `VCRUNTIME*.dll`, `MSVCP*.dll`, or `api-ms-win-crt-*.dll`, or if its architecture is unexpected.
 
-  El CI compila los releases con este mismo script.
+  CI builds releases with this same script.
 
 .PARAMETER SkipCheck
-  No busca valores locales ni valida los imports (la comprobacion del conjunto de ejecutables se hace siempre).
+  Does not search for local values or validate imports (the executable set is always checked).
 
 .PARAMETER CheckOnly
-  No compila: comprueba los binarios de release que ya existan (los de los destinos `bin` del workspace).
+  Does not build; checks existing release binaries (the workspace `bin` targets).
 
 .PARAMETER CargoArgs
-  Argumentos extra para `cargo build --release` (por defecto: --workspace).
+  Additional arguments for `cargo build --release` (default: --workspace).
 
 .PARAMETER ExpectedExes
-  Nombres de los ejecutables que tiene que producir la compilacion (por defecto tesela.exe y tesela-scan.exe).
+  Names of the executables the build must produce (default: tesela.exe and tesela-scan.exe).
 
 .EXAMPLE
   pwsh -File scripts/build-release.ps1
@@ -62,8 +62,8 @@ $sysroot = (& rustc --print sysroot).Trim()
 $rustupHome = $env:RUSTUP_HOME
 if (-not $rustupHome) { $rustupHome = Join-Path $env:USERPROFILE '.rustup' }
 
-# rustc aplica los remaps DE EL ULTIMO AL PRIMERO (gana el ultimo que coincide): el mas especifico va despues. El sysroot cuelga
-# de RUSTUP_HOME, asi que `/rust-toolchain` va DESPUES de `/rustup` (si no, todo el sysroot saldria como `/rustup/toolchains/...`).
+# rustc applies remaps from LAST to FIRST (the last matching rule wins): put the most specific rule later. The sysroot is
+# under RUSTUP_HOME, so `/rust-toolchain` comes AFTER `/rustup` (otherwise the entire sysroot would map to `/rustup/toolchains/...`).
 $remaps = @(
     @($repo, '/tesela'),
     @($cargoHome, '/cargo'),
@@ -72,21 +72,21 @@ $remaps = @(
 )
 $flags = New-Object System.Collections.Generic.List[string]
 foreach ($r in $remaps) {
-    # La ruta tal cual, con `/` y con `\` (la que da git, la de cargo y la de Windows no tienen por que coincidir).
+    # Try the path as-is, with `/`, and with `\` (Git, Cargo, and Windows may use different separators).
     foreach ($form in @($r[0], $r[0].Replace('\', '/'), $r[0].Replace('/', '\')) | Select-Object -Unique) {
         if ($form) { $flags.Add("--remap-path-prefix=$form=$($r[1])") }
     }
 }
-# Runtime de C enlazado de forma estatica (ver arriba): tiene que coincidir con .cargo/config.toml.
+# Statically linked C runtime (see above): must match .cargo/config.toml.
 $flags.Add('-Ctarget-feature=+crt-static')
-# Build reproducible: sin `/Brepro` el enlazador de MSVC graba una marca de tiempo (y un GUID de PDB) distintos en cada
-# compilacion. Con el, dos builds del mismo commit en carpetas distintas dan el MISMO SHA-256 (las rutas ya se normalizan
-# con --remap-path-prefix). Tiene que coincidir con .cargo/config.toml.
+# Reproducible build: without `/Brepro`, the MSVC linker records a different timestamp (and PDB GUID) in each build.
+# With it, builds of the same commit in different directories produce the SAME SHA-256 (paths are normalized by
+# --remap-path-prefix). Must match .cargo/config.toml.
 $flags.Add('-Clink-arg=/Brepro')
 $env:CARGO_ENCODED_RUSTFLAGS = ($flags -join [string][char]0x1f)
 $env:RUSTFLAGS = $null
 
-# Arquitectura que se espera en los binarios: la de `--target` si se pasa, y si no la del equipo que compila.
+# Expected binary architecture: the `--target` value if provided, otherwise the build machine's architecture.
 $triple = $null
 for ($i = 0; $i -lt $CargoArgs.Count; $i++) {
     if ($CargoArgs[$i] -eq '--target' -and ($i + 1) -lt $CargoArgs.Count) { $triple = $CargoArgs[$i + 1] }
@@ -124,34 +124,34 @@ try {
             }
         }
     }
-    # Rutas normalizadas (cargo puede mezclar barras si CARGO_TARGET_DIR las mezcla) para compararlas sin sorpresas.
+    # Normalize paths (Cargo can mix separators if CARGO_TARGET_DIR does) before comparing them.
     $artifacts = @($artifacts | ForEach-Object { [System.IO.Path]::GetFullPath($_) } | Sort-Object -Unique)
 
-    # --- El conjunto de ejecutables tiene que ser EXACTAMENTE el esperado ---------------------------------------------
+    # --- The executable set must be EXACTLY the expected set ----------------------------------------------------------
     $names = @($artifacts | ForEach-Object { Split-Path -Leaf $_ })
     $missing = @($ExpectedExes | Where-Object { $n = $_; -not ($names | Where-Object { $_ -ieq $n }) })
     $unexpected = @($names | Where-Object { $n = $_; -not ($ExpectedExes | Where-Object { $_ -ieq $n }) })
     $absent = @($artifacts | Where-Object { -not (Test-Path -LiteralPath $_ -PathType Leaf) })
     $setProblems = New-Object System.Collections.Generic.List[string]
-    if ($artifacts.Count -eq 0) { $setProblems.Add('la compilacion no produjo ningun ejecutable') }
-    foreach ($n in $missing) { $setProblems.Add("falta el ejecutable esperado: $n") }
-    foreach ($n in $unexpected) { $setProblems.Add("ejecutable inesperado (si es nuevo, anadelo a -ExpectedExes): $n") }
-    foreach ($a in $absent) { $setProblems.Add("el ejecutable que dice cargo no existe: $(Split-Path -Leaf $a)") }
+    if ($artifacts.Count -eq 0) { $setProblems.Add('the build produced no executables') }
+    foreach ($n in $missing) { $setProblems.Add("expected executable is missing: $n") }
+    foreach ($n in $unexpected) { $setProblems.Add("unexpected executable (if new, add it to -ExpectedExes): $n") }
+    foreach ($a in $absent) { $setProblems.Add("Cargo-reported executable does not exist: $(Split-Path -Leaf $a)") }
     if ($artifacts.Count -gt 0) {
-        # Un .exe en la carpeta de release que esta compilacion NO ha producido es de otra compilacion (otro nombre, otra
-        # configuracion): no se aprueba ni se publica por error.
+        # An .exe in the release directory that this build did NOT produce belongs to another build (different name or
+        # configuration); do not accept or publish it by mistake.
         $releaseDirs = @($artifacts | ForEach-Object { Split-Path -Parent $_ } | Sort-Object -Unique)
         foreach ($d in $releaseDirs) {
             foreach ($f in @(Get-ChildItem -LiteralPath $d -Filter '*.exe' -File -ErrorAction SilentlyContinue)) {
                 $full = [System.IO.Path]::GetFullPath($f.FullName)
                 if (-not ($artifacts | Where-Object { $_ -ieq $full })) {
-                    $setProblems.Add("ejecutable antiguo en la carpeta de release (no lo ha producido esta compilacion): $($f.Name)")
+                    $setProblems.Add("stale executable in the release directory (not produced by this build): $($f.Name)")
                 }
             }
         }
     }
     if ($setProblems.Count -gt 0) {
-        Write-Host 'build-release: el conjunto de ejecutables no es el esperado:' -ForegroundColor Red
+        Write-Host 'build-release: executable set does not match the expected set:' -ForegroundColor Red
         $setProblems | ForEach-Object { Write-Host "  $_" }
         exit 1
     }
@@ -160,7 +160,7 @@ try {
     }
     if ($SkipCheck) { exit 0 }
 
-    # Valores locales (usuario, equipo, perfil, repositorio, CARGO_HOME, toolchain...) en cada .exe, con `\` y con `/`.
+    # Check each .exe for local values (user, computer, profile, repository, CARGO_HOME, toolchain...) with both `\` and `/`.
     $needles = Get-LocalValueNeedles -Repo $repo -CargoHome $cargoHome -Sysroot $sysroot -RustupHome $rustupHome
     $leaks = New-Object System.Collections.Generic.List[string]
     foreach ($exePath in $artifacts) {
@@ -168,24 +168,24 @@ try {
         foreach ($f in $found) { $leaks.Add($f) }
     }
     if ($leaks.Count -gt 0) {
-        Write-Host 'build-release: los binarios contienen datos de esta maquina:' -ForegroundColor Red
+        Write-Host 'build-release: binaries contain data from this machine:' -ForegroundColor Red
         $leaks | Sort-Object -Unique | ForEach-Object { Write-Host "  $_" }
         exit 1
     }
 
-    # --- Tabla de imports PE: sin runtime de C dinamico y de la arquitectura esperada ------------------------------------
+    # --- PE import table: no dynamic C runtime and expected architecture -----------------------------------------------
     $py = Get-Command python -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $py) { $py = Get-Command python3 -ErrorAction SilentlyContinue | Select-Object -First 1 }
     if (-not $py) {
-        Write-Host 'build-release: hace falta Python 3 en el PATH para leer la tabla de imports de los .exe' -ForegroundColor Red
+        Write-Host 'build-release: Python 3 on PATH is required to read the .exe import table' -ForegroundColor Red
         exit 1
     }
     & $py.Source -I (Join-Path $repo 'scripts/check-pe.py') --machine $machine @artifacts
     if ($LASTEXITCODE -ne 0) {
-        Write-Host 'build-release: los binarios importan el runtime de C (VCRUNTIME*, MSVCP*, api-ms-win-crt-*) o no son de la arquitectura esperada' -ForegroundColor Red
+        Write-Host 'build-release: binaries import the C runtime (VCRUNTIME*, MSVCP*, api-ms-win-crt-*) or have an unexpected architecture' -ForegroundColor Red
         exit 1
     }
-    Write-Host "build-release: OK ($($artifacts.Count) binarios $machine sin valores locales y sin runtime de C dinamico)"
+    Write-Host "build-release: OK ($($artifacts.Count) $machine binaries without local values or the dynamic C runtime)"
 } finally {
     Pop-Location
 }

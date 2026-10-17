@@ -1,37 +1,37 @@
 <#
 .SYNOPSIS
-  Instala WiX Toolset (CLI `wix`, `dotnet tool` global) con la version FIJADA, comprobando el SHA-512 del paquete ANTES de
-  instalar nada.
+  Installs WiX Toolset (the `wix` CLI, global `dotnet tool`) at the PINNED version, checking the package SHA-512 BEFORE
+  installing anything.
 
 .DESCRIPTION
-  Lo usan ci.yml y release.yml, y sirve en local. Hace estas cosas, por este orden:
-    1. si `wix` ya esta instalado: comprueba que es la version fijada y que el SHA-512 de su paquete (el .nupkg que dotnet
-       guardo en su almacen) es el esperado; no instala ni quita nada;
-    2. si no lo esta: DESCARGA el .nupkg de nuget.org (flat container, https) a una carpeta temporal propia, calcula su SHA-512
-       y lo compara con el valor fijado aqui (el mismo que publica nuget.org en el catalogo del paquete). Si no coincide, FALLA
-       sin haber instalado nada;
-    3. solo con el hash correcto instala DESDE ESE ARCHIVO LOCAL ya verificado: `dotnet tool install ... --source <carpeta>
-       --configfile installer/nuget.config`. `--source` deja la carpeta como UNICA fuente (dotnet no vuelve a pedir el paquete a
-       la red, asi que lo instalado es lo comprobado), y `installer/nuget.config` (`<clear/>` y solo nuget.org) hace que dotnet
-       ignore cualquier otra configuracion de NuGet de la maquina. Despues vuelve a comprobar el hash del paquete instalado;
-    4. en GitHub Actions anade la carpeta de las herramientas de dotnet al PATH de los pasos siguientes.
-  Para quitarlo: `dotnet tool uninstall --global wix`.
+  Used by ci.yml and release.yml, and available locally. It performs these steps in order:
+    1. If `wix` is already installed, checks that it is the pinned version and that its package SHA-512 (the .nupkg in
+       dotnet's package store) matches the expected value; it does not install or remove anything.
+    2. Otherwise, DOWNLOADS the .nupkg from nuget.org (HTTPS flat container) to a dedicated temporary directory, computes
+       its SHA-512, and compares it with the value pinned here (the value published by nuget.org in the package catalog).
+       If they differ, it FAILS without installing anything.
+    3. Only after the hash matches, installs FROM THAT VERIFIED LOCAL FILE: `dotnet tool install ... --source <directory>
+       --configfile installer/nuget.config`. `--source` makes that directory the ONLY source (dotnet does not fetch the
+       package again, so the installed file is the one checked), and `installer/nuget.config` (`<clear/>` and nuget.org
+       only) makes dotnet ignore other machine NuGet configuration. It then checks the installed package hash again.
+    4. In GitHub Actions, adds the dotnet tools directory to PATH for subsequent steps.
+  To uninstall: `dotnet tool uninstall --global wix`.
 
-  Para subir de version hay que cambiarla a la vez en scripts/build-msi.ps1, ci.yml, release.yml y aqui (con su SHA-512, que
-  se saca de https://api.nuget.org/v3/catalog0/ -> packageHash del paquete), y repetir el ciclo de instalacion; la prueba
-  scripts/tests/wix-version.tests.ps1 vigila que coincidan.
+  To upgrade, update the version in scripts/build-msi.ps1, ci.yml, release.yml, and this file (including its SHA-512 from
+  https://api.nuget.org/v3/catalog0/ -> the package's packageHash), then repeat the installation cycle. The test
+  scripts/tests/wix-version.tests.ps1 checks that they match.
 
-  El script es solo ASCII a proposito (Windows PowerShell 5.1 lee los .ps1 sin BOM como ANSI).
+  The script is ASCII-only by design (Windows PowerShell 5.1 reads .ps1 files without a BOM as ANSI).
 
 .PARAMETER Version
-  Version de WiX. Solo se admiten las que figuran en la tabla de abajo.
+  WiX version. Only versions listed in the table below are supported.
 
 .PARAMETER ToolPath
-  Instala (y busca) en esta carpeta en vez de en el almacen global de herramientas de dotnet (`--tool-path`). Para las pruebas y
-  para quien no quiera tocar el almacen global; no cambia el PATH.
+  Installs (and searches) in this directory instead of dotnet's global tool store (`--tool-path`). For tests and anyone
+  who does not want to modify the global store; does not change PATH.
 
 .PARAMETER NupkgPath
-  Usa este .nupkg local en vez de descargarlo (sin red): pasa por EXACTAMENTE la misma comprobacion de SHA-512. Para las pruebas.
+  Uses this local .nupkg instead of downloading it (offline); it goes through EXACTLY the same SHA-512 check. For tests.
 
 .EXAMPLE
   pwsh -File scripts/install-wix.ps1 -Version 5.0.2
@@ -45,12 +45,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# Version -> SHA-512 (base64) del .nupkg, tal como lo publica nuget.org (packageHash del catalogo del paquete).
+# Version -> SHA-512 (base64) of the .nupkg, as published by nuget.org (packageHash in the package catalog).
 $KnownHashes = @{
     '5.0.2' = 'z+fu1deTcaV+TRCo4+6HrJ48Sdnj+yeQjjMStTI3GW7NxFEPaknYCdxrf0qEvgdXrjYdjLnkZKCsNSqTTOo2OA=='
 }
 if (-not $KnownHashes.ContainsKey($Version)) {
-    throw "WiX $Version no esta en la tabla de versiones conocidas de install-wix.ps1 (solo: $($KnownHashes.Keys -join ', '))"
+    throw "WiX $Version is not in the known-version table in install-wix.ps1 (supported: $($KnownHashes.Keys -join ', '))"
 }
 
 function Get-Sha512Base64([string]$Path) {
@@ -62,7 +62,7 @@ function Get-Sha512Base64([string]$Path) {
 function Assert-PackageHash([string]$Path, [string]$What) {
     $actual = Get-Sha512Base64 $Path
     if ($actual -cne $KnownHashes[$Version]) {
-        throw "el SHA-512 del paquete WiX $Version ($What) no es el esperado (esperado $($KnownHashes[$Version]), obtenido $actual)"
+        throw "WiX $Version package SHA-512 ($What) does not match the expected value (expected $($KnownHashes[$Version]), got $actual)"
     }
 }
 
@@ -71,7 +71,7 @@ $code = 0
 try {
     $repo = (& git rev-parse --show-toplevel).Trim()
     $config = Join-Path $repo 'installer/nuget.config'
-    if (-not (Test-Path -LiteralPath $config)) { throw "falta $config" }
+    if (-not (Test-Path -LiteralPath $config)) { throw "missing $config" }
 
     if ($ToolPath) {
         $toolsDir = $ToolPath
@@ -87,7 +87,7 @@ try {
         $installed = @(@(& dotnet @listArgs) | Where-Object { $_ -match '^\s*wix\s+(\S+)' } | ForEach-Object { $Matches[1] })
     }
     if ($installed.Count -gt 0 -and $installed[0] -ne $Version) {
-        throw "ya hay WiX $($installed[0]) instalado y este repositorio fija la ${Version}: dotnet tool uninstall --global wix"
+        throw "WiX $($installed[0]) is already installed, but this repository pins ${Version}: dotnet tool uninstall --global wix"
     }
 
     $nupkg = Join-Path $toolsDir ".store/wix/$Version/wix/$Version/wix.$Version.nupkg"
@@ -97,39 +97,39 @@ try {
         New-Item -ItemType Directory -Path $work | Out-Null
         $local = Join-Path $work "wix.$Version.nupkg"
         if ($NupkgPath) {
-            Write-Host "install-wix: usando el paquete local $NupkgPath"
+            Write-Host "install-wix: using local package $NupkgPath"
             Copy-Item -LiteralPath $NupkgPath -Destination $local
         } else {
             $url = "https://api.nuget.org/v3-flatcontainer/wix/$Version/wix.$Version.nupkg"
-            Write-Host "install-wix: descargando $url"
+            Write-Host "install-wix: downloading $url"
             $ProgressPreference = 'SilentlyContinue'
             Invoke-WebRequest -Uri $url -OutFile $local -UseBasicParsing
         }
-        Assert-PackageHash $local 'a instalar'
-        Write-Host "install-wix: SHA-512 del paquete WiX $Version correcto (antes de instalar)"
+        Assert-PackageHash $local 'to install'
+        Write-Host "install-wix: WiX $Version package SHA-512 verified (before installation)"
 
-        # --- 2. Instalar DESDE ese archivo verificado (unica fuente) ----------------------------------------------------
+        # --- 2. Install FROM that verified file (only source) ----------------------------------------------------------
         $installArgs = @('tool', 'install', 'wix', '--version', $Version, '--source', $work, '--configfile', $config)
         if ($ToolPath) { $installArgs += @('--tool-path', $ToolPath) } else { $installArgs += '--global' }
         Write-Host "install-wix: dotnet $($installArgs -join ' ')"
         & dotnet @installArgs
-        if ($LASTEXITCODE -ne 0) { throw 'dotnet tool install fallo' }
+        if ($LASTEXITCODE -ne 0) { throw 'dotnet tool install failed' }
     } else {
-        Write-Host "install-wix: WiX $Version ya esta instalado"
+        Write-Host "install-wix: WiX $Version is already installed"
     }
 
-    # --- 3. El paquete que quedo en el almacen es el verificado (tambien cuando ya estaba instalado) ---------------------
-    if (-not (Test-Path -LiteralPath $nupkg)) { throw "no se encuentra el paquete instalado: $nupkg" }
-    Assert-PackageHash $nupkg 'instalado'
-    Write-Host "install-wix: SHA-512 del paquete WiX $Version instalado correcto"
+    # --- 3. Verify that the package in the store matches (also when it was already installed) ---------------------------
+    if (-not (Test-Path -LiteralPath $nupkg)) { throw "installed package not found: $nupkg" }
+    Assert-PackageHash $nupkg 'installed'
+    Write-Host "install-wix: installed WiX $Version package SHA-512 verified"
 
     if (-not $ToolPath) {
         if ($env:GITHUB_PATH) { Add-Content -LiteralPath $env:GITHUB_PATH -Value $toolsDir }
         $wix = Get-Command wix -ErrorAction SilentlyContinue | Select-Object -First 1
         if (-not $wix -and $env:GITHUB_PATH) {
-            Write-Host "install-wix: wix estara en el PATH en los pasos siguientes ($toolsDir)"
+            Write-Host "install-wix: wix will be on PATH in subsequent steps ($toolsDir)"
         } elseif (-not $wix) {
-            throw "wix no esta en el PATH: anade $toolsDir"
+            throw "wix is not on PATH: add $toolsDir"
         }
     }
     Write-Host 'install-wix: OK'
