@@ -280,7 +280,7 @@ pub fn show_properties_async(path: PathBuf) -> std::thread::JoinHandle<bool> {
     })
 }
 
-/// Indicadores de `ShellExecuteExW` para abrir la Papelera: sin interfaz de error (`NO_UI`) y SÍNCRONO (`NOASYNC`): con COM
+/// Indicadores de `ShellExecuteExW` para abrir la Papelera (y la página de una versión): sin interfaz de error (`NO_UI`) y SÍNCRONO (`NOASYNC`): con COM
 /// inicializado en el hilo, la shell termina la petición antes de que el hilo acabe (sin él, un hilo que termina puede
 /// dejar la petición a medias).
 const RECYCLE_BIN_MASK: u32 = SEE_MASK_FLAG_NO_UI | SEE_MASK_NOASYNC;
@@ -294,8 +294,23 @@ fn recycle_bin_request() -> (Vec<u16>, Vec<u16>) {
 /// Abre la Papelera de reciclaje en el Explorador (`shell:RecycleBinFolder`), en un hilo propio: la E/S de la shell no
 /// debe bloquear la interfaz. No hay nada que comprobar: si Windows no puede, no pasa nada.
 pub fn open_recycle_bin() {
-    std::thread::spawn(|| {
-        let (verb, file) = recycle_bin_request();
+    let (verb, file) = recycle_bin_request();
+    shell_open_async(verb, file);
+}
+
+/// Abre `url` en el navegador predeterminado (verbo `open` de la shell), en un hilo propio. SOLO para las páginas de
+/// versiones que Tesela construye con `tesela_update::release_url` a partir de una versión validada (la comprobación
+/// de actualizaciones): nunca se le pasa una URL que venga de un texto externo. Se rechaza lo que no sea `https` o
+/// lleve caracteres de control, por defensa en profundidad.
+pub fn open_url_async(url: &str) {
+    if url.starts_with("https://") && !url.chars().any(char::is_control) {
+        shell_open_async(wide("open"), wide(url));
+    }
+}
+
+/// Pide a la shell `verb` sobre `file` (UTF-16 con NUL final) desde un hilo propio, con COM inicializado.
+fn shell_open_async(verb: Vec<u16>, file: Vec<u16>) {
+    std::thread::spawn(move || {
         // `COINIT_DISABLE_OLE1DDE`: la combinación que recomienda la documentación de `ShellExecuteExW` (sin el soporte de DDE de OLE1).
         // SAFETY: `CoInitializeEx` no recibe punteros (nulo = reservado) y se empareja con `CoUninitialize` solo si tuvo éxito.
         let hr = unsafe {
