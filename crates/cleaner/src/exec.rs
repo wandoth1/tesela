@@ -4,22 +4,23 @@
 //! items to the Recycle Bin, so items the user wants to keep recoverable are not deleted in the same operation.
 //!
 //! * **Permanent**: `engine` handle traversal (exclusive open, identity check, `FileDispositionInfoEx`).
-//! * **Papelera** (sin lápidas): se abre el elemento en exclusiva, se verifica su identidad y su ruta resuelta (local y
-//!   permitida), se CIERRA el handle y se entrega la RUTA ORIGINAL a `IFileOperation` con un receptor de eventos propio.
-//!   La shell dice, por elemento, el resultado y la ruta real del elemento ya en la Papelera; se abre y se compara su
-//!   IDENTIDAD con la aprobada: igual = enviado; distinta = "se movió a la Papelera un objeto distinto del aprobado"
-//!   (recuperable: está en la Papelera); sin elemento en la Papelera = eliminado definitivamente (no cabía, o un sustituto
-//!   que no cabía); error = omitido con su motivo, solo si el objeto aprobado sigue intacto en su sitio (A-M1).
-//!   Un directorio con algo abierto dentro falla en seguro (mover es renombrar) y se informa como "en uso". El receptor
-//!   vigila la entrega (devuelve `E_ABORT`): `PreDeleteItem` compara la identidad de lo que hay en la ruta con la aprobada
-//!   y veta el sustituto (M1); `PostDeleteItem` corta tras el primer borrado definitivo o la primera ruta sin verificar
-//!   (M2). Lo que queda del lote no se procesa y sigue en su sitio.
-//!   A3-M1: un DIRECTORIO lleva una vigilancia de cambios (`ReadDirectoryChangesW` sobre un segundo handle verificado)
-//!   abierta ANTES de su recorrido de medida y viva hasta su `PreDeleteItem`: si algo cambia dentro, o no se puede vigilar,
-//!   la medida no vale y no se envía ("cambió desde la confirmación"). A3-M2: la ocupación de la Papelera se lee antes y
-//!   después del recorrido y manda la mayor; es una heurística, no una garantía (la shell decide por su cuenta si cabe).
-//! * **Tres contadores**: "eliminado definitivamente" y "movido a la Papelera" son sumas de tamaños; "liberado ahora" es la
-//!   diferencia MEDIDA del espacio libre de cada volumen antes y después.
+//! * **Recycle Bin** (sin lápidas): the item is opened exclusively, its identity and resolved path (local and allowed)
+//!   are verified, the handle is CLOSED, and the ORIGINAL PATH is given to `IFileOperation` with a dedicated event receiver.
+//!   For each item, the shell reports the outcome and the actual path of the item in the Recycle Bin; that path is opened
+//!   and its IDENTITY compared with the approved one: same = sent; different = "a different object from the approved one
+//!   was moved to the Recycle Bin" (recoverable: it is in the Recycle Bin); no item in the Recycle Bin = permanently deleted
+//!   (it did not fit, or a replacement did not fit); error = skipped with its reason, only if the approved object remains
+//!   intact in place (A-M1). A directory with anything open inside fails safely (moving is a rename) and is reported as
+//!   "in use". The receiver monitors the operation (returns `E_ABORT`): `PreDeleteItem` compares the identity at the path
+//!   with the approved identity and vetoes a replacement (M1); `PostDeleteItem` stops after the first permanent deletion
+//!   or the first path that cannot be verified (M2). The rest of the batch is not processed and stays in place.
+//!   A3-M1: a DIRECTORY has a change monitor (`ReadDirectoryChangesW` on a second verified handle) opened BEFORE its
+//!   measurement traversal and kept alive until its `PreDeleteItem`: if anything inside changes, or cannot be monitored,
+//!   the measurement is invalid and the item is not sent ("changed since approval"). A3-M2: Recycle Bin occupancy is read
+//!   before and after traversal, and the larger value is used; this is a heuristic, not a guarantee (the shell decides
+//!   independently whether an item fits).
+//! * **Three counters**: "permanently deleted" and "moved to the Recycle Bin" are sums of sizes; "freed now" is the
+//!   MEASURED difference in each volume's free space before and after.
 //! * **Simulation** (`dry_run`): performs everything except destructive actions and records the identities it would affect.
 
 use crate::engine::{self, Event, Mode, Outcome, RootStatus, StatsSnapshot, Unit, UnitSpec};
@@ -42,25 +43,25 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::time::Duration;
 use windows::core::HRESULT;
 
-/// Cuántos rechazados del plan se anotan en el registro (el resto, en una sola línea).
+/// How many plan rejections are recorded in the log (the rest are summarized on one line).
 const MAX_REJECTED_NOTES: usize = 200;
 
-/// Opciones de la ejecución.
+/// Execution options.
 #[derive(Clone, Default)]
 pub struct ExecOptions {
-    /// Simulación: no se toca nada.
+    /// Dry run: nothing is touched.
     pub dry_run: bool,
-    /// El usuario marcó la casilla del grupo ámbar: lo que no cabe en la Papelera se elimina definitivamente.
+    /// The user checked the amber-group box: items that do not fit in the Recycle Bin are permanently deleted.
     pub allow_unfit_permanent: bool,
     /// Explicit acknowledgment that local Outlook `.pst` files may be permanently deleted.
     /// The engine also checks each file discovered after approval.
     pub allow_local_mail_permanent: bool,
-    /// Registro local de la ejecución. OBLIGATORIO salvo en simulación (M4): sin un registro utilizable no hay ninguna
-    /// acción destructiva ([`ExecError::LogRequired`]).
+    /// Local execution log. REQUIRED except in a dry run (M4): no destructive action is allowed without a usable log
+    /// ([`ExecError::LogRequired`]).
     pub log: Option<Arc<LogWriter>>,
 }
 
-/// Fase en curso (para la interfaz).
+/// Current phase (for the interface).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Phase {
@@ -72,17 +73,17 @@ pub enum Phase {
     Done = 5,
 }
 
-/// Progreso compartido con la interfaz y cancelación.
+/// Progress shared with the interface and cancellation state.
 pub struct Progress {
-    /// Poner a `true` cancela entre entradas: lo que ya empezó termina bien, lo demás no se toca.
+    /// Setting this to `true` cancels between entries: work already started finishes, and nothing else is touched.
     cancel: Arc<AtomicBool>,
-    /// El USUARIO pidió cancelar (`cancel()`). `cancel` también se activa solo si el registro falla (M4): este distingue una
-    /// cosa de la otra para que el informe diga las dos (H6.5).
+    /// The USER requested cancellation (`cancel()`). `cancel` is also set if the log fails (M4): this field distinguishes
+    /// the two cases so the report can state both (H6.5).
     user_cancelled: AtomicBool,
-    /// Entradas procesadas por el recorrido.
+    /// Entries processed by the traversal.
     pub entries: Arc<AtomicU64>,
     phase: AtomicU8,
-    /// Elementos del plan terminados y totales.
+    /// Completed and total plan items.
     pub items_done: AtomicUsize,
     pub items_total: AtomicUsize,
 }
@@ -108,36 +109,36 @@ impl Progress {
             _ => Phase::Done,
         }
     }
-    /// Indica la fase en curso (lo hace el ejecutor; el respaldo simulado de la demostración también).
+    /// Sets the current phase (used by the executor and the demo's simulated backend).
     pub fn set_phase(&self, p: Phase) {
         self.phase.store(p as u8, Ordering::Relaxed);
     }
-    /// Fija cuántos elementos tiene la ejecución.
+    /// Sets the number of items in the execution.
     pub fn set_items_total(&self, n: usize) {
         self.items_total.store(n, Ordering::Relaxed);
     }
-    /// Un elemento terminado más.
+    /// Marks one more item as complete.
     pub fn add_item_done(&self) {
         self.items_done.fetch_add(1, Ordering::Relaxed);
     }
-    /// ¿Se pidió cancelar (el usuario, o el fallo del registro, que también detiene la limpieza)?
+    /// Was cancellation requested (by the user or by a log failure, which also stops cleanup)?
     pub fn is_cancelled(&self) -> bool {
         self.cancel.load(Ordering::SeqCst)
     }
-    /// Cancela: entre entradas, lo que ya empezó termina bien y lo demás no se toca. Es la ÚNICA forma de cancelar desde
-    /// fuera y siempre anota que lo pidió el usuario (`user_cancelled`), que es lo que distingue el informe (R3).
+    /// Cancels between entries: work already started finishes, and nothing else is touched. This is the ONLY way to cancel
+    /// from outside, and it always records that the user requested it (`user_cancelled`), which distinguishes the report (R3).
     pub fn cancel(&self) {
         self.user_cancelled.store(true, Ordering::SeqCst);
         self.cancel.store(true, Ordering::SeqCst);
     }
-    /// ¿Lo canceló el usuario (aunque además haya fallado el registro)?
+    /// Did the user cancel (even if the log also failed)?
     pub fn user_cancelled(&self) -> bool {
         self.user_cancelled.load(Ordering::SeqCst)
     }
 }
 
-/// Cuántos elementos de la lista cambiaron desde la confirmación: los que no cuadraban al enumerar (`not_matching`) más los
-/// elementos a los que se atribuye algún veto (`Veto::id`: el `$R` dueño, no la ruta vetada, que puede ser de un hijo).
+/// Number of listed items that changed since approval: those that did not match during enumeration (`not_matching`) plus
+/// items associated with a veto (`Veto::id`: the owning `$R`, not the vetoed path, which may be a child).
 pub(crate) fn bin_changed(
     not_matching: usize,
     vetoes: &[recycle::Veto],
@@ -153,114 +154,115 @@ pub(crate) fn bin_changed(
     (not_matching + vetoed.len()) as u64
 }
 
-/// Qué falló al enviar un elemento a la Papelera.
+/// What failed when sending an item to the Recycle Bin.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecycleFail {
-    /// Algo dentro o el propio elemento está en uso (falló en seguro: mover es renombrar).
+    /// The item itself or something inside it is in use (failed safely: moving is a rename).
     InUse,
-    /// Sin permiso.
+    /// Access denied.
     Denied,
-    /// La shell no lo procesó y sigue en su sitio.
+    /// The shell did not process it; it remains in place.
     NotProcessed,
-    /// La shell dijo que abortó la operación en la que iba y el elemento sigue en su sitio.
+    /// The shell reported that it aborted the current operation, and the item remains in place.
     Aborted,
-    /// No hay sitio en la Papelera ahora (capacidad menos lo que ya ocupa): enviarlo haría que la shell lo elimine o
-    /// expulse elementos que ya estaban. No se toca.
+    /// There is no room in the Recycle Bin now (capacity minus current occupancy): sending it would make the shell delete it
+    /// or evict items already there. It is not touched.
     NoRoom,
-    /// Se detuvo el envío a la Papelera por seguridad (otro elemento acabó eliminado definitivamente o no se pudo
-    /// verificar): no se tocó.
+    /// Sending to the Recycle Bin stopped for safety (another item was permanently deleted or could not be verified): this
+    /// item was not touched.
     Stopped,
-    /// La shell lo rechazó con este `HRESULT` (sigue en su sitio).
+    /// The shell rejected it with this `HRESULT` (it remains in place).
     Shell(i32),
 }
 
-/// Cómo terminó un elemento.
+/// How processing of an item ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ItemStatus {
-    /// Definitivo: la raíz se procesó (lo que quedó, en los contadores).
+    /// Permanent: the root was processed (the results are in the counters).
     Done,
-    /// Verificado en la Papelera.
+    /// Verified in the Recycle Bin.
     Recycled,
-    /// Simulación: se habría enviado a la Papelera.
+    /// Dry run: would have been sent to the Recycle Bin.
     WouldRecycle,
-    /// No se envió.
+    /// Not sent.
     NotRecycled(RecycleFail),
-    /// Desapareció sin llegar a la Papelera (la shell lo eliminó definitivamente: no cabía) o, en un DIRECTORIO, su contenido
-    /// ya no es el de justo antes del envío (una medida completa con otra huella: perdió una parte, o cambió, por ejemplo
-    /// porque otro proceso escribía dentro). Para el directorio no se afirma el borrado: se afirma la diferencia (H2).
+    /// Disappeared without reaching the Recycle Bin (the shell permanently deleted it because it did not fit) or, for a
+    /// DIRECTORY, its contents no longer match just before sending (a complete measurement has a different fingerprint:
+    /// something was lost or changed, for example because another process wrote inside). For the directory, this does not
+    /// claim deletion; it reports the difference (H2).
     DeletedUnexpectedly,
-    /// Se movió a la Papelera un objeto DISTINTO del aprobado (alguien lo sustituyó entre la comprobación y la shell).
-    /// Está en la Papelera: se puede restaurar.
+    /// An object DIFFERENT from the approved one was moved to the Recycle Bin (someone replaced it between the check and
+    /// the shell operation). It is in the Recycle Bin and can be restored.
     RecycledOther,
-    /// No se pudo comprobar qué pasó (la shell no dio la ruta del elemento en la Papelera, o no se pudo abrir).
+    /// What happened could not be verified (the shell did not provide the item's Recycle Bin path, or it could not be opened).
     Unverified,
-    /// La raíz no se pudo procesar (no existe, cambió, protegida, en uso, cancelada...).
+    /// The root could not be processed (missing, changed, protected, in use, cancelled...).
     Root(RootStatus),
-    /// No se toca: no cabe en la Papelera y no se marcó la casilla de borrado definitivo, o es de los que NUNCA se borran
-    /// definitivamente ([`PlanItem::never_permanent`]: informes de errores y volcados).
+    /// Not touched: it does not fit in the Recycle Bin and permanent deletion was not selected, or it is NEVER permanently
+    /// deleted ([`PlanItem::never_permanent`]: error reports and dumps).
     SkippedUnfit,
 }
 
-/// Resultado de un elemento del plan.
+/// Result for a plan item.
 #[derive(Clone, Debug)]
 pub struct ItemReport {
     pub id: usize,
     pub category: Option<CategoryId>,
     pub path: PathBuf,
-    /// Destino con el que se ejecutó (un elemento que no cabía y se confirmó pasa a `Permanent`).
+    /// Destination used for execution (an item that did not fit and was confirmed is moved to `Permanent`).
     pub destination: Destination,
     pub status: ItemStatus,
     pub stats: StatsSnapshot,
-    /// Lo que desapareció de verdad (rutas completas): la interfaz actualiza el árbol con esto, sin reescanear. Vacío en
-    /// simulación y en lo que no se tocó.
+    /// What actually disappeared (complete paths): the interface uses this to update the tree without rescanning. Empty
+    /// during a dry run and for items that were not touched.
     pub removed: Vec<Removed>,
 }
 
-/// Una entrada que desapareció del disco, o una parte de su contenido (ver [`ItemReport::removed`]).
+/// An entry that disappeared from disk, or part of its contents (see [`ItemReport::removed`]).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Removed {
     pub path: PathBuf,
     pub is_dir: bool,
-    /// Desapareció entera (si no, se eliminó solo parte de su contenido).
+    /// The entire entry disappeared (otherwise, only part of its contents was deleted).
     pub removed: bool,
-    /// Bytes en disco eliminados (sin enlaces compartidos), tamaño lógico y archivos.
+    /// On-disk bytes deleted (excluding shared links), logical size, and file count.
     pub bytes: u64,
     pub logical: u64,
     pub files: u64,
 }
 
-/// Resultado de vaciar la Papelera.
+/// Result of emptying the Recycle Bin.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BinReport {
-    /// Elementos de la lista capturada.
+    /// Items in the captured list.
     pub requested: u64,
-    /// Elementos de la lista que ya no están en la Papelera.
+    /// Items from the list that are no longer in the Recycle Bin.
     pub purged: u64,
-    /// Elementos de la lista que siguen.
+    /// Items from the list that remain.
     pub still_there: u64,
-    /// De ellos, los que NO se tocaron porque su `$R` o su `$I` ya no eran los de la enumeración (cambiaron desde la
-    /// confirmación) o no se pudieron verificar.
+    /// Of these, items that were NOT touched because their `$R` or `$I` no longer matched enumeration (they changed since
+    /// approval) or could not be verified.
     pub changed: u64,
-    /// Elementos que la shell dio por purgados pero cuyo objeto aprobado NO se eliminó: entre la última comprobación y el
-    /// borrado se sustituyó su `$R` y se borró lo que había con su nombre (A-M4). No cuentan como purgados y no se pudo
-    /// evitar: la ventana que queda entre el receptor y la shell.
+    /// Items the shell reported as purged even though the approved object was NOT deleted: between the final check and
+    /// deletion, its `$R` was replaced and the object at that name was deleted (A-M4). These do not count as purged. This
+    /// could not be prevented because of the remaining race window between the receiver and the shell.
     pub replaced: u64,
-    /// Elementos que no se tocaron porque su sistema de archivos no da identidad (FAT, exFAT) y no se pueden verificar.
-    /// No es que hayan cambiado (H6.9).
+    /// Items not touched because their file system does not provide identity (FAT, exFAT), so they cannot be verified.
+    /// This does not mean they changed (H6.9).
     pub unverifiable: u64,
-    /// Elementos que NO se purgaron porque su `$R` lleva reparse points dentro (junction, symlink, enlace de WSL, archivo de
-    /// la nube) o no se pudo comprobar entero (M2): se excluyen ANTES de entregarlos y no cortan el lote.
+    /// Items NOT purged because their `$R` contains reparse points (junction, symlink, WSL link, cloud file) or could not
+    /// be checked completely (M2): they are excluded BEFORE submission and do not stop the batch.
     pub with_links: u64,
-    /// Elementos de la Papelera que no se listaron al confirmar porque sus metadatos (`$I`) están ilegibles: no se vacían y su
-    /// tamaño no cuenta en lo que se prometió (m1).
+    /// Recycle Bin items not listed at approval because their metadata (`$I`) was unreadable: they are not emptied, and
+    /// their size is not included in the promised amount (m1).
     pub unlisted: u64,
-    /// Tamaño aproximado de la Papelera al confirmar.
+    /// Approximate Recycle Bin size at approval.
     pub bytes_hint: u64,
-    /// La shell no pudo hacer la operación.
+    /// The shell could not perform the operation.
     pub failed: bool,
 }
 
-/// Espacio libre de un volumen antes y después.
+/// A volume's free space before and after execution.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VolumeDelta {
     pub root: PathBuf,
@@ -268,93 +270,93 @@ pub struct VolumeDelta {
     pub free_after: u64,
 }
 
-/// El resumen de una ejecución.
+/// Execution summary.
 #[derive(Clone, Debug, Default)]
 pub struct Report {
     pub dry_run: bool,
     pub cancelled: bool,
     pub items: Vec<ItemReport>,
-    /// Eliminado definitivamente (suma de tamaños, sin enlaces compartidos). En simulación, lo que se habría eliminado.
+    /// Permanently deleted (sum of sizes, excluding shared links). In a dry run, the amount that would have been deleted.
     pub permanent_bytes: u64,
-    /// Movido a la Papelera (verificado). En simulación, lo que se habría movido.
+    /// Moved to the Recycle Bin (verified). In a dry run, the amount that would have been moved.
     pub recycled_bytes: u64,
     pub bin: Option<BinReport>,
-    /// Contadores sumados de todo (en uso, sin permiso, cambiados, protegidos, enlaces compartidos...).
+    /// Counters summed across all items (in use, access denied, changed, protected, shared links...).
     pub totals: StatsSnapshot,
-    /// "Liberado ahora": diferencia MEDIDA del espacio libre de los volumenes (con signo; `None` en simulación).
+    /// "Freed now": MEASURED difference in volume free space (signed; `None` during a dry run).
     pub freed_now: Option<i64>,
     pub volumes: Vec<VolumeDelta>,
-    /// Elementos que desaparecieron sin llegar a la Papelera.
+    /// Items that disappeared without reaching the Recycle Bin.
     pub deleted_unexpectedly: u64,
-    /// Elementos cuyo destino en la Papelera es un objeto distinto del aprobado (están en la Papelera: se pueden restaurar).
+    /// Items whose Recycle Bin destination is an object other than the approved one (they are in the Recycle Bin and can be restored).
     pub recycled_other: u64,
-    /// Elementos de los que no se pudo comprobar qué pasó.
+    /// Items whose outcome could not be verified.
     pub unverified: u64,
-    /// El primer error (`HRESULT`) que devolvió la shell o COM al enviar a la Papelera, si hubo alguno. Lo que no se pudo
-    /// enviar queda como no procesado y sigue donde estaba.
+    /// First error (`HRESULT`) returned by the shell or COM while sending items to the Recycle Bin, if any. Items that
+    /// could not be sent remain unprocessed and stay where they were.
     pub shell_error: Option<i32>,
-    /// El envío a la Papelera se DETUVO por seguridad (ver [`StopReason`]): los que quedaban no se tocaron.
+    /// Sending to the Recycle Bin STOPPED for safety (see [`StopReason`]): remaining items were not touched.
     pub recycle_stopped: bool,
-    /// Por qué se detuvo (el primero), si `recycle_stopped`.
+    /// Why sending stopped (the first reason), if `recycle_stopped`.
     pub stop_reason: Option<StopReason>,
-    /// Elementos que no se enviaron por falta de sitio en la Papelera.
+    /// Items not sent because there was no room in the Recycle Bin.
     pub no_room: u64,
-    /// Elementos que no se enviaron por el corte de seguridad.
+    /// Items not sent because of the safety stop.
     pub stopped_items: u64,
-    /// Lo que hay en TODA la Papelera tras la ejecución (según la shell): es lo que vaciaría "Vaciar ahora". `None` si
-    /// no se envió nada a la Papelera, en simulación o si la consulta falló.
+    /// Contents of the ENTIRE Recycle Bin after execution (according to the shell): what "Empty now" would remove. `None`
+    /// if nothing was sent to the Recycle Bin, during a dry run, or if the query failed.
     pub bin_total_after: Option<u64>,
-    /// Elementos que no se pudieron enviar.
+    /// Items that could not be sent.
     pub not_recycled: u64,
-    /// Elementos que no caben en la Papelera y no se confirmaron.
+    /// Items that do not fit in the Recycle Bin and were not confirmed.
     pub skipped_unfit: u64,
-    /// Ruta del registro local.
+    /// Path to the local log.
     pub log_path: Option<PathBuf>,
-    /// El registro local FALLÓ al escribir o volcar (M4): la limpieza se detuvo en el siguiente punto seguro y no se tocó
-    /// nada más. Lo que ya estaba hecho se queda (y puede no constar entero en el registro).
+    /// The local log FAILED while writing or flushing (M4): cleanup stopped at the next safe point and nothing else was
+    /// touched. Completed work remains in effect (and may not be fully recorded in the log).
     pub log_failed: bool,
-    /// El registro llegó a su tope (líneas o bytes) y dejó de anotar: la limpieza siguió, pero lo que vino después NO consta
-    /// en el registro (H5).
+    /// The log reached its limit (lines or bytes) and stopped recording: cleanup continued, but subsequent work is NOT
+    /// recorded in the log (H5).
     pub log_truncated: bool,
 }
 
-/// Por qué se detuvo el envío a la Papelera (corte de seguridad).
+/// Why sending to the Recycle Bin stopped (safety stop).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StopReason {
-    /// La shell eliminó definitivamente un elemento (no cabía en la Papelera) o el contenido de un directorio ya no es el de
-    /// antes del envío (H2: puede haber cambiado sin que se haya perdido nada).
+    /// The shell permanently deleted an item (it did not fit in the Recycle Bin), or a directory's contents no longer match
+    /// their state just before sending (H2: they may have changed without anything being lost).
     DeletedUnexpectedly,
-    /// No se pudo comprobar qué pasó con un elemento (la shell no dijo dónde quedó, o no se pudo abrir).
+    /// An item's outcome could not be verified (the shell did not say where it ended up, or it could not be opened).
     Unverified,
-    /// La shell dijo que "eliminó" el elemento sin enviarlo a la Papelera (no cabía) pero NO lo tocó: sigue en su sitio, o
-    /// falló con un error, se comprobó que lo dejó intacto y el receptor canceló con ello lo que quedaba de su lote
-    /// (A2-M1). Se detiene el envío igual (la shell se comporta de forma inesperada), pero no se afirma que se haya borrado
-    /// nada.
+    /// The shell reported that it "deleted" the item without sending it to the Recycle Bin (it did not fit), but did NOT
+    /// touch it: it remains in place; or the operation failed, the item was verified intact, and the receiver cancelled
+    /// the rest of its batch (A2-M1). Sending stops anyway (the shell behaved unexpectedly), but this does not claim that
+    /// anything was deleted.
     ShellDeclined,
-    /// Lo que había en la ruta justo antes de que la shell actuara no era lo aprobado (`PreDeleteItem` lo vetó): se detuvo
-    /// el envío y no se mandó nada más.
+    /// The item at the path just before the shell acted was not the approved one (`PreDeleteItem` vetoed it): sending
+    /// stopped, and nothing else was submitted.
     Changed,
 }
 
-/// Por qué no se ejecutó.
+/// Why execution did not proceed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ExecError {
-    /// Lo que cabe en la Papelera cambió desde la confirmación: hay que volver a confirmar (PLAN.md §2.5). Lleva los ids.
+    /// Recycle Bin fit changed since approval: confirmation is required again (PLAN.md §2.5). Contains the item IDs.
     NeedsReconfirm(Vec<usize>),
-    /// No hay registro local utilizable (no se pudo crear, o ya había fallado) y no es una simulación: sin registro no hay
-    /// acción destructiva (M4). No se ha tocado nada.
+    /// No usable local log exists (it could not be created or had already failed), and this is not a dry run: no destructive
+    /// action is allowed without a log (M4). Nothing was touched.
     LogRequired,
-    /// El proceso se ejecuta ELEVADO (como administrador): la limpieza real y vaciar la Papelera no se hacen (PLAN.md §3.9: la
-    /// aplicación nunca limpia elevada). El análisis y la simulación sí se permiten. No se ha tocado nada.
+    /// The process is ELEVATED (running as administrator): actual cleanup and emptying the Recycle Bin are not allowed
+    /// (PLAN.md §3.9: the application never cleans while elevated). Analysis and dry runs are allowed. Nothing was touched.
     Elevated,
 }
 
-/// ¿Está elevado el proceso? Un rasgo para poder probar las dos ramas sin elevar nada (el CI no se puede elevar).
+/// Is the process elevated? A trait that allows both branches to be tested without elevating (CI cannot elevate).
 pub(crate) trait Elevation: Send + Sync {
     fn is_elevated(&self) -> bool;
 }
 
-/// La consulta real al token del proceso. FALLA CERRADO: si no se puede consultar, se trata como elevado (sin limpieza).
+/// Queries the actual process token. FAILS CLOSED: if the query fails, the process is treated as elevated (no cleanup).
 pub(crate) struct RealElevation;
 
 impl Elevation for RealElevation {
@@ -377,7 +379,7 @@ impl Elevation for NotElevated {
     }
 }
 
-/// Falla cerrado: sin poder consultar el token se trata como elevado.
+/// Fails closed: if the token cannot be queried, the process is treated as elevated.
 fn elevated_from(state: Option<bool>) -> bool {
     state.unwrap_or(true)
 }
