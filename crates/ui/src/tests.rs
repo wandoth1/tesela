@@ -1493,9 +1493,10 @@ fn acerca_de_muestra_la_version_y_los_avisos_de_terceros_y_no_cambia_los_ajustes
         );
         h.get_by_label(avisos).click();
         h.run_steps(4);
-        // El botón y la primera línea del texto.
-        assert!(h.query_all_by_label_contains("Avisos de terceros").count() >= 2);
-        h.get_by_label_contains("Licencias usadas");
+        // The Spanish button opens the generated English third-party notices.
+        h.get_by_label("Avisos de terceros");
+        h.get_by_label_contains("Third-party notices");
+        h.get_by_label_contains("Licenses used");
         // Escape la cierra.
         h.key_press(Key::Escape);
         h.run_steps(3);

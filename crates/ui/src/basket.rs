@@ -766,7 +766,15 @@ impl Explore {
                     || empty = true,
                 );
             }
-            if recs.downloads.is_none() && recs.recycle.is_none() {
+            let mut any = recs.downloads.is_some() || recs.recycle.is_some();
+            for row in recs.diagnostics() {
+                if any {
+                    ui.separator();
+                }
+                any = true;
+                self.review_category_row(ui, env, row.id, row.bytes);
+            }
+            if !any {
                 ui.label(RichText::new(env.tr.t("recs-review-none")).color(pal.text_muted));
             }
         });
@@ -815,6 +823,63 @@ impl Explore {
                 );
             }
         });
+    }
+}
+
+impl Explore {
+    /// A Review category with a checkbox, estimated size and Recycle Bin-only destination.
+    fn review_category_row(&mut self, ui: &mut Ui, env: &mut Env, id: CategoryId, bytes: u64) {
+        let pal = env.pal;
+        let name = category_name(env, id);
+        let why = env.tr.t(match id {
+            CategoryId::WerReports => "rule-wer-reports-why",
+            _ => "rule-crash-dumps-why",
+        });
+        let mut checked = self.flow.basket.contains_category(id);
+        let before = checked;
+        ui.horizontal_top(|ui| {
+            let cb = ui.add_enabled(bytes > 0, egui::Checkbox::without_text(&mut checked));
+            let label = env.tr.ta("recs-include", args!["name" => name.clone()]);
+            cb.widget_info(|| {
+                egui::WidgetInfo::selected(
+                    egui::WidgetType::Checkbox,
+                    bytes > 0,
+                    checked,
+                    label.clone(),
+                )
+            });
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(&name)
+                            .font(theme::font_semibold(15.0))
+                            .color(pal.text),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.label(
+                            RichText::new(env.tr.size(bytes))
+                                .font(theme::font_semibold(15.0))
+                                .color(pal.text),
+                        );
+                    });
+                });
+                ui.add(
+                    egui::Label::new(RichText::new(&why).size(13.0).color(pal.text_muted)).wrap(),
+                );
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    env.icons.show(ui, Icon::Delete, 13.0, pal.text);
+                    ui.label(
+                        RichText::new(env.tr.t("dest-recycle-diag"))
+                            .size(12.0)
+                            .color(pal.text),
+                    );
+                });
+            });
+        });
+        if checked != before {
+            self.flow.basket.set_category(id, checked);
+        }
     }
 }
 

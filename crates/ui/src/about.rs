@@ -140,7 +140,7 @@ mod tests {
 
     #[test]
     fn los_avisos_estan_incrustados_y_listan_las_dependencias_y_sus_licencias() {
-        assert!(NOTICES.contains("Avisos de terceros"));
+        assert!(NOTICES.contains("Third-party notices"));
         assert!(NOTICES.contains("MIT"));
         assert!(NOTICES.contains("Apache License"));
         // Las dependencias directas del producto aparecen.
