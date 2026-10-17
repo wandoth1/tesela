@@ -1,16 +1,16 @@
-# Reglas de limpieza del MVP (PLAN.md §2.6). Cada categoria tiene riesgo, destino y, si procede, antiguedad minima.
+# MVP cleanup rules (PLAN.md §2.6). Each category has a risk, destination, and optional minimum age.
 #
-#   risk        safe (se puede preseleccionar) | review (nunca se preselecciona) | info (solo informar, sin casilla)
-#   destination permanent (se borra y se vuelve a crear sola: SOLO lo regenerable que clasifica una regla) | recycle
-#   action      contents   = borra los HIJOS de las raices de la categoria (la raiz no se borra)
-#               empty-bin  = vaciar la Papelera con alcance enumerado (la propia accion es el borrado)
-#               none       = no hay accion (se informa o se ofrece "Ver")
-#   min_age_hours  solo se tocan los archivos mas antiguos que esto (la mas reciente de creacion, escritura y cambio)
-#   selectable  tiene casilla en Recomendaciones
+#   risk        safe (may be preselected) | review (never preselected) | info (display only, no checkbox)
+#   destination permanent (delete; only rule-classified regenerable data) | recycle
+#   action      contents   = delete CHILDREN of category roots (leave the roots intact)
+#               empty-bin  = empty the Recycle Bin within the enumerated scope
+#               none       = no action (show information or offer "View")
+#   min_age_hours  touch only files older than this (latest creation, write, or change time)
+#   selectable  has a checkbox in Recommendations
 #
-# Los textos ("por que") viven en la interfaz (es.ftl / en.ftl), con el identificador `rule-<id>-why`.
-# Un test comprueba las invariantes: lo seguro es regenerable y borra con una regla, lo "revisar" nunca se preselecciona
-# y lo "solo informar" no lleva destino ni accion.
+# Explanations live in the UI (es.ftl / en.ftl), keyed as `rule-<id>-why`.
+# A test checks these invariants: safe data is regenerable and deleted under a rule; review is never preselected;
+# info has no destination or action.
 
 [[rule]]
 id = "user-temp"
@@ -60,8 +60,8 @@ action = "empty-bin"
 min_age_hours = 0
 selectable = true
 
-# Descargas: informativo (Revisar). Se ofrece "Ver" para entrar en la carpeta; lo que el usuario elija va a la cesta como
-# "Tu archivo" (Papelera). Nunca es "seguro".
+# Downloads: informational (Review). "View" opens the folder; user-selected entries enter the basket as
+# "Your file" (Recycle Bin). Downloads are never "safe".
 [[rule]]
 id = "downloads"
 risk = "review"
@@ -70,19 +70,19 @@ action = "none"
 min_age_hours = 0
 selectable = false
 
-# Informes de errores de Windows del usuario (WER): SOLO las dos carpetas de informes de
-# %LOCALAPPDATA%\Microsoft\Windows\WER, `ReportArchive` (ya enviados; queda lo que dejó WER) y `ReportQueue` (en cola).
-# Nunca la carpeta `WER` ni otra cosa de dentro. Riesgo "Revisar" y destino Papelera: sirven para diagnosticar un fallo y
-# el soporte de un programa puede pedirlos; NO son regenerables (el invariante "definitivo = solo lo regenerable" no cambia).
-# Si no caben en la Papelera, el flujo existente pide el borrado definitivo expreso (grupo ámbar). 7 días: lo reciente puede
-# ser un fallo de esta semana que se quiera enviar o mirar.
-# Fuentes (revisadas el 2026-10-17; caducidad: 1 año, revisar antes si cambia el formato de WER en Windows):
-#   - https://learn.microsoft.com/en-us/windows/win32/wer/wer-settings (ms.date 2021-03-12): archivo y cola con tope
-#     (MaxArchiveCount 1000, MaxQueueCount 50 por defecto).
+# Current user's Windows Error Reporting (WER): ONLY the two report folders under
+# %LOCALAPPDATA%\Microsoft\Windows\WER: `ReportArchive` (sent reports retained by WER) and `ReportQueue` (pending).
+# Never the `WER` parent or other contents. Review risk and Recycle Bin destination: reports can diagnose failures
+# and support staff may request them. They are NOT regenerable; permanent deletion stays limited to regenerable data.
+# If they do not fit in the Recycle Bin, keep them: diagnostics are never permanently deleted. Minimum age is 7 days;
+# recent reports may describe a failure the user wants to inspect or submit.
+# Sources (reviewed 2026-10-17; revisit within one year or sooner if WER changes):
+#   - https://learn.microsoft.com/en-us/windows/win32/wer/wer-settings (ms.date 2021-03-12): archive and queue limits
+#     (default MaxArchiveCount 1000, MaxQueueCount 50).
 #   - https://learn.microsoft.com/en-us/windows-server/failover-clustering/troubleshooting-using-wer-reports (ms.date
-#     2021-10-21): qué guarda cada carpeta (cola = pendientes de subir; archivo = ya subidos, queda `Report.wer`).
-#   - https://learn.microsoft.com/en-us/archive/blogs/oanapl/windows-error-reporting-wer-for-developers (archivada, 2009):
-#     la ruta por usuario `%LOCALAPPDATA%\Microsoft\Windows\WER` con `ReportArchive` y `ReportQueue`.
+#     2021-10-21): queue contains pending reports; archive contains sent reports, including `Report.wer`.
+#   - https://learn.microsoft.com/en-us/archive/blogs/oanapl/windows-error-reporting-wer-for-developers (archived 2009):
+#     per-user `%LOCALAPPDATA%\Microsoft\Windows\WER` path with `ReportArchive` and `ReportQueue`.
 [[rule]]
 id = "wer-reports"
 risk = "review"
@@ -91,14 +91,14 @@ action = "contents"
 min_age_hours = 168
 selectable = true
 
-# Volcados de bloqueo de aplicaciones: la carpeta por defecto de los volcados locales de WER,
-# %LOCALAPPDATA%\CrashDumps. Mismo criterio que arriba: Revisar, Papelera y 7 días (un volcado de ayer puede ser el que se
-# envía al soporte). Un volcado completo puede ocupar GB: si no cabe en la Papelera, grupo ámbar con confirmación expresa.
-# Solo la ruta por defecto: si `DumpFolder` está redirigida (HKLM, necesita administrador) no se toca nada.
-# Fuente (revisada el 2026-10-17; caducidad: 1 año):
-#   - https://learn.microsoft.com/en-us/windows/win32/wer/collecting-user-mode-dumps (ms.date 2024-07-18): `DumpFolder`
-#     por defecto `%LOCALAPPDATA%\CrashDumps`, `DumpCount` 10 (sustituye el más antiguo), `DumpType` 1 (mini); la
-#     función no está activada por defecto (la carpeta solo existe si alguien la activó o un programa escribe ahí).
+# Application crash dumps: WER's default local dump folder, `%LOCALAPPDATA%\CrashDumps`.
+# Same policy: Review, Recycle Bin, and 7-day minimum age (yesterday's dump may be needed for support).
+# A full dump can be gigabytes; if it does not fit in the Recycle Bin, keep it.
+# Only the default path: do not touch a redirected `DumpFolder` (HKLM configuration requires an administrator).
+# Source (reviewed 2026-10-17; revisit within one year):
+#   - https://learn.microsoft.com/en-us/windows/win32/wer/collecting-user-mode-dumps (ms.date 2024-07-18): default
+#     `DumpFolder` is `%LOCALAPPDATA%\CrashDumps`; default `DumpCount` is 10 (oldest replaced) and `DumpType` is 1
+#     (mini). The feature is disabled by default, so the folder may not exist.
 [[rule]]
 id = "crash-dumps"
 risk = "review"

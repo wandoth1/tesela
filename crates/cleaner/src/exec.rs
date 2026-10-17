@@ -52,6 +52,9 @@ pub struct ExecOptions {
     pub dry_run: bool,
     /// El usuario marcó la casilla del grupo ámbar: lo que no cabe en la Papelera se elimina definitivamente.
     pub allow_unfit_permanent: bool,
+    /// Explicit acknowledgment that local Outlook `.pst` files may be permanently deleted.
+    /// The engine also checks each file discovered after approval.
+    pub allow_local_mail_permanent: bool,
     /// Registro local de la ejecución. OBLIGATORIO salvo en simulación (M4): sin un registro utilizable no hay ninguna
     /// acción destructiva ([`ExecError::LogRequired`]).
     pub log: Option<Arc<LogWriter>>,
@@ -477,10 +480,16 @@ impl Cleaner {
             // Falla cerrado: lo que `never_permanent` prohíbe (informes y volcados, o una unidad suelta con antigüedad mínima,
             // cuyo recorrido definitivo no es todo-o-nada) no llega nunca a la rama definitiva: ni por destino ni con la casilla.
             match (it.destination, it.is_unfit()) {
-                (Destination::Permanent, _) if !it.never_permanent() => perm.push(it),
+                (Destination::Permanent, _)
+                    if !it.never_permanent() && !self.roots.is_diagnostic_path(&it.path) =>
+                {
+                    perm.push(it)
+                }
                 (Destination::Recycle, false) => recyc.push(it),
                 (Destination::Recycle, true)
-                    if opts.allow_unfit_permanent && !it.never_permanent() =>
+                    if opts.allow_unfit_permanent
+                        && !it.never_permanent()
+                        && !self.roots.is_diagnostic_path(&it.path) =>
                 {
                     perm.push(it)
                 }
@@ -574,7 +583,14 @@ impl Cleaner {
                     Unit::new(
                         it.id,
                         it.spec.clone(),
-                        self.env(mode, it.min_age, cancel, &progress.entries, sink.clone()),
+                        self.env(
+                            mode,
+                            it.min_age,
+                            cancel,
+                            &progress.entries,
+                            sink.clone(),
+                            opts.allow_local_mail_permanent,
+                        ),
                     )
                 })
                 .collect();
@@ -1659,7 +1675,7 @@ impl Cleaner {
         let unit = Unit::new(
             it.id,
             it.spec.clone(),
-            self.env(Mode::Measure, it.min_age, cancel, &progress, None),
+            self.env(Mode::Measure, it.min_age, cancel, &progress, None, false),
         );
         engine::run(std::slice::from_ref(&unit), self.threads);
         // Un recorrido interrumpido por la cancelación (o por un pánico de un hilo, que también la activa) no vio todo.

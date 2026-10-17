@@ -83,6 +83,7 @@ fn exec(
         &ExecOptions {
             dry_run: dry,
             allow_unfit_permanent: allow_unfit,
+            allow_local_mail_permanent: false,
             log,
         },
         &Progress::new(),
@@ -2198,6 +2199,9 @@ fn una_unidad_suelta_con_antiguedad_minima_nunca_llega_a_la_rama_definitiva() {
     plan.items[0].diagnostic_path = false;
     assert!(!plan.items[0].never_permanent());
     assert_eq!(plan.unfit_items().count(), 1);
+    // Execution also enforces the fixed diagnostic path, even if an old plan missed it.
+    let rep = exec(&c, &plan, true, true, None).unwrap();
+    assert_eq!(status_of(&rep, "app.1111.dmp"), ItemStatus::SkippedUnfit);
 }
 
 /// m-2: lo que se deja por reciente consta como rechazado (`Young`) en el plan y en el registro. m-3: una raíz que no existe no
@@ -3349,6 +3353,7 @@ fn un_r_con_enlaces_dentro_se_excluye_y_el_resto_del_lote_se_purga() {
             &ExecOptions {
                 dry_run: false,
                 allow_unfit_permanent: false,
+                allow_local_mail_permanent: false,
                 log: Some(log.clone()),
             },
             &Progress::new(),
@@ -3407,6 +3412,7 @@ fn los_elementos_sin_listar_constan_en_el_registro_y_en_el_informe() {
             &ExecOptions {
                 dry_run: false,
                 allow_unfit_permanent: false,
+                allow_local_mail_permanent: false,
                 log: Some(log.clone()),
             },
             &Progress::new(),
@@ -6649,4 +6655,90 @@ fn mail_measurement_counts_files_without_changing_recycle_fingerprint() {
     single.add_path(sb.long("Mail/a.PST"), c.protection());
     let single = approve(&c, &single);
     assert_eq!(single.mail_totals(), ((1, alloc("Mail/a.PST")), (0, 0)));
+}
+
+#[test]
+fn newly_added_pst_requires_consent_in_cache_contents() {
+    let sb = Sandbox::new();
+    let cache = "Local/Google/Chrome/User Data/Default/Cache";
+    sb.write(&format!("{cache}/plain.bin"), 32);
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "never");
+    let c = cleaner_for(&sb).with_shell(fake);
+    let mut basket = Basket::new();
+    basket.set_category(CategoryId::ChromeCache, true);
+    let plan = approve(&c, &basket);
+    assert_eq!(plan.mail_totals().0.0, 0);
+    sb.write(&format!("{cache}/new.pst"), 64);
+
+    let run = |allow_local_mail_permanent| {
+        c.execute(
+            &plan,
+            &ExecOptions {
+                dry_run: true,
+                allow_unfit_permanent: false,
+                allow_local_mail_permanent,
+                log: None,
+            },
+            &Progress::new(),
+        )
+        .unwrap()
+    };
+    let without = run(false);
+    assert_eq!(
+        without.items.iter().map(|i| i.stats.protected).sum::<u64>(),
+        1
+    );
+    assert_eq!(without.items.iter().map(|i| i.stats.files).sum::<u64>(), 1);
+    let with = run(true);
+    assert_eq!(with.items.iter().map(|i| i.stats.protected).sum::<u64>(), 0);
+    assert_eq!(with.items.iter().map(|i| i.stats.files).sum::<u64>(), 2);
+    assert!(sb.path(&format!("{cache}/new.pst")).exists());
+}
+
+#[test]
+fn newly_added_pst_requires_consent_in_unfit_entry() {
+    let sb = Sandbox::new();
+    sb.write("Docs/Own/plain.bin", 32);
+    let fake = FakeShell::new(&sb, Some(1), 0, "never");
+    let c = cleaner_for(&sb).with_shell(fake);
+    let mut basket = Basket::new();
+    basket.add_path(sb.long("Docs/Own"), c.protection());
+    let plan = approve(&c, &basket);
+    assert_eq!(plan.items.len(), 1);
+    assert!(plan.items[0].is_unfit());
+    assert_eq!(plan.mail_totals().0.0, 0);
+    sb.write("Docs/Own/new.pst", 64);
+
+    let run = |allow_local_mail_permanent| {
+        c.execute(
+            &plan,
+            &ExecOptions {
+                dry_run: true,
+                allow_unfit_permanent: true,
+                allow_local_mail_permanent,
+                log: None,
+            },
+            &Progress::new(),
+        )
+        .unwrap()
+    };
+    let without = run(false);
+    assert_eq!(without.items[0].destination, Destination::Permanent);
+    assert_eq!(without.items[0].stats.protected, 1);
+    assert_eq!(without.items[0].stats.files, 1);
+    let with = run(true);
+    assert_eq!(with.items[0].stats.protected, 0);
+    assert_eq!(with.items[0].stats.files, 2);
+    assert!(sb.path("Docs/Own/new.pst").exists());
+}
+
+#[test]
+fn fixed_diagnostic_paths_do_not_depend_on_current_existence() {
+    let sb = Sandbox::new();
+    let c = cleaner_for(&sb);
+    let root = sb.long("Local/CrashDumps");
+    assert!(!root.exists());
+    assert!(c.roots.is_diagnostic_path(&root));
+    assert!(c.roots.is_diagnostic_path(&root.join("later.dmp")));
+    assert!(!c.roots.is_diagnostic_path(&sb.long("Docs/Own")));
 }

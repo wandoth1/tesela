@@ -371,6 +371,16 @@ impl Roots {
             .collect()
     }
 
+    /// Diagnostic folders are never eligible for permanent deletion. Use the fixed known-folder
+    /// paths rather than currently existing category roots: a folder can disappear while a plan
+    /// is measured and then return with the same identity before execution.
+    pub(crate) fn is_diagnostic_path(&self, path: &Path) -> bool {
+        let candidate = PathKey::new(path);
+        diagnostic_dirs(&self.browser)
+            .into_iter()
+            .any(|(_, root)| candidate.is_same_or_under(&PathKey::new(&root)))
+    }
+
     /// Protection rules with verified category roots as exceptions: descendants of those roots are not denied, but they
     /// exempt ONLY the denied zone each one declares (never "that zone or any ancestor").
     pub fn protection(&self) -> Protection {
