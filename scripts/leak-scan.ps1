@@ -19,7 +19,7 @@ function Get-LocalValueNeedles {
         'USERNAME'     = $env:USERNAME
         'USERPROFILE'  = $env:USERPROFILE
         'COMPUTERNAME' = $env:COMPUTERNAME
-        'repositorio'  = $Repo
+        'repository'   = $Repo
         'CARGO_HOME'   = $CargoHome
         'toolchain'    = $Sysroot
         'RUSTUP_HOME'  = $RustupHome
