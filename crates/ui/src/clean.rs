@@ -139,6 +139,12 @@ fn unix_now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+/// Cuántos elementos se tocarían de verdad: los del plan sin los que "se quedan donde están" (`kept`), más la Papelera si se
+/// vacía. La confirmación cuenta con esto y desactiva el botón si es cero.
+pub(crate) fn actionable_count(items: usize, kept: usize, has_bin: bool) -> usize {
+    items.saturating_sub(kept) + usize::from(has_bin)
+}
+
 /// ¿Cuánto ocupa lo que se libera "de verdad" (definitivo + vaciar la Papelera + lo que no cabe si se confirmó)?
 pub(crate) fn free_bytes(plan: &Plan, allow_unfit: bool) -> u64 {
     plan.permanent_bytes()
@@ -641,7 +647,9 @@ fn confirm_ui(
                 let title = env.tr.t("confirm-title");
                 let r = ui.label(RichText::new(&title).font(theme::font_semibold(24.0)).color(pal.text));
                 r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, title.clone()));
-                let n_items = plan.items.len() as u64 + u64::from(plan.bin.is_some());
+                let kept = plan.kept_unfit_items().count();
+                let actionable = actionable_count(plan.items.len(), kept, plan.bin.is_some());
+                let n_items = actionable as u64;
                 let total = free_bytes(&plan, c.allow_unfit) + plan.recycle_bytes();
                 ui.label(
                     RichText::new(env.tr.ta(
@@ -650,6 +658,11 @@ fn confirm_ui(
                     ))
                     .color(pal.text_muted),
                 );
+                // Solo hay lo que se queda donde está: el botón está desactivado y aquí se dice por qué.
+                if actionable == 0 && kept > 0 {
+                    ui.add_space(6.0);
+                    note_line(ui, &pal, &env.tr.t("confirm-only-kept"), true);
+                }
                 if dry {
                     ui.add_space(6.0);
                     note_line(ui, &pal, &env.tr.t("confirm-dry-banner"), true);
@@ -675,7 +688,11 @@ fn confirm_ui(
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let unfit = plan.unfit_items().count() > 0;
-                        let nothing = plan.items.is_empty() && plan.bin.is_none();
+                        let nothing = actionable_count(
+                            plan.items.len(),
+                            plan.kept_unfit_items().count(),
+                            plan.bin.is_some(),
+                        ) == 0;
                         let label = go_label(env, &plan, c.allow_unfit, dry);
                         let enabled = !nothing;
                         let r = widgets::button(ui, env, ButtonStyle::Primary, Some(Icon::ShieldCheckmark), &label, enabled);
@@ -1442,6 +1459,25 @@ fn summary_ui(ui: &mut Ui, env: &mut Env, s: &Summary) -> Option<SummaryClick> {
             });
         });
     click
+}
+
+#[cfg(test)]
+mod actionable_tests {
+    use super::actionable_count;
+
+    /// Lo que "se queda donde está" no cuenta; sin nada que tocar (ni Papelera que vaciar) el botón se desactiva.
+    #[test]
+    fn lo_que_se_queda_donde_esta_no_cuenta_como_elemento() {
+        assert_eq!(actionable_count(5, 2, false), 3);
+        assert_eq!(actionable_count(5, 0, false), 5);
+        // Solo elementos que se quedan: nada que hacer.
+        assert_eq!(actionable_count(2, 2, false), 0);
+        // Vaciar la Papelera sí es algo que hacer.
+        assert_eq!(actionable_count(2, 2, true), 1);
+        assert_eq!(actionable_count(0, 0, false), 0);
+        // Nunca por debajo de cero.
+        assert_eq!(actionable_count(1, 3, false), 0);
+    }
 }
 
 #[cfg(test)]

@@ -302,6 +302,9 @@ confirm-more =
     }
 confirm-group-unfit = Se eliminará definitivamente porque no se puede enviar a la Papelera
 confirm-unfit-capacity-hint = Para poder enviarlo a la Papelera: abre las propiedades de la Papelera de reciclaje y fija un tamaño máximo para la unidad.
+confirm-group-recycle-diag = Informes y volcados de fallos · van a la Papelera
+basket-phrase-recycle-diag = Puedes recuperarlos mientras estén en la Papelera; si no caben, se dejan donde están
+confirm-only-kept = No hay nada que limpiar ahora: lo que hay no cabe en la Papelera y no se borra definitivamente. Si quieres limpiarlo, haz sitio en la Papelera (o fija un tamaño máximo mayor) y vuelve a intentarlo.
 confirm-group-kept = No caben en la Papelera: se dejan donde están
 confirm-kept-note = No caben en la Papelera; no se borran definitivamente porque sirven para diagnosticar fallos.
 confirm-diag-note = Cada informe o volcado guarda un fallo concreto y no se vuelve a crear; puede ser lo que pida el soporte de un programa. El espacio se libera de verdad al vaciar la Papelera.

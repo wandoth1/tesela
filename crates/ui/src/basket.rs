@@ -272,14 +272,18 @@ impl Explore {
                     };
                 let mut cats: Vec<(Source, String, String, u64)> = Vec::new();
                 let mut user: Vec<(Source, String, String, u64)> = Vec::new();
+                let mut diag: Vec<(Source, String, String, u64)> = Vec::new();
                 let mut bin: Vec<(Source, String, String, u64)> = Vec::new();
                 for s in self.flow.basket.sources() {
                     match s {
                         Source::Category(id) => {
                             let b = recs.row(*id).map_or(0, |r| r.bytes);
                             let row = (s.clone(), category_name(env, *id), String::new(), b);
-                            // Una categoría con destino Papelera (informes de errores, volcados) va con lo que se puede recuperar.
-                            if category_is_recycled(*id) {
+                            // Informes de errores y volcados: grupo propio (van a la Papelera, pero si no caben se dejan donde
+                            // están: "puedes recuperarlo" no es toda la verdad). Otra categoría con destino Papelera, con lo suyo.
+                            if id.is_diagnostic() {
+                                diag.push(row);
+                            } else if category_is_recycled(*id) {
                                 user.push(row);
                             } else {
                                 cats.push(row);
@@ -321,6 +325,11 @@ impl Explore {
                     env.tr.t("basket-phrase-recycle"),
                 );
                 group(ui, env, Icon::Delete, &h2, &p2, user);
+                let (h2d, p2d) = (
+                    env.tr.t("confirm-group-recycle-diag"),
+                    env.tr.t("basket-phrase-recycle-diag"),
+                );
+                group(ui, env, Icon::Delete, &h2d, &p2d, diag);
                 let (h3, p3) = (env.tr.t("confirm-group-bin"), env.tr.t("basket-phrase-bin"));
                 group(ui, env, Icon::BinRecycle, &h3, &p3, bin);
             });

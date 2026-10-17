@@ -301,6 +301,9 @@ confirm-more =
     }
 confirm-group-unfit = Will be deleted permanently because it cannot be sent to the Recycle Bin
 confirm-unfit-capacity-hint = To be able to send it to the Recycle Bin: open the Recycle Bin properties and set a maximum size for the drive.
+confirm-group-recycle-diag = Error reports and crash dumps · go to the Recycle Bin
+basket-phrase-recycle-diag = You can recover them while they are in the Recycle Bin; if they do not fit, they are left alone
+confirm-only-kept = There is nothing to clean right now: what is here does not fit in the Recycle Bin and is not deleted permanently. To clean it, make room in the Recycle Bin (or set a larger maximum size) and try again.
 confirm-group-kept = They do not fit in the Recycle Bin: left where they are
 confirm-kept-note = They do not fit in the Recycle Bin; they are not deleted permanently because they help diagnose failures.
 confirm-diag-note = Each report or dump records a specific failure and is not recreated; a program's support may ask for it. The space is only really freed when you empty the Recycle Bin.
