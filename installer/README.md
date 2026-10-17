@@ -79,6 +79,10 @@ cálculo de espacio). Sin imágenes ni iconos (`Binary` está prohibida). Solo e
   mensajes de error genéricos de Windows Installer salen en el idioma de Windows. Los mensajes de las condiciones de lanzamiento
   (modo sin interfaz) también van en los dos idiomas juntos.
 
+  Early launch-condition errors can appear before the Spanish UI properties are initialized: their buttons remain in English.
+  The condition message itself is bilingual. This cosmetic limitation is accepted to keep localization out of the early
+  installer validation sequence; it does not change the condition or installation scope.
+
 ### Sin interfaz (`/qn`)
 
 Igual que la v0.1.4: **por usuario y sin UAC por defecto**.
@@ -94,7 +98,7 @@ Igual que la v0.1.4: **por usuario y sin UAC por defecto**.
 ### Ámbito y actualizaciones
 
 Windows Installer **no actualiza entre contextos**: un producto instalado por usuario no se sustituye desde una instalación para
-todos, ni al revés. Se **detecta** la instalación previa (una clave con `InstallFolder` **y** `tesela.exe` en esa carpeta: una clave sin producto no cuenta; `HKCU\Software\Tesela\InstallFolder`, que ya escribía la v0.1.4, y
+todos, ni al revés. Se **detecta** la instalación previa (una clave con `InstallFolder` **y** `tesela.exe` en esa carpeta: una clave sin ese ejecutable no cuenta; `HKCU\Software\Tesela\InstallFolder`, que ya escribía la v0.1.4, y
 `HKLM\SOFTWARE\Tesela\InstallFolder`) y se **bloquea el cambio de ámbito** con un mensaje que dice que hay que desinstalar antes. **Excepción (varias cuentas):** si ESTE usuario tiene
 su propia instalación por usuario, esa gana y puede actualizarla aunque otra cuenta haya instalado para todos (verá dos accesos directos «Tesela»);
 la inversa, pedir «para todos» teniendo la suya por usuario, sigue bloqueada.
@@ -106,6 +110,18 @@ instalación para todos hay que lanzarla con `ALLUSERS=1`.
 - v0.1.4 (por usuario) → v0.1.5 por usuario: actualiza en su sitio, conserva la carpeta personalizada y deja un solo producto.
 - v0.1.4 (por usuario) → para todos: bloqueado; desinstala primero.
 - Bajar de versión sigue bloqueado.
+
+#### Recovering orphaned installer metadata
+
+The executable check does **not** verify Windows Installer product registration. If both `InstallFolder` and an orphaned
+`tesela.exe` remain after the product registration was removed, setup can still ask you to uninstall first.
+Check Settings > Apps > Installed apps for Tesela, in the affected user account and for the all-users installation.
+If a registered installation exists, uninstall it normally; do not edit its metadata.
+Only after confirming that the affected scope has no registered Tesela installation, export its `Software\Tesela` registry
+key as a backup and remove **only its `InstallFolder` value**, then run setup again. Use HKCU for the affected user or the
+64-bit HKLM view for all users (administrator permission required). Leave any orphaned files in place until you have
+reviewed them; clearing this metadata does not uninstall or delete those files. If the registration state is uncertain,
+repair or uninstall with the original MSI rather than deleting metadata.
 
 ### Carpeta personalizada
 

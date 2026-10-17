@@ -559,6 +559,9 @@ try {
     }
 }
 
+# Keep the established coverage floor: deleting cases must not silently produce a green run.
+$MinChecks = 198
+if ($total -lt $MinChecks) { $failures.Add("only $total checks ran; expected at least $MinChecks") }
 if ($failures.Count -gt 0) {
     Write-Host "msi-validate.tests: $($failures.Count) de $total comprobaciones fallan:" -ForegroundColor Red
     $failures | ForEach-Object { Write-Host "  $_" }

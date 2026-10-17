@@ -121,8 +121,9 @@
       <RegistrySearch Id="PrevMachineDesktop" Root="HKLM" Key="Software\Tesela" Name="DesktopShortcut" Type="raw" />
     </Property>
     <!--
-      Una clave sin producto NO cuenta (restos de versiones antiguas, un registro de Windows Installer limpiado a mano, la carpeta
-      borrada sin desinstalar): ademas del valor, tiene que existir tesela.exe en la carpeta recordada. Es otra busqueda de
+       A remembered folder WITHOUT tesela.exe does not count (for example, a folder deleted without uninstalling).
+       This checks file existence, NOT Windows Installer product registration. A registry value plus an orphaned executable
+       still counts; see the installer README recovery procedure before changing orphaned metadata. Es otra busqueda de
       registro con un FileSearch, sin codigo; AppSearch las procesa por orden alfabetico de la propiedad, y _EXE va despues de
       su carpeta. Si el archivo no esta, las acciones TeselaStale* de abajo vacian TESELA_PREV_USER / TESELA_PREV_MACHINE y la
       clave se ignora (no bloquea el cambio de ambito ni fija una carpeta que ya no existe).

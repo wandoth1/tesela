@@ -206,6 +206,8 @@ function Assert-Clean([string]$When) {
     Check "$When`: sin carpeta por usuario" (-not (Test-Path -LiteralPath $userDefault))
     Check "$When`: sin InstallFolder en HKCU" ($null -eq (Get-RegValue 'HKCU:\Software\Tesela' 'InstallFolder'))
     Check "$When`: sin InstallFolder en HKLM" ($null -eq (Get-RegValue 'HKLM:\SOFTWARE\Tesela' 'InstallFolder'))
+    Check "$When`: no Tesela key remains in HKCU" (-not (Test-Path -LiteralPath 'HKCU:\Software\Tesela'))
+    Check "$When`: no Tesela key remains in HKLM" (-not (Test-Path -LiteralPath 'HKLM:\SOFTWARE\Tesela'))
     Check "$When`: sin acceso directo en el menu Inicio del usuario" (-not (Test-Path -LiteralPath $userStartMenu))
     Check "$When`: sin acceso directo en el menu Inicio comun" (-not (Test-Path -LiteralPath $commonStartMenu))
     Check "$When`: sin acceso directo en el escritorio del usuario" (-not (Test-Path -LiteralPath $userDesktop))

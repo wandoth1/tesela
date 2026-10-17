@@ -153,6 +153,7 @@ switch ($Phase) {
         }
         Check 'su carpeta ya no existe' (-not (Test-Path -LiteralPath $userDefault))
         Check 'sin InstallFolder en su HKCU' ($null -eq (Get-RegValue 'HKCU:\Software\Tesela' 'InstallFolder'))
+        Check 'no Tesela key remains in its HKCU' (-not (Test-Path -LiteralPath 'HKCU:\Software\Tesela'))
         Check 'sin acceso directo en su menu Inicio' (-not (Test-Path -LiteralPath $startMenu))
         Check 'ningun producto Tesela para este usuario' (@(Get-Products).Count -eq 0)
     }
