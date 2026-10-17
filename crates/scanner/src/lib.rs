@@ -23,6 +23,7 @@
 mod browser;
 mod classify;
 mod known;
+mod paths;
 mod priority;
 mod progress;
 mod sys;
@@ -37,10 +38,11 @@ pub use known::{
 pub use progress::{PriorityTarget, Progress, TopLevel};
 
 use crossbeam_deque::{Stealer, Worker};
+use paths::{drive_of, drive_root};
 use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::os::windows::ffi::OsStringExt;
-use std::path::{Component, Path, PathBuf, Prefix};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
@@ -310,33 +312,6 @@ fn io_err(code: u32) -> std::io::Error {
     std::io::Error::from_raw_os_error(code as i32)
 }
 
-/// Letra de unidad si `p` es exactamente la raíz de una unidad (`C:\` o `\\?\C:\`).
-fn drive_root(p: &Path) -> Option<PathBuf> {
-    let mut it = p.components();
-    let Some(Component::Prefix(prefix)) = it.next() else {
-        return None;
-    };
-    let letter = match prefix.kind() {
-        Prefix::Disk(l) | Prefix::VerbatimDisk(l) => l,
-        _ => return None,
-    };
-    (it.next() == Some(Component::RootDir) && it.next().is_none())
-        .then(|| PathBuf::from(format!("{}:\\", letter as char)))
-}
-
-/// Raíz de la unidad (por letra) a la que pertenece `p`, aunque `p` no sea la raíz.
-fn drive_of(p: &Path) -> Option<PathBuf> {
-    match p.components().next() {
-        Some(Component::Prefix(prefix)) => match prefix.kind() {
-            Prefix::Disk(l) | Prefix::VerbatimDisk(l) => {
-                Some(PathBuf::from(format!("{}:\\", l as char)))
-            }
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
 /// Arranca un escaneo. La preparación (abrir y listar la raíz, resolver las rutas prioritarias) es síncrona, así que
 /// los errores de la raíz se devuelven aquí; el resto corre en hilos y se sigue con [`ScanHandle`].
 ///
@@ -429,7 +404,9 @@ pub fn start(opts: ScanOptions) -> Result<ScanHandle, ScanError> {
     // (canonicaliza y consulta cada ruta conocida): si ya se pidió cancelar, se omite y el escaneo sigue con lo recibido.
     let find_mode = sh.find_mode.load(Ordering::Relaxed);
     let mut resolved = priority::Resolved::default();
-    if !find_mode
+    // Sin `FileId` guardados (ni NTFS ni ReFS) no hay adopción posible: la cola prioritaria se basa en ellos.
+    if store_ids
+        && !find_mode
         && !cancel.load(Ordering::SeqCst)
         && (opts.known_paths || opts.priority_paths.is_some())
     {
@@ -445,6 +422,7 @@ pub fn start(opts: ScanOptions) -> Result<ScanHandle, ScanError> {
                     name: OsString::from_wide(name),
                     id: t.id,
                     tag: t.tag,
+                    cloud: t.cloud,
                 }
             })
             .collect();
