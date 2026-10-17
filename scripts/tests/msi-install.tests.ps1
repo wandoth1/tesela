@@ -323,14 +323,15 @@ function Get-LuaEvidence {
     $out = New-Object System.Collections.Generic.List[string]
     foreach ($dir in $WorkDir, $stdShared) {
         if (-not (Test-Path -LiteralPath $dir)) { continue }
-        foreach ($log in Get-ChildItem -LiteralPath $dir -Filter '*.log' -ErrorAction SilentlyContinue) {
+        # Los del usuario estandar (std-*) primero: son la evidencia que mas interesa.
+        foreach ($log in (Get-ChildItem -LiteralPath $dir -Filter '*.log' -ErrorAction SilentlyContinue | Sort-Object { if ($_.Name -like 'std-*') { 0 } else { 1 } }, Name)) {
             $text = [System.Text.Encoding]::Latin1.GetString(@([System.IO.File]::ReadAllBytes($log.FullName) | Where-Object { $_ -ne 0 }))
             foreach ($line in ($text -split "`r?`n")) {
                 if ($line -match 'MSI_LUA|dual mode|Elevation required|sufficient privileges|MSIINSTALLPERUSER') { $out.Add("$($log.Name): $($line.Trim())") }
             }
         }
     }
-    return @($out | Select-Object -Unique | Select-Object -First 60)
+    return @($out | Select-Object -Unique | Select-Object -First 80)
 }
 
 # --- Rutas ---------------------------------------------------------------------------------------------------------------------

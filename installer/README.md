@@ -236,7 +236,11 @@ común, carpeta personalizada, actualización y desinstalación sin restos); el 
 `DESKTOPSHORTCUT` (por usuario y para todos, recordado al actualizar, quitado al desinstalar); la carpeta protegida; una clave de registro sin producto; y
 un **usuario estándar** desechable (contraseña aleatoria generada en el job y nunca impresa, borrado al final aunque falle): `ALLUSERS=1 /qn` sin
 privilegios tiene que fallar sin dejar nada, instalar por usuario sin elevar tiene que terminar con 0 en su perfil sin tocar `Program Files` ni
-`HKLM`, y su instalación por usuario se puede actualizar aunque otra cuenta haya instalado para todos (M2). El resumen del job lista cada
+`HKLM`, y su instalación por usuario se puede actualizar aunque otra cuenta haya instalado para todos (M2). **El runner es Windows Server**, donde la directiva
+efectiva de Windows Installer es `DisableMsi=1`: un usuario estándar no puede instalar ningún MSI (error 1625, sea el paquete que sea, antes de
+decidir el ámbito). Para probar lo que importa en un Windows de cliente (cuyo valor por defecto es 0), la máquina desechable recibe la
+directiva `DisableMSI=0` mientras dura ese escenario y se le quita al terminar. Con ella, el registro de msiexec dice «dual mode package ...
+installed in Per-User mode. No elevation is required»; sin elevar, `ALLUSERS=1 /qn` termina con 1603 sin instalar nada. El resumen del job lista cada
 comprobación, lo omitido (que no cuenta como pasado, y hace fallar el job si la versión ya es posterior a la v0.1.4 publicada) y las líneas
 `MSI_LUA` de los registros de msiexec (cómo decidió el motor el ámbito y la elevación).
 **Lo que no prueba ningún agente ni el CI:** la interfaz (ventanas: aspecto, textos, flujo), la petición de administrador (UAC) al pulsar
