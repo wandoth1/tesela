@@ -1,6 +1,7 @@
 <#
 .SYNOPSIS
-  Construye el instalador MSI por usuario, el zip portable y SHA256SUMS.txt de Tesela, y valida el resultado.
+  Construye el instalador MSI (por usuario o para todos, con interfaz), el zip portable y SHA256SUMS.txt de Tesela, y valida el
+  resultado.
 
 .DESCRIPTION
   Todo sale de lo que produce scripts/build-release.ps1 (CRT estatico, --remap-path-prefix, conjunto exacto de
@@ -20,11 +21,14 @@
       SHA256SUMS.txt
 
   Validacion del MSI (falla si algo no cuadra):
-    * `wix msi validate` (ICE); solo se aceptan ICE61 (AllowSameVersionUpgrades) e ICE91 (todo es por usuario).
-    * tablas leidas con la API de Windows Installer en SOLO LECTURA: version, UpgradeCode, por usuario (sin ALLUSERS, o
-      ALLUSERS=2 con MSIINSTALLPERUSER=1; y el bit "no hace falta elevar" del Summary Information), exactamente los 5 archivos
-      esperados, ninguna accion personalizada, solo registro en HKCU, solo carpetas del perfil, 1 acceso directo del menu
-      Inicio, icono, MajorUpgrade y bloqueo de versiones anteriores.
+    * `wix msi validate` (ICE); solo se aceptan ICE61 (AllowSameVersionUpgrades) e ICE57 para los dos componentes de los
+      accesos directos (ver $AcceptedIce).
+    * tablas leidas con la API de Windows Installer en SOLO LECTURA (scripts/msi-validate.ps1): version, UpgradeCode, ambito
+      dual (ALLUSERS=2 y MSIINSTALLPERUSER=1, y el bit "no hace falta elevar" del Summary Information), exactamente los 5
+      archivos esperados, acciones personalizadas SOLO de tipo 51 y 35 (las esperadas, una a una), registro solo en
+      HKMU\Software\Tesela, el arbol de carpetas, 2 accesos directos (menu Inicio y escritorio), icono, propiedades seguras,
+      MajorUpgrade, bloqueo de versiones anteriores y del cambio de ambito, y la interfaz (ventanas, eventos nativos, textos
+      en espanol e ingles).
     * los archivos que lleva el MSI (extraidos con `wix msi decompile -x`) son byte a byte los de la compilacion.
     * leak-scan (usuario, equipo, perfil, repositorio, CARGO_HOME y toolchain) sobre el MSI, sobre cada archivo que
       contiene y sobre cada archivo del zip YA DESCOMPRIMIDO, mas los nombres de las entradas del zip. (Los bytes crudos del
@@ -56,7 +60,16 @@ $ErrorActionPreference = 'Stop'
 
 # --- Constantes (cambiarlas es una decision deliberada) -------------------------------------------------------------------
 $WixVersion = '5.0.2'
-$AcceptedIce = @('ICE61', 'ICE91')
+# Avisos de ICE que se ACEPTAN (cualquier otro es un fallo). Cada uno: patron sobre la linea y por que.
+#   * ICE61: AllowSameVersionUpgrades="yes" (reinstalar la MISMA version reemplaza a la anterior) hace que el maximo de la fila
+#     de reemplazo no sea menor que la version del producto. Es lo que se quiere.
+#   * ICE57 solo para StartMenuShortcut y DesktopShortcut: un acceso directo es dato "por usuario" y su KeyPath es un valor de
+#     HKMU (HKCU por usuario, HKLM para todos), que ICE57 no sabe resolver. Es el diseno estandar de un paquete de doble
+#     proposito (el acceso directo y su KeyPath van siempre en el mismo contexto: el del usuario o el comun del equipo).
+$AcceptedIce = @(
+    @{ Pattern = '\bICE61\b' },
+    @{ Pattern = "\bICE57\b.*Component '(StartMenuShortcut|DesktopShortcut)'" }
+)
 
 . (Join-Path $PSScriptRoot 'leak-scan.ps1')
 . (Join-Path $PSScriptRoot 'msi-validate.ps1')
@@ -165,7 +178,7 @@ try {
     # --- 3. MSI ---------------------------------------------------------------------------------------------------------
     Write-Step "wix build -> $msiName"
     $buildOut = Invoke-Native $wix.Source @(
-        'build', (Join-Path $repo 'installer/Tesela.wxs'), '-arch', 'x64', '-nologo', '-wx',
+        'build', (Join-Path $repo 'installer/Tesela.wxs'), (Join-Path $repo 'installer/TeselaUI.wxs'), '-arch', 'x64', '-nologo', '-wx',
         '-d', "Version=$msiVersion", '-d', "SourceDir=$stage", '-d', "IconFile=$ico",
         '-pdbtype', 'none', '-o', $msiPath)
     $buildOut | ForEach-Object { if ($_) { Write-Host "  $_" } }
@@ -175,13 +188,19 @@ try {
     $iceOut = & $wix.Source msi validate $msiPath 2>&1 | ForEach-Object { "$_" }
     $iceCode = $LASTEXITCODE
     $bad = New-Object System.Collections.Generic.List[string]
+    $acceptedErrors = 0
     foreach ($line in $iceOut) {
         if (-not $line.Trim()) { continue }
         $accepted = $false
-        foreach ($i in $AcceptedIce) { if ($line -match "\b$i\b") { $accepted = $true } }
-        if ($accepted) { Write-Host "  (aceptado) $($line.Substring([Math]::Max(0, $line.IndexOf('warning'))))" } else { $bad.Add($line) }
+        foreach ($i in $AcceptedIce) { if ($line -match $i.Pattern) { $accepted = $true } }
+        if ($accepted) {
+            if ($line -match ' error ') { $acceptedErrors++ }
+            Write-Host "  (aceptado) $($line.Substring([Math]::Max(0, $line.IndexOf('warning'))))"
+        } else { $bad.Add($line) }
     }
-    if ($iceCode -ne 0 -or $bad.Count -gt 0) {
+    # Un codigo de salida distinto de 0 solo se tolera si lo explican avisos ACEPTADOS que ICE da como error (ICE57 de los accesos
+    # directos): con cualquier otra causa, o sin ninguna linea, es un fallo.
+    if (($iceCode -ne 0 -and $acceptedErrors -eq 0) -or $bad.Count -gt 0) {
         $bad | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
         throw "wix msi validate: codigo $iceCode, $($bad.Count) mensajes sin aceptar"
     }
