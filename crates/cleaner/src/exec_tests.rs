@@ -4991,7 +4991,13 @@ fn un_descendiente_de_ruta_demasiado_larga_deja_la_carpeta_sin_papelera() {
     let plan = approve(&c, &b);
     assert_eq!(plan.items.len(), 1, "{:?}", plan.rejected);
     let it = &plan.items[0];
-    assert!(crate::plan::path_units(&it.path) < 120, "la carpeta, corta");
+    // La propia carpeta es más corta que su descendiente más profundo en 4 segmentos de 60 y sus barras, sea cual sea la
+    // longitud de `%TEMP%`: lo que pasa de 258 es el DESCENDIENTE, no la carpeta aprobada.
+    assert!(
+        it.estimate.max_path as usize >= crate::plan::path_units(&it.path) + 4 * 61,
+        "{:?}",
+        it.estimate
+    );
     assert!(it.estimate.max_path > 258, "{:?}", it.estimate);
     assert_eq!(it.fit, Fit::Unfit(UnfitReason::PathTooLong), "{it:?}");
     // Y `path_units` cuenta unidades UTF-16, no bytes.

@@ -14,6 +14,10 @@
 //!   vigila la entrega (devuelve `E_ABORT`): `PreDeleteItem` compara la identidad de lo que hay en la ruta con la aprobada
 //!   y veta el sustituto (M1); `PostDeleteItem` corta tras el primer borrado definitivo o la primera ruta sin verificar
 //!   (M2). Lo que queda del lote no se procesa y sigue en su sitio.
+//!   A3-M1: un DIRECTORIO lleva una vigilancia de cambios (`ReadDirectoryChangesW` sobre un segundo handle verificado)
+//!   abierta ANTES de su recorrido de medida y viva hasta su `PreDeleteItem`: si algo cambia dentro, o no se puede vigilar,
+//!   la medida no vale y no se envía ("cambió desde la confirmación"). A3-M2: la ocupación de la Papelera se lee antes y
+//!   después del recorrido y manda la mayor; es una heurística, no una garantía (la shell decide por su cuenta si cabe).
 //! * **Tres contadores**: "eliminado definitivamente" y "movido a la Papelera" son sumas de tamaños; "liberado ahora" es la
 //!   diferencia MEDIDA del espacio libre de cada volumen antes y después.
 //! * **Simulación** (`dry_run`): hace todo salvo lo destructivo y registra las identidades que habría tocado.
