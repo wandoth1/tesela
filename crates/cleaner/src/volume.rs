@@ -67,19 +67,19 @@ pub fn drive_kind(root: &Path) -> DriveKind {
     }
 }
 
-/// ¿Es `path` (la ruta FINAL resuelta por un handle, con o sin `\?\`) un archivo de un volumen LOCAL, fijo o extraíble según
-/// `GetDriveTypeW`? Todo lo demás (UNC, también hacia un disco local con `localhost` o `127.0.0.1`, comparticiones
-/// administrativas, unidades de red, volúmenes sin letra, discos ópticos) NO es local: el `cleaner` lo rechaza porque la
-/// protección se escribe sobre rutas de unidad y una ruta de red al mismo sitio la esquivaría. El escáner sí puede leerlas.
+/// Is `path` (the FINAL path resolved from a handle, with or without `\\?\`) on a LOCAL fixed or removable volume according
+/// to `GetDriveTypeW`? Everything else (UNC, including to a local disk via `localhost` or `127.0.0.1`, administrative
+/// shares, network drives, volumes without drive letters, and optical disks) is NOT local: `cleaner` rejects it because
+/// protection is defined on drive paths, and a network path to the same location could bypass it. The scanner may still read them.
 ///
-/// GM-M6: el tipo es el del VOLUMEN que contiene la ruta (`GetVolumePathNameW`), no el de la letra con la que empieza: una
-/// carpeta de `C:` puede ser el punto de montaje de otro volumen (extraíble, óptico) y se juzga por ese.
+/// GM-M6: this is the type of the VOLUME containing the path (`GetVolumePathNameW`), not the drive letter at its start: a
+/// folder on `C:` may be a mount point for another volume (removable or optical), and is classified by that volume.
 pub fn is_local_path(path: &Path) -> bool {
     is_local_with(path, volume_root, drive_kind)
 }
 
-/// [`is_local_path`] con la raíz del volumen y su tipo inyectados (así se prueba sin montar nada). Falla cerrado: sin raíz de
-/// volumen conocida no es local.
+/// [`is_local_path`] with the volume root and type injected (so it can be tested without mounting anything). Fails closed:
+/// without a known volume root, the path is not local.
 pub(crate) fn is_local_with(
     path: &Path,
     root_of: impl Fn(&Path) -> Option<PathBuf>,
@@ -103,13 +103,13 @@ pub(crate) fn is_local_with(
     matches!(kind_of(&root), DriveKind::Fixed | DriveKind::Removable)
 }
 
-/// Los volúmenes montados en CARPETAS (no en una letra): raíces como `C:\montajes\datos\`. Dentro de ellos `$Recycle.Bin`,
-/// `System Volume Information`, `$MFT` y `pagefile.sys` cuelgan de la raíz del volumen, que no es la de una unidad con letra
-/// (GM-M6). Lista vacía si no se puede enumerar (entonces solo se conocen las raíces con letra).
+/// Volumes mounted in FOLDERS (not on drive letters): roots such as `C:\mounts\data\`. Their `$Recycle.Bin`,
+/// `System Volume Information`, `$MFT`, and `pagefile.sys` entries are children of the volume root, which is not a
+/// drive-letter root (GM-M6). Returns an empty list if enumeration fails (then only drive-letter roots are known).
 pub fn mounted_roots() -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut vol = vec![0u16; 64];
-    // SAFETY: `vol` es escribible con `vol.len()` unidades UTF-16.
+    // SAFETY: `vol` is writable for `vol.len()` UTF-16 units.
     let h = unsafe { FindFirstVolumeW(vol.as_mut_ptr(), vol.len() as u32) };
     if h == INVALID_HANDLE_VALUE {
         return out;
@@ -117,8 +117,8 @@ pub fn mounted_roots() -> Vec<PathBuf> {
     loop {
         let mut names = vec![0u16; 1024];
         let mut needed = 0u32;
-        // SAFETY: `vol` es el nombre de volumen (terminado en NUL) que dio la enumeración; `names` es escribible con
-        // `names.len()` unidades y `needed` también.
+        // SAFETY: `vol` is the NUL-terminated volume name returned by enumeration; `names` is writable for `names.len()` units,
+        // and `needed` is writable as well.
         let mut ok = unsafe {
             GetVolumePathNamesForVolumeNameW(
                 vol.as_ptr(),
@@ -129,7 +129,7 @@ pub fn mounted_roots() -> Vec<PathBuf> {
         };
         if ok == 0 && needed as usize > names.len() {
             names = vec![0u16; needed as usize];
-            // SAFETY: igual que arriba con el búfer ampliado.
+            // SAFETY: same as above, with the enlarged buffer.
             ok = unsafe {
                 GetVolumePathNamesForVolumeNameW(
                     vol.as_ptr(),
@@ -140,21 +140,21 @@ pub fn mounted_roots() -> Vec<PathBuf> {
             };
         }
         if ok != 0 {
-            // Una lista de cadenas terminadas en NUL que acaba con una vacía.
+            // A list of NUL-terminated strings ending with an empty string.
             for s in names.split(|&c| c == 0).take_while(|s| !s.is_empty()) {
                 let root = PathBuf::from(OsString::from_wide(s));
-                // Solo las que NO son una letra de unidad con su barra (tres unidades UTF-16).
+                // Keep only roots that are NOT a drive letter followed by a backslash (three UTF-16 units).
                 if s.len() > 3 {
                     out.push(root);
                 }
             }
         }
-        // SAFETY: `h` es el handle de la enumeración y `vol` es escribible con `vol.len()` unidades.
+        // SAFETY: `h` is the enumeration handle and `vol` is writable for `vol.len()` units.
         if unsafe { FindNextVolumeW(h, vol.as_mut_ptr(), vol.len() as u32) } == 0 {
             break;
         }
     }
-    // SAFETY: `h` es el handle de la enumeración, que se cierra una sola vez.
+    // SAFETY: `h` is the enumeration handle and is closed exactly once.
     unsafe { FindVolumeClose(h) };
     out
 }
@@ -166,7 +166,7 @@ pub fn volume_guid(root: &Path) -> Option<String> {
         r.insert(r.len() - 1, b'\\' as u16);
     }
     let mut buf = vec![0u16; 64];
-    // SAFETY: `r` termina en NUL; `buf` es escribible con `buf.len()` unidades UTF-16.
+    // SAFETY: `r` is NUL-terminated; `buf` is writable for `buf.len()` UTF-16 units.
     let ok = unsafe {
         GetVolumeNameForVolumeMountPointW(r.as_ptr(), buf.as_mut_ptr(), buf.len() as u32)
     };
@@ -200,8 +200,8 @@ fn reg_dword(hive: HKEY, subkey: &str, value: &str) -> Option<u32> {
     let v: Vec<u16> = value.encode_utf16().chain(Some(0)).collect();
     let mut data = 0u32;
     let mut size = size_of::<u32>() as u32;
-    // SAFETY: `sk` y `v` terminan en NUL; `data` y `size` son escribibles y `size` es el tamaño exacto de `data`; la
-    // clave raíz es una predefinida.
+    // SAFETY: `sk` and `v` are NUL-terminated; `data` and `size` are writable, and `size` is exactly the size of `data`;
+    // the root key is a predefined constant.
     let rc = unsafe {
         RegGetValueW(
             hive,
