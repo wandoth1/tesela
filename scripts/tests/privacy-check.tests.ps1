@@ -1035,6 +1035,25 @@ try {
     Expect 'rango: el nombre del committer con un SID se rechaza' $true @('-From', $authorMailTip, '-To', $committerTip)
     Expect 'rango: el correo del committer con un SID se rechaza' $true @('-From', $committerTip, '-To', $committerMailTip)
     Expect 'rango: un commit limpio despues de los malos pasa' $false @('-From', $committerMailTip, '-To', $cleanTip)
+    # R-S8: el hallazgo lleva la etiqueta de su campo (no `mensaje:1..4`) y el cuerpo conserva sus numeros de linea.
+    foreach ($case in @(
+            @($authorTip, $base, 'autor (nombre)'),
+            @($authorMailTip, $authorTip, 'autor (correo)'),
+            @($committerTip, $authorMailTip, 'committer (nombre)'),
+            @($committerMailTip, $committerTip, 'committer (correo)')
+        )) {
+        $script:total++
+        $out = (Run-Check @('-From', $case[1], '-To', $case[0])).Out
+        if ($out -notlike ('*' + $case[2] + ': SID*') -or $out -like '*mensaje:*') { $script:failures.Add("etiqueta del campo $($case[2]): $out") }
+    }
+    Reset-Repo
+    Invoke-Git -C $repo checkout -q -f -B cuerpo $base
+    $prevEap2 = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try { & git -C $repo commit -q --allow-empty --no-verify -m "chore: linea 1`n`nlinea 3`n$sid" 2>&1 | Out-Null } finally { $ErrorActionPreference = $prevEap2 }
+    $script:total++
+    $out = (Run-Check @('-From', $base, '-To', (Sha 'HEAD'))).Out
+    if ($out -notlike '*mensaje:4: SID*') { $script:failures.Add("numero de linea del cuerpo (se esperaba mensaje:4): $out") }
 
     # Capturas HISTORICAS de --demo: su hash esta en la lista cerrada del script (solo en modo -To), no en ningun README.
     Reset-Repo

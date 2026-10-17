@@ -661,11 +661,18 @@ if ($To) {
     foreach ($c in $commits) {
         $short = $c.Substring(0, 10)
         $script:ImgReadmeRef = $c
-        # Autor y committer (nombre y correo de cada uno) y el mensaje completo (cabecera y cuerpo; sin excepcion de tijera ni de
-        # lineas con `#`). Los cuatro campos van antes del mensaje, uno por linea: el numero de linea de un hallazgo en el cuerpo
-        # queda desplazado 4 (nombre del autor, correo del autor, nombre del committer, correo del committer).
+        # Autor y committer (nombre y correo de cada uno), cada campo por separado y con su etiqueta, y el mensaje completo (cabecera
+        # y cuerpo; sin excepcion de tijera ni de lineas con `#`) con sus propios numeros de linea.
+        $people = [System.Text.Encoding]::UTF8.GetString((Invoke-GitBytes "log -1 --format=%an%x00%ae%x00%cn%x00%ce $c" $repoRoot)).TrimEnd("`n").Split([char]0)
+        $personLabels = @('autor (nombre)', 'autor (correo)', 'committer (nombre)', 'committer (correo)')
+        for ($k = 0; $k -lt $personLabels.Count; $k++) {
+            $field = if ($k -lt $people.Count) { $people[$k] } else { '' }
+            $rejectP = $null
+            $personText = ConvertTo-ScanText ([System.Text.Encoding]::UTF8.GetBytes($field)) ([ref]$rejectP)
+            foreach ($hit in (Test-Rules $personText $rules)) { $problems.Add("commit ${short}: $($personLabels[$k]): $($hit[0])") }
+        }
         $reject = $null
-        $msgText = ConvertTo-ScanText (Invoke-GitBytes "log -1 --format=%an%n%ae%n%cn%n%ce%n%B $c" $repoRoot) ([ref]$reject)
+        $msgText = ConvertTo-ScanText (Invoke-GitBytes "log -1 --format=%B $c" $repoRoot) ([ref]$reject)
         foreach ($hit in (Test-Rules $msgText $rules)) { $problems.Add("commit ${short}: mensaje:$($hit[1]): $($hit[0])") }
         # Archivos que introduce (altas, cambios, copias y renombrados; con -m tambien los de los merges).
         $raw = Split-Nul (Invoke-GitBytes "diff-tree -r -m --root --no-commit-id --no-renames --diff-filter=ACMRT --raw -z $c" $repoRoot)
