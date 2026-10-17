@@ -21,7 +21,7 @@
 use crate::engine::{self, Event, Mode, Outcome, RootStatus, StatsSnapshot, Unit, UnitSpec};
 use crate::log::LogWriter;
 use crate::paths::PathKey;
-use crate::plan::{Cleaner, Fit, Plan, PlanItem, fit_for};
+use crate::plan::{Cleaner, Fit, Plan, PlanItem, bin_big, bin_cap, fit_for, fit_for_deep};
 use crate::protect::Verdict;
 use crate::recycle::{self, BinItem, RecycleMode};
 use crate::rules::{CategoryId, Destination};
@@ -416,12 +416,10 @@ impl Cleaner {
             .iter()
             .filter(|i| i.destination == Destination::Recycle)
             .filter(|i| {
-                let size = i
-                    .estimate
-                    .bytes
-                    .max(i.estimate.logical)
-                    .max(i.estimate.shared_bytes);
-                self.fit(&i.path, size) != i.fit
+                // GM-M3: bytes + compartidos (conjuntos disjuntos) y el lógico; el mayor manda. Con la ruta más larga de lo
+                // que hay dentro, como al aprobar.
+                let size = i.estimate.recycle_charge();
+                self.fit_deep(&i.path, size, i.estimate.max_path as usize) != i.fit
             })
             .map(|i| i.id)
             .collect();
@@ -870,7 +868,8 @@ impl Cleaner {
                             continue;
                         }
                         emit(it, Some(p.identity), p.links, Outcome::WouldRecycle);
-                        st.bytes = it.estimate.bytes;
+                        st.bytes = p.disk;
+                        st.logical = p.logical;
                         results.insert(it.id, (ItemStatus::WouldRecycle, st));
                     }
                     Prepared::Ready(p) => slots.push(Some((it, p))),
@@ -1145,7 +1144,8 @@ impl Cleaner {
                         let mut st = StatsSnapshot::default();
                         match status {
                             ItemStatus::Recycled => {
-                                st.bytes = it.estimate.bytes;
+                                st.bytes = p.disk;
+                                st.logical = p.logical;
                                 st.files = it.estimate.files;
                                 st.dirs = it.estimate.dirs;
                             }
@@ -1242,8 +1242,8 @@ impl Cleaner {
                     path: it.path.clone(),
                     is_dir: it.is_dir(),
                     removed: true,
-                    bytes: it.estimate.bytes,
-                    logical: it.estimate.logical,
+                    bytes: stats.bytes,
+                    logical: stats.logical,
                     files: it.estimate.files,
                 }]
             } else {
@@ -1349,11 +1349,7 @@ impl Cleaner {
         // Lo que ocupa de verdad ahora frente a lo medido al aprobar. Un directorio NO se vuelve a medir aquí (un trozo son
         // hasta 32 elementos y entre este punto y su turno pasa tiempo): se mide JUSTO ANTES de entregarlo, solo en su
         // operación, en `fresh_size` (H6.2, A2-B1). Mientras tanto vale lo aprobado.
-        let estimate = it
-            .estimate
-            .bytes
-            .max(it.estimate.logical)
-            .max(it.estimate.shared_bytes);
+        let estimate = it.estimate.recycle_charge();
         // Un archivo: lo que ocupa de verdad ahora frente a lo medido al aprobar, el mayor manda (provisional: se vuelve a
         // medir por la guarda JUSTO ANTES de la operación, en `fresh_size`).
         let (size, last) = if m.is_dir {
@@ -1371,6 +1367,17 @@ impl Cleaner {
             held: Arc::new(held),
             size,
             last,
+            // Lo que se informará si llega a la Papelera: lo aprobado hasta que `fresh_size` lo mida de nuevo (GM-m6).
+            disk: if m.is_dir || m.links > 1 {
+                it.estimate.bytes
+            } else {
+                m.alloc
+            },
+            logical: if m.is_dir {
+                it.estimate.logical
+            } else {
+                m.logical
+            },
             snapshot: None,
         })
     }
@@ -1428,30 +1435,37 @@ impl Cleaner {
             let fresh = m.alloc.max(m.logical);
             // Si creció frente a lo APROBADO o frente a la última medida real (la de `prepare_recycle` y las posteriores),
             // no se envía: el reparto de la operación se decidió con un tamaño que ya no es cierto.
-            let approved = it
-                .estimate
-                .bytes
-                .max(it.estimate.logical)
-                .max(it.estimate.shared_bytes);
+            let approved = it.estimate.recycle_charge();
             if fresh > approved || p.last.is_some_and(|l| fresh > l) {
                 return changed(st);
             }
             p.size = fresh;
             p.last = Some(fresh);
+            // GM-m6: lo que se informa si llega a la Papelera es lo de AHORA (un archivo que encogió).
+            p.disk = if m.links > 1 { 0 } else { m.alloc };
+            p.logical = m.logical;
             return Ok(());
         }
         match self.remeasure(it, cancel) {
             Remeasure::Now(fresh) => {
-                let size = fresh.bytes.max(fresh.logical).max(fresh.shared_bytes);
-                let grew = fresh.bytes > it.estimate.bytes
-                    || fresh.logical > it.estimate.logical
-                    || fresh.shared_bytes > it.estimate.shared_bytes
-                    || p.last.is_some_and(|l| size > l);
-                if grew {
+                // GM-B3: un directorio solo se envía con el MISMO contenido que se aprobó: huella (identidad, tamaños,
+                // enlaces y clase de cada entrada, independiente del orden) y recuentos idénticos, y sin MÁS protegidos,
+                // reparse points ni archivos de la nube. Antes solo se miraba que no hubiese crecido: si un archivo
+                // desaparecía y aparecía otro más pequeño, la carpeta se enviaba con contenido que nadie aprobó. Una carpeta
+                // cuyo contenido cambió en cualquier sentido (también si encogió) vuelve a la confirmación.
+                let est = &it.estimate;
+                let same = snap_of(&fresh) == snap_of(est)
+                    && fresh.reparse <= est.reparse
+                    && fresh.cloud <= est.cloud
+                    && fresh.protected <= est.protected;
+                let size = fresh.recycle_charge();
+                if !same || p.last.is_some_and(|l| size > l) {
                     return changed(st);
                 }
                 p.size = size;
                 p.last = Some(size);
+                p.disk = fresh.bytes;
+                p.logical = fresh.logical;
                 p.snapshot = Some(snap_of(&fresh));
                 Ok(())
             }
@@ -1540,12 +1554,16 @@ struct Pending {
     /// La medida del directorio hecha justo antes de entregarlo a la shell (tamaño y número de entradas): lo que
     /// `dir_check` compara después si la shell dice "eliminado" sin dar elemento en la Papelera (R6).
     snapshot: Option<DirSnap>,
+    /// Lo que se informa si llega a la Papelera: bytes en disco (sin enlaces compartidos) y tamaño lógico de AHORA (GM-m6: un
+    /// archivo que encogió desde la aprobación no se cuenta con el tamaño aprobado).
+    disk: u64,
+    logical: u64,
 }
 
 /// Lo que se compara de un directorio antes y después: bytes en disco, tamaño lógico, archivos, directorios, lo compartido y
 /// la HUELLA del contenido (independiente del orden: identidad, tamaños y enlaces de cada entrada). Los totales solos no
 /// bastan: quitar un hijo y crear otro del mismo tamaño los deja iguales (A-M1).
-type DirSnap = (u64, u64, u64, u64, u64, u64, u64, u64);
+type DirSnap = (u64, u64, u64, u64, u64, u64, u64, u64, u64);
 
 fn snap_of(s: &StatsSnapshot) -> DirSnap {
     (
@@ -1557,6 +1575,8 @@ fn snap_of(s: &StatsSnapshot) -> DirSnap {
         s.shared_bytes,
         s.fp_sum,
         s.fp_xor,
+        // La ruta más larga de dentro (GM-M3): renombrar algo a un nombre más largo cambia lo que cabe en la Papelera.
+        s.max_path,
     )
 }
 
@@ -1589,6 +1609,11 @@ pub(crate) trait RecycleShell: Send + Sync {
     /// decidir al ejecutar (la real consulta el registro y las directivas; las pruebas con shell simulada no dependen del
     /// equipo).
     fn fit(&self, path: &Path, bytes: u64) -> Fit;
+    /// Como [`RecycleShell::fit`], sabiendo cuánto mide la ruta más larga de lo que hay dentro del elemento (unidades UTF-16;
+    /// de la medida). Por defecto lo ignora (las shells simuladas no dependen de la longitud de las rutas).
+    fn fit_deep(&self, path: &Path, bytes: u64, _deepest: usize) -> Fit {
+        self.fit(path, bytes)
+    }
     /// ¿Está `p` dentro de una Papelera (`<unidad>:\$Recycle.Bin\...`)?
     fn is_bin_path(&self, p: &Path) -> bool;
 }
@@ -1613,6 +1638,9 @@ impl RecycleShell for RealShell {
     }
     fn fit(&self, path: &Path, bytes: u64) -> Fit {
         fit_for(path, bytes)
+    }
+    fn fit_deep(&self, path: &Path, bytes: u64, deepest: usize) -> Fit {
+        fit_for_deep(path, bytes, deepest)
     }
     fn is_bin_path(&self, p: &Path) -> bool {
         recycle::is_recycle_bin_path(p)
@@ -1653,12 +1681,12 @@ pub(crate) fn take_op(sizes: &[u64], room: BinRoom) -> Take {
     let (Some(max), Some(used)) = (room.max, room.used) else {
         return Take::NoRoom;
     };
-    let cap = max / 10 * 9;
+    let cap = bin_cap(max);
     let budget = cap.saturating_sub(used);
     if first > budget {
         return Take::NoRoom;
     }
-    let big = max / 10;
+    let big = bin_big(max);
     if first > big {
         return Take::Send(1);
     }

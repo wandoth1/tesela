@@ -264,12 +264,34 @@ pub fn default_threads() -> usize {
     (2 * cores).clamp(2, 8)
 }
 
-/// Margen de seguridad frente al tamaño máximo de la Papelera: por encima del 90 % no se considera que quepa (la shell
-/// compara con su propio criterio y, si no cabe, elimina SIN avisar: ver las pruebas de `recycle`).
-const BIN_MARGIN_PERCENT: u64 = 90;
+/// Margen de seguridad frente al tamaño máximo de la Papelera: por encima del 90 % no se considera que quepa. Es una
+/// HEURÍSTICA de reparto, no una garantía: la shell decide por su cuenta si algo cabe (con su propio criterio y a su hora) y,
+/// si no cabe, elimina SIN avisar; Tesela lo detecta después (`DeletedUnexpectedly`) y detiene el envío.
+const BIN_MARGIN_PERCENT: u128 = 90;
+
+/// Un elemento que por sí solo pasa del 10 % de la capacidad va solo en su operación.
+const BIN_BIG_PERCENT: u128 = 10;
+
+/// El tope de una operación: el 90 % de `max`, calculado de una vez y sin desbordar (GM-m6: `fit_decide` y `take_op` usan
+/// EXACTAMENTE esta cuenta; antes uno hacía `bytes * 100 > max * 90` y el otro `max / 10 * 9`).
+pub(crate) fn bin_cap(max: u64) -> u64 {
+    ((u128::from(max) * BIN_MARGIN_PERCENT) / 100) as u64
+}
+
+/// El umbral de "grande" (10 % de `max`), con la misma cuenta que [`bin_cap`].
+pub(crate) fn bin_big(max: u64) -> u64 {
+    ((u128::from(max) * BIN_BIG_PERCENT) / 100) as u64
+}
 
 /// La Papelera no admite rutas de 260 caracteres o más.
 const MAX_BIN_PATH: usize = 258;
+
+/// Longitud de una ruta en unidades UTF-16 (lo que cuenta Windows para `MAX_PATH`), no en bytes WTF-8 (GM-M3: un nombre con
+/// caracteres fuera del plano básico o acentos pesa distinto en bytes que en unidades).
+pub(crate) fn path_units(p: &Path) -> usize {
+    use std::os::windows::ffi::OsStrExt;
+    p.as_os_str().encode_wide().count()
+}
 
 impl Cleaner {
     pub fn new(roots: Roots) -> Cleaner {
@@ -364,6 +386,11 @@ impl Cleaner {
         self.shell.fit(path, bytes)
     }
 
+    /// Como [`Cleaner::fit`], con la longitud de la ruta más larga de lo que hay dentro del elemento (de su medida).
+    pub(crate) fn fit_deep(&self, path: &Path, bytes: u64, deepest: usize) -> Fit {
+        self.shell.fit_deep(path, bytes, deepest)
+    }
+
     /// Aprueba la cesta: captura identidades, re-valida la protección, mide y decide el encaje en la Papelera.
     pub fn approve(
         &self,
@@ -438,9 +465,9 @@ impl Cleaner {
                 });
                 continue;
             }
-            let size = est.bytes.max(est.logical).max(est.shared_bytes);
+            let size = est.recycle_charge();
             let fit = if dest == Destination::Recycle {
-                self.shell.fit(&c.canon, size)
+                self.shell.fit_deep(&c.canon, size, est.max_path as usize)
             } else {
                 Fit::Fits
             };
@@ -633,7 +660,7 @@ impl Cleaner {
         };
         for e in entries {
             let child = canon.join(OsString::from_wide(&e.name));
-            if e.is_reparse() && !(sys::is_cloud_tag(e.reparse_tag) && !e.is_dir()) {
+            if e.is_reparse() && (e.is_dir() || !sys::is_cloud_tag(e.reparse_tag)) {
                 plan.rejected.push(Rejected {
                     path: child,
                     reason: RejectReason::Reparse,
@@ -773,7 +800,7 @@ impl Cleaner {
                     plan.omitted_protected.1 += e.alloc;
                 }
                 ChildAction::Delete => {
-                    if e.is_reparse() && !(sys::is_cloud_tag(e.reparse_tag) && !e.is_dir()) {
+                    if e.is_reparse() && (e.is_dir() || !sys::is_cloud_tag(e.reparse_tag)) {
                         plan.rejected.push(Rejected {
                             path: child,
                             reason: RejectReason::Reparse,
@@ -843,7 +870,7 @@ pub(crate) fn fit_decide(bytes: u64, f: &BinFacts) -> Fit {
     if f.policy_no_recycle {
         return Fit::Unfit(UnfitReason::Policy);
     }
-    let too_big = |max: u64| (bytes as u128) * 100 > (max as u128) * BIN_MARGIN_PERCENT as u128;
+    let too_big = |max: u64| bytes > bin_cap(max);
     match f.limit {
         BinLimit::NoBin => Fit::Unfit(UnfitReason::NoBin),
         BinLimit::NukeOnDelete => Fit::Unfit(UnfitReason::NukeOnDelete),
@@ -859,6 +886,12 @@ pub(crate) fn fit_decide(bytes: u64, f: &BinFacts) -> Fit {
 /// ¿Cabe un elemento de `bytes` con ruta `path` en la Papelera de su volumen? Cualquier error al averiguarlo (raíz del
 /// volumen, límite, tamaño del volumen, directivas) da `Unfit`: nunca falla abierto.
 pub(crate) fn fit_for(path: &Path, bytes: u64) -> Fit {
+    fit_for_deep(path, bytes, 0)
+}
+
+/// Como [`fit_for`], con la longitud (unidades UTF-16) de la ruta más larga de lo que hay DENTRO (`deepest`, de la medida;
+/// 0 si no se sabe): la shell no admite rutas de 260 o más y un descendiente así deja la carpeta sin Papelera (GM-M3).
+pub(crate) fn fit_for_deep(path: &Path, bytes: u64, deepest: usize) -> Fit {
     // `GetVolumePathNameW` resuelve una ruta rara o relativa contra el directorio actual: solo se pregunta por rutas
     // absolutas de unidades locales (las que ya pasaron la comprobación de `is_local_path`).
     let root = volume::is_local_path(path)
@@ -871,7 +904,7 @@ pub(crate) fn fit_for(path: &Path, bytes: u64) -> Fit {
     fit_decide(
         bytes,
         &BinFacts {
-            path_len: path.as_os_str().len(),
+            path_len: path_units(path).max(deepest),
             volume_known: root.is_some(),
             policy_no_recycle: volume::recycle_policy_disabled(),
             limit,

@@ -883,3 +883,70 @@ fn la_suma_y_el_xor_de_la_huella_cambian_cada_uno_por_separado() {
     assert_ne!(before.fp_sum, 0);
     assert_ne!(before.fp_xor, 0);
 }
+
+/// GM-M3: la medida anota la ruta MÁS LARGA de lo que hay dentro (unidades UTF-16, ruta completa del descendiente) y medir,
+/// simular y borrar cuentan lo mismo. Nombres con acentos y fuera del plano básico: se cuentan unidades, no bytes.
+#[test]
+fn la_medida_anota_la_ruta_mas_larga_en_unidades_utf16() {
+    let sb = Sandbox::new();
+    build_tree(&sb);
+    // Un nombre con un carácter fuera del plano básico (2 unidades UTF-16, 4 bytes) y un acento (1 unidad, 2 bytes).
+    sb.write("R/d1/d2/😀é-larguísimo.bin", 10);
+    let longest = sb.long("R/d1/d2/😀é-larguísimo.bin");
+    let units = crate::plan::path_units(&longest) as u64;
+    assert!(
+        (longest.as_os_str().len() as u64) > units,
+        "en bytes pesa más que en unidades UTF-16"
+    );
+    let measure = run_contents(&sb, "R", Mode::Measure, 0, no_protection(), 4);
+    assert_eq!(measure.stats().max_path, units, "{:?}", measure.stats());
+    let dry = run_contents(&sb, "R", Mode::DryRun, 0, no_protection(), 4);
+    assert_eq!(dry.stats(), measure.stats());
+    // `merge` se queda con el mayor (no suma).
+    let mut a = StatsSnapshot {
+        max_path: 10,
+        ..StatsSnapshot::default()
+    };
+    a.merge(&StatsSnapshot {
+        max_path: 7,
+        ..StatsSnapshot::default()
+    });
+    assert_eq!(a.max_path, 10);
+    a.merge(&StatsSnapshot {
+        max_path: 12,
+        ..StatsSnapshot::default()
+    });
+    assert_eq!(a.max_path, 12);
+}
+
+/// GM-M3: `recycle_charge` SUMA `bytes` (un solo enlace) y `shared_bytes` (varios enlaces): son conjuntos disjuntos que la
+/// shell cuenta los dos. El máximo de los dos (lo anterior) subestimaba una carpeta con las dos clases.
+#[test]
+fn el_cargo_a_la_papelera_suma_bytes_y_compartidos() {
+    let s = StatsSnapshot {
+        bytes: 12_288,
+        shared_bytes: 12_288,
+        logical: 20_000,
+        ..StatsSnapshot::default()
+    };
+    assert_eq!(s.recycle_charge(), 24_576);
+    assert_eq!(
+        s.bytes.max(s.logical).max(s.shared_bytes),
+        20_000,
+        "la cuenta anterior"
+    );
+    // El lógico manda si es mayor (archivo disperso o comprimido).
+    let sparse = StatsSnapshot {
+        bytes: 4_096,
+        logical: 1 << 40,
+        ..StatsSnapshot::default()
+    };
+    assert_eq!(sparse.recycle_charge(), 1 << 40);
+    // Sin desbordar.
+    let huge = StatsSnapshot {
+        bytes: u64::MAX,
+        shared_bytes: u64::MAX,
+        ..StatsSnapshot::default()
+    };
+    assert_eq!(huge.recycle_charge(), u64::MAX);
+}

@@ -3475,33 +3475,65 @@ fn un_directorio_va_siempre_solo_y_los_archivos_contiguos_se_agrupan() {
     );
 }
 
-/// B2: un directorio que ENCOGIÓ se reparte con su tamaño nuevo (no con el aprobado). El aprobado (estimación falseada
-/// a 8 500 con 2 000 ya ocupados de una capacidad de 10 000: presupuesto 7 000) no cabría; el real, mucho menor, sí.
+/// GM-B3 (sustituye a la prueba B2 "un directorio que encogió se reparte con su tamaño nuevo"): una carpeta solo se envía con
+/// el MISMO contenido que se aprobó. Antes de esta comprobación, `fresh_size` solo miraba que no hubiese crecido, así que
+/// una carpeta que había PERDIDO un archivo, o a la que se cambió un archivo por otro (más pequeño o incluso del mismo
+/// tamaño, con otro `FileId`) se enviaba con contenido que nadie aprobó. Ahora cualquier cambio de contenido (también si
+/// encogió) vuelve a la confirmación ("cambió desde la confirmación") y no llega a la shell.
 #[test]
-fn un_directorio_que_encogio_se_reparte_con_su_tamano_nuevo() {
+fn un_directorio_cuyo_contenido_cambio_en_cualquier_sentido_no_se_envia() {
+    // Control: sin tocar nada, el mismo directorio se envía.
     let sb = Sandbox::new();
-    let fake = FakeShell::new(&sb, Some(10_000), 2_000, "nunca");
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
     let c = cleaner_for(&sb).with_shell(fake.clone());
-    let mut plan = plan_dir(&sb, &c, "encoge", 1_000);
-    // La estimación al aprobar era enorme (el directorio contenía mucho más).
-    plan.items[0].estimate.bytes = 8_500;
-    plan.items[0].estimate.logical = 8_500;
-    plan.items[0].fit = c.fit(&plan.items[0].path, 8_500);
-    assert_eq!(plan.items[0].fit, Fit::Fits);
-    // Con la estimación vieja, `take_op` diría NoRoom (8 500 > 7 000): la medida nueva manda.
-    let room = BinRoom {
-        max: Some(10_000),
-        used: Some(2_000),
-    };
-    assert_eq!(take_op(&[8_500], room), Take::NoRoom);
+    sb.write("Docs/igual/a.bin", 5_000);
+    sb.write("Docs/igual/b.bin", 5_000);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/igual"), c.protection());
+    let plan = approve(&c, &b);
     let rep = exec(&c, &plan, false, false, None).unwrap();
-    assert_eq!(
-        rep.items[0].status,
-        ItemStatus::Recycled,
-        "{:?}",
-        rep.items[0]
-    );
-    assert_eq!(fake.names(), vec![vec!["encoge"]]);
+    assert_eq!(rep.items[0].status, ItemStatus::Recycled);
+
+    // Tres cambios posteriores a la aprobación, cada uno con su propio árbol.
+    for (name, change) in [
+        ("pierde", "quita"),
+        ("cambia-por-menor", "menor"),
+        ("cambia-por-igual", "igual-tamano"),
+    ] {
+        let sb = Sandbox::new();
+        let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+        let c = cleaner_for(&sb).with_shell(fake.clone());
+        sb.write(&format!("Docs/{name}/a.bin"), 5_000);
+        sb.write(&format!("Docs/{name}/b.bin"), 5_000);
+        let mut b = Basket::new();
+        b.add_path(sb.long(&format!("Docs/{name}")), c.protection());
+        let plan = approve(&c, &b);
+        assert_eq!(plan.items.len(), 1, "{:?}", plan.rejected);
+        let a = sb.path(&format!("Docs/{name}/a.bin"));
+        fs::remove_file(&a).unwrap();
+        match change {
+            "quita" => {}
+            "menor" => {
+                sb.write(&format!("Docs/{name}/c.bin"), 100);
+            }
+            _ => {
+                // Otro objeto (otro `FileId`) con el mismo nombre y el mismo tamaño: los totales no cambian.
+                sb.write(&format!("Docs/{name}/a.bin"), 5_000);
+            }
+        }
+        let rep = exec(&c, &plan, false, false, None).unwrap();
+        assert_eq!(
+            rep.items[0].status,
+            ItemStatus::Root(crate::engine::RootStatus::Changed),
+            "{name}: {:?}",
+            rep.items[0]
+        );
+        assert!(
+            fake.names().is_empty(),
+            "{name}: no debe llegar a la shell con contenido no aprobado"
+        );
+        assert!(rep.totals.changed >= 1, "{name}");
+    }
 }
 
 /// A-B1 (blocker): un ARCHIVO también se vuelve a medir justo antes de la operación que lo incluye. Dos archivos de unos 20 KB
@@ -4285,6 +4317,118 @@ fn take_op_es_una_funcion_pura_con_las_reglas_del_reparto() {
     assert_eq!(take_op(&[], BinRoom::UNKNOWN), Take::Send(0));
 }
 
+/// GM-m6: el encaje al aprobar (`fit_decide`) y el reparto al ejecutar (`take_op`) usan la MISMA cuenta del 90 % y del 10 %
+/// (`bin_cap`, `bin_big`). Antes uno hacía `bytes * 100 > max * 90` y el otro `max / 10 * 9`: con una capacidad que no es
+/// múltiplo de 10 discrepaban en el borde y un elemento podía "encajar" al aprobar y quedar `NoRoom` al ejecutar (o al
+/// revés). Se barre el borde con capacidades de todas las formas, incluida una enorme sin desbordar.
+#[test]
+fn el_encaje_y_el_reparto_usan_la_misma_cuenta_del_90_por_ciento() {
+    use crate::plan::{BinFacts, bin_big, bin_cap, fit_decide};
+    use crate::volume::BinLimit;
+    for max in [
+        10u64,
+        11,
+        19,
+        99,
+        101,
+        999,
+        10_001,
+        1_000_003,
+        (1 << 40) + 7,
+        u64::MAX,
+    ] {
+        let cap = bin_cap(max);
+        assert_eq!(cap as u128, (max as u128) * 90 / 100, "{max}");
+        for bytes in [cap.saturating_sub(1), cap, cap.saturating_add(1)] {
+            let facts = BinFacts {
+                path_len: 40,
+                volume_known: true,
+                policy_no_recycle: false,
+                limit: BinLimit::Max(max),
+            };
+            let fits = fit_decide(bytes, &facts) == Fit::Fits;
+            let room = BinRoom {
+                max: Some(max),
+                used: Some(0),
+            };
+            let sent = take_op(&[bytes], room) != Take::NoRoom;
+            assert_eq!(fits, sent, "max {max} bytes {bytes}");
+            assert_eq!(fits, bytes <= cap, "max {max} bytes {bytes}");
+        }
+        // Lo "grande" (más del 10 %) va solo; lo que no pasa de ahí se agrupa si cabe.
+        let big = bin_big(max);
+        assert_eq!(big as u128, (max as u128) * 10 / 100, "{max}");
+        if big > 0 && big < u64::MAX / 4 {
+            let room = BinRoom {
+                max: Some(max),
+                used: Some(0),
+            };
+            assert_eq!(take_op(&[big + 1, 1], room), Take::Send(1), "{max}");
+            assert_eq!(take_op(&[big, 1], room), Take::Send(2), "{max}");
+        }
+    }
+}
+
+/// GM-M3: una carpeta con archivos de un solo enlace Y archivos con varios enlaces cuenta los dos conjuntos (son disjuntos)
+/// contra la Papelera. Con el máximo de los dos (lo anterior) una Papelera simulada cuyo 90 % cae entre las dos cuentas
+/// encajaba la carpeta y la shell la habría contado entera y eliminado.
+#[test]
+fn una_carpeta_con_enlaces_duros_cuenta_bytes_y_compartidos_para_encajar() {
+    let sb = Sandbox::new();
+    let big = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(big);
+    sb.write("Docs/hl/a.bin", 10_000);
+    sb.write("Docs/hl/b.bin", 10_000);
+    // `b.bin` tiene otro nombre fuera de la carpeta: su espacio es de la clase "compartido".
+    sb.hard_link("Docs/hl/b.bin", "Docs/otro-nombre.bin");
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/hl"), c.protection());
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 1, "{:?}", plan.rejected);
+    let est = plan.items[0].estimate;
+    assert!(est.bytes > 0 && est.shared_bytes > 0, "{est:?}");
+    let old = est.bytes.max(est.logical).max(est.shared_bytes);
+    let new = est.recycle_charge();
+    assert_eq!(new, (est.bytes + est.shared_bytes).max(est.logical));
+    assert!(new > old, "la suma supera al máximo: {est:?}");
+    // Una capacidad cuyo 90 % cae entre las dos cuentas: con la anterior encajaba; con la correcta, no.
+    let max = (old + new) / 2 * 100 / 90 + 1;
+    assert!(old <= crate::plan::bin_cap(max) && crate::plan::bin_cap(max) < new);
+    let tight = FakeShell::new(&sb, Some(max), 0, "nunca");
+    let c2 = cleaner_for(&sb).with_shell(tight.clone());
+    let plan2 = approve(&c2, &b);
+    assert_eq!(
+        plan2.items[0].fit,
+        Fit::Unfit(UnfitReason::TooBig),
+        "{est:?} max {max}"
+    );
+    assert!(tight.names().is_empty());
+}
+
+/// GM-M3 (de punta a punta, con el encaje REAL): una carpeta con un descendiente cuya ruta pasa de los 258 caracteres no se
+/// ofrece para la Papelera aunque la ruta de la propia carpeta sea corta. Los nombres con caracteres fuera del plano básico
+/// pesan más en bytes que en unidades UTF-16: el recuento es en unidades (antes `as_os_str().len()`, bytes).
+#[test]
+fn un_descendiente_de_ruta_demasiado_larga_deja_la_carpeta_sin_papelera() {
+    let sb = Sandbox::new();
+    let c = cleaner_for(&sb); // la shell REAL: el motivo de la ruta larga se decide antes de mirar el registro.
+    let seg = "x".repeat(60);
+    let rel = format!("Docs/larga/{seg}/{seg}/{seg}/{seg}/f.bin");
+    sb.write(&rel, 10);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/larga"), c.protection());
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 1, "{:?}", plan.rejected);
+    let it = &plan.items[0];
+    assert!(crate::plan::path_units(&it.path) < 120, "la carpeta, corta");
+    assert!(it.estimate.max_path > 258, "{:?}", it.estimate);
+    assert_eq!(it.fit, Fit::Unfit(UnfitReason::PathTooLong), "{it:?}");
+    // Y `path_units` cuenta unidades UTF-16, no bytes.
+    let p = Path::new("C:\\😀é");
+    assert_eq!(crate::plan::path_units(p), 6);
+    assert_eq!(p.as_os_str().len(), 9);
+}
+
 /// M-C con la shell REAL, de forma segura: un archivo disperso de miles de GiB lógicos (no ocupa nada) entre dos pequeños.
 /// Lo que ocupa de verdad (su tamaño lógico) manda sobre la estimación: como pasa de lo aprobado no se envía ("cambió desde la
 /// confirmación", A-B1; antes `NoRoom`: ambas lo dejan sin tocar) y los pequeños llegan bien a la Papelera, cada uno en su
@@ -4368,6 +4512,8 @@ fn pending(identity: FileIdentity, path: &Path, held_path: &Path) -> Pending {
         size: 0,
         last: None,
         snapshot: None,
+        disk: 0,
+        logical: 0,
     }
 }
 
