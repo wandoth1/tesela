@@ -32,8 +32,8 @@ Tesela **deletes files** and installs without administrator rights, so the cases
 - The application sends information off the computer, or connects anywhere, beyond what is documented (it must not: it has
   no telemetry or accounts, and its only network request is the optional update check, off by default, which asks GitHub for
   the latest version and sends only the fixed `User-Agent` `Tesela`: see "Privacy and network" in the README).
-- The update check downloads or runs anything, opens a page that was not built from a validated version tag, or runs when it is
-  turned off or in `--demo` or a measuring tool.
+- The update check downloads or runs an update (it only reads a version number), opens a page that was not built from a
+  validated version tag, or runs when it is turned off or in `--demo` or a measuring tool.
 
 ## Elevation
 

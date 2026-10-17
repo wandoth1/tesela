@@ -97,10 +97,13 @@ person installing or operating it.
 Tesela has no telemetry or accounts; it scans only the drive or folder you choose and keeps
 its settings and the cleanup log **only on your computer** (`%APPDATA%\Tesela` and `%LOCALAPPDATA%\Tesela`).
 It makes **no network connection by default**. The only request it can make is the **optional update check**
-(*Settings > Check for updates when Tesela opens*, off by default): at most once every 24 hours it asks GitHub
-(`api.github.com`, through WinHTTP) for the latest published version, sending only the fixed `User-Agent` `Tesela` (no
-version, system or identifier), never downloads or installs anything, and never runs in `--demo` or in the measuring
-tools. The code that can reach the network is the `tesela-update` crate.
+(*Settings > Check for updates when Tesela opens*, off by default): when the box is ticked and then at most once every 24
+hours it asks GitHub (`api.github.com`, through WinHTTP) for the latest published version, sending only the fixed
+`User-Agent` `Tesela` (no version, system, identifier or credentials), downloads only that answer (never an update, and
+nothing is installed), and never runs in `--demo` or in the measuring tools. Through WinHTTP it uses the system proxy and,
+on networks that enable it, may discover the proxy configuration automatically (WPAD), which can involve name lookups and a
+script fetched from the local network. The code that can reach the network is the `tesela-update` crate, and
+`scripts/check-pe.py` fails the build if the executables import any network module other than `winhttp.dll`.
 **[TO CONFIRM: that no dependency makes network requests in the version that gets signed (apart from that check); if any
 affects privacy, SignPath asks to link its policy.]**
 

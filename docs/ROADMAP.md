@@ -59,8 +59,8 @@ that deleting it is harmless.
    - use Windows' official methods.
 6. **No telemetry**, not even "anonymous". The only connection Tesela may make is the optional update check
    (decided on 2026-10-17): off by default, it only asks GitHub for the latest published version, sends no identifier,
-   never downloads or installs anything and never runs in demo mode or in the measuring tools. Any other network use
-   needs a new decision.
+   only reads a version number (never downloads or installs an update) and never runs in demo mode or in the measuring
+   tools. Any other network use needs a new decision.
 7. **The application never cleans elevated.** It keeps refusing to clean when it runs as administrator. The only
    exception, decided on 2026-10-17, is the **limited administrator helper** (§5b, v0.2): a separate binary that is
    only installed with the all-users install, cleans a fixed list of Windows areas, accepts no paths from the user,
