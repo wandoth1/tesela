@@ -493,6 +493,16 @@ sum-bin-unverifiable =
         [one] { $count } elemento de la Papelera está en una unidad cuyo sistema de archivos no permite verificarlo (FAT o exFAT) y no se tocó.
        *[other] { $count } elementos de la Papelera están en una unidad cuyo sistema de archivos no permite verificarlos (FAT o exFAT) y no se tocaron.
     }
+sum-bin-with-links =
+    { $n ->
+        [one] { $count } elemento de la Papelera contiene enlaces (o no se pudo comprobar su contenido) y no se vació: se dejó donde estaba.
+       *[other] { $count } elementos de la Papelera contienen enlaces (o no se pudo comprobar su contenido) y no se vaciaron: se dejaron donde estaban.
+    }
+sum-bin-unlisted =
+    { $n ->
+        [one] { $count } elemento de la Papelera tiene los datos dañados, no se pudo leer y no se incluyó al vaciar.
+       *[other] { $count } elementos de la Papelera tienen los datos dañados, no se pudieron leer y no se incluyeron al vaciar.
+    }
 sum-cancelled = Cancelaste la limpieza: lo que ya estaba hecho se queda.
 sum-diverge = "Eliminado definitivamente" y el cambio medido del espacio libre no coinciden: puede ser por enlaces duros, archivos que otro programa tenía abiertos, escrituras de otros programas o cambios del propio Windows.
 

@@ -155,6 +155,9 @@ pub struct Plan {
     pub rejected: Vec<Rejected>,
     /// Hijos de carpetas expandidas que se omiten por estar protegidos: (entradas, bytes del listado).
     pub omitted_protected: (u64, u64),
+    /// Elementos de la Papelera que NO se listaron porque sus metadatos (`$I`) están ilegibles (m1): no se vacían y su tamaño no
+    /// entra en lo que se promete vaciar.
+    pub bin_unlisted: u64,
 }
 
 impl Plan {
@@ -409,14 +412,17 @@ impl Cleaner {
                 Source::Path(p) => self.candidate_entry(p, &mut cands, &mut plan),
                 Source::ContentsOf(p) => self.candidates_of_contents(p, &mut cands, &mut plan),
                 Source::EmptyBin => {
-                    if let Ok(mut items) = crate::recycle::list_bin() {
+                    if let Ok((mut items, unlisted)) = crate::recycle::list_bin_counted() {
+                        plan.bin_unlisted = unlisted;
                         if let Some(f) = &self.bin_filter {
                             items.retain(|i| f(i));
                         }
                         // El tamaño tiene que ser el de la LISTA enumerada: con un filtro, la suma de lo que se listó; sin él,
                         // el total de toda la Papelera según la shell (o, si falla, lo que sepa quien llama).
                         let listed: u64 = items.iter().map(|i| i.size).sum();
-                        let hint = if self.bin_filter.is_some() {
+                        // m1: con elementos sin listar, el total de la shell los incluye y se prometería vaciar de más: manda la suma
+                        // de lo listado (puede quedarse corta: la shell no da el tamaño de las carpetas, pero nunca promete de más).
+                        let hint = if self.bin_filter.is_some() || unlisted > 0 {
                             listed
                         } else {
                             crate::recycle::bin_totals()

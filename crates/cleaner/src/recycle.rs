@@ -285,6 +285,12 @@ fn filetime_to_unix(ft: FILETIME) -> i64 {
 /// se listó; antes un solo `$I` roto abortaba la lista entera y con ella toda la limpieza de la Papelera. Lo que no se lista no
 /// se vacía (se queda donde está). Solo un fallo de la propia enumeración aborta.
 pub fn list_bin() -> Result<Vec<BinItem>> {
+    list_bin_counted().map(|(items, _)| items)
+}
+
+/// Como [`list_bin`], y además cuántos elementos se SALTARON por tener los metadatos ilegibles (m1 de la auditoría): quien
+/// llama lo anota en el plan, en el registro y en el informe, y no cuenta su tamaño en lo que promete vaciar.
+pub fn list_bin_counted() -> Result<(Vec<BinItem>, u64)> {
     let _com = Com::init()?;
     // SAFETY: COM está inicializado en este hilo; todas las interfaces y cadenas que se obtienen aquí son propias de
     // esta función y se liberan con el RAII de `windows` o con `take_pwstr`.
@@ -293,6 +299,7 @@ pub fn list_bin() -> Result<Vec<BinItem>> {
             SHGetKnownFolderItem(&FOLDERID_RecycleBinFolder, KF_FLAG_DEFAULT, None)?;
         let en: IEnumShellItems = bin.BindToHandler(None, &BHID_EnumItems)?;
         let mut out = Vec::new();
+        let mut skipped = 0u64;
         loop {
             let mut fetched = 0u32;
             let mut arr = [None];
@@ -302,9 +309,11 @@ pub fn list_bin() -> Result<Vec<BinItem>> {
             }
             let Some(item) = &arr[0] else { break };
             // SAFETY (llamada): `item` es una interfaz viva de esta enumeración.
-            push_readable(&mut out, read_bin_item(item));
+            if !push_readable(&mut out, read_bin_item(item)) {
+                skipped += 1;
+            }
         }
-        Ok(out)
+        Ok((out, skipped))
     }
 }
 
@@ -455,6 +464,9 @@ pub struct BatchOutcome {
     /// Solo al purgar: elementos que NO se purgaron porque su sistema de archivos no da identidad (FAT, exFAT) y no se
     /// pueden verificar: `id` de cada uno. No es que hayan cambiado (H6.9).
     pub unverifiable_bin: Vec<OsString>,
+    /// Solo al purgar (M2): elementos cuyo `$R` lleva reparse points dentro (junction, symlink, enlace de WSL, archivo de la
+    /// nube) o no se pudo comprobar entero: se EXCLUYEN antes de entregarlos a la shell (no se purgan y no cortan el lote).
+    pub linked_bin: Vec<OsString>,
 }
 
 /// Un elemento que se entrega a la shell: su ruta original y la IDENTIDAD aprobada (volumen + FileId).
@@ -1058,6 +1070,7 @@ impl Operation {
             sink_aborted: self.state.tripped.load(Ordering::SeqCst),
             vetoed,
             changed_bin: Vec::new(),
+            linked_bin: Vec::new(),
             unverifiable_bin: Vec::new(),
             replaced_bin: Vec::new(),
         }
@@ -1140,6 +1153,9 @@ pub enum PurgeStep<'a> {
     /// Elementos a los que `PreDeleteItem` puso veto (A-M4): entre la enumeración y el instante en que la shell iba a
     /// borrarlos, su `$R` o su `$I` dejaron de ser los capturados. No se purgaron.
     Vetoed(&'a [&'a BinItem]),
+    /// Elementos que NO se purgaron porque su `$R` lleva reparse points dentro o no se pudo comprobar entero (M2): se saltan
+    /// ANTES de entregar el trozo y el resto del lote sigue.
+    Linked(&'a [&'a BinItem]),
     /// Después de cada trozo: cada elemento con el `HRESULT` que notificó la shell (`None` = sin aviso).
     Done(&'a [(&'a BinItem, Option<i32>)]),
 }
@@ -1247,6 +1263,23 @@ fn purge_items_flags(
             out.changed_bin.extend(lost.iter().map(|i| i.id.clone()));
             obs(PurgeStep::Skipped(&lost));
         }
+        // M2: un `$R` con reparse points dentro (junction, symlink, enlace de WSL, archivo de la nube) se EXCLUYE aquí, antes
+        // de entregar nada: el receptor vetaría el hijo-enlace en `PreDeleteItem` (GM-m5) y un veto corta el lote entero, de
+        // modo que "vaciar" se detendría en ese elemento cada vez. Excluido así, solo él se queda y el resto se purga. El
+        // veto del receptor sigue como última defensa por si el enlace aparece después de esta comprobación.
+        let mut linked: Vec<&BinItem> = Vec::new();
+        staged.retain(|(_, bi, _)| {
+            if bin_item_has_links(bi) {
+                linked.push(*bi);
+                false
+            } else {
+                true
+            }
+        });
+        if !linked.is_empty() {
+            out.linked_bin.extend(linked.iter().map(|i| i.id.clone()));
+            obs(PurgeStep::Linked(&linked));
+        }
         if staged.is_empty() {
             continue;
         }
@@ -1343,6 +1376,60 @@ fn purge_items_flags(
 /// `true` la PRIMERA vez que se ve un `id` (GM-m5): los repetidos de la enumeración de la shell no se vuelven a casar.
 fn first_match(seen: &mut std::collections::HashSet<OsString>, id: &OsString) -> bool {
     seen.insert(id.clone())
+}
+
+/// Profundidad máxima del recorrido de [`bin_item_has_links`]: más allá no se comprueba y se trata como "con enlaces".
+const MAX_LINK_SCAN_DEPTH: usize = 512;
+
+/// M2: ¿lleva el `$R` de un elemento de la Papelera algún reparse point dentro (junction, symlink, enlace de WSL, archivo de la
+/// nube) o no se pudo comprobar entero? Recorre el `$R` por handles relativos (sin entrar en ningún reparse point). FALLA
+/// CERRADO: cualquier error al abrir o listar, una identidad que no es la capturada o una profundidad excesiva cuentan como
+/// "con enlaces" y el elemento no se purga. Un `$R` archivo está limpio salvo que él mismo sea un reparse point.
+fn bin_item_has_links(item: &BinItem) -> bool {
+    fn walk(dir: &sys::Handle, volume: u64, depth: usize) -> bool {
+        if depth > MAX_LINK_SCAN_DEPTH {
+            return true;
+        }
+        let Ok(entries) = sys::list_dir(dir) else {
+            return true;
+        };
+        for e in entries {
+            if e.is_reparse() {
+                return true;
+            }
+            if e.is_dir() {
+                let Ok(child) = sys::open_child_dir_for_listing(dir, &e.name) else {
+                    return true;
+                };
+                let same = sys::meta(&child).is_ok_and(|m| {
+                    m.identity.file_id == e.file_id
+                        && m.identity.volume_serial == volume
+                        && !m.is_reparse()
+                });
+                if !same || walk(&child, volume, depth + 1) {
+                    return true;
+                }
+            }
+        }
+        false
+    }
+    let data = Path::new(&item.id);
+    let Ok(h) = sys::open_dir_for_listing(data) else {
+        return true;
+    };
+    let Ok(m) = sys::meta(&h) else {
+        return true;
+    };
+    if m.is_reparse() || item.data_id.is_none_or(|want| want != m.identity) {
+        return true;
+    }
+    m.is_dir && walk(&h, m.identity.volume_serial, 0)
+}
+
+/// Separa los elementos sin enlaces dentro (se purgan) de los que los llevan o no se pudieron comprobar (M2).
+#[cfg(test)]
+pub(crate) fn partition_linked<'a>(items: &[&'a BinItem]) -> (Vec<&'a BinItem>, Vec<&'a BinItem>) {
+    items.iter().copied().partition(|i| !bin_item_has_links(i))
 }
 
 /// Elementos por trozo al purgar (y por vuelta de la cancelación).
@@ -3673,6 +3760,7 @@ mod tests {
                 PurgeStep::Skipped(_) => "skipped".to_string(),
                 PurgeStep::Unverifiable(_) => "unverifiable".to_string(),
                 PurgeStep::Vetoed(i) => format!("vetoed {}", i.len()),
+                PurgeStep::Linked(i) => format!("linked {}", i.len()),
                 PurgeStep::Replaced(_) => "replaced".to_string(),
                 PurgeStep::Done(d) => format!("done {}", d.len()),
             };

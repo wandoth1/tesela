@@ -2466,6 +2466,49 @@ impl RecycleShell for FakeShell {
             ..recycle::BatchOutcome::default()
         }
     }
+    /// M2: la purga simulada comprueba antes de entregar si el `$R` lleva enlaces dentro y los excluye (`linked`) SIN cortar el
+    /// lote; el resto se "purga" (se borran su `$R` y su `$I`). Es lo que hace la shell real en `purge_items_flags`.
+    fn purge(
+        &self,
+        items: &[recycle::BinItem],
+        cancel: &AtomicBool,
+        obs: &mut dyn FnMut(recycle::PurgeStep<'_>),
+    ) -> Result<recycle::BatchOutcome, recycle::ShellError> {
+        let refs: Vec<&recycle::BinItem> = items.iter().collect();
+        let (clean, linked) = recycle::partition_linked(&refs);
+        let mut out = recycle::BatchOutcome::default();
+        if !linked.is_empty() {
+            out.linked_bin = linked.iter().map(|i| i.id.clone()).collect();
+            obs(recycle::PurgeStep::Linked(&linked));
+        }
+        if clean.is_empty() || cancel.load(Ordering::Relaxed) {
+            return Ok(out);
+        }
+        obs(recycle::PurgeStep::Begin(&clean));
+        let mut done: Vec<(&recycle::BinItem, Option<i32>)> = Vec::new();
+        for i in &clean {
+            let r = PathBuf::from(&i.id);
+            if fs::symlink_metadata(&r).is_ok_and(|m| m.is_dir()) {
+                fs::remove_dir_all(&r).unwrap();
+            } else {
+                fs::remove_file(&r).unwrap();
+            }
+            let name = r
+                .file_name()
+                .unwrap()
+                .to_string_lossy()
+                .replacen("$R", "$I", 1);
+            let _ = fs::remove_file(r.with_file_name(name));
+            out.events.push(recycle::DeleteEvent {
+                item: i.id.clone(),
+                hr: 0,
+                state: recycle::BinState::Deleted,
+            });
+            done.push((*i, Some(0)));
+        }
+        obs(recycle::PurgeStep::Done(&done));
+        Ok(out)
+    }
     fn bin_room(&self, _root: &Path) -> BinRoom {
         BinRoom {
             max: self.max,
@@ -2510,6 +2553,156 @@ fn la_shell_simulada_cuenta_el_contenido_de_los_directorios_en_su_ocupacion() {
     fake.recycle(&[send("Docs/grande")]);
     assert_eq!(*fake.used.lock().unwrap(), 101_000);
     assert!(*fake.used.lock().unwrap() > 90_000);
+}
+
+/// Un `BinItem` propio del sandbox: `$R<token>` (archivo o carpeta, ya creado) y su `$I`, con las identidades capturadas.
+fn bin_item_at(sb: &Sandbox, token: &str, is_dir: bool) -> recycle::BinItem {
+    let dir = sb.long("FakeBin/S");
+    let r = dir.join(format!("$R{token}"));
+    let i = dir.join(format!("$I{token}"));
+    if is_dir {
+        fs::create_dir_all(&r).unwrap();
+    } else {
+        fs::write(&r, b"datos").unwrap();
+    }
+    fs::write(&i, b"meta").unwrap();
+    let id_of = |p: &Path| {
+        sys::meta(&sys::open_for_query(p).unwrap())
+            .unwrap()
+            .identity
+    };
+    recycle::BinItem {
+        id: r.clone().into_os_string(),
+        name: OsString::from(format!("{token}.txt")),
+        original_parent: sb.long("origen"),
+        time_deleted: 0,
+        size: 5,
+        data_id: Some(id_of(&r)),
+        meta_id: Some(id_of(&i)),
+        no_identity: false,
+    }
+}
+
+/// M2 (auditoría): un `$R` de la Papelera con enlaces dentro (junction, archivo con reparse point) se EXCLUYE antes de
+/// entregarlo, con su motivo en el informe y en el registro, y NO corta el lote: los demás elementos se purgan. Antes el
+/// receptor vetaba el hijo-enlace y el veto cortaba la purga entera ("vaciar" se paraba ahí cada vez).
+#[test]
+fn un_r_con_enlaces_dentro_se_excluye_y_el_resto_del_lote_se_purga() {
+    let mut sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    sb.mkdir("FakeBin/S");
+    sb.write("fuera/secreto.txt", 10);
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    let a = bin_item_at(&sb, "AAAA01", false);
+    let con_junction = bin_item_at(&sb, "CCCC01", true);
+    sb.write("FakeBin/S/$RCCCC01/normal.txt", 5);
+    sb.junction("FakeBin/S/$RCCCC01/enlace", "fuera");
+    let b = bin_item_at(&sb, "BBBB01", true);
+    sb.write("FakeBin/S/$RBBBB01/sub/hondo/x.txt", 5);
+    let con_reparse = bin_item_at(&sb, "DDDD01", true);
+    let tiene_reparse =
+        crate::testutil::make_reparse_file(&sb.path("FakeBin/S/$RDDDD01/nube.bin"), 1_000);
+    let f = bin_item_at(&sb, "EEEE01", false);
+    let items = vec![
+        a.clone(),
+        con_junction.clone(),
+        b.clone(),
+        con_reparse.clone(),
+        f.clone(),
+    ];
+    let plan = Plan {
+        bin: Some(crate::plan::BinPlan {
+            items,
+            bytes_hint: 0,
+        }),
+        ..Plan::default()
+    };
+    let (log, tmp) = log_for(&c);
+    let rep = c
+        .execute(
+            &plan,
+            &ExecOptions {
+                dry_run: false,
+                allow_unfit_permanent: false,
+                log: Some(log.clone()),
+            },
+            &Progress::new(),
+        )
+        .unwrap();
+    let bin = rep.bin.expect("informe de la Papelera");
+    let esperados_con_enlaces = if tiene_reparse { 2 } else { 1 };
+    assert_eq!(bin.requested, 5);
+    assert_eq!(bin.with_links, esperados_con_enlaces, "{bin:?}");
+    // Se purgan los limpios: el archivo, la carpeta anidada y el último; el corte NO se produjo.
+    let limpios = 5 - esperados_con_enlaces;
+    assert_eq!(bin.purged, limpios, "{bin:?}");
+    assert_eq!(bin.still_there, esperados_con_enlaces);
+    assert!(!bin.failed, "{bin:?}");
+    assert!(!PathBuf::from(&a.id).exists());
+    assert!(!PathBuf::from(&b.id).exists());
+    assert!(
+        !PathBuf::from(&f.id).exists(),
+        "lo que va DESPUÉS del excluido también se purga"
+    );
+    // El excluido se queda tal cual (con su junction y su destino intactos).
+    assert!(PathBuf::from(&con_junction.id).join("normal.txt").exists());
+    assert!(sb.path("fuera/secreto.txt").exists());
+    // Consta en el registro con su motivo.
+    log.flush();
+    let text = fs::read_to_string(log.path()).unwrap();
+    assert!(text.contains("\"out\":\"linked\""), "{text}");
+    drop(log);
+    if let Some(d) = tmp {
+        let _ = fs::remove_dir_all(d);
+    }
+    sb.remove_junction("FakeBin/S/$RCCCC01/enlace");
+}
+
+/// m1 (auditoría): los elementos de la Papelera que no se pudieron listar (metadatos ilegibles) constan en el registro y en el
+/// informe (`BinReport::unlisted`); lo listado se purga igual.
+#[test]
+fn los_elementos_sin_listar_constan_en_el_registro_y_en_el_informe() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    sb.mkdir("FakeBin/S");
+    let c = cleaner_for(&sb).with_shell(fake);
+    let a = bin_item_at(&sb, "AAAA02", false);
+    let plan = Plan {
+        bin: Some(crate::plan::BinPlan {
+            items: vec![a.clone()],
+            bytes_hint: 5,
+        }),
+        bin_unlisted: 3,
+        ..Plan::default()
+    };
+    let (log, tmp) = log_for(&c);
+    let rep = c
+        .execute(
+            &plan,
+            &ExecOptions {
+                dry_run: false,
+                allow_unfit_permanent: false,
+                log: Some(log.clone()),
+            },
+            &Progress::new(),
+        )
+        .unwrap();
+    let bin = rep.bin.unwrap();
+    assert_eq!(
+        (bin.requested, bin.purged, bin.unlisted),
+        (1, 1, 3),
+        "{bin:?}"
+    );
+    log.flush();
+    let text = fs::read_to_string(log.path()).unwrap();
+    assert!(
+        text.contains("bin-unlisted") && text.contains("3 elementos"),
+        "{text}"
+    );
+    drop(log);
+    if let Some(d) = tmp {
+        let _ = fs::remove_dir_all(d);
+    }
 }
 
 /// Un plan de elementos de `Docs/<nombre>` con el tamaño dado: el archivo real mide `len` bytes y la ESTIMACIÓN aprobada es
@@ -4336,6 +4529,95 @@ fn un_hijo_cambiado_entre_el_listado_y_la_apertura_no_se_aprueba() {
         "{:?}",
         plan.rejected
     );
+}
+
+/// S2 (auditoría): el chequeo posterior al recorrido de `fresh_size`, FIJADO EN SOLITARIO. Se llama a `fresh_size` directamente
+/// (sin la comprobación previa al envío ni el receptor): si el primer archivo contado crece durante el recorrido, la propia
+/// `fresh_size` devuelve "cambió desde la confirmación". Con el chequeo quitado devolvería `Ok` (la huella vista es la de lo
+/// que contó antes de crecer, igual a la aprobada). Control: sin cambio, `Ok` y la vigilancia queda en el elemento.
+#[test]
+fn fresh_size_por_si_sola_ve_lo_que_crecio_durante_el_recorrido() {
+    for crece in [false, true] {
+        let sb = Sandbox::new();
+        let fake = FakeShell::new(&sb, Some(100_000), 0, "nunca");
+        let c = cleaner_for(&sb).with_shell(fake).with_threads(1);
+        sb.write("Docs/d/f1.bin", 1_000);
+        sb.write("Docs/d/f2.bin", 1_000);
+        let mut b = Basket::new();
+        b.add_path(sb.long("Docs/d"), c.protection());
+        let plan = approve(&c, &b);
+        assert_eq!(plan.items.len(), 1, "{:?}", plan.rejected);
+        let it = &plan.items[0];
+        let mut st = StatsSnapshot::default();
+        let Prepared::Ready(mut p) = c.prepare_recycle(it, &mut st) else {
+            panic!("debía prepararse");
+        };
+        let seen: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
+        let _hook = crate::engine::test_hooks::install(sb.long("Docs/d"), {
+            let seen = seen.clone();
+            move |q| {
+                if !crece || q.extension().is_none_or(|e| e != "bin") {
+                    return;
+                }
+                let mut first = seen.lock().unwrap();
+                match first.as_ref() {
+                    None => *first = Some(q.to_path_buf()),
+                    Some(counted) if counted != q => {
+                        fs::write(counted, vec![1u8; 1 << 20]).unwrap();
+                    }
+                    _ => {}
+                }
+            }
+        });
+        let r = c.fresh_size(it, &mut p, &mut st, &cancel());
+        if crece {
+            let err = r.unwrap_err();
+            assert_eq!(err.0, ItemStatus::Root(crate::engine::RootStatus::Changed));
+            assert_eq!(err.1, Outcome::Changed);
+            assert_eq!(st.changed, 1);
+            assert!(
+                p.watch.is_none(),
+                "una medida que no vale no deja vigilancia"
+            );
+        } else {
+            r.unwrap();
+            assert!(p.watch.is_some());
+        }
+    }
+}
+
+/// S1 (auditoría): una carpeta que ya cambió ANTES de escribir la línea de intención no deja un `recycle-begin` sin entrega.
+#[test]
+fn una_carpeta_cambiada_antes_de_la_intencion_no_deja_recycle_begin() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(100_000), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    sb.write("Docs/d/f1.bin", 1_000);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/d"), c.protection());
+    let plan = approve(&c, &b);
+    let _hook = crate::engine::test_hooks::install_before_shell(sb.long("Docs"), |p| {
+        if p.ends_with("d") {
+            fs::write(p.join("f1.bin"), vec![1u8; 1 << 20]).unwrap();
+        }
+    });
+    let (log, tmp) = log_for(&c);
+    let rep = exec(&c, &plan, false, false, Some(log.clone())).unwrap();
+    assert_eq!(
+        rep.items[0].status,
+        ItemStatus::Root(crate::engine::RootStatus::Changed)
+    );
+    assert!(fake.names().is_empty());
+    log.flush();
+    let text = fs::read_to_string(log.path()).unwrap();
+    assert!(
+        !text.contains("recycle-begin"),
+        "no se anota intención de lo que no se va a entregar: {text}"
+    );
+    drop(log);
+    if let Some(d) = tmp {
+        let _ = fs::remove_dir_all(d);
+    }
 }
 
 /// A3-M2 (repetición de Astra): capacidad 100 000, la Papelera vacía al empezar la medida y con 99 000 ocupados al acabar el

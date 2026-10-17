@@ -242,6 +242,12 @@ pub struct BinReport {
     /// Elementos que no se tocaron porque su sistema de archivos no da identidad (FAT, exFAT) y no se pueden verificar.
     /// No es que hayan cambiado (H6.9).
     pub unverifiable: u64,
+    /// Elementos que NO se purgaron porque su `$R` lleva reparse points dentro (junction, symlink, enlace de WSL, archivo de
+    /// la nube) o no se pudo comprobar entero (M2): se excluyen ANTES de entregarlos y no cortan el lote.
+    pub with_links: u64,
+    /// Elementos de la Papelera que no se listaron al confirmar porque sus metadatos (`$I`) están ilegibles: no se vacían y su
+    /// tamaño no cuenta en lo que se prometió (m1).
+    pub unlisted: u64,
     /// Tamaño aproximado de la Papelera al confirmar.
     pub bytes_hint: u64,
     /// La shell no pudo hacer la operación.
@@ -503,6 +509,18 @@ impl Cleaner {
         // 1. Vaciar la Papelera con la lista enumerada al confirmar.
         if let Some(bp) = plan.bin.as_ref().filter(|b| !b.items.is_empty()) {
             progress.set_phase(Phase::EmptyingBin);
+            // m1: lo que no se pudo listar consta en el registro (y en el informe, `BinReport::unlisted`).
+            if plan.bin_unlisted > 0
+                && let Some(l) = &opts.log
+            {
+                l.write_note(
+                    "bin-unlisted",
+                    &format!(
+                        "{} elementos de la Papelera con los metadatos ilegibles no se listaron y no se vacían",
+                        plan.bin_unlisted
+                    ),
+                );
+            }
             report.bin = Some(self.empty_bin(
                 &bp.items,
                 bp.bytes_hint,
@@ -511,6 +529,9 @@ impl Cleaner {
                 sink.as_deref(),
                 opts.log.as_deref(),
             ));
+            if let Some(b) = report.bin.as_mut() {
+                b.unlisted = plan.bin_unlisted;
+            }
             progress.items_done.fetch_add(1, Ordering::Relaxed);
         }
 
@@ -720,6 +741,13 @@ impl Cleaner {
                     }
                     l.flush();
                 }
+                recycle::PurgeStep::Linked(items) => {
+                    // M2: el `$R` lleva enlaces dentro (o no se pudo comprobar): no se entrega a la shell.
+                    for i in items {
+                        l.write_bin_item(&i.original_path(), &i.id, i.size, "linked");
+                    }
+                    l.flush();
+                }
                 recycle::PurgeStep::Vetoed(items) => {
                     // A-M4: la shell iba a borrar algo que ya no era lo capturado y el receptor lo vetó.
                     for i in items {
@@ -740,7 +768,7 @@ impl Cleaner {
                 }
             }
         };
-        match recycle::purge_items_observed(items, cancel, &mut observe) {
+        match self.shell.purge(items, cancel, &mut observe) {
             Ok(out) => {
                 let wanted: HashSet<&OsString> = items.iter().map(|i| &i.id).collect();
                 let purged: HashSet<&OsString> = out
@@ -761,6 +789,8 @@ impl Cleaner {
                 // que la shell los borrara (veto de `PreDeleteItem`, A-M4).
                 rep.changed = bin_changed(out.changed_bin.len(), &out.vetoed, &wanted);
                 rep.unverifiable = out.unverifiable_bin.len() as u64;
+                rep.with_links =
+                    out.linked_bin.iter().filter(|i| wanted.contains(i)).count() as u64;
                 // El `E_ABORT` que provoca el propio receptor al vetar no es un fallo de la shell.
                 rep.failed = out.error.is_some() && !out.sink_aborted;
             }
@@ -831,6 +861,30 @@ impl Cleaner {
                 l.flush();
             }
         };
+        // A3-M1: ¿cambió algo dentro de alguno de los directorios de la operación desde que se midió (lo vio su vigilancia)?
+        let watch_changed = |entries: &[(&PlanItem, Pending)]| {
+            entries
+                .iter()
+                .any(|(_, p)| p.watch.as_ref().is_some_and(|w| w.changed()))
+        };
+        // La operación no se entrega: sus elementos constan como "cambió desde la confirmación".
+        let reject_changed =
+            |entries: &[(&PlanItem, Pending)],
+             results: &mut HashMap<usize, (ItemStatus, StatsSnapshot)>| {
+                for (it, _) in entries {
+                    emit(it, None, 0, Outcome::Changed);
+                    results.insert(
+                        it.id,
+                        (
+                            ItemStatus::Root(RootStatus::Changed),
+                            StatsSnapshot {
+                                changed: 1,
+                                ..StatsSnapshot::default()
+                            },
+                        ),
+                    );
+                }
+            };
         let mut stopped = false;
         for chunk in items.chunks(RECYCLE_CHUNK) {
             if cancel.load(Ordering::Relaxed) {
@@ -1067,6 +1121,14 @@ impl Cleaner {
                     for p in &paths {
                         crate::engine::test_hooks::before_shell(p);
                     }
+                    // A3-M1 (S1 de la auditoría): también ANTES de escribir la línea de intención. Una carpeta que ya cambió no
+                    // deja un `recycle-begin` sin entrega; se vuelve a mirar justo después de escribirla (lo último antes de la
+                    // shell), porque la escritura tarda y cae dentro de la ventana.
+                    if watch_changed(&entries) {
+                        reject_changed(&entries, &mut results);
+                        drop(entries);
+                        continue;
+                    }
                     // Antes de entregarlas a la shell se anota la INTENCIÓN (la lista de rutas del lote) y se vuelca: tras un
                     // cierre forzoso se sabe qué pudo moverse. Si no se puede dejar escrita, NO se entrega nada a la shell.
                     if let Some(l) = &opts.log
@@ -1088,23 +1150,8 @@ impl Cleaner {
                     // A3-M1: lo último antes de la shell. Si algo cambió dentro del directorio desde que se midió (la vigilancia
                     // lo vio), la medida no es cierta: no se entrega ("cambió desde la confirmación"). Un directorio va solo en
                     // su operación; en la shell, `PreDeleteItem` vuelve a consultar la misma vigilancia (y, si pasa, la para).
-                    if entries
-                        .iter()
-                        .any(|(_, p)| p.watch.as_ref().is_some_and(|w| w.changed()))
-                    {
-                        for (it, _) in &entries {
-                            emit(it, None, 0, Outcome::Changed);
-                            results.insert(
-                                it.id,
-                                (
-                                    ItemStatus::Root(RootStatus::Changed),
-                                    StatsSnapshot {
-                                        changed: 1,
-                                        ..StatsSnapshot::default()
-                                    },
-                                ),
-                            );
-                        }
+                    if watch_changed(&entries) {
+                        reject_changed(&entries, &mut results);
                         drop(entries);
                         continue;
                     }
@@ -1679,6 +1726,16 @@ pub(crate) trait RecycleShell: Send + Sync {
     /// Envía los elementos (ruta original + identidad aprobada) en UNA operación y dice qué notificó la shell de cada
     /// uno. El receptor de eventos veta lo que ya no es el objeto aprobado.
     fn recycle(&self, items: &[recycle::SendItem]) -> recycle::BatchOutcome;
+    /// Purga (borra definitivamente) los elementos de la Papelera enumerados al confirmar. Por defecto, la shell real; las
+    /// pruebas ponen una simulada para probar el reparto y lo que se excluye sin tocar la Papelera de nadie (M2).
+    fn purge(
+        &self,
+        items: &[recycle::BinItem],
+        cancel: &AtomicBool,
+        obs: &mut dyn FnMut(recycle::PurgeStep<'_>),
+    ) -> Result<recycle::BatchOutcome, recycle::ShellError> {
+        recycle::purge_items_observed(items, cancel, obs)
+    }
     /// Capacidad y ocupación de la Papelera del volumen cuya raíz es `root`.
     fn bin_room(&self, root: &Path) -> BinRoom;
     /// ¿Cabe un elemento de `bytes` con ruta `path` en la Papelera de su volumen? Se decide al aprobar y se vuelve a
