@@ -115,6 +115,15 @@ pub fn release_url(v: Version) -> String {
     format!("{RELEASE_PAGE_PREFIX}{v}")
 }
 
+/// Is `url` exactly a release page of this repository, as [`release_url`] builds it? The exact prefix
+/// [`RELEASE_PAGE_PREFIX`] followed by a valid `vX.Y.Z` tag and NOTHING else (no query, fragment, space, quote, `%`...).
+/// It is the only thing the code that opens a browser accepts.
+pub fn is_release_page(url: &str) -> bool {
+    url.strip_prefix(RELEASE_PAGE_PREFIX)
+        .and_then(Version::parse_tag)
+        .is_some_and(|v| release_url(v) == url)
+}
+
 /// Is `latest` newer than `current`?
 pub fn is_newer(latest: Version, current: Version) -> bool {
     latest > current
@@ -127,8 +136,9 @@ pub fn is_due(enabled: bool, last: Option<u64>, now: u64) -> bool {
     enabled && last.is_none_or(|l| l > now || now - l >= MIN_INTERVAL_SECS)
 }
 
-/// The version to tell the user about, if any: the check is on, `latest` is newer than `current`, and it was not
-/// dismissed. (Dismissing a version does not hide a later one.)
+/// The version to tell the user about, if any: the check is on, `latest` is newer than `current`, and it is newer than
+/// the dismissed one. Dismissing compares by ORDER: a version lower than or equal to the dismissed one never shows again
+/// (GitHub's "latest" is the most recently created release, not necessarily the highest number), while a higher one does.
 pub fn notice_for(
     enabled: bool,
     latest: Option<Version>,
@@ -136,7 +146,7 @@ pub fn notice_for(
     dismissed: Option<Version>,
 ) -> Option<Version> {
     let (latest, current) = (latest?, current?);
-    (enabled && is_newer(latest, current) && Some(latest) != dismissed).then_some(latest)
+    (enabled && is_newer(latest, current) && dismissed.is_none_or(|d| latest > d)).then_some(latest)
 }
 
 /// What is requested: a URL and a `User-Agent`. There is deliberately no field for anything else.
@@ -319,11 +329,64 @@ mod tests {
             "unknown own version"
         );
         assert_eq!(notice_for(true, new, cur, new), None, "dismissed");
-        // A dismissed version does not hide a later one.
+        // A dismissed version does not hide a later one...
         assert_eq!(
             notice_for(true, Some(v(0, 1, 6)), cur, new),
             Some(v(0, 1, 6))
         );
+        // ...but a lower or equal one never shows again, whatever GitHub calls "latest" later.
+        let high = Some(v(0, 2, 0));
+        assert_eq!(
+            notice_for(true, new, cur, high),
+            None,
+            "lower than dismissed"
+        );
+        assert_eq!(
+            notice_for(true, high, cur, high),
+            None,
+            "equal to dismissed"
+        );
+        assert_eq!(
+            notice_for(true, Some(v(0, 2, 1)), cur, high),
+            Some(v(0, 2, 1))
+        );
+    }
+
+    #[test]
+    fn only_a_release_page_built_from_a_valid_tag_may_be_opened() {
+        for ok in [(0, 1, 5), (10, 200, 3000)] {
+            let url = release_url(v(ok.0, ok.1, ok.2));
+            assert!(is_release_page(&url), "{url}");
+        }
+        let p = RELEASE_PAGE_PREFIX;
+        for bad in [
+            String::new(),
+            p.to_owned(),
+            format!("{p}v0.1"),
+            format!("{p}0.1.5"),
+            format!("{p}v0.1.5-rc1"),
+            format!("{p}v0.1.5/"),
+            format!("{p}v0.1.5?x=1"),
+            format!("{p}v0.1.5#x"),
+            format!("{p}v0.1.5 "),
+            format!("{p}v0.1.5%20"),
+            format!("{p}v0.1.5\\"),
+            format!("{p}v0.1.5\"x"),
+            format!("{p}v0.1.5\n"),
+            format!("{p}v0.1.5\0"),
+            format!(" {p}v0.1.5"),
+            format!("{p}v01.1.5"),
+            "http://github.com/wandoth1/tesela/releases/tag/v0.1.5".to_owned(),
+            "file:///C:/Windows/System32/calc.exe".to_owned(),
+            "https://github.com/wandoth1/tesela/releases/latest".to_owned(),
+            "https://github.com/wandoth1/tesela/releases/tag/v0.1.5@evil.example".to_owned(),
+            "https://evil.example/wandoth1/tesela/releases/tag/v0.1.5".to_owned(),
+            "https://github.com.evil.example/wandoth1/tesela/releases/tag/v0.1.5".to_owned(),
+            "https://GitHub.com/wandoth1/tesela/releases/tag/v0.1.5".to_owned(),
+            "https://github.com/other/tesela/releases/tag/v0.1.5".to_owned(),
+        ] {
+            assert!(!is_release_page(&bad), "{bad:?}");
+        }
     }
 
     #[test]

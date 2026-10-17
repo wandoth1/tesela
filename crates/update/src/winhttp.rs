@@ -1,13 +1,22 @@
 //! The real transport: WinHTTP, the system HTTP stack (it honors the system proxy and adds nothing to the supply chain).
 //!
 //! What it sends is exactly the request line, `Host`, `User-Agent` and `Connection`: no `Accept`, no cookies (disabled),
-//! no redirects (disabled: the answer of the address that was asked for, or nothing) and no credentials of the current
-//! Windows user (automatic logon only with the highest security level, so none is sent on its own). It is blocking: the
-//! caller runs it on its own thread, and every phase has a short timeout.
+//! no redirects (disabled) and no authentication at all (disabled, and automatic logon only with the highest security
+//! level, so no Windows credentials are ever sent, to the server or to a proxy). It is blocking: the caller runs it on its
+//! own thread, and every phase has a short timeout.
+//!
+//! Redirects stay disabled on purpose: the answer of the address that was asked for, or nothing. The consequence is
+//! that if the repository is ever renamed or changes owner, GitHub's API answers with a redirect, this reads it as a
+//! failure, and the installed versions stop notifying (silently, as any other failure). The old name must not be
+//! reused and the notice has to be shipped in a version built with the new address.
+//!
+//! The proxy is the system one (`WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY`), which can also look for the network's proxy
+//! configuration automatically (WPAD): name lookups and a configuration script fetched from the local network may come
+//! before the connection to GitHub.
 //!
 //! It is the only module of Tesela that can reach the network, and it is only reached if the user turned the update
-//! check on. Nothing here is exercised by the automated tests (they use a fake [`Transport`]); see `docs/` and the
-//! test notes for the single manual request.
+//! check on. Nothing here is exercised by the automated tests (they use a fake [`Transport`]); the single manual
+//! request is the `#[ignore]`d test `real_request_by_hand` at the end of this file (its doc comment has the command).
 #![allow(unsafe_code)]
 
 use crate::{MAX_BODY_BYTES, Request, Transport, TransportError};
@@ -15,11 +24,12 @@ use std::ffi::c_void;
 use std::time::{Duration, Instant};
 use windows::Win32::Networking::WinHttp::{
     WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_AUTOLOGON_SECURITY_LEVEL_HIGH,
-    WINHTTP_DISABLE_COOKIES, WINHTTP_DISABLE_REDIRECTS, WINHTTP_FLAG_SECURE,
-    WINHTTP_OPTION_AUTOLOGON_POLICY, WINHTTP_OPTION_DISABLE_FEATURE, WINHTTP_QUERY_FLAG_NUMBER,
-    WINHTTP_QUERY_STATUS_CODE, WinHttpCloseHandle, WinHttpConnect, WinHttpOpen, WinHttpOpenRequest,
-    WinHttpQueryDataAvailable, WinHttpQueryHeaders, WinHttpReadData, WinHttpReceiveResponse,
-    WinHttpSendRequest, WinHttpSetOption, WinHttpSetTimeouts,
+    WINHTTP_DISABLE_AUTHENTICATION, WINHTTP_DISABLE_COOKIES, WINHTTP_DISABLE_REDIRECTS,
+    WINHTTP_FLAG_SECURE, WINHTTP_OPTION_AUTOLOGON_POLICY, WINHTTP_OPTION_DISABLE_FEATURE,
+    WINHTTP_QUERY_FLAG_NUMBER, WINHTTP_QUERY_STATUS_CODE, WinHttpCloseHandle, WinHttpConnect,
+    WinHttpOpen, WinHttpOpenRequest, WinHttpQueryDataAvailable, WinHttpQueryHeaders,
+    WinHttpReadData, WinHttpReceiveResponse, WinHttpSendRequest, WinHttpSetOption,
+    WinHttpSetTimeouts,
 };
 use windows::core::{HSTRING, PCWSTR};
 
@@ -103,7 +113,8 @@ fn get(user_agent: &str, host: &str, port: u16, path: &str) -> Result<Vec<u8>, T
     })
     .ok_or(TransportError::Unavailable)?;
 
-    let disable = WINHTTP_DISABLE_COOKIES | WINHTTP_DISABLE_REDIRECTS;
+    let disable =
+        WINHTTP_DISABLE_COOKIES | WINHTTP_DISABLE_REDIRECTS | WINHTTP_DISABLE_AUTHENTICATION;
     let autologon = WINHTTP_AUTOLOGON_SECURITY_LEVEL_HIGH;
     // SAFETY: `request` is valid; the buffers are `u32` values (what these two options expect) alive for the call.
     unsafe {
