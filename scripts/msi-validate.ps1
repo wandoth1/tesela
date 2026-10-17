@@ -17,7 +17,10 @@
       busqueda de registro de InstallFolder de tipo 18;
     * el arbol de carpetas EXACTO ($MsiExpectedDirectories: cada Directory con su Directory_Parent y, donde se fija el
       nombre, su DefaultDir) y los componentes solo en la carpeta de instalacion y el menu Inicio;
-    * un acceso directo del menu Inicio, un icono;
+    * un acceso directo del menu Inicio (sin Arguments y con WkDir = INSTALLFOLDER), un icono;
+    * los GUID fijos de los 6 componentes (Windows Installer identifica el componente por su GUID entre versiones);
+    * INSTALLFOLDER en SecureCustomProperties, AppSearch sin condicion y ANTES de CostFinalize en las dos secuencias de
+      instalacion, y la tabla Signature vacia (no hay busquedas de archivos ni carpetas);
     * MajorUpgrade y bloqueo de versiones anteriores, con valores exactos (ver $MsiExpectedUpgradeRows): las dos filas de la
       tabla Upgrade (UpgradeCode, VersionMin/VersionMax, idioma, Attributes y ActionProperty), la LaunchCondition
       `NOT WIX_DOWNGRADE_DETECTED` con su mensaje, FindRelatedProducts y LaunchConditions sin condicion en las dos
@@ -65,6 +68,16 @@ $MsiExpectedUpgradeRows = @(
     @{ Name = 'bloquear versiones posteriores'; ActionProperty = 'WIX_DOWNGRADE_DETECTED'; Min = 'V'; MaxIsVersion = $false; Attributes = '2' }
 )
 $MsiExpectedLanguage = '1033'
+# GUID de componente FIJOS de installer/Tesela.wxs (en mayusculas y entre llaves, como los guarda la tabla Component). Un cambio
+# accidental dejaria dos componentes distintos para el mismo archivo entre versiones.
+$MsiExpectedComponentIds = @{
+    'TeselaExe'         = '{B684DA7F-4E1F-49DD-9ED7-A7D2C72A1B22}'
+    'TeselaScanExe'     = '{F6AC4BAC-3E83-4784-ACA7-50ED49A1D3D9}'
+    'LicenseMit'        = '{1B50C86F-50F5-4EEF-B97B-BE62D82BBB9D}'
+    'LicenseApache'     = '{100B9CE0-2501-4884-8A2D-FE074CF71F06}'
+    'ThirdPartyNotices' = '{0FFBF222-BD3C-4B09-A7A1-97CA3D105F13}'
+    'StartMenuShortcut' = '{089416B7-8B88-4F2D-9636-96931BE9FCC0}'
+}
 $MsiExpectedLaunchCondition = 'NOT WIX_DOWNGRADE_DETECTED'
 # Lista CERRADA de tablas de un MSI de Tesela. Una tabla que no esta aqui es un fallo, tenga o no filas.
 $MsiAllowedTables = @(
@@ -190,13 +203,24 @@ function Test-MsiPackage {
             $leafName = ($found[0][2] -split '\|')[-1]
             if ($null -cne $e.DefaultDir -and $leafName -cne $e.DefaultDir) { $problems.Add("carpeta $($e.Id): DefaultDir = '$($found[0][2])', se esperaba '$($e.DefaultDir)'") }
         }
-        foreach ($c in (Get-MsiRows $msi 'SELECT `Component`, `Directory_` FROM `Component`' 2)) {
+        $comps = @(Get-MsiRows $msi 'SELECT `Component`, `Directory_`, `ComponentId` FROM `Component`' 3)
+        foreach ($c in $comps) {
             if (@('INSTALLFOLDER', 'ProgramMenuFolder') -cnotcontains $c[1]) { $problems.Add("componente $($c[0]) en $($c[1])") }
+            if (-not $MsiExpectedComponentIds.ContainsKey($c[0])) { $problems.Add("componente inesperado: $($c[0])") }
+            elseif ($c[2] -cne $MsiExpectedComponentIds[$c[0]]) { $problems.Add("componente $($c[0]): GUID = '$($c[2])', se esperaba '$($MsiExpectedComponentIds[$c[0]])' (los GUID de componente son fijos)") }
+        }
+        foreach ($k in $MsiExpectedComponentIds.Keys) {
+            if (@($comps | Where-Object { $_[0] -ceq $k }).Count -cne 1) { $problems.Add("falta el componente $k") }
         }
 
-        $sc = @(Get-MsiRows $msi 'SELECT `Shortcut`, `Directory_`, `Name`, `Target`, `Icon_` FROM `Shortcut`' 5)
+        $sc = @(Get-MsiRows $msi 'SELECT `Shortcut`, `Directory_`, `Name`, `Target`, `Icon_`, `Arguments`, `WkDir` FROM `Shortcut`' 7)
         if ($sc.Count -cne 1 -or $sc[0][1] -cne 'ProgramMenuFolder' -or $sc[0][3] -cne '[INSTALLFOLDER]tesela.exe') {
             $problems.Add("se esperaba exactamente 1 acceso directo en el menu Inicio hacia tesela.exe; hay $($sc.Count)")
+        } else {
+            # Sin argumentos (un acceso directo con `--scan <ruta>` o `--demo` cambiaria lo que hace Tesela al abrirse) y con la
+            # carpeta de trabajo en la de instalacion.
+            if ($sc[0][5] -cne '') { $problems.Add("el acceso directo lleva argumentos: '$($sc[0][5])'") }
+            if ($sc[0][6] -cne 'INSTALLFOLDER') { $problems.Add("el acceso directo tiene WkDir = '$($sc[0][6])', se esperaba 'INSTALLFOLDER'") }
         }
         $icons = @(Get-MsiRows $msi 'SELECT `Name` FROM `Icon`' 1)
         if ($icons.Count -cne 1) { $problems.Add("se esperaba 1 icono en el MSI; hay $($icons.Count)") }
@@ -264,7 +288,8 @@ function Test-MsiPackage {
         # Las dos propiedades que rellena la tabla Upgrade tienen que figurar en SecureCustomProperties (propiedades publicas
         # restringidas: sin ello Windows Installer no las conserva al pasar de la fase de interfaz a la de ejecucion).
         $secure = @(($props['SecureCustomProperties'] -split ';') | Where-Object { $_ })
-        foreach ($a in 'WIX_UPGRADE_DETECTED', 'WIX_DOWNGRADE_DETECTED') {
+        # INSTALLFOLDER tambien (`<Property Secure="yes">`): la carpeta de la linea de comandos y la de la busqueda de registro.
+        foreach ($a in 'WIX_UPGRADE_DETECTED', 'WIX_DOWNGRADE_DETECTED', 'INSTALLFOLDER') {
             if ($secure -cnotcontains $a) { $problems.Add("SecureCustomProperties no incluye $a (tiene: '$($props['SecureCustomProperties'])')") }
         }
 
@@ -289,6 +314,21 @@ function Test-MsiPackage {
         }
         $app = @(Get-MsiRows $msi 'SELECT `Property`, `Signature_` FROM `AppSearch`' 2)
         if ($app.Count -cne 1 -or $app[0][0] -cne 'INSTALLFOLDER') { $problems.Add('AppSearch tiene que asignar solo INSTALLFOLDER') }
+        # La accion AppSearch (la que ejecuta la busqueda) tiene que estar, sin condicion, ANTES de CostFinalize (que calcula las
+        # rutas de instalacion con INSTALLFOLDER) en las dos secuencias de instalacion: si no, la carpeta recordada no se recupera
+        # al actualizar, reparar o desinstalar y los archivos de una carpeta personalizada quedarian huerfanos.
+        foreach ($t in 'InstallExecuteSequence', 'InstallUISequence') {
+            if (-not $seq[$t].ContainsKey('AppSearch')) { $problems.Add("falta AppSearch en $t"); continue }
+            if ($seq[$t]['AppSearch'][1] -cne '') { $problems.Add("AppSearch en ${t} lleva la condicion '$($seq[$t]['AppSearch'][1])' (tiene que ser incondicional)") }
+            if (-not $seq[$t].ContainsKey('CostFinalize')) { $problems.Add("falta CostFinalize en $t"); continue }
+            if ([int]$seq[$t]['AppSearch'][2] -ge [int]$seq[$t]['CostFinalize'][2]) {
+                $problems.Add("AppSearch (secuencia $($seq[$t]['AppSearch'][2])) tiene que ir antes de CostFinalize (secuencia $($seq[$t]['CostFinalize'][2])) en ${t}")
+            }
+        }
+        # Sin busquedas de archivos ni de carpetas: la tabla Signature (si existe) esta vacia. RegLocator no usa filas de
+        # Signature; una fila de mas seria una busqueda que el .wxs no declara.
+        $sig = @(Get-MsiRows $msi 'SELECT `Signature` FROM `Signature`' 1)
+        if ($sig.Count -cne 0) { $problems.Add("la tabla Signature tiene $($sig.Count) filas, tiene que estar vacia (busquedas de archivos o carpetas no declaradas)") }
         $saved = @(Get-MsiRows $msi 'SELECT `Name`, `Value` FROM `Registry`' 2 | Where-Object { $_[0] -ceq 'InstallFolder' })
         if ($saved.Count -cne 1 -or $saved[0][1] -cne '[INSTALLFOLDER]') { $problems.Add('falta el valor de registro InstallFolder = [INSTALLFOLDER]') }
     } finally {

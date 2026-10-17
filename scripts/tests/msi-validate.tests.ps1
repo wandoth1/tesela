@@ -249,6 +249,43 @@ try {
     $path = New-Mutant 'case-secure' @("UPDATE ``Property`` SET ``Value``='wix_upgrade_detected;wix_downgrade_detected' WHERE ``Property``='SecureCustomProperties'")
     Check 'SecureCustomProperties en minusculas' ((Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*SecureCustomProperties no incluye WIX_DOWNGRADE_DETECTED*') -and (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*SecureCustomProperties no incluye WIX_UPGRADE_DETECTED*'))
 
+    $path = New-Mutant 'secure-installfolder' @("UPDATE ``Property`` SET ``Value``='WIX_UPGRADE_DETECTED;WIX_DOWNGRADE_DETECTED' WHERE ``Property``='SecureCustomProperties'")
+    Check 'SecureCustomProperties sin INSTALLFOLDER' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*SecureCustomProperties no incluye INSTALLFOLDER*')
+
+    # --- Acceso directo: sin argumentos y con la carpeta de trabajo de la instalacion -----------------------------------------
+    $path = New-Mutant 'shortcut-args' @("UPDATE ``Shortcut`` SET ``Arguments``='--demo'")
+    Check 'acceso directo con argumentos' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*acceso directo lleva argumentos*--demo*')
+    $path = New-Mutant 'shortcut-wkdir' @("UPDATE ``Shortcut`` SET ``WkDir``='ProgramMenuFolder'")
+    Check 'acceso directo con otra carpeta de trabajo' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*WkDir*ProgramMenuFolder*INSTALLFOLDER*')
+    $path = New-Mutant 'shortcut-nowkdir' @("UPDATE ``Shortcut`` SET ``WkDir``=''")
+    Check 'acceso directo sin carpeta de trabajo' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*WkDir*se esperaba*INSTALLFOLDER*')
+
+    # --- GUID de componente fijos ----------------------------------------------------------------------------------------------
+    $path = New-Mutant 'component-guid' @("UPDATE ``Component`` SET ``ComponentId``='{11111111-2222-3333-4444-555555555555}' WHERE ``Component``='StartMenuShortcut'")
+    Check 'otro GUID en el componente del acceso directo' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*componente StartMenuShortcut*GUID*')
+    $path = New-Mutant 'component-guid-exe' @("UPDATE ``Component`` SET ``ComponentId``='{11111111-2222-3333-4444-555555555555}' WHERE ``Component``='TeselaExe'")
+    Check 'otro GUID en el componente de tesela.exe' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*componente TeselaExe*GUID*')
+
+    # --- AppSearch: la accion, sin condicion y antes de CostFinalize en las dos secuencias; Signature vacia -------------------------
+    foreach ($t in 'InstallExecuteSequence', 'InstallUISequence') {
+        $path = New-Mutant "appsearch-none-$t" @("DELETE FROM ``$t`` WHERE ``Action``='AppSearch'")
+        Check "sin la accion AppSearch en $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*falta AppSearch en $t*")
+        $path = New-Mutant "appsearch-cond-$t" @("UPDATE ``$t`` SET ``Condition``='0' WHERE ``Action``='AppSearch'")
+        Check "AppSearch con condicion en $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*AppSearch en $t lleva la condicion*")
+        $path = New-Mutant "appsearch-late-$t" @("UPDATE ``$t`` SET ``Sequence``=2000 WHERE ``Action``='AppSearch'")
+        Check "AppSearch despues de CostFinalize en $t" (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) "*AppSearch*tiene que ir antes de CostFinalize*$t*")
+    }
+    $msiTables = Open-MsiDatabase $Msi
+    $hasSignature = $msiTables.Tables -contains 'Signature'
+    Close-Msi $msiTables
+    $sigStatements = @()
+    if (-not $hasSignature) {
+        $sigStatements += 'CREATE TABLE `Signature` (`Signature` CHAR(72) NOT NULL, `FileName` CHAR(255) NOT NULL PRIMARY KEY `Signature`)'
+    }
+    $sigStatements += 'INSERT INTO `Signature` (`Signature`, `FileName`) VALUES (''EvilSearch'', ''evil.dll'')'
+    $path = New-Mutant 'signature-row' $sigStatements
+    Check 'una fila en la tabla Signature (busqueda de archivo no declarada)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*tabla Signature tiene 1 filas*')
+
     $path = New-Mutant 'secure-props' @("UPDATE ``Property`` SET ``Value``='WIX_UPGRADE_DETECTED' WHERE ``Property``='SecureCustomProperties'")
     Check 'SecureCustomProperties sin WIX_DOWNGRADE_DETECTED' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*SecureCustomProperties no incluye WIX_DOWNGRADE_DETECTED*')
 

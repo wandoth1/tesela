@@ -62,7 +62,10 @@
       huerfanos. No hace falta ninguna accion personalizada. (La busqueda tiene prioridad sobre el valor de la linea de
       comandos: una actualizacion o reparacion se queda donde estaba instalada.)
     -->
-    <Property Id="INSTALLFOLDER">
+    <!-- Secure="yes": INSTALLFOLDER entra en SecureCustomProperties (propiedad publica restringida), igual que las dos que
+         rellena MajorUpgrade: sin ello, una instalacion elevada o administrada ignora el valor de la linea de comandos y
+         el que lleva la busqueda de registro puede no llegar de la interfaz a la fase de ejecucion. -->
+    <Property Id="INSTALLFOLDER" Secure="yes">
       <RegistrySearch Id="InstallFolderSearch" Root="HKCU" Key="Software\Tesela" Name="InstallFolder" Type="raw" />
     </Property>
 
@@ -106,9 +109,13 @@
       </Component>
     </ComponentGroup>
 
-    <!-- Acceso directo del menu Inicio del usuario (directamente en Programas, sin carpeta propia). -->
+    <!-- Acceso directo del menu Inicio del usuario (directamente en Programas, sin carpeta propia). GUID FIJO como el de los
+         demas componentes (no cambiarlo: Windows Installer identifica el componente por el entre versiones). MajorUpgrade
+         desinstala la version anterior ENTERA (RemoveExistingProducts, entre InstallValidate e InstallInitialize) antes de
+         instalar la nueva, asi que pasar del GUID que WiX derivaba antes a este no deja ni el acceso directo ni su valor de
+         registro huerfanos. -->
     <ComponentGroup Id="StartMenu" Directory="ProgramMenuFolder">
-      <Component Id="StartMenuShortcut">
+      <Component Id="StartMenuShortcut" Guid="089416B7-8B88-4F2D-9636-96931BE9FCC0">
         <Shortcut
           Id="StartMenuShortcut"
           Name="Tesela"
