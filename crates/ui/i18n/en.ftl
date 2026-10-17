@@ -75,6 +75,7 @@ scan-known-title = Places where temporary files usually pile up
 scan-known-sum = Up to { $size } in low-risk candidates (checked when cleaning)
 scan-known-note = This is an estimate, not a guaranteed minimum, and it only counts low-risk items: temporary files older than 7 days and browser caches. We show you what is deleted and what goes to the Recycle Bin before cleaning, and the real figure is measured when cleaning.
 scan-known-excluded = Downloads and the Recycle Bin are your own data: they are shown, but not counted in the figure above.
+scan-known-excluded-diag = Error reports and crash dumps help diagnose failures: they are not counted in the figure above either.
 risk-review-tag = Review
 scan-clean-safe = Clean the safe stuff
 scan-checking = Checking { $done } of { $total } known places…
@@ -97,6 +98,8 @@ known-edge-cache = Edge cache
 known-firefox-cache = Firefox cache
 known-downloads = Downloads
 known-recycle-bin = Recycle Bin
+known-wer-reports = Windows error reports
+known-crash-dumps = Application crash dumps
 known-other = Other known place
 
 # Main window
@@ -262,6 +265,8 @@ rule-user-temp-why = Temporary files not modified in the last week (older than 7
 rule-windows-temp-why = Windows temporary files not modified in the last week (older than 7 days). Recent ones are left in case an installer is using them.
 rule-downloads-why = Your own files: look at them and choose. Nothing here is checked automatically.
 rule-recycle-bin-why = Emptying it is permanent. Only what is in it when you confirm is emptied; what arrives later is not touched.
+rule-wer-reports-why = Reports Windows saves when a program fails, already sent or queued. They help diagnose the failure and a program's support may ask for them: if you delete them, they are gone. Only those older than 7 days are touched. They go to the Recycle Bin and are never ticked for you: each one records a specific failure and cannot be regenerated.
+rule-crash-dumps-why = Memory dumps of programs that closed because of a crash (the CrashDumps folder, which usually exists only if that Windows feature was turned on). They can be large and are what a developer asks for to understand the failure: if you delete them, they are gone. Only those older than 7 days are touched. They go to the Recycle Bin and are never ticked for you: each one records a specific failure and cannot be regenerated.
 
 # Confirmation
 confirm-title = Review before cleaning

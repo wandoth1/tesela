@@ -13,7 +13,7 @@ use crate::treepath::Locator;
 use crate::widgets::{self, ButtonStyle};
 use egui::{Align, CornerRadius, Layout, Margin, RichText, Stroke, Ui, vec2};
 use tesela_cleaner::paths::PathKey;
-use tesela_cleaner::{AddOutcome, Browser, CategoryId, Source, Verdict};
+use tesela_cleaner::{AddOutcome, Browser, CategoryId, Destination, Source, Verdict, rules};
 use tesela_model::{NodeId, flags};
 
 /// Ancho que se reserva a la derecha del titular de Recomendaciones para el botón "Limpiar lo seguro (X)" (unos 215 px) y su hueco.
@@ -277,7 +277,13 @@ impl Explore {
                     match s {
                         Source::Category(id) => {
                             let b = recs.row(*id).map_or(0, |r| r.bytes);
-                            cats.push((s.clone(), category_name(env, *id), String::new(), b));
+                            let row = (s.clone(), category_name(env, *id), String::new(), b);
+                            // Una categoría con destino Papelera (informes de errores, volcados) va con lo que se puede recuperar.
+                            if category_is_recycled(*id) {
+                                user.push(row);
+                            } else {
+                                cats.push(row);
+                            }
                         }
                         Source::Path(p) | Source::ContentsOf(p) => {
                             let b = loc
@@ -325,6 +331,11 @@ impl Explore {
     }
 }
 
+/// ¿Va esta categoría a la Papelera (informes de errores, volcados) en vez de borrarse y recrearse sola?
+pub(crate) fn category_is_recycled(id: CategoryId) -> bool {
+    rules().get(id).destination == Some(Destination::Recycle)
+}
+
 /// Nombre de una categoría en la cesta y en las recomendaciones.
 pub(crate) fn category_name(env: &Env, id: CategoryId) -> String {
     env.tr.t(match id {
@@ -335,6 +346,8 @@ pub(crate) fn category_name(env: &Env, id: CategoryId) -> String {
         CategoryId::FirefoxCache => "known-firefox-cache",
         CategoryId::RecycleBin => "known-recycle-bin",
         CategoryId::Downloads => "known-downloads",
+        CategoryId::WerReports => "known-wer-reports",
+        CategoryId::CrashDumps => "known-crash-dumps",
         CategoryId::Pagefile => "info-name-pagefile",
         CategoryId::Hiberfil => "info-name-hiberfil",
         CategoryId::Swapfile => "info-name-swapfile",
@@ -673,7 +686,16 @@ impl Explore {
                     || empty = true,
                 );
             }
-            if recs.downloads.is_none() && recs.recycle.is_none() {
+            // Informes de errores y volcados de bloqueo: Revisar, con casilla (nunca marcada de salida) y a la Papelera.
+            let mut any = recs.downloads.is_some() || recs.recycle.is_some();
+            for row in recs.diagnostics() {
+                if any {
+                    ui.separator();
+                }
+                any = true;
+                self.review_category_row(ui, env, row.id, row.bytes);
+            }
+            if !any {
                 ui.label(RichText::new(env.tr.t("recs-review-none")).color(pal.text_muted));
             }
         });
@@ -722,6 +744,64 @@ impl Explore {
                 );
             }
         });
+    }
+}
+
+impl Explore {
+    /// Una categoría de "Revisar" con casilla (informes de errores y volcados de bloqueo): nombre, qué es y qué se pierde,
+    /// tamaño estimado y destino (la Papelera). Marcarla la mete en la cesta; nunca viene marcada.
+    fn review_category_row(&mut self, ui: &mut Ui, env: &mut Env, id: CategoryId, bytes: u64) {
+        let pal = env.pal;
+        let name = category_name(env, id);
+        let why = env.tr.t(match id {
+            CategoryId::WerReports => "rule-wer-reports-why",
+            _ => "rule-crash-dumps-why",
+        });
+        let mut checked = self.flow.basket.contains_category(id);
+        let before = checked;
+        ui.horizontal_top(|ui| {
+            let cb = ui.add_enabled(bytes > 0, egui::Checkbox::without_text(&mut checked));
+            let label = env.tr.ta("recs-include", args!["name" => name.clone()]);
+            cb.widget_info(|| {
+                egui::WidgetInfo::selected(
+                    egui::WidgetType::Checkbox,
+                    bytes > 0,
+                    checked,
+                    label.clone(),
+                )
+            });
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(&name)
+                            .font(theme::font_semibold(15.0))
+                            .color(pal.text),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.label(
+                            RichText::new(env.tr.size(bytes))
+                                .font(theme::font_semibold(15.0))
+                                .color(pal.text),
+                        );
+                    });
+                });
+                ui.add(
+                    egui::Label::new(RichText::new(&why).size(13.0).color(pal.text_muted)).wrap(),
+                );
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    env.icons.show(ui, Icon::Delete, 13.0, pal.text);
+                    ui.label(
+                        RichText::new(env.tr.t("basket-phrase-recycle"))
+                            .size(12.0)
+                            .color(pal.text),
+                    );
+                });
+            });
+        });
+        if checked != before {
+            self.flow.basket.set_category(id, checked);
+        }
     }
 }
 

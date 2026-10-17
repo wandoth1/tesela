@@ -76,6 +76,7 @@ scan-known-title = Sitios donde suele haber archivos temporales
 scan-known-sum = Hasta { $size } en candidatos de bajo riesgo (se comprueba al limpiar)
 scan-known-note = Es una estimación, no un mínimo garantizado, y solo cuenta lo de bajo riesgo: temporales de más de 7 días y cachés de navegador. Qué se borra y qué va a la Papelera te lo enseñamos antes de limpiar, y la cifra real se mide al limpiar.
 scan-known-excluded = Descargas y la Papelera son datos tuyos: se muestran, pero no cuentan en la cifra de arriba.
+scan-known-excluded-diag = Los informes de errores y los volcados de bloqueo sirven para diagnosticar fallos: tampoco cuentan en la cifra de arriba.
 risk-review-tag = Revisar
 scan-clean-safe = Limpiar lo seguro
 scan-checking = Revisando { $done } de { $total } sitios conocidos…
@@ -98,6 +99,8 @@ known-edge-cache = Caché de Edge
 known-firefox-cache = Caché de Firefox
 known-downloads = Descargas
 known-recycle-bin = Papelera de reciclaje
+known-wer-reports = Informes de errores de Windows
+known-crash-dumps = Volcados de bloqueo de programas
 known-other = Otro sitio conocido
 
 # Ventana principal
@@ -263,6 +266,8 @@ rule-user-temp-why = Archivos temporales sin modificar en la última semana (má
 rule-windows-temp-why = Archivos temporales de Windows sin modificar en la última semana (más de 7 días). Los recientes se dejan por si un instalador los está usando.
 rule-downloads-why = Archivos tuyos: míralos y elige. Nada de aquí se marca solo.
 rule-recycle-bin-why = Vaciarla es definitivo. Solo se vacía lo que hay al confirmar; lo que entre después no se toca.
+rule-wer-reports-why = Informes que Windows guarda cuando un programa falla, ya enviados o en cola. Sirven para diagnosticar el fallo y el soporte de un programa puede pedirlos: si los borras, los pierdes. Solo se tocan los de más de 7 días. Van a la Papelera y no se marcan solos: cada uno guarda un fallo concreto y no se puede regenerar.
+rule-crash-dumps-why = Volcados de memoria de programas que se cerraron por un fallo (carpeta CrashDumps, que suele existir solo si se activó esa función de Windows). Pueden ocupar mucho y son lo que pide un desarrollador para entender el fallo: si los borras, los pierdes. Solo se tocan los de más de 7 días. Van a la Papelera y no se marcan solos: cada uno guarda un fallo concreto y no se puede regenerar.
 
 # Confirmación
 confirm-title = Revisa antes de limpiar

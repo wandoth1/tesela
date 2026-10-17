@@ -496,6 +496,7 @@ fn item_name(env: &Env, it: &PlanItem) -> String {
         Some(CategoryId::FirefoxCache) => env.tr.t("known-firefox-cache"),
         Some(CategoryId::Downloads) => env.tr.t("known-downloads"),
         Some(CategoryId::RecycleBin) => env.tr.t("known-recycle-bin"),
+        // Cada elemento es una carpeta de informe o un volcado: se muestra con su propio nombre y la categoría va de etiqueta.
         _ => it.path.file_name().map_or_else(
             || it.path.display().to_string(),
             |n| n.to_string_lossy().into_owned(),
@@ -922,7 +923,12 @@ fn confirm_groups(ui: &mut Ui, env: &mut Env, c: &mut Confirm, plan: &Plan) {
 fn recycle_row(ui: &mut Ui, env: &mut Env, it: &PlanItem) {
     let pal = env.pal;
     let name = item_name(env, it);
-    let chip = it.category.is_none().then(|| env.tr.t("confirm-your-file"));
+    // "Tu archivo", o la categoría de diagnóstico (informes de errores, volcados) a la que pertenece el elemento.
+    let chip = match it.category {
+        None => Some(env.tr.t("confirm-your-file")),
+        Some(id) if id.is_diagnostic() => Some(crate::basket::category_name(env, id)),
+        Some(_) => None,
+    };
     let mut size = env.tr.size(it.bytes());
     if it.hard_linked || it.estimate.shared_files > 0 {
         size = env.tr.t("confirm-no-space");
