@@ -141,7 +141,7 @@ class ExtractIcoTests(unittest.TestCase):
         sec_hdr = 0x40 + 4 + 20 + (112 + 16 * 8)  # cabecera de la unica seccion (PE32+)
         rsize = struct.unpack_from("<I", pe, sec_hdr + 16)[0]
         struct.pack_into("<I", pe, sec_hdr + 8, rsize + 0x1000)  # vsize mayor que rsize
-        pe += b"\0" * 0x1000  # y bytes tras la seccion, para que un desplazamiento sin comprobar caiga DENTRO del archivo
+        pe += b"\0" * 0x1000  # trailing bytes make an unchecked offset land INSIDE the file
         dd = 0x40 + 4 + 20 + 112
         struct.pack_into("<I", pe, dd + 8 * 2, SECTION_RVA + rsize + 0x10)  # el directorio de recursos, en la cola virtual
         with self.assertRaisesRegex(extract_ico.PeError, "section's file data"):
