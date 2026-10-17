@@ -553,6 +553,9 @@ enum Approved {
 /// Lo aprobado, por ruta: lo que `PreDeleteItem` comprueba antes de que la shell actúe.
 struct Guard {
     approved: Vec<(PathKey, Approved)>,
+    /// El nombre EXACTO (tal como se entregó) de cada elemento de `approved`, en el mismo orden (GM-M5): en un directorio
+    /// sensible a mayúsculas dos nombres que solo difieren en ellas tienen la misma `PathKey` (que pliega mayúsculas).
+    names: Vec<OsString>,
     /// Es la guarda de una PURGA de la Papelera (si no, de un envío).
     purge: bool,
 }
@@ -561,6 +564,10 @@ impl Guard {
     /// Guarda de un ENVÍO a la Papelera (ruta original + identidad aprobada).
     fn new(items: &[SendItem]) -> Guard {
         Guard {
+            names: items
+                .iter()
+                .map(|i| i.path.as_os_str().to_os_string())
+                .collect(),
             approved: items
                 .iter()
                 .map(|i| {
@@ -581,7 +588,16 @@ impl Guard {
     /// Guarda de una PURGA (A-M4): cada elemento de la lista con las identidades de su `$R` y de su `$I` capturadas al
     /// enumerar. Sin las dos, el elemento no se purga (nunca llega aquí: ver `check_bin_item`); si falta alguna se vetaría.
     fn purge(items: &[&BinItem]) -> Guard {
+        let kept: Vec<&&BinItem> = items
+            .iter()
+            .filter(|i| {
+                i.data_id.is_some()
+                    && i.meta_id.is_some()
+                    && meta_sibling(Path::new(&i.id)).is_some()
+            })
+            .collect();
         Guard {
+            names: kept.iter().map(|i| i.id.clone()).collect(),
             approved: items
                 .iter()
                 .filter_map(|i| {
@@ -612,12 +628,14 @@ impl Guard {
     /// `PreDeleteItem` hijo a hijo (medido con la shell real: `...\$R<token>\hijo.txt`), no con la ruta de su `$R`: lo que
     /// cuelga de un `$R` aprobado se atribuye a ESE `$R`. Al ENVIAR vale solo la ruta exacta (un evento por carpeta).
     fn find(&self, path: &OsString) -> Option<&(PathKey, Approved)> {
+        // GM-M5: primero el nombre exacto; la clave (que pliega mayúsculas) solo si no hay ambigüedad.
+        if let Some(i) = crate::paths::owner_index(&self.names, path) {
+            return self.approved.get(i);
+        }
         let key = PathKey::new(Path::new(path));
-        self.approved.iter().find(|(k, _)| *k == key).or_else(|| {
-            self.purge
-                .then(|| self.approved.iter().find(|(k, _)| key.is_same_or_under(k)))
-                .flatten()
-        })
+        self.purge
+            .then(|| self.approved.iter().find(|(k, _)| key.is_same_or_under(k)))
+            .flatten()
     }
 
     /// El `id` (ruta del `$R`) del elemento de una purga al que pertenece `path` (él mismo o uno de sus hijos); `None` si no
@@ -2851,6 +2869,45 @@ mod tests {
     fn send_item(sb: &Sandbox, rel: &str, size: usize) -> SendItem {
         sb.write(rel, size);
         SendItem::capture(&sb.long(rel))
+    }
+
+    /// GM-M5 (sin sistema de archivos): dos nombres que solo difieren en mayúsculas (posible en un directorio sensible a ellas)
+    /// tienen la MISMA `PathKey`. La guarda busca primero el nombre EXACTO, así que cada uno recibe su propia identidad; con
+    /// la búsqueda por clave, el segundo habría heredado la del primero. Un nombre que no coincide con ninguno exacto solo se
+    /// resuelve por clave si es inequívoco.
+    #[test]
+    fn la_guarda_distingue_dos_nombres_que_solo_difieren_en_mayusculas() {
+        let id = |n: u128| FileIdentity {
+            volume_serial: 9,
+            file_id: n,
+        };
+        let item = |p: &str, n: u128| SendItem {
+            path: PathBuf::from(p),
+            identity: id(n),
+            size_guard: None,
+            watch: None,
+        };
+        let g = Guard::new(&[item(r"C:\x\a.bin", 1), item(r"C:\x\A.bin", 2)]);
+        assert_eq!(
+            PathKey::new(Path::new(r"C:\x\a.bin")),
+            PathKey::new(Path::new(r"C:\x\A.bin"))
+        );
+        let want = |p: &str| -> Option<FileIdentity> {
+            match g.find(&OsString::from(p)) {
+                Some((_, Approved::Object { identity, .. })) => Some(*identity),
+                _ => None,
+            }
+        };
+        assert_eq!(want(r"C:\x\a.bin"), Some(id(1)));
+        assert_eq!(want(r"C:\x\A.bin"), Some(id(2)));
+        // Ni uno ni otro exacto (`A.BIN`): con dos candidatos por clave no se adivina (se vetaría como no aprobado).
+        assert_eq!(want(r"C:\x\A.BIN"), None);
+        // Con un solo candidato la clave sí resuelve (la shell puede dar otras mayúsculas o la forma `c:`).
+        let solo = Guard::new(&[item(r"C:\x\a.bin", 1)]);
+        assert!(matches!(
+            solo.find(&OsString::from(r"c:\X\A.BIN")),
+            Some((_, Approved::Object { identity, .. })) if *identity == id(1)
+        ));
     }
 
     /// H3 (sin COM): la comprobación de `PreDeleteItem` por ruta. Misma identidad pasa; otra identidad, un archivo que ya no

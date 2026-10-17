@@ -1130,20 +1130,28 @@ impl Cleaner {
                             l.flush();
                         }
                     }
-                    let events: HashMap<PathKey, &recycle::DeleteEvent> = outcome
-                        .events
-                        .iter()
-                        .map(|e| (PathKey::new(Path::new(&e.item)), e))
-                        .collect();
-                    let vetoed: HashSet<PathKey> = outcome
-                        .vetoed
-                        .iter()
-                        .map(|v| PathKey::new(Path::new(v.id())))
-                        .collect();
+                    // GM-M5: cada evento y cada veto se asigna al elemento de la operación por su nombre EXACTO; la clave (que
+                    // pliega mayúsculas) solo si no hay ambigüedad. Con dos nombres que solo difieren en mayúsculas en un
+                    // directorio sensible a ellas, una tabla por clave los confundía y el segundo heredaba el resultado (o el
+                    // veto) del primero.
+                    let names: Vec<&std::ffi::OsStr> =
+                        entries.iter().map(|(_, p)| p.path.as_os_str()).collect();
+                    let mut event_of: Vec<Option<&recycle::DeleteEvent>> = vec![None; names.len()];
+                    for e in &outcome.events {
+                        if let Some(i) = crate::paths::owner_index(&names, &e.item) {
+                            event_of[i] = Some(e);
+                        }
+                    }
+                    let mut veto_of: Vec<bool> = vec![false; names.len()];
+                    for v in &outcome.vetoed {
+                        if let Some(i) = crate::paths::owner_index(&names, v.id()) {
+                            veto_of[i] = true;
+                        }
+                    }
                     // 3. Juzgar cada elemento por lo que notificó la shell (con el handle de guarda aún abierto).
-                    for (it, p) in &entries {
-                        let ev = events.get(&PathKey::new(&p.path)).copied();
-                        let (mut status, mut o) = if vetoed.contains(&PathKey::new(&p.path)) {
+                    for (idx, (it, p)) in entries.iter().enumerate() {
+                        let ev = event_of[idx];
+                        let (mut status, mut o) = if veto_of[idx] {
                             // `PreDeleteItem` vio otro objeto en la ruta aprobada y lo vetó: no se envió (sigue ahí, el
                             // sustituto) y consta como "cambió desde la confirmación".
                             (ItemStatus::Root(RootStatus::Changed), Outcome::Changed)
@@ -1239,9 +1247,7 @@ impl Cleaner {
                         // directorio, que va solo) no había nada pendiente y las operaciones siguientes siguen.
                         let failure_only = outcome.vetoed.is_empty()
                             && outcome.events.iter().any(|e| !e.succeeded());
-                        let cancelled_pending = entries
-                            .iter()
-                            .any(|(_, p)| !events.contains_key(&PathKey::new(&p.path)));
+                        let cancelled_pending = event_of.iter().any(Option::is_none);
                         if !failure_only || cancelled_pending {
                             stopped = true;
                             report.recycle_stopped = true;

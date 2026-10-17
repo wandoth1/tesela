@@ -162,6 +162,30 @@ impl PathKey {
     }
 }
 
+/// A qué elemento de `candidates` corresponde `name` (GM-M5). Una [`PathKey`] pliega mayúsculas, así que en un directorio
+/// sensible a mayúsculas (`fsutil file setCaseSensitiveInfo`) `Informe.txt` e `informe.txt` son DOS objetos con la misma clave y
+/// una búsqueda por clave coge siempre el primero. Primero el nombre EXACTO; solo si ninguno coincide, por clave (la shell
+/// puede dar la misma ruta con otras mayúsculas o forma), y entonces únicamente si hay UN solo candidato con esa clave: con
+/// varios no se adivina (`None`: quien llama falla cerrado).
+pub fn owner_index<S: AsRef<std::ffi::OsStr>>(
+    candidates: &[S],
+    name: &std::ffi::OsStr,
+) -> Option<usize> {
+    if let Some(i) = candidates.iter().position(|c| c.as_ref() == name) {
+        return Some(i);
+    }
+    let key = PathKey::new(Path::new(name));
+    let mut found = candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| PathKey::new(Path::new(c.as_ref())) == key)
+        .map(|(i, _)| i);
+    match (found.next(), found.next()) {
+        (Some(i), None) => Some(i),
+        _ => None,
+    }
+}
+
 /// Ruta canónica larga de un objeto EXISTENTE (sin seguirlo si es un enlace): se abre por handle y se pregunta a
 /// Windows (`GetFinalPathNameByHandleW`). Resuelve nombres 8.3, mayúsculas y los enlaces de los ANCESTROS.
 pub fn canonical_path(path: &Path) -> Result<PathBuf, sys::Win32> {
@@ -262,6 +286,22 @@ mod tests {
         let net_verbatim = ["\\\\?\\", "UNC", "\\", "srv", "\\", "share", "\\", "d"].concat();
         assert_eq!(k(&net), k(&net_verbatim));
         assert!(k(&net).is_same_or_under(&k(&["\\\\", "srv", "\\", "share"].concat())));
+    }
+
+    /// GM-M5: `owner_index` busca el nombre exacto, después la clave si es inequívoca, y no adivina entre varios.
+    #[test]
+    fn el_dueno_de_un_nombre_es_el_exacto_o_el_unico_por_clave() {
+        use std::ffi::OsStr;
+        let v = [r"C:\d\Informe.txt", r"C:\d\informe.txt", r"C:\d\otro.txt"];
+        let own = |n: &str| owner_index(&v, OsStr::new(n));
+        assert_eq!(own(r"C:\d\Informe.txt"), Some(0));
+        assert_eq!(own(r"C:\d\informe.txt"), Some(1));
+        assert_eq!(own(r"C:\d\otro.txt"), Some(2));
+        // Sin exacto: por clave, solo si es único (aquí hay dos con la clave `informe.txt`).
+        assert_eq!(own(r"C:\d\INFORME.TXT"), None);
+        assert_eq!(own(r"c:\D\OTRO.txt"), Some(2));
+        assert_eq!(own(r"C:\d\nada.txt"), None);
+        assert_eq!(owner_index::<&str>(&[], OsStr::new("x")), None);
     }
 
     #[test]
