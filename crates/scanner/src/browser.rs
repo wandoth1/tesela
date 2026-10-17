@@ -31,8 +31,8 @@
 //! `Guest Profile`, `System Profile`, and `Profile 01` are not considered profiles either.
 //!
 //! # Untrusted paths
-//! El resultado es de CUATRO estados ([`BrowserPath`]): ante una ruta relativa, con `..`, con prefijo raro (`\\.\`,
-//! `\\?\GLOBALROOT`, UNC), con alias 8.3 (`GOOGLE~1`), con puntos o espacios finales, con `:` (flujos de datos) o con
+//! There are FOUR possible results ([`BrowserPath`]): for a relative path, one containing `..`, an unusual prefix (`\\.\`,
+//! `\\?\GLOBALROOT`, UNC), an 8.3 alias (`GOOGLE~1`), trailing dots or spaces, `:` (data streams), or
 //! case differences that match only outside ASCII, the answer is `Unknown` ("do not touch"), never "not a browser".
 
 use crate::classify;
@@ -267,7 +267,7 @@ fn cache_dirs(roots: &BrowserRoots, verify_ancestors: bool) -> Vec<(KnownKind, P
 pub enum BrowserPath {
     /// A cache directory from [`browser_cache_dirs`], or a path below it.
     Cache(KnownKind),
-    /// Cualquier otra cosa de los datos de un navegador (el perfil con historial, cookies, credenciales, `Service Worker`,
+    /// Anything else in browser data (the profile with history, cookies, credentials, `Service Worker`,
     /// `CacheStorage`, etc.), including the `User Data` or `Profiles` directory itself: NOT cache.
     Profile(BrowserFamily),
     /// A well-formed absolute path that is NOT under any browser data (an ancestor such as
@@ -308,7 +308,7 @@ fn untrusted_component(s: &str) -> bool {
 }
 
 /// Lowercase drive letter and components of a well-formed absolute drive-letter path (`C:\...`), or `None` if the path has
-/// si no se puede razonar sobre ella: relativa a la unidad (`C:Users`), a la unidad actual (`\Users`), con `..`, con otro
+/// if it cannot be reasoned about: drive-relative (`C:Users`), current-drive-rooted (`\Users`), containing `..`, with another
 /// an untrusted prefix (UNC, `\\.\`, `\\?\GLOBALROOT`) or untrusted components.
 fn normalize(p: &Path) -> Option<(char, Vec<String>)> {
     let p = dunce::simplified(p);
@@ -352,7 +352,7 @@ fn is_device_name(n: &OsStr) -> bool {
 }
 
 /// Comparison of two names: equal (ASCII-only case-insensitive), different, or AMBIGUOUS (matches after
-/// plegado de Unicode pero no con el de ASCII: el signo Kelvin no puede valer `k`, y NTFS decide con su propia tabla).
+/// Unicode case folding but not ASCII folding: the Kelvin sign cannot stand for `k`, and NTFS uses its own table).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Cmp {
     Equal,
@@ -449,12 +449,12 @@ fn classify_chromium(fam: BrowserFamily, rest: &[String]) -> BrowserPath {
     }
 }
 
-/// Clasifica `path` (sin tocar el disco): ver [`BrowserPath`]. Es CONSERVADORA: solo dice `Cache` si la ruta es EXACTAMENTE
+/// Classifies `path` (without touching the disk); see [`BrowserPath`]. It is CONSERVATIVE: it returns `Cache` only if the path is EXACTLY
 /// a cache directory from [`browser_cache_dirs`] or is below one, component by component. When in doubt, return `Profile`
 /// (not cache) or `Unknown` (do not touch).
 ///
 /// **For LABELING only.** Deletion authorization does NOT come from here; it comes from roots in [`browser_cache_dirs`]
-/// verificadas por handle justo antes de borrar (PLAN.md §3.7).
+/// verified by handle immediately before deletion (PLAN.md §3.7).
 pub fn classify_browser_path(roots: &BrowserRoots, path: &Path) -> BrowserPath {
     let Some((drive, comps)) = normalize(path) else {
         return BrowserPath::Unknown;
@@ -531,8 +531,8 @@ mod tests {
     use super::*;
     use std::fs;
 
-    /// Árbol temporal con guarda RAII (solo se borra `%TEMP%\tesela-test-*` creado aquí). La ruta se canonicaliza: con un
-    /// nombre de usuario largo `%TEMP%` puede traer alias 8.3 (`USUARI~1`), en los que la clasificación no confía.
+    /// RAII-guarded temporary tree (only `%TEMP%\tesela-test-*` created here is deleted). The path is canonicalized: with a
+    /// long username, `%TEMP%` may contain an 8.3 alias (`USUARI~1`), which classification does not trust.
     struct Temp(PathBuf);
     impl Temp {
         fn new() -> Temp {
@@ -649,7 +649,7 @@ mod tests {
             assert_eq!(got, esperado, "{fam_dir}");
         }
         assert_eq!(dirs.len(), 2 * esperado.len());
-        // La lista de cachés verificadas en la fuente.
+        // The source's list of verified caches.
         for needed in [
             "Cache",
             "Code Cache",
@@ -670,7 +670,7 @@ mod tests {
                 "{never} no es caché verificada"
             );
         }
-        // Clasificación sobre TODO el árbol: solo es caché lo esperado (y lo que cuelga de ello).
+        // Classification over the ENTIRE tree: only expected cache directories (and their descendants) are caches.
         for fam_dir in [
             "Local/Google/Chrome/User Data",
             "Local/Microsoft/Edge/User Data",
@@ -705,7 +705,7 @@ mod tests {
                 }
             }
             assert!(caches > 0 && privados > 0);
-            // `Service Worker\CacheStorage` (datos de sitios, modo sin conexión de PWA) NO es caché, ni lo de dentro.
+            // `Service Worker\CacheStorage` (site data for PWA offline mode) is NOT a cache, nor is anything inside it.
             for sw in [
                 "Default/Service Worker/CacheStorage",
                 "Default/Service Worker/CacheStorage/dato",
@@ -719,7 +719,7 @@ mod tests {
                     "{sw}"
                 );
             }
-            // `User Data` es dato del navegador (no caché); sus ancestros no tienen que ver con los navegadores.
+            // `User Data` is browser data, not a cache; its ancestors are unrelated to browsers.
             assert!(matches!(
                 classify_browser_path(&roots, &ud),
                 BrowserPath::Profile(_)
@@ -763,7 +763,7 @@ mod tests {
     #[test]
     fn firefox_solo_cache2_y_startupcache_del_perfil_local_y_nada_del_roaming() {
         let t = Temp::new();
-        // Perfil de datos (Roaming): todo privado, incluso lo que se llame como una caché.
+        // Data profile (Roaming): everything is private, even directories named like caches.
         for f in [
             "places.sqlite",
             "key4.db",
@@ -807,7 +807,7 @@ mod tests {
                 "Local/Mozilla/Firefox/Profiles/abcd.default-release/startupCache",
             ]
         );
-        // Clasificación: todo lo de Roaming es perfil; en Local solo las dos cachés.
+        // Classification: everything in Roaming is profile data; in Local, only the two cache directories.
         let mut n_cache = 0;
         let mut walk = vec![t.0.join("Roaming"), t.0.join("Local")];
         while let Some(d) = walk.pop() {
@@ -835,7 +835,7 @@ mod tests {
             }
         }
         assert!(n_cache > 0);
-        // La carpeta `Profiles` de Roaming NUNCA es caché ni se ofrece como tal (era el fallo original).
+        // The Roaming `Profiles` directory is NEVER a cache and is never offered as one (this was the original bug).
         let roaming = t.0.join("Roaming/Mozilla/Firefox/Profiles");
         assert_eq!(
             classify_browser_path(&roots, &roaming),
@@ -860,7 +860,7 @@ mod tests {
             cls(ud.join(r"Default\DAWNWEBGPUCACHE\x")),
             BrowserPath::Cache(KnownKind::ChromeCache)
         );
-        // Cosas que solo se parecen: no son caché.
+        // Lookalikes are not caches.
         for bad in [
             r"Default\Cache2",
             r"Default\CacheX",
@@ -892,7 +892,7 @@ mod tests {
         ] {
             assert!(!es_cache(ud.join(bad)), "{bad}");
         }
-        // Firefox: una carpeta que solo se parece, o sin perfil por medio.
+        // Firefox: a lookalike directory, or a cache path without an intervening profile.
         let ff = t.0.join("Local/Mozilla/Firefox/Profiles");
         assert!(!es_cache(ff.join("p1/cache2old")));
         assert!(!es_cache(ff.join("cache2")));
@@ -901,7 +901,7 @@ mod tests {
             cls(ff.join("p1/cache2/entries/a")),
             BrowserPath::Cache(KnownKind::FirefoxCache)
         );
-        // Con prefijo verbatim da lo mismo (en una ruta verbatim `/` no separa: se normaliza antes).
+        // The same applies with a verbatim prefix (`/` is not a separator in a verbatim path: normalize it first).
         let plain = ud
             .join(r"Default\Cache")
             .display()
@@ -911,7 +911,7 @@ mod tests {
             cls(PathBuf::from(format!(r"\\?\{plain}"))),
             BrowserPath::Cache(KnownKind::ChromeCache)
         );
-        // Ajeno a los navegadores: bien formado y fuera de las raíces.
+        // Unrelated to browsers: well-formed and outside the roots.
         assert_eq!(cls(t.0.join("Local/Otra/Cache")), BrowserPath::NotBrowser);
     }
 
@@ -922,17 +922,17 @@ mod tests {
         let ud = t.0.join("Local/Google/Chrome/User Data");
         let cls = |p: PathBuf| classify_browser_path(&roots, &p);
         let drive = t.0.display().to_string().chars().next().unwrap();
-        // (Las rutas de red se construyen en tiempo de ejecución: el check de privacidad rechaza una literal.)
+        // (Network paths are built at runtime: the privacy check rejects a literal.)
         let (bs, host, share) = ('\\', "srv", "share");
         let unknown: Vec<PathBuf> = vec![
-            // Relativas, también las que llevan letra de unidad pero no raíz (`C:Users\...`) y las de la unidad actual.
+            // Relative paths, including drive-relative (`C:Users\...`) and current-drive-rooted paths.
             PathBuf::from(r"Local\Google\Chrome\User Data\Default\Cache"),
             PathBuf::from(format!(
                 r"{drive}:Users\x\AppData\Local\Google\Chrome\User Data\Default\Cache"
             )),
             PathBuf::from(r"\Users\x\AppData\Local\Google\Chrome\User Data\Default\Cache"),
             PathBuf::from(""),
-            // `..` en cualquier sitio, aunque acabe en una caché real.
+            // `..` anywhere, even if the path ends at an existing cache.
             ud.join(r"Default\Login Data\..\Cache"),
             ud.join(r"..\..\Google\Chrome\User Data\Default\Cache"),
             // Prefijos raros.
@@ -941,13 +941,13 @@ mod tests {
             PathBuf::from(format!("{bs}{bs}?{bs}UNC{bs}{host}{bs}{share}{bs}x")),
             PathBuf::from(format!("{bs}{bs}{host}{bs}{share}{bs}x")),
             PathBuf::from(r"\\?\Volume{00000000-0000-0000-0000-000000000000}\x"),
-            // Alias 8.3: pueden esconder cualquier nombre largo.
+            // 8.3 aliases can conceal any long name.
             PathBuf::from(format!(
                 r"{drive}:\USUARI~1\AppData\Local\Google\Chrome\User Data\Default\Cache"
             )),
             ud.join(r"DEFAUL~1\Cache"),
             ud.join(r"Default\CODECA~1"),
-            // Puntos o espacios finales (Windows los quita), flujos de datos y caracteres prohibidos.
+            // Trailing dots or spaces (Windows removes them), data streams, and forbidden characters.
             ud.join(r"Default\Cache."),
             ud.join("Default\\Cache "),
             ud.join(r"Default\Cache:flujo"),
@@ -958,7 +958,7 @@ mod tests {
         for p in &unknown {
             assert_eq!(cls(p.clone()), BrowserPath::Unknown, "{p:?}");
         }
-        // Una raíz de navegador con alias 8.3 impide afirmar nada de NINGUNA ruta.
+        // A browser root containing an 8.3 alias prevents us from making claims about ANY path.
         let bad_roots = BrowserRoots {
             local_appdata: Some(PathBuf::from(format!(r"{drive}:\USUARI~1\AppData\Local"))),
             roaming_appdata: roots.roaming_appdata.clone(),
@@ -971,12 +971,12 @@ mod tests {
 
     #[test]
     fn el_plegado_de_mayusculas_es_solo_ascii() {
-        // El signo Kelvin (U+212A) se pliega a `k` con Unicode, pero un nombre con él NO es el nombre con `k`.
+        // Unicode folds the Kelvin sign (U+212A) to `k`, but a name containing it is NOT the name containing `k`.
         assert_eq!(cmp_name("Cache", "CACHE"), Cmp::Equal);
         assert_eq!(cmp_name("\u{212A}", "k"), Cmp::Ambiguous);
         assert_eq!(cmp_name("\u{212A}", "x"), Cmp::Different);
         assert_eq!(cmp_name("stra\u{DF}e", "STRASSE"), Cmp::Ambiguous);
-        // Nombres de perfil: solo dígitos ASCII, sin ceros a la izquierda.
+        // Profile names: ASCII digits only, with no leading zeroes.
         for ok in [
             "Default",
             "DEFAULT",
@@ -1001,7 +1001,7 @@ mod tests {
         ] {
             assert!(!is_chromium_profile_name(bad), "{bad}");
         }
-        // Un nombre ambiguo con una caché NO se toma por ella ni por un perfil normal: no tocar.
+        // An ambiguous name resembling a cache is NOT treated as one or as a normal profile: leave it alone.
         let t = Temp::new();
         let roots = BrowserRoots {
             local_appdata: Some(t.0.join("Local")),
@@ -1017,7 +1017,7 @@ mod tests {
             classify_browser_path(&roots, &ud.join("Default\\\u{212A}")),
             BrowserPath::Profile(BrowserFamily::Chrome)
         );
-        // Una raíz con letras no ASCII que solo coincide al plegar Unicode es ambigua: Unknown.
+        // A root with non-ASCII letters that matches only after Unicode folding is ambiguous: Unknown.
         let roots = BrowserRoots {
             local_appdata: Some(t.0.join("Local-\u{DC}")),
             roaming_appdata: None,
@@ -1068,7 +1068,7 @@ mod tests {
 
     #[test]
     fn un_reparse_point_no_cuenta_como_directorio_de_cache() {
-        // Una junction llamada `GPUCache` hacia datos del usuario no se ofrece como caché.
+        // A junction named `GPUCache` pointing to user data is not offered as a cache.
         let t = Temp::new();
         let ud = "Local/Google/Chrome/User Data/Default";
         t.dir(&format!("{ud}/Cache")); // real
@@ -1084,7 +1084,7 @@ mod tests {
             let dirs = browser_cache_dirs(&t.roots());
             assert_eq!(dirs.len(), 1, "{dirs:?}");
             assert!(dirs[0].1.ends_with("Cache"));
-            // La junction se quita sin tocar el destino (remove_dir sobre el enlace).
+            // Remove the junction without touching its target (`remove_dir` on the link).
             fs::remove_dir(&junction).unwrap();
             assert!(datos.join("importante.txt").exists());
         }
@@ -1094,7 +1094,7 @@ mod tests {
     #[test]
     fn un_enlace_en_un_ancestro_intermedio_descarta_las_cachés_de_debajo() {
         let t = Temp::new();
-        // Destino real con la estructura completa de Chrome y de Firefox (`Cache`, `cache2`) FUERA de `Local`.
+        // Real target with the full Chrome and Firefox structure (`Cache`, `cache2`) OUTSIDE `Local`.
         t.dir("Fuera/Chrome/User Data/Default/Cache");
         t.dir("Fuera/Chrome/User Data/ShaderCache");
         t.dir("Fuera/Firefox/Profiles/abc.default/cache2");
@@ -1112,22 +1112,22 @@ mod tests {
             assert!(made.is_ok_and(|o| o.status.success()), "mklink /J falló");
             links.push(l);
         }
-        // `Local/Google` -> `Fuera` y `Local/Mozilla` -> `Fuera`: las rutas de caché existirían a través de los enlaces.
+        // `Local/Google` -> `Outside` and `Local/Mozilla` -> `Outside`: cache paths would exist through the links.
         assert!(local.join("Google/Chrome/User Data/Default/Cache").exists());
         assert!(
             local
                 .join("Mozilla/Firefox/Profiles/abc.default/cache2")
                 .exists()
         );
-        // La verificada no ofrece nada a través de enlaces; la de candidatas SÍ las lista (el `cleaner` las rechaza después con
-        // su motivo: sin ellas una `User Data` convertida en enlace desaparecería sin rastro).
+        // Verified discovery offers nothing through links; candidate discovery DOES list them (the `cleaner` later rejects
+        // them with a reason: without this, a `User Data` directory replaced by a link would disappear without explanation).
         let dirs = browser_cache_dirs_verified(&roots);
         assert!(
             dirs.is_empty(),
             "se ofrecieron cachés a través de un enlace: {dirs:?}"
         );
         assert_eq!(browser_cache_dirs(&roots).len(), 3, "las candidatas sí");
-        // El mismo árbol SIN enlaces sí se ofrece (la prueba no es vacía): se quitan como enlaces y se crean carpetas reales.
+        // The same tree WITHOUT links is offered (the test is not vacuous): remove the links and create actual directories.
         for l in &links {
             fs::remove_dir(l).unwrap();
         }
@@ -1150,7 +1150,7 @@ mod tests {
         );
         // La propia base no se comprueba.
         assert_eq!(real_dir_under(&base, &base), Some(base.clone()));
-        // No cuelga de la base, no existe o es un archivo.
+        // It is outside the base, does not exist, or is a file.
         assert_eq!(real_dir_under(&base, &t.0.join("otra")), None);
         assert_eq!(real_dir_under(&base, &base.join("no-existe")), None);
         assert_eq!(real_dir_under(&base, &base.join("a").join("f.txt")), None);
@@ -1163,7 +1163,7 @@ mod tests {
 
     #[test]
     fn las_raices_reales_vienen_del_sistema_y_son_absolutas() {
-        // `SHGetKnownFolderPath`, no las variables de entorno.
+        // `SHGetKnownFolderPath`, not environment variables.
         let r = BrowserRoots::from_system();
         for p in [r.local_appdata.as_ref(), r.roaming_appdata.as_ref()]
             .into_iter()

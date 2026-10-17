@@ -304,7 +304,7 @@ mod tests {
                 Risk::Review | Risk::Info => assert!(!rule.preselected(), "{:?}", rule.id),
             }
         }
-        // Descargas y la Papelera: Revisar, nunca "seguro".
+        // Downloads and the Recycle Bin: Review, never "safe".
         assert_eq!(r.get(CategoryId::Downloads).risk, Risk::Review);
         assert_eq!(
             r.get(CategoryId::Downloads).destination,
@@ -312,7 +312,7 @@ mod tests {
         );
         assert_eq!(r.get(CategoryId::RecycleBin).risk, Risk::Review);
         assert_eq!(r.get(CategoryId::RecycleBin).action, Action::EmptyBin);
-        // Solo informar: sin destino.
+        // Information only: no destination.
         for id in [
             CategoryId::Pagefile,
             CategoryId::Hiberfil,
@@ -337,7 +337,7 @@ mod tests {
         }
         assert_eq!(CategoryId::WerReports.key(), "wer-reports");
         assert_eq!(CategoryId::CrashDumps.key(), "crash-dumps");
-        // Ninguna otra categoría es de diagnóstico.
+        // No other category is diagnostic.
         assert_eq!(
             CategoryId::ALL.iter().filter(|c| c.is_diagnostic()).count(),
             2
@@ -345,7 +345,7 @@ mod tests {
     }
 
     fn with(extra: &str) -> String {
-        // Una tabla mínima válida más una regla de prueba (sustituye a la existente con ese id).
+        // A minimal valid table plus a test rule (replaces the existing rule with that id).
         let mut s = String::new();
         for rule in rules().iter() {
             if extra.contains(&format!("id = \"{}\"", rule.id.key())) {
@@ -396,7 +396,7 @@ mod tests {
             assert!(e.contains("permanent deletion"), "{e}");
             let e = Rules::parse(&rule("safe", "recycle")).unwrap_err();
             assert!(e.contains(id) && e.contains("Review risk"), "{e}");
-            // m-7: sin antigüedad mínima de 7 días, o sin borrar el contenido de la raíz, tampoco valen.
+            // m-7: a minimum age other than 7 days, or not deleting the root's contents, is also invalid.
             for (hours, action) in [
                 (0, "contents"),
                 (167, "contents"),
@@ -410,13 +410,13 @@ mod tests {
                 assert!(e.contains(id) && e.contains("168"), "{hours} {action}: {e}");
             }
         }
-        // «Solo informar» con destino.
+        // "Information only" with a destination.
         let e = Rules::parse(&with("[[rule]]\nid = \"pagefile\"\nrisk = \"info\"\ndestination = \"recycle\"\naction = \"none\"\n")).unwrap_err();
         assert!(e.contains("information-only"), "{e}");
-        // Vaciar la Papelera como «seguro».
+        // Emptying the Recycle Bin as "safe".
         let e = Rules::parse(&with("[[rule]]\nid = \"recycle-bin\"\nrisk = \"safe\"\ndestination = \"permanent\"\naction = \"empty-bin\"\nselectable = true\n")).unwrap_err();
         assert!(e.contains("safe rules") || e.contains("Recycle Bin"), "{e}");
-        // Una categoría repetida, una desconocida y una que falta.
+        // A duplicate category, an unknown one, and a missing one.
         assert!(
             Rules::parse(&format!(
                 "{}{}",

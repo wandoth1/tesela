@@ -104,7 +104,7 @@ type AfterPrune = std::cell::RefCell<Option<Box<dyn Fn(&Path)>>>;
 
 #[cfg(test)]
 thread_local! {
-    /// SOLO PRUEBAS (s-4): se ejecuta en `create_at` tras podar y antes de comprobar que el registro existe.
+    /// TESTS ONLY (s-4): runs in `create_at` after pruning and before checking that the log exists.
     static TEST_AFTER_PRUNE: AfterPrune = const { std::cell::RefCell::new(None) };
 }
 
@@ -221,7 +221,7 @@ impl LogWriter {
         Self::create_with(dir, dry_run, LogFile::Real)
     }
 
-    /// SOLO PARA PRUEBAS: un registro cuyo archivo falla al escribir pasados `bytes` bytes.
+    /// TESTS ONLY: a log whose file fails writes after `bytes` bytes.
     #[cfg(test)]
     pub(crate) fn create_failing_after(
         dir: &Path,
@@ -242,7 +242,7 @@ impl LogWriter {
         Self::create_at(dir, dry_run, wrap, unix_now())
     }
 
-    /// Como `create_with`, con el reloj (segundos Unix) dado: las pruebas fijan el segundo para probar las colisiones.
+    /// Like `create_with`, with a given Unix timestamp: tests fix the second to exercise collisions.
     fn create_at(
         dir: &Path,
         dry_run: bool,
@@ -505,7 +505,7 @@ impl LogWriter {
         let _ = self.raw(&v.to_string());
     }
 
-    /// Escribe una entrada procesada.
+    /// Writes a processed item.
     pub fn write_event(&self, ev: &Event) {
         self.operation_written.store(true, Ordering::SeqCst);
         let Some(_) = self.over_cap() else {
@@ -737,7 +737,7 @@ mod tests {
                 .to_string_lossy()
                 .ends_with("-simulacion.jsonl")
         );
-        // La simulación NO poda (m2): los 35 antiguos siguen.
+        // Simulation does NOT prune (m2): all 35 old logs remain.
         let olds = |dir: &Path| {
             fs::read_dir(dir)
                 .unwrap()
@@ -780,7 +780,7 @@ mod tests {
             .filter(|e| e.file_name().to_string_lossy().starts_with("limpieza-"))
             .count();
         assert_eq!(n, KEEP_LOGS + 5 + 1, "{n}");
-        // Una limpieza REAL sí poda sus reales: quedan en `KEEP_LOGS` (el nuevo cuenta) y la simulación se conserva.
+        // A REAL cleanup prunes its real logs: `KEEP_LOGS` remain (including the new one), and simulation logs are preserved.
         let real = LogWriter::create(&dir, false).unwrap();
         let (mut reales, mut sims) = (0, 0);
         for e in fs::read_dir(&dir).unwrap().flatten() {
@@ -798,8 +798,8 @@ mod tests {
         assert!(real.path().exists());
     }
 
-    /// m2 y H6.6: 31 registros reales y una simulación: siguen los 31 reales (la simulación nunca toca un registro real).
-    /// Las simulaciones se podan SOLO entre sí (a `KEEP_SIM_LOGS`) y una limpieza real poda solo los reales.
+    /// m2 and H6.6: with 31 real logs and one simulation, all 31 real logs remain (simulation never touches a real log).
+    /// Simulations are pruned ONLY among themselves (to `KEEP_SIM_LOGS`); real cleanup prunes only real logs.
     #[test]
     fn cada_clase_de_registro_se_poda_solo_a_si_misma() {
         let sb = Sandbox::new();
@@ -819,22 +819,21 @@ mod tests {
         assert!(sim.path().exists());
         assert_eq!(count(&dir, false), 31, "la simulación no toca los reales");
         drop(sim);
-        // 40 simulaciones seguidas (en el mismo segundo los nombres llevan sufijo): los reales intactos y las
-        // simulaciones, podadas entre sí. Cada una termina (se cierra) antes de la siguiente, como en la realidad: desde
-        // A2-M2 un registro ABIERTO no lo poda otro escritor.
+        // 40 consecutive simulations (names get a suffix within the same second): real logs stay intact and simulation logs
+        // are pruned among themselves. Each run closes before the next: since A2-M2, another writer cannot prune an OPEN log.
         for _ in 0..40 {
             drop(LogWriter::create(&dir, true).unwrap());
         }
         assert_eq!(count(&dir, false), 31);
         assert_eq!(count(&dir, true), KEEP_SIM_LOGS);
-        // Una limpieza real poda SOLO los reales (a `KEEP_LOGS`) y deja las simulaciones como están.
+        // Real cleanup prunes ONLY real logs (to `KEEP_LOGS`) and leaves simulation logs unchanged.
         let _real = LogWriter::create(&dir, false).unwrap();
         assert_eq!(count(&dir, false), KEEP_LOGS);
         assert_eq!(count(&dir, true), KEEP_SIM_LOGS);
     }
 
-    /// A-M3: MEDICIÓN (no es una prueba: `cargo test -p tesela-cleaner medicion_a_m3 -- --ignored --nocapture`). Cuánto cuesta
-    /// anotar 100 000 resultados de entradas en el registro: solo el escritor, con rutas de longitud típica.
+    /// A-M3: MEASUREMENT (not a test: `cargo test -p tesela-cleaner medicion_a_m3 -- --ignored --nocapture`). Cost of logging
+    /// 100,000 item results: only the writer, with typical-length paths.
     #[test]
     #[ignore = "medición A-M3"]
     fn medicion_a_m3_100000_resultados_en_el_escritor() {
@@ -866,9 +865,9 @@ mod tests {
         v
     }
 
-    /// A-M2: con registros FECHADOS DESPUÉS (reloj adelantado, copia de otra máquina) el registro recién creado ordenaba el
-    /// primero y la poda, que corría tras crearlo, lo borraba: la limpieza seguía con un archivo desvinculado y `ok()` a
-    /// `true`. Ahora la poda lo excluye, y tras crearlo se comprueba que existe.
+    /// A-M2: with logs DATED IN THE FUTURE (clock ahead, copied from another machine), the new log sorted first and pruning
+    /// immediately deleted it: cleanup continued with an unlinked file and `ok()` returning `true`. Pruning now excludes it,
+    /// and its existence is checked after creation.
     #[test]
     fn el_registro_nuevo_no_se_borra_a_si_mismo_aunque_haya_otros_fechados_despues() {
         let sb = Sandbox::new();
@@ -889,7 +888,7 @@ mod tests {
             fs::read_to_string(log.path()).unwrap().contains("summary"),
             "lo escrito llega al archivo que hay en el disco"
         );
-        // La retención se cumple (30 reales contando el nuevo) y el nuevo es uno de ellos.
+        // Retention is met (30 real logs including the new one), and the new one is among them.
         let names = real_logs(&dir);
         assert_eq!(names.len(), KEEP_LOGS, "{names:?}");
         assert!(
@@ -901,14 +900,14 @@ mod tests {
                     .into_owned()
             )
         );
-        // Lo que se poda son los MÁS ANTIGUOS de los demás (por fecha leída como número): los primeros fechados.
+        // Prune the OLDEST of the others (by numeric date): the earliest-dated ones.
         assert!(!dir.join("limpieza-29990101-000000-001.jsonl").exists());
         assert!(dir.join("limpieza-29990101-000034-001.jsonl").exists());
     }
 
-    /// A-M2: dos registros en el MISMO segundo. Antes el segundo se llamaba `...-1.jsonl`, que ordena ANTES que el nombre base
-    /// (`-` < `.`), y la poda lo borraba en cuanto había que podar. Ahora llevan una secuencia de 3 cifras que ordena bien, y
-    /// la secuencia es la mayor del segundo más uno (no el primer hueco). Con el reloj fijo, para que sea determinista.
+    /// A-M2: two logs in the SAME second. Previously, the second was named `...-1.jsonl`, which sorts BEFORE the base name
+    /// (`-` < `.`), so pruning deleted it as soon as needed. Names now use a correctly sorting three-digit sequence, set to
+    /// the largest sequence for that second plus one (not the first gap). The clock is fixed for determinism.
     #[test]
     fn varios_registros_en_el_mismo_segundo_ordenan_bien_y_se_podan_los_mas_antiguos() {
         let sb = Sandbox::new();
@@ -926,21 +925,21 @@ mod tests {
         assert_eq!(sorted, made, "se crean en el orden en que ordenan");
         let names = real_logs(&dir);
         assert_eq!(names.len(), KEEP_LOGS, "{names:?}");
-        // Sobreviven los KEEP_LOGS más recientes, no los más antiguos.
+        // The KEEP_LOGS newest logs survive, not the oldest.
         for p in &made[..6] {
             assert!(!p.exists(), "{p:?}");
         }
         for p in &made[6..] {
             assert!(p.exists(), "{p:?}");
         }
-        // Y la secuencia continúa tras una poda: el siguiente es el mayor más uno, no un hueco.
+        // The sequence continues after pruning: the next is the largest plus one, not a gap.
         let w = LogWriter::create_at(&dir, false, LogFile::Real, NOW).unwrap();
         let seq = log_key(&w.path().file_name().unwrap().to_string_lossy()).2;
         assert_eq!(seq as usize, KEEP_LOGS + 6 + 1);
     }
 
-    /// A-M2: el orden por nombre lee fecha, hora y secuencia como números: el nombre base va antes que `-1`, `-2` y `-10`
-    /// (los nombres de las versiones anteriores) y que `-001`; lo que no se entiende, el más antiguo.
+    /// A-M2: filename ordering parses date, time, and sequence numerically: the base name precedes `-1`, `-2`, and `-10`
+    /// (older-version names), as well as `-001`; unrecognized names sort oldest.
     #[test]
     fn el_orden_de_los_registros_lee_fecha_hora_y_secuencia_como_numeros() {
         let k = |n: &str| log_key(n);
@@ -965,9 +964,9 @@ mod tests {
         assert_eq!(k("limpieza-20260101-120000.jsonl").2, 0);
     }
 
-    /// A-M2: los registros de la versión anterior (`...-1.jsonl`, `...-2.jsonl`, `...-10.jsonl`) conviven con los nuevos: se podan
-    /// por su orden NUMÉRICO (el base, `-1`, `-2`... `-34`), no por el del texto (`-1`, `-10`, `-11`... `-2`, que borraba los
-    /// recientes), y el nuevo sigue la secuencia (35).
+    /// A-M2: older logs (`...-1.jsonl`, `...-2.jsonl`, `...-10.jsonl`) coexist with new ones: pruning uses NUMERIC order
+    /// (base, `-1`, `-2`... `-34`), not lexicographic order (`-1`, `-10`, `-11`... `-2`, which deleted recent logs), and
+    /// the new log continues the sequence (35).
     #[test]
     fn los_registros_de_la_version_anterior_se_podan_por_su_orden_numerico() {
         let sb = Sandbox::new();
@@ -993,8 +992,8 @@ mod tests {
         }
     }
 
-    /// s-2: los nombres de SIMULACIÓN de la versión anterior con colisión (`...-simulacion-1.jsonl`) se leen con su secuencia y
-    /// ordenan después del base y por su orden numérico, y se podan así.
+    /// s-2: colliding SIMULATION log names from the older version (`...-simulacion-1.jsonl`) are parsed with their sequence,
+    /// sorted after the base name in numeric order, and pruned accordingly.
     #[test]
     fn los_nombres_de_simulacion_de_la_version_anterior_ordenan_por_su_secuencia() {
         let k = |n: &str| log_key(n);
@@ -1012,7 +1011,7 @@ mod tests {
         assert_eq!(k("limpieza-20260101-120000-simulacion-10.jsonl").2, 10);
         assert_eq!(k("limpieza-20260101-120000-011-simulacion.jsonl").2, 11);
         assert_eq!(k("limpieza-20260101-120000-simulacion.jsonl").2, 0);
-        // Podadas: 15 simulaciones antiguas del mismo segundo (base, -1... -14) y una nueva; sobreviven las más recientes.
+        // Pruned: 15 older simulations from the same second (base, -1... -14) and one new log; the newest survive.
         let sb = Sandbox::new();
         let dir = sb.mkdir("Tesela");
         const NOW: u64 = 1_767_268_800;
@@ -1032,7 +1031,7 @@ mod tests {
             .map(|e| e.file_name().to_string_lossy().into_owned())
             .collect();
         assert_eq!(sims.len(), KEEP_SIM_LOGS, "{sims:?}");
-        // Se conservan -6 ... -14 (9) y el nuevo; el base y -1 ... -5 son los más antiguos.
+        // Keep -6 ... -14 (9) and the new log; the base and -1 ... -5 are the oldest.
         for gone in std::iter::once("limpieza-20260101-120000-simulacion.jsonl".to_string())
             .chain((1..=5).map(|n| format!("limpieza-20260101-120000-simulacion-{n}.jsonl")))
         {
@@ -1044,10 +1043,10 @@ mod tests {
         );
     }
 
-    /// s-4 + A2-M2: entre la poda y la comprobación nadie puede borrar el registro recién creado: está abierto sin
-    /// `FILE_SHARE_DELETE`, así que el intento (el gancho de la prueba) falla con un error de compartición y `create` devuelve
-    /// un escritor cuyo archivo sigue ahí. (Antes el gancho lo borraba y `create` fallaba por la comprobación; esa comprobación
-    /// se conserva como defensa en profundidad: ver `ensure_exists`.)
+    /// s-4 + A2-M2: nobody can delete the newly created log between pruning and the existence check: it is open without
+    /// `FILE_SHARE_DELETE`, so the attempt (the test hook) fails with a sharing error and `create` returns a writer whose file
+    /// remains. (Previously, the hook deleted it and `create` failed at the check; that check remains as defense in depth:
+    /// see `ensure_exists`.)
     #[test]
     fn un_registro_recien_creado_no_se_puede_borrar_antes_de_la_comprobacion() {
         let sb = Sandbox::new();
@@ -1075,7 +1074,7 @@ mod tests {
         );
     }
 
-    /// A2-M2: la comprobación de existencia sigue ahí (defensa en profundidad): un registro que no existe es un error.
+    /// A2-M2: the existence check remains (defense in depth): a missing log is an error.
     #[test]
     fn la_comprobacion_de_existencia_falla_con_un_registro_que_no_existe() {
         let sb = Sandbox::new();
@@ -1085,17 +1084,16 @@ mod tests {
         assert!(ensure_exists(&dir.join("limpieza-20000101-000000-001.jsonl")).is_err());
     }
 
-    /// Un nombre de registro con fecha `unix` y secuencia 001.
+    /// A log filename with the given Unix timestamp and sequence 001.
     fn log_name_at(unix: u64) -> String {
         let (y, mo, d, h, mi, s) = utc_parts(unix);
         format!("limpieza-{y:04}{mo:02}{d:02}-{h:02}{mi:02}{s:02}-001.jsonl")
     }
 
-    /// A2-M2 (blocker de la auditoría externa), la repetición de Astra: 29 registros con fecha futura; el escritor A abre el
-    /// suyo (la más antigua de las futuras) y escribe una intención; el escritor B abre con una fecha ANTERIOR y su poda ve a
-    /// A como el más antiguo de los que sobran. Antes lo borraba: la ruta de A desaparecía mientras A seguía aceptando
-    /// escrituras con `ok()` verdadero. Ahora A se abre sin `FILE_SHARE_DELETE`: la poda de B falla al borrarlo, lo salta, y A
-    /// sigue siendo un registro válido. Cuando A termina (se cierra), la poda siguiente ya puede retirarlo.
+    /// A2-M2 (external audit blocker), Astra reproduction: 29 future-dated logs; writer A opens its log (the oldest future
+    /// one) and writes an intent; writer B opens with an EARLIER date and sees A as the oldest excess log. Previously B deleted
+    /// it: A's path disappeared while it still accepted writes with `ok()` returning true. A is now opened without
+    /// `FILE_SHARE_DELETE`: B's prune fails to delete it and skips it, leaving A valid. Once A closes, the next prune can remove it.
     #[test]
     fn un_registro_abierto_no_lo_borra_la_poda_de_otro_escritor() {
         let sb = Sandbox::new();
@@ -1109,7 +1107,7 @@ mod tests {
         a.write_intent("delete-begin", &[PathBuf::from("primera")])
             .unwrap();
         let a_path = a.path().to_path_buf();
-        // B abre con una fecha anterior: su poda ve 30 registros ajenos (los 29 y A), de los que sobra uno: A, el más antiguo.
+        // B opens with an earlier date: pruning sees 30 other logs (the 29 plus A), one too many: A, the oldest.
         let b = LogWriter::create_at(&dir, false, LogFile::Real, NOW).unwrap();
         assert!(a_path.is_file(), "la poda de B no borró el registro de A");
         assert!(a.ok(), "A sigue siendo un registro válido");
@@ -1123,15 +1121,15 @@ mod tests {
         );
         assert!(b.path().is_file() && b.ok());
         assert_eq!(real_logs(&dir).len(), 29 + 2, "los 29, A y B");
-        // Cuando A termina, un tercer escritor sí lo poda (B, que sigue abierto, se salta; A, ya cerrado, se borra).
+        // After A finishes, a third writer prunes it (B remains open and is skipped; A is closed and deleted).
         drop(a);
         let c = LogWriter::create_at(&dir, false, LogFile::Real, NOW + 1).unwrap();
         assert!(!a_path.exists(), "ya cerrado, la retención lo retira");
         assert!(b.path().is_file() && c.path().is_file());
     }
 
-    /// A2-M2: un registro abierto se puede LEER desde otro handle (`FILE_SHARE_READ`: la interfaz y las pruebas lo hacen) pero
-    /// no se puede borrar ni renombrar mientras esté abierto.
+    /// A2-M2: an open log can be READ through another handle (`FILE_SHARE_READ`, as the UI and tests do), but cannot be
+    /// deleted or renamed while open.
     #[test]
     fn un_registro_abierto_se_lee_pero_no_se_borra_ni_se_renombra() {
         let sb = Sandbox::new();
@@ -1151,15 +1149,15 @@ mod tests {
             Some(32)
         );
         assert!(w.path().is_file() && w.ok());
-        // Cerrado, vuelve a poder borrarse.
+        // Once closed, it can be deleted again.
         let path = w.path().to_path_buf();
         drop(w);
         fs::remove_file(&path).unwrap();
     }
 
-    /// A2-M2: tras `discard` el registro ya no existe y el escritor queda cerrado: escribir en él da un error (el archivo se
-    /// borró; no hay un escritor desvinculado con `ok()` verdadero que acepte escrituras). Con otro handle de LECTURA abierto
-    /// (compartiendo el borrado, como `File::open`) el descarte funciona igual.
+    /// A2-M2: after `discard`, the log no longer exists and the writer is closed: writing to it returns an error (the file was
+    /// deleted; there is no unlinked writer with `ok()` returning true that accepts writes). Discard also works with another
+    /// READ handle open (sharing deletion, as `File::open` does).
     #[test]
     fn descartar_cierra_el_handle_antes_de_borrar_y_el_escritor_queda_cerrado() {
         let sb = Sandbox::new();
@@ -1171,7 +1169,7 @@ mod tests {
         assert!(!w.ok(), "descartado: ya no es un registro válido");
         drop(reader);
         assert!(!path.exists(), "descartado");
-        // Escribir tras descartar no puede pasar por bueno.
+        // A write after discard must not succeed.
         w.write_rejected(Path::new("x"), "ReparseAncestor");
         assert!(w.flush_checked().is_err());
         assert!(
@@ -1181,8 +1179,8 @@ mod tests {
         assert!(!path.exists(), "y no reaparece");
     }
 
-    /// A2-M2: "Borrar el historial" no puede borrar un registro que está abierto (la limpieza en curso lo necesita): lo salta
-    /// (devuelve el error de compartición, que la interfaz ignora) y borra todo lo demás.
+    /// A2-M2: "Clear history" cannot delete an open log (the ongoing cleanup needs it): it skips the log (returns a sharing
+    /// error, which the UI ignores) and deletes everything else.
     #[test]
     fn borrar_el_historial_no_borra_el_registro_abierto() {
         let sb = Sandbox::new();
@@ -1202,7 +1200,7 @@ mod tests {
         assert!(history_clear(&dir).is_ok(), "cerrado, ya se puede borrar");
     }
 
-    /// A-M2: `prune` nunca borra el registro activo, aunque ordene el primero, y le reserva una plaza.
+    /// A-M2: `prune` never deletes the active log, even if it sorts first, and reserves a slot for it.
     #[test]
     fn la_poda_excluye_siempre_el_registro_activo() {
         let sb = Sandbox::new();
@@ -1223,7 +1221,7 @@ mod tests {
             KEEP_LOGS,
             "el activo cuenta como uno"
         );
-        // Sin activo, se conservan KEEP_LOGS de los demás.
+        // Without an active log, KEEP_LOGS of the others are retained.
         prune(&dir, false, KEEP_LOGS - 1, None);
         assert_eq!(real_logs(&dir).len(), KEEP_LOGS - 1);
         assert!(
@@ -1244,7 +1242,7 @@ mod tests {
         }
     }
 
-    /// H6.8: un registro descartado desaparece (no queda un archivo con solo la línea de arranque ocupando plaza).
+    /// H6.8: a discarded log disappears (no file containing only the startup line remains to occupy a slot).
     #[test]
     fn un_registro_descartado_no_deja_archivo() {
         let sb = Sandbox::new();
@@ -1252,11 +1250,11 @@ mod tests {
         let log = LogWriter::create(&dir, false).unwrap();
         let path = log.path().to_path_buf();
         assert!(path.exists());
-        // Las notas `rejected` no son una operación: se puede descartar.
+        // `rejected` notes are not operations: the log can be discarded.
         log.write_rejected(Path::new("x"), "ReparseAncestor");
         assert!(log.discard().is_ok());
         assert!(!path.exists());
-        // R2: con una operación escrita (intención, entrada, `bin-item` o resultado) NO se borra y devuelve un error.
+        // R2: once an operation is written (intent, item, `bin-item`, or result), do NOT delete the log; return an error.
         for i in 0..4 {
             let log = LogWriter::create(&dir, false).unwrap();
             let path = log.path().to_path_buf();
@@ -1276,8 +1274,8 @@ mod tests {
         }
     }
 
-    /// GM-S1: el tope de líneas es EXACTO. Con el tope en `N`, constan `N` entradas y una sola marca de truncado: antes se
-    /// escribía una de más (`n > MAX`) y, con varios hilos, la cuenta y la comparación fuera del cerrojo dejaban pasar más.
+    /// GM-S1: the line limit is EXACT. With a limit of `N`, there are `N` entries and one truncation marker: previously one
+    /// extra entry was written (`n > MAX`), and with multiple threads the count and comparison outside the lock allowed more.
     #[test]
     fn el_tope_de_lineas_es_exacto_tambien_con_varios_hilos() {
         for threads in [1usize, 8] {
@@ -1303,7 +1301,7 @@ mod tests {
         }
     }
 
-    /// R4: las notas `rejected` respetan el mismo tope y el mismo truncado que las entradas.
+    /// R4: `rejected` notes obey the same limit and truncation behavior as entries.
     #[test]
     fn las_notas_rejected_respetan_el_tope_del_registro() {
         let sb = Sandbox::new();
@@ -1326,7 +1324,7 @@ mod tests {
         let sb = Sandbox::new();
         let dir = sb.path("Tesela");
         let log = LogWriter::create(&dir, false).unwrap();
-        // Nada de `flush()` explícito de quien llama: la línea de arranque ya está en el archivo.
+        // No explicit caller `flush()`: the startup line is already in the file.
         assert!(
             fs::read_to_string(log.path())
                 .unwrap()
@@ -1335,23 +1333,23 @@ mod tests {
         );
         let paths = vec![PathBuf::from("a.txt"), PathBuf::from("b c.txt")];
         log.write_intent("recycle-begin", &paths).unwrap();
-        // A-m1: SIN un `flush()` compensatorio de la prueba (antes lo había y el mutante que quitaba el volcado de
-        // `write_intent` sobrevivía): la intención ya está en el archivo al volver.
+        // A-m1: WITHOUT a compensating test `flush()` (there used to be one, allowing a mutant that removed the flush from
+        // `write_intent` to survive), the intent is already in the file on return.
         let text = fs::read_to_string(log.path()).unwrap();
         let line = text.lines().find(|l| l.contains("recycle-begin")).unwrap();
         let v: serde_json::Value = serde_json::from_str(line).unwrap();
         assert_eq!(v["paths"], serde_json::json!(["a.txt", "b c.txt"]));
     }
 
-    /// A-M3: el resultado de CADA entrada es legible desde otro handle en cuanto se escribe, SIN ningún `flush()` de quien llama.
-    /// Antes se acumulaban hasta 256 líneas en el búfer: un cierre forzoso perdía hasta 255 resultados de entradas ya
-    /// borradas. Un mutante que quite el volcado de `write_event` (o de `write_note`, `write_bin_item`) falla aquí.
+    /// A-M3: the result of EACH item is readable through another handle as soon as it is written, with NO caller `flush()`.
+    /// Previously, up to 256 lines accumulated in the buffer: a forced close could lose up to 255 results for deleted items.
+    /// A mutant removing the flush from `write_event` (or `write_note`, `write_bin_item`) fails here.
     #[test]
     fn cada_resultado_es_legible_desde_otro_handle_sin_volcar() {
         let sb = Sandbox::new();
         let dir = sb.path("Tesela");
         let log = Arc::new(LogWriter::create(&dir, false).unwrap());
-        // Otro handle abierto una sola vez: lee lo que haya en el archivo en cada momento.
+        // Open another handle once; read whatever is in the file each time.
         let mut reader = File::open(log.path()).unwrap();
         let lines_now = |r: &mut File| {
             use std::io::{Read, Seek};
@@ -1371,7 +1369,7 @@ mod tests {
                 (Some("entry"), Some(i as u64))
             );
         }
-        // Las notas de resultado y los elementos de la Papelera, también.
+        // Result notes and Recycle Bin items too.
         let n = lines_now(&mut reader).len();
         log.write_note("recycle", "x -> Recycled");
         assert_eq!(lines_now(&mut reader).len(), n + 1);
@@ -1380,13 +1378,13 @@ mod tests {
         assert!(log.ok());
     }
 
-    /// A-M3: un error al escribir o volcar un resultado MARCA el registro como fallido y activa la cancelación (no se traga):
-    /// la limpieza se detiene en el siguiente punto seguro.
+    /// A-M3: an error writing or flushing a result MARKS the log as failed and triggers cancellation (it is not swallowed):
+    /// cleanup stops at the next safe point.
     #[test]
     fn un_error_al_volcar_un_resultado_marca_el_registro_y_cancela() {
         let sb = Sandbox::new();
         let dir = sb.path("Tesela");
-        // El presupuesto cubre la línea de arranque (≈ 50 bytes) y poco más: el primer resultado largo falla.
+        // The budget covers the startup line (about 50 bytes) and little else: the first long result fails.
         let log = LogWriter::create_failing_after(&dir, false, 120).unwrap();
         let cancel = Arc::new(AtomicBool::new(false));
         log.cancel_on_error(cancel.clone());
@@ -1434,7 +1432,7 @@ mod tests {
         let log_path = log.path().to_path_buf();
         drop(log);
         fs::write(dir.join("limpieza-2000-001.jsonl"), b"x").unwrap();
-        // Lo que no es de Tesela o no tiene ese nombre se queda: otro archivo, otra extensión y una carpeta homónima.
+        // Non-Tesela files or files with a different name remain: another file, another extension, and a same-named directory.
         fs::write(dir.join("config.toml"), b"x").unwrap();
         fs::write(dir.join("limpieza-notas.txt"), b"x").unwrap();
         fs::create_dir(dir.join("limpieza-carpeta.jsonl")).unwrap();
@@ -1468,7 +1466,7 @@ mod tests {
             },
         )
         .unwrap();
-        // Una línea corrupta no rompe la lectura.
+        // A corrupt line does not break reading.
         let mut f = OpenOptions::new()
             .append(true)
             .open(dir.join("history.jsonl"))

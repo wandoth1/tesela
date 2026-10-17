@@ -43,13 +43,13 @@ mod tests {
 
     const PROBE: &str = "tesela_probe_dll.dll";
 
-    /// Carga `PROBE` por nombre (sin ruta ni indicadores, como hace wgpu) y dice si el sistema la encontró.
+    /// Loads `PROBE` by name (without a path or flags, as wgpu does) and reports whether the system found it.
     fn load_probe_by_name() -> bool {
         let wide: Vec<u16> = std::ffi::OsStr::new(PROBE)
             .encode_wide()
             .chain(Some(0))
             .collect();
-        // SAFETY: `wide` termina en NUL y vive durante la llamada; el módulo cargado se libera enseguida.
+        // SAFETY: `wide` is NUL-terminated and remains alive for the call; the loaded module is released immediately.
         unsafe {
             let h = LoadLibraryW(wide.as_ptr());
             if h.is_null() {
@@ -60,13 +60,13 @@ mod tests {
         }
     }
 
-    /// Hijo de la prueba (una COPIA del ejecutable de pruebas dentro de una carpeta temporal que también contiene `PROBE`: esa
-    /// es "la carpeta de la aplicación"): SIN el endurecimiento la DLL se carga por nombre desde ahí y CON él no. Así se
-    /// distingue `LOAD_LIBRARY_SEARCH_SYSTEM32` de `LOAD_LIBRARY_SEARCH_DEFAULT_DIRS`, que SÍ incluye la carpeta de la aplicación.
+    /// Test child (a COPY of the test executable in a temporary directory that also contains `PROBE`, the "application
+    /// directory"): without hardening, the DLL is loaded by name from there; with hardening, it is not. This distinguishes
+    /// `LOAD_LIBRARY_SEARCH_SYSTEM32` from `LOAD_LIBRARY_SEARCH_DEFAULT_DIRS`, which DOES include the application directory.
     #[test]
     fn hijo_busqueda_restringida() {
         if std::env::var_os("TESELA_DLL_PROBE_CHILD").is_none() {
-            return; // solo lo lanza `la_busqueda_de_dll_se_limita_a_system32`
+            return; // Only `la_busqueda_de_dll_se_limita_a_system32` launches it.
         }
         let exe_dir = std::env::current_exe()
             .unwrap()
@@ -88,14 +88,14 @@ mod tests {
         );
     }
 
-    /// La prueba real corre en un proceso hijo: `SetDefaultDllDirectories` es del proceso entero y no debe cambiar las
-    /// cargas de los demás tests. El hijo es una copia de este ejecutable de pruebas en una carpeta temporal, con al lado una
-    /// copia de una DLL legítima del sistema con otro nombre (no ejecuta nada propio); la carpeta se borra al acabar.
+    /// The real test runs in a child process: `SetDefaultDllDirectories` affects the entire process and must not change other
+    /// tests' loads. The child is a copy of this test executable in a temporary directory, next to a renamed copy of a
+    /// legitimate system DLL (nothing of our own is executed); the directory is deleted afterward.
     #[test]
     fn la_busqueda_de_dll_se_limita_a_system32() {
-        // Lanza un proceso hijo (copia del ejecutable de pruebas): solo con TESELA_PROCESS_TESTS=1 (el CI la define).
+        // Launch a child process (a copy of the test executable): only with TESELA_PROCESS_TESTS=1 (set by CI).
         if !std::env::var("TESELA_PROCESS_TESTS").is_ok_and(|v| v == "1") {
-            // En CI el salto no puede pasar en silencio (una variable perdida del workflow): falla.
+            // In CI, skipping must not go unnoticed (for example, if a workflow variable is lost): fail.
             assert!(
                 std::env::var_os("CI").is_none(),
                 "CI sin TESELA_PROCESS_TESTS=1: las pruebas con procesos hijo no pueden saltarse en CI (revisa el workflow)"
@@ -137,9 +137,9 @@ mod tests {
         );
     }
 
-    /// GM-S2: el endurecimiento hace las DOS llamadas: quita el directorio de trabajo del orden clásico (`SetDllDirectoryW("")`)
-    /// y fija el valor predeterminado a `System32`. Cambiar el estado del proceso de pruebas afectaría a las demás pruebas
-    /// (por eso el comportamiento real se prueba en un proceso hijo): aquí se vigila que las dos llamadas siguen en el código.
+    /// GM-S2: hardening makes BOTH calls: removes the working directory from the classic search order (`SetDllDirectoryW("")`)
+    /// and sets the default to `System32`. Changing the test process state would affect other tests (so actual behavior is
+    /// tested in a child process); here we ensure both calls remain in the code.
     #[test]
     fn el_endurecimiento_quita_tambien_el_directorio_de_trabajo() {
         let src = include_str!("dll_hardening.rs");
@@ -165,7 +165,7 @@ mod tests {
         );
     }
 
-    /// `main` llama al endurecimiento ANTES que a cualquier otra cosa (antes de analizar argumentos y de eframe/wgpu).
+    /// `main` calls hardening BEFORE anything else (before parsing arguments and before eframe/wgpu).
     #[test]
     fn main_lo_llama_lo_primero() {
         let main = include_str!("main.rs");
@@ -173,7 +173,7 @@ mod tests {
         let call = body
             .find("dll_hardening::restrict_dll_search()")
             .expect("main llama a restrict_dll_search");
-        // Primera sentencia de `main` (saltando los comentarios).
+        // First statement in `main` (skipping comments).
         let after_brace = &body[body.find('{').unwrap() + 1..];
         let first_stmt = after_brace
             .lines()
@@ -189,7 +189,7 @@ mod tests {
                 assert!(call < i, "el endurecimiento debe ir antes de {later}");
             }
         }
-        // Y el compilador de sombreadores de DX12 se fija a FXC: nunca se sondea dxcompiler.dll.
+        // The DX12 shader compiler is also fixed to FXC: `dxcompiler.dll` is never probed.
         assert!(main.contains("Dx12Compiler::Fxc"));
     }
 }

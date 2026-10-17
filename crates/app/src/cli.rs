@@ -286,14 +286,14 @@ mod tests {
         assert!(p("--scan").unwrap_err().contains("requires a value"));
         assert!(p("--cosa").unwrap_err().contains("unknown argument"));
         assert!(p("--bench-hover 0").is_err());
-        // Medir el mapa exige llegar a él: sin --demo ni --scan, o con el escaneo simulado, no hay mapa.
+        // Measuring the map requires reaching it: without --demo or --scan, or with a simulated scan, there is no map.
         assert!(
             p("--bench-hover 5")
                 .unwrap_err()
                 .contains("--demo or --scan")
         );
         assert!(p("--demo --screen scan --bench-hover 5").is_err());
-        // GM-m8: tampoco las pantallas de la limpieza (recs, confirm, summary): no hay mapa que medir.
+        // GM-m8: cleanup screens (recs, confirm, summary) have no map to measure either.
         for s in ["recs", "confirm", "summary"] {
             assert!(
                 p(&format!("--demo --screen {s} --bench-hover 5"))
@@ -308,7 +308,7 @@ mod tests {
                 "{s}"
             );
         }
-        // GM-m8: `--stress` solo tiene sentido con `--demo`.
+        // GM-m8: `--stress` only makes sense with `--demo`.
         assert!(p("--stress").unwrap_err().contains("--demo"));
         assert!(p("--demo --stress").unwrap().stress);
         assert!(p("--demo --bench-hover 5").is_ok());
@@ -318,7 +318,7 @@ mod tests {
             p("--demo --idle-memory 12").unwrap().idle_memory,
             Some(12.0)
         );
-        // Una captura de un disco real mostraría datos del equipo: solo con --demo.
+        // Capturing a real disk would expose machine data: allow it only with --demo.
         assert!(p("--screenshot x.png").unwrap_err().contains("--demo"));
         assert!(
             p("--scan C --screenshot x.png")
@@ -329,7 +329,7 @@ mod tests {
             p("--demo --screenshot x.png").unwrap().screenshot,
             Some(PathBuf::from("x.png"))
         );
-        // `--overwrite` solo acompaña a `--screenshot`.
+        // `--overwrite` is only valid with `--screenshot`.
         assert!(
             p("--demo --overwrite")
                 .unwrap_err()
@@ -349,7 +349,7 @@ mod tests {
         ] {
             let c = p(&format!("--demo --screen {v}")).unwrap();
             assert_eq!(c.screen, sc);
-            // Sin --demo mostrarian una limpieza que no es la del disco real.
+            // Without --demo, these would show a cleanup that does not reflect the real disk.
             assert!(p(&format!("--screen {v}")).unwrap_err().contains("--demo"));
         }
         assert!(
@@ -359,7 +359,7 @@ mod tests {
         );
         assert!(p("--dry-run").unwrap().dry_run);
         assert!(!p("--demo").unwrap().dry_run);
-        // La simulacion se combina con el resto (escanear y limpiar sin tocar nada).
+        // Simulation can be combined with the rest (scan and clean without touching anything).
         let c = p("--scan X --dry-run").unwrap();
         assert!(c.dry_run && c.scan == Some(PathBuf::from("X")));
         assert!(p("--demo --screen confirm --dry-run").unwrap().dry_run);
@@ -367,7 +367,7 @@ mod tests {
 
     #[test]
     fn la_sesion_aislada_es_la_demo_y_todas_las_herramientas_de_medicion() {
-        // GM-M4: `--idle-memory` y `--bench-hover` SIN `--demo` también están aisladas (sin historial ni raíces reales).
+        // GM-M4: `--idle-memory` and `--bench-hover` are isolated even WITHOUT `--demo` (no history or real roots).
         assert!(!p("").unwrap().isolated());
         assert!(!p("--scan X").unwrap().isolated());
         assert!(!p("--dry-run").unwrap().isolated());
@@ -380,7 +380,7 @@ mod tests {
         ] {
             assert!(p(a).unwrap().isolated(), "{a}");
         }
-        // Las herramientas de medición lo son aunque no haya demostración; la demostración no es una herramienta.
+        // Measurement tools are isolated even without the demo; the demo itself is not a measurement tool.
         assert!(p("--idle-memory 5").unwrap().tool_mode());
         assert!(!p("--demo").unwrap().tool_mode());
     }

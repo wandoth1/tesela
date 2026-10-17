@@ -76,7 +76,7 @@ mod tests {
     use super::*;
     use std::io::Write;
 
-    /// Carpeta temporal propia con guarda RAII (solo se borra `%TEMP%\tesela-test-*` creada aquí).
+    /// Owned RAII-guarded temporary directory (only `%TEMP%\tesela-test-*` created here is deleted).
     struct Temp(std::path::PathBuf);
     impl Temp {
         fn new() -> Temp {
@@ -98,15 +98,15 @@ mod tests {
         let e = preflight(&t.0.join("no-existe").join("x.png"), false).unwrap_err();
         assert!(e.contains("does not exist"), "{e}");
         assert!(preflight(&t.0.join("no-existe").join("x.png"), true).is_err());
-        // Destino que es una carpeta.
+        // Destination is a directory.
         assert!(preflight(&t.0, true).unwrap_err().contains("directory"));
-        // Archivo nuevo: bien. Existente: solo con overwrite.
+        // New file: succeeds. Existing file: only with overwrite.
         let p = t.0.join("c.png");
         assert!(preflight(&p, false).is_ok());
         std::fs::write(&p, b"x").unwrap();
         assert!(preflight(&p, false).unwrap_err().contains("--overwrite"));
         assert!(preflight(&p, true).is_ok());
-        // Sin carpeta en la ruta: es el directorio actual.
+        // No parent in the path: use the current directory.
         assert!(preflight(Path::new("no-existe-tesela-test.png"), false).is_ok());
     }
 

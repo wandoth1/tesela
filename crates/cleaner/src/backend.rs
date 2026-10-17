@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 
-/// Lo que la interfaz necesita del `cleaner`.
+/// What the UI needs from the `cleaner`.
 pub trait Backend: Send + Sync {
     /// Roots (directories) for a category with the `Contents` action. The UI looks them up in the scanned tree to show sizes.
     fn category_roots(&self, id: CategoryId) -> Vec<PathBuf>;

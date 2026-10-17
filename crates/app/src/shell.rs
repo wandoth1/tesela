@@ -83,7 +83,7 @@ pub struct Shell {
     pub idle_mem: Option<IdleMemory>,
     #[cfg_attr(not(feature = "capture"), allow(dead_code))]
     pub screenshot: Option<PathBuf>,
-    /// `--overwrite`: la captura puede reemplazar un archivo existente.
+    /// `--overwrite`: the capture may replace an existing file.
     #[cfg_attr(not(feature = "capture"), allow(dead_code))]
     pub screenshot_overwrite: bool,
     #[cfg_attr(not(feature = "capture"), allow(dead_code))]
@@ -92,7 +92,7 @@ pub struct Shell {
     pub shot_requested: bool,
     pub normalize_scale: Option<(f32, f32)>,
     pub norm_frames: u32,
-    /// Con `--scan`: la captura espera a que el escaneo termine y aparezca el mapa.
+    /// With `--scan`: capture waits for the scan to finish and the map to appear.
     #[cfg_attr(not(feature = "capture"), allow(dead_code))]
     pub wait_explore: bool,
 }
@@ -191,7 +191,7 @@ impl eframe::App for Shell {
         if let Some(b) = &mut self.bench {
             ctx.request_repaint();
             if b.start.is_none() && showing {
-                // Calentamiento: el primer segundo y medio no cuenta (se construyen el layout y el mesh).
+                // Warm-up: the first 1.5 seconds do not count (the layout and mesh are being built).
                 let w = *b.warm_start.get_or_insert_with(Instant::now);
                 if w.elapsed().as_secs_f32() > 1.5 {
                     b.start = Some(Instant::now());
@@ -319,7 +319,7 @@ mod tests {
                 "{x},{y}"
             );
         }
-        // Recorre una buena parte del área.
+        // Traverse a substantial part of the area.
         let xs: Vec<f32> = (0..2000)
             .map(|i| Bench::pointer_at(i as f32 * 0.05, 1000.0, 600.0).0)
             .collect();

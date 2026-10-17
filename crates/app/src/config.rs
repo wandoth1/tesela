@@ -168,8 +168,8 @@ impl Session {
 mod tests {
     use super::*;
 
-    /// Carpeta temporal de la prueba con guarda: se borra al soltarla, también si la prueba entra en pánico (solo si es
-    /// hija directa de `%TEMP%` y se llama `tesela-test-*`).
+    /// Guarded temporary test directory: deleted when dropped, including during a test panic (only if it is a direct
+    /// child of `%TEMP%` named `tesela-test-*`).
     struct TempDir(PathBuf);
 
     impl std::ops::Deref for TempDir {
@@ -202,7 +202,7 @@ mod tests {
     fn la_sesion_aislada_ni_lee_ni_guarda() {
         let dir = temp_dir();
         let path = dir.join("Tesela").join("config.toml");
-        // Hay una configuración guardada: la sesión aislada la ignora (valores por defecto) y no tiene dónde guardar.
+        // A saved configuration exists: the isolated session ignores it (defaults) and has nowhere to save.
         Config {
             window_width: Some(1234.0),
             ..Config::default()
@@ -212,7 +212,7 @@ mod tests {
         let aislada = Session::with_path(true, Some(path.clone()));
         assert_eq!(aislada.config, Config::default());
         assert!(aislada.path.is_none() && !aislada.persists());
-        // La normal sí la lee y guarda en esa ruta.
+        // The normal session reads it and saves to that path.
         let normal = Session::with_path(false, Some(path.clone()));
         assert_eq!(normal.config.window_width, Some(1234.0));
         assert_eq!(normal.path.as_deref(), Some(path.as_path()));
@@ -224,7 +224,7 @@ mod tests {
     fn ida_y_vuelta_y_valores_por_defecto() {
         let dir = temp_dir();
         let path = dir.join("Tesela").join("config.toml");
-        // Sin archivo: valores por defecto.
+        // No file: defaults.
         assert_eq!(Config::load(&path), Config::default());
         assert_eq!(Config::default().window_size(), DEFAULT_SIZE);
         let c = Config {
@@ -246,7 +246,7 @@ mod tests {
 
     #[test]
     fn solo_se_guarda_lo_que_el_usuario_cambia() {
-        // Sesión con `--lang en --theme dark` impuestos: el archivo no recibe nada hasta que se cambia algo en la interfaz.
+        // Session with `--lang en --theme dark` imposed: nothing is written until something changes in the UI.
         let saved = Config {
             theme: Some(ThemePref::Light),
             language: Some(LangPref::Es),
@@ -260,7 +260,7 @@ mod tests {
         let mut c = saved.clone();
         c.apply_changes(session, session);
         assert_eq!(c, saved, "sin cambios no se toca nada");
-        // El usuario cambia solo el tema en la interfaz: se guarda el tema, y el idioma impuesto NO.
+        // The user changes only the theme in the UI: the theme is saved, but the imposed language is NOT.
         let now = Settings {
             theme: ThemePref::System,
             ..session
@@ -272,7 +272,7 @@ mod tests {
             Some(LangPref::Es),
             "el --lang de la sesión no se guarda"
         );
-        // Sin configuración previa y sin cambios: sigue vacía.
+        // No prior configuration and no changes: it remains empty.
         let mut empty = Config::default();
         empty.apply_changes(session, session);
         assert_eq!(empty, Config::default());
@@ -284,7 +284,7 @@ mod tests {
         let path = dir.join("config.toml");
         std::fs::write(&path, "esto no es toml = = =").unwrap();
         assert_eq!(Config::load(&path), Config::default());
-        // Valores desconocidos y tamaños absurdos se acotan.
+        // Unknown values and unreasonable sizes are clamped.
         std::fs::write(
             &path,
             "theme = \"dark\"\nwindow_width = 10.0\nwindow_height = 99999.0\nextra = 1\n",
@@ -307,7 +307,7 @@ mod tests {
 
     #[test]
     fn la_comprobacion_de_actualizaciones_esta_desactivada_por_defecto_y_no_deja_rastro() {
-        // Sin archivo, o con un archivo sin esas claves: desactivada, sin fechas ni versiones.
+        // No file, or a file without those keys: disabled, with no dates or versions.
         let off = Config::default().settings().update;
         assert_eq!(off, UpdatePrefs::default());
         assert!(!off.check && off.last_check.is_none());
@@ -315,7 +315,7 @@ mod tests {
         let path = dir.join("config.toml");
         std::fs::write(&path, "theme = \"dark\"\n").unwrap();
         assert!(!Config::load(&path).settings().update.check);
-        // Y guardar una configuración sin tocar el ajuste no escribe ninguna clave de la comprobación.
+        // Saving a configuration without changing the setting writes none of the update-check keys.
         let mut c = Config::load(&path);
         c.apply_changes(Settings::default(), Settings::default());
         c.save(&path).unwrap();
@@ -345,14 +345,14 @@ mod tests {
         let back = Config::load(&path);
         assert_eq!(back, c);
         assert_eq!(back.settings().update, after.update);
-        // Solo cambia la fecha del intento: lo demás se queda como estaba.
+        // Only the attempt date changes: everything else stays as it was.
         let mut next = after;
         next.update.last_check = Some(1_800_086_400);
         let mut c2 = back.clone();
         c2.apply_changes(after, next);
         assert_eq!(c2.update_last_check, Some(1_800_086_400));
         assert_eq!(c2.check_updates, Some(true));
-        // Desactivarlo se guarda como `false`.
+        // Disabling it is saved as `false`.
         let mut off = next;
         off.update.check = false;
         c2.apply_changes(next, off);
@@ -399,7 +399,7 @@ mod tests {
             assert_eq!(c.update_last_check, None, "{bad}");
             assert!(!c.settings().update.check, "{bad}");
         }
-        // Con el tipo bueno se lee tal cual.
+        // With the correct type, it is read as-is.
         std::fs::write(
             &path,
             "check_updates = true\nupdate_last_check = 1800000000\n",

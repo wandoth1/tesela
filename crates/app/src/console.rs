@@ -43,7 +43,7 @@ mod tests {
 
     #[test]
     fn las_llamadas_a_windows_se_ejecutan() {
-        // Cualquier resultado es válido (depende de cómo se lance el test); se prueba que las dos llamadas corren.
+        // Any result is valid (it depends on how the test is launched); this verifies both calls execute.
         let _ = has_std_error();
         let _ = attach_parent();
         print("tesela: prueba de la salida de texto");

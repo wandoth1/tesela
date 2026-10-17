@@ -20,7 +20,7 @@ pub enum Browser {
 impl Browser {
     pub const ALL: [Browser; 3] = [Browser::Chrome, Browser::Edge, Browser::Firefox];
 
-    /// Nombre del ejecutable.
+    /// Executable name.
     pub fn exe(self) -> &'static str {
         match self {
             Browser::Chrome => "chrome.exe",
@@ -29,7 +29,7 @@ impl Browser {
         }
     }
 
-    /// Nombre para mostrar.
+    /// Display name.
     pub fn name(self) -> &'static str {
         match self {
             Browser::Chrome => "Chrome",
@@ -105,7 +105,7 @@ fn process_names() -> Vec<String> {
     names
 }
 
-/// Navegadores abiertos ahora mismo.
+/// Browsers that are currently open.
 pub fn running_browsers() -> Vec<Browser> {
     match_browsers(&process_names())
 }
@@ -136,7 +136,7 @@ mod tests {
     fn la_instantanea_de_procesos_funciona_y_no_inventa_navegadores() {
         let names = process_names();
         assert!(!names.is_empty(), "debe haber procesos");
-        // El propio proceso de pruebas está en la lista.
+        // The test process itself appears in the list.
         let me = std::env::current_exe().unwrap();
         let me = me.file_name().unwrap().to_string_lossy().to_string();
         assert!(names.iter().any(|n| n.eq_ignore_ascii_case(&me)), "{me}");
