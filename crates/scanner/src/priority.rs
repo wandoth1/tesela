@@ -127,6 +127,15 @@ fn resolve_candidate(
     p: &Path,
 ) -> Option<Candidate> {
     let long = sys::long_path(p).ok()?;
+    // `GetLongPathNameW` no normaliza `..`, y `split` los descartaba: `<raiz>\a\..\b` se validaba como `<raiz>\a\b` mientras el
+    // sistema la resolvería a `<raiz>\b`. Una candidata con `..` (o `.` inicial) es ambigua: se descarta. (`Path::components` ya
+    // normaliza los `.` intermedios.)
+    if long
+        .components()
+        .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
+    {
+        return None;
+    }
     let (prefix, comps) = split(&long);
     // La candidata es una ruta sin canonizar: las mayúsculas pueden no ser las del disco.
     if prefix != root_prefix
@@ -465,6 +474,30 @@ mod tests {
         assert_eq!(r.initial.len(), 1);
         assert!(r.takeover.is_empty());
         assert_eq!(r.adopt.len(), 2, "sub y hondo se precrean");
+    }
+
+    #[test]
+    fn una_candidata_con_punto_punto_se_descarta() {
+        // R-m2: `real\..\otra` NO es `real\otra` (que aquí existe): el sistema la resolvería a `otra`. Se descarta.
+        let t = tree();
+        std::fs::create_dir(t.0.join("real").join("otra")).unwrap();
+        let root = canonical_root(&t);
+        let sh = shared();
+        for rel in [
+            t.0.join("real").join("..").join("otra"),
+            t.0.join("real").join("sub").join("..").join("sub"),
+            t.0.join("..").join(t.0.file_name().unwrap()).join("otra"),
+        ] {
+            let r = resolve(&sh, &root, &children(), vec![rel.clone()]);
+            assert!(
+                r.targets.is_empty() && r.initial.is_empty(),
+                "se aceptó {rel:?}: {:?}",
+                r.targets
+            );
+        }
+        // Sin `..` la misma carpeta sí vale (la prueba no es vacía).
+        let r = resolve(&sh, &root, &children(), vec![t.0.join("real").join("otra")]);
+        assert_eq!(r.targets, [root.join("real").join("otra")]);
     }
 
     #[test]
