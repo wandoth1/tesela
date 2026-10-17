@@ -260,14 +260,14 @@ mod tests {
         if let Some(g) = volume_guid(&root) {
             assert!(g.starts_with('{') && g.ends_with('}'), "{g}");
         }
-        // No panica y da una de las cuatro respuestas.
+        // It does not panic and returns one of the four results.
         let _ = bin_limit(&root);
     }
 
     #[test]
     fn solo_las_rutas_de_unidades_locales_con_letra_son_locales() {
         let tmp = dunce::canonicalize(std::env::temp_dir()).unwrap();
-        // El temporal de la prueba está en una unidad local, con o sin prefijo verbatim.
+        // The test's temporary directory is on a local drive, with or without the verbatim prefix.
         assert!(is_local_path(&tmp), "{tmp:?}");
         assert!(is_local_path(&PathBuf::from(format!(
             r"\\?\{}",
@@ -277,7 +277,7 @@ mod tests {
         assert!(is_local_path(&sub));
         let letter = tmp.to_string_lossy().chars().next().unwrap();
         let rest: String = tmp.to_string_lossy().chars().skip(3).collect();
-        // La misma carpeta por la compartición administrativa o por una ruta de red: NO es local.
+        // The same directory through an administrative share or network path is NOT local.
         for host in ["localhost", "127.0.0.1", "[::1]", "equipo.invalid"] {
             let sep = '\\';
             for p in [
@@ -288,7 +288,7 @@ mod tests {
                 assert!(!is_local_path(Path::new(&p)), "{p}");
             }
         }
-        // Volumen sin letra, rutas relativas, raíces sin barra, dispositivos y unidades que no existen.
+        // Volumes without drive letters, relative paths, roots without separators, devices, and nonexistent drives.
         for p in [
             r"\\?\Volume{00000000-0000-0000-0000-000000000000}\x",
             r"\\.\C:\x",
@@ -308,14 +308,14 @@ mod tests {
 
     #[test]
     fn una_unidad_de_red_o_extraible_no_tiene_papelera_por_su_tipo() {
-        // Sin crear ninguna: el mapeo de tipos es el de GetDriveTypeW.
+        // No volumes are created: type mapping follows GetDriveTypeW.
         assert_eq!(drive_kind(Path::new("ZZ:\\")), DriveKind::Unknown);
-        // Lo que no se puede averiguar NUNCA se da por bueno.
+        // Anything that cannot be determined is NEVER treated as valid.
         assert_eq!(bin_limit(Path::new("ZZ:\\")), BinLimit::Indeterminate);
     }
 
-    /// GM-M6: el tipo de unidad es el del VOLUMEN que contiene la ruta, no el de su letra: una carpeta de `C:` que es el punto
-    /// de montaje de un disco óptico o de red no es local aunque `C:` sí lo sea. Sin raíz de volumen conocida, no es local.
+    /// GM-M6: the drive type belongs to the VOLUME containing the path, not its drive letter: a directory on `C:` that is a
+    /// mount point for an optical or network drive is not local even if `C:` is. Without a known volume root, it is not local.
     #[test]
     fn el_tipo_de_unidad_es_el_del_volumen_que_contiene_la_ruta() {
         let root_of = |p: &Path| -> Option<PathBuf> {
@@ -345,16 +345,16 @@ mod tests {
             !local(r"C:\montajes\optico\a.txt"),
             "óptico montado en una carpeta de C:"
         );
-        // Sin raíz de volumen conocida (o con letra desconocida) falla cerrado.
+        // Without a known volume root (or with an unknown drive letter), fail closed.
         assert!(!local(r"ZZ:\a.txt"));
-        // Lo que no tiene forma de unidad con letra no es local, sepa lo que se sepa del volumen.
+        // Anything that is not shaped like a drive-letter path is not local, regardless of what is known about the volume.
         assert!(!local(r"relativa\a.txt"));
         assert!(!local(
             &["\\", "\\", "servidor", "\\", "recurso", "\\", "a.txt"].concat()
         ));
     }
 
-    /// GM-M6: la enumeración de volúmenes montados en carpetas no falla y solo devuelve raíces que no son una letra de unidad.
+    /// GM-M6: enumerating volumes mounted in directories does not fail and returns only roots that are not drive letters.
     #[test]
     fn los_montajes_en_carpetas_no_incluyen_letras_de_unidad() {
         for r in mounted_roots() {

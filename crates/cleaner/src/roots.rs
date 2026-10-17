@@ -499,7 +499,7 @@ mod tests {
         assert!(!ok(r"C:\Users\<usuario>\Documents"));
         assert!(!ok(r"C:\"));
         assert!(!ok(r"C:\Windows\Temp"));
-        // Sin LocalAppData conocida no se ofrece nada.
+        // Without a known LocalAppData folder, nothing is offered.
         assert!(!accept_user_temp(
             Path::new(r"C:\Users\<usuario>\AppData\Local\Temp"),
             None

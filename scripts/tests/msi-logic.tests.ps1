@@ -9,12 +9,11 @@
   (never reads the registry or real directories), it calls Windows Installer's condition evaluator (`EvaluateCondition`)
   and runs type 51 actions with `DoAction` (they only set properties). It then:
 
-    * recorre las secuencias (las filas de InstallExecuteSequence y de InstallUISequence, en orden de numero) y comprueba la
-      carpeta, el ambito, el escritorio y el idioma que salen en cada caso, y que las condiciones de lanzamiento dejan pasar o
-      bloquean lo que tienen que bloquear;
-    * recorre los eventos de control de los botones Siguiente de las ventanas de ambito y de carpeta como lo haria la
-      interfaz (condiciones evaluadas por Windows Installer, valores formateados) y comprueba el contexto (ALLUSERS,
-      MSIINSTALLPERUSER) y la carpeta que dejan, el aviso de carpeta protegida y el bloqueo de Siguiente;
+    * walks the sequences (InstallExecuteSequence and InstallUISequence rows, in sequence-number order) and checks the
+      directory, scope, desktop shortcut, and language selected in each case, as well as which launch conditions pass or fail;
+    * walks the Next-button control events in the scope and directory dialogs as the UI would (conditions evaluated by
+      Windows Installer, formatted values) and checks the context (ALLUSERS, MSIINSTALLPERUSER), resulting directory,
+      protected-directory warning, and whether Next is blocked;
     * checks that Spanish UI strings (including accents) survive the MSI tables and that the language is selected correctly.
 
   Does NOT replace testing the real UI (rendering, tab order, control behavior), the engine's behavior when ALLUSERS
@@ -36,7 +35,7 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path (Split-Path -Parent $PSScriptRoot) 'msi-validate.ps1')
 
 $Msi = [System.IO.Path]::GetFullPath($Msi)
-if (-not (Test-Path -LiteralPath $Msi -PathType Leaf)) { throw "no existe el MSI: $Msi" }
+if (-not (Test-Path -LiteralPath $Msi -PathType Leaf)) { throw "MSI does not exist: $Msi" }
 
 # Work on a COPY under %TEMP% (the session does not modify the MSI, but this ensures the original is never touched).
 $tmp = Join-Path ([System.IO.Path]::GetTempPath()) ('tesela-logic-' + [guid]::NewGuid().ToString())
@@ -76,12 +75,12 @@ function Test-Cond($S, [string]$Condition) {
     # 0 = false, 1 = true, 2 = no condition, 3 = syntax error. An empty condition is true.
     if ([string]::IsNullOrEmpty($Condition)) { return $true }
     $r = [int][System.__ComObject].InvokeMember('EvaluateCondition', 'InvokeMethod', $null, $S, @($Condition))
-    if ($r -ge 2) { throw "la condicion no se pudo evaluar (codigo $r): $Condition" }
+    if ($r -ge 2) { throw "Could not evaluate condition (code $r): $Condition" }
     return ($r -eq 1)
 }
 function Invoke-Action($S, [string]$Name) {
     $r = [int][System.__ComObject].InvokeMember('DoAction', 'InvokeMethod', $null, $S, @($Name))
-    if ($r -ne 1) { throw "la accion $Name devolvio $r" }
+    if ($r -ne 1) { throw "Action $Name returned $r" }
 }
 function Format-Arg($S, [string]$Arg) {
     # `[Property]` -> its value; `{}` -> empty (clears the property).
@@ -107,11 +106,11 @@ try {
 $synthetic = @{ LocalAppDataFolder = 'C:\Synth\Local\' }
 $userDefault = 'C:\Synth\Local\Programs\Tesela\'
 $pf64 = $env:ProgramW6432
-$pf32 = $pf64 + ' (x86)'   # como el MSI: ICE03 no admite %ProgramFiles(x86)% dentro de [%...]
+$pf32 = $pf64 + ' (x86)'   # As in the MSI: ICE03 does not allow %ProgramFiles(x86)% inside [%...].
 $winDir = $env:SystemRoot
-if (-not $pf64 -or -not $winDir) { throw 'faltan las variables de entorno ProgramW6432 o SystemRoot (hace falta un Windows de 64 bits)' }
+if (-not $pf64 -or -not $winDir) { throw 'Missing ProgramW6432 or SystemRoot environment variables (64-bit Windows is required)' }
 $machineDefault = $pf64 + '\Tesela\'
-$unc = '\' * 2   # prefijo de ruta de red, construido en vez de escrito (privacy-check rechaza rutas de red literales)
+$unc = '\' * 2   # Network-path prefix, constructed rather than written (privacy-check rejects literal network paths).
 
 function New-Case([hashtable]$Props) {
     # New session with synthetic directories and case-specific properties. All other properties come from the package.
@@ -172,7 +171,7 @@ try {
             elseif ($_.Condition -clike '*INSTALLFOLDER><":*') { 'format' }
             else { 'desconocida' }
         })
-    Check "las cinco condiciones de lanzamiento se reconocen ($($lcNames -join ', '))" ((($lcNames | Sort-Object) -join ',') -ceq 'downgrade,format,machine->user,protected,user->machine')
+    Check "all five launch conditions are recognized ($($lcNames -join ', '))" ((($lcNames | Sort-Object) -join ',') -ceq 'downgrade,format,machine->user,protected,user->machine')
     function Get-LcFailures($Result) {
         $bad = @()
         for ($i = 0; $i -lt $lcNames.Count; $i++) { if (-not $Result[$i]) { $bad += $lcNames[$i] } }
@@ -221,7 +220,7 @@ try {
         $s = New-Case $c.Props
         # The action sets the default directory (if INSTALLFOLDER is not preset): run the server sequence.
         $res = Invoke-Sequence $s 'InstallExecuteSequence'
-        Check ("condiciones de lanzamiento: " + $c.Name) ((Get-LcFailures $res) -ceq $c.Fails) "bloquean: '$(Get-LcFailures $res)', se esperaba '$($c.Fails)'"
+        Check ("launch conditions: " + $c.Name) ((Get-LcFailures $res) -ceq $c.Fails) "blocked: '$(Get-LcFailures $res)', expected '$($c.Fails)'"
     }
 
     # Regression: with the session's REAL directories (not synthetic ones), the per-user default directory must NOT be
@@ -230,9 +229,9 @@ try {
     $real = New-Session
     $realLc = Invoke-Sequence $real 'InstallExecuteSequence'
     $realFolder = Get-Prop $real 'INSTALLFOLDER'
-    Check 'con las carpetas reales de la sesion, la instalacion por usuario por defecto no se bloquea' ((Get-LcFailures $realLc) -ceq '') "bloquean: '$(Get-LcFailures $realLc)'"
-    Check 'con las carpetas reales de la sesion, la carpeta por defecto por usuario es LocalAppData\Programs\Tesela\' ($realFolder -ceq ((Get-Prop $real 'LocalAppDataFolder') + 'Programs\Tesela\'))
-    Check 'en el contexto por usuario ProgramFiles64Folder esta redirigida al perfil (y por eso el MSI usa las variables de entorno)' ((Get-Prop $real 'ProgramFiles64Folder') -ceq ((Get-Prop $real 'LocalAppDataFolder') + 'Programs\')) 'si esto falla, Windows Installer ya no redirige: se puede simplificar el MSI'
+    Check 'with the session''s real directories, the default per-user install is not blocked' ((Get-LcFailures $realLc) -ceq '') "blocked: '$(Get-LcFailures $realLc)'"
+    Check 'with the session''s real directories, the default per-user directory is LocalAppData\Programs\Tesela\' ($realFolder -ceq ((Get-Prop $real 'LocalAppDataFolder') + 'Programs\Tesela\'))
+    Check 'in per-user context, ProgramFiles64Folder is redirected to the profile (so the MSI uses environment variables)' ((Get-Prop $real 'ProgramFiles64Folder') -ceq ((Get-Prop $real 'LocalAppDataFolder') + 'Programs\')) 'if this fails, Windows Installer no longer redirects it: the MSI can be simplified'
 
     # === 2. Directory, scope, and desktop shortcut in the server sequence (/qn) =======================================
     $seqCases = @(
@@ -257,7 +256,7 @@ try {
         $s = New-Case $c.Props
         [void](Invoke-Sequence $s 'InstallExecuteSequence')
         foreach ($k in $c.Expect.Keys) {
-            Check ("secuencia del servidor: $($c.Name) [$k]") ((Get-Prop $s $k) -ceq $c.Expect[$k]) "es '$(Get-Prop $s $k)', se esperaba '$($c.Expect[$k])'"
+            Check ("server sequence: $($c.Name) [$k]") ((Get-Prop $s $k) -ceq $c.Expect[$k]) "is '$(Get-Prop $s $k)', expected '$($c.Expect[$k])'"
         }
     }
     # With UI (UI sequence): a remembered desktop shortcut DOES check the box by default; scope is preselected.
@@ -273,7 +272,7 @@ try {
         $s = New-Case $c.Props
         [void](Invoke-Sequence $s 'InstallUISequence' -IncludeAfterLaunch)
         foreach ($k in $c.Expect.Keys) {
-            Check ("secuencia de interfaz: $($c.Name) [$k]") ((Get-Prop $s $k) -ceq $c.Expect[$k]) "es '$(Get-Prop $s $k)', se esperaba '$($c.Expect[$k])'"
+            Check ("UI sequence: $($c.Name) [$k]") ((Get-Prop $s $k) -ceq $c.Expect[$k]) "is '$(Get-Prop $s $k)', expected '$($c.Expect[$k])'"
         }
     }
 
@@ -286,24 +285,24 @@ try {
     foreach ($c in $langCases) {
         $s = New-Case @{ UILevel = 5; UserLanguageID = $c[0]; TESELA_LANG = $c[1] }
         [void](Invoke-Sequence $s 'InstallUISequence' -IncludeAfterLaunch)
-        Check "idioma: UserLanguageID=$($c[0]) TESELA_LANG='$($c[1])' -> $($c[2])" ((Get-Prop $s 'TESELA_LANG') -ceq $c[2]) "es '$(Get-Prop $s 'TESELA_LANG')'"
+        Check "language: UserLanguageID=$($c[0]) TESELA_LANG='$($c[1])' -> $($c[2])" ((Get-Prop $s 'TESELA_LANG') -ceq $c[2]) "is '$(Get-Prop $s 'TESELA_LANG')'"
     }
     # Spanish UI strings: the action sets the property, and accented characters survive the package code page.
     $s = New-Case @{ UILevel = 5 }
     $before = Get-Prop $s 'TxWelcomeTitle'
     Invoke-Action $s 'TeselaEs_TxWelcomeTitle'
     $after = Get-Prop $s 'TxWelcomeTitle'
-    Check 'texto en ingles por defecto' ($before -ceq 'Welcome to the Tesela setup') "es '$before'"
-    Check 'la accion TeselaEs_ lo cambia al espanol con acentos intactos' ($after -ceq ('Bienvenido a la instalaci' + [char]0x00F3 + 'n de Tesela')) "es '$after'"
+    Check 'default English text' ($before -ceq 'Welcome to the Tesela setup') "is '$before'"
+    Check 'TeselaEs_ action switches it to Spanish with accents intact' ($after -ceq ('Bienvenido a la instalaci' + [char]0x00F3 + 'n de Tesela')) "is '$after'"
     Invoke-Action $s 'TeselaEs_TxScopeTitle'
-    Check 'signo de interrogacion de apertura y acentos del espanol' ((Get-Prop $s 'TxScopeTitle') -ceq ([char]0x00BF + 'Para qui' + [char]0x00E9 + 'n es Tesela?'))
+    Check 'Spanish opening question mark and accents' ((Get-Prop $s 'TxScopeTitle') -ceq ([char]0x00BF + 'Para qui' + [char]0x00E9 + 'n es Tesela?'))
     Invoke-Action $s 'TeselaEs_TxExitPin'
-    Check 'la linea de anclar a la barra de tareas (espanol)' ((Get-Prop $s 'TxExitPin') -clike '*Anclar a la barra de tareas*')
+    Check 'taskbar pinning line (Spanish)' ((Get-Prop $s 'TxExitPin') -clike '*Anclar a la barra de tareas*')
     $sEn = New-Case @{ UILevel = 5 }
-    Check 'la linea de anclar a la barra de tareas (ingles)' ((Get-Prop $sEn 'TxExitPin') -clike '*Pin to taskbar*')
-    Check 'el texto honesto del ambito (ingles) dice que NO da mas permisos' ((Get-Prop $sEn 'TxScopeHonest') -clike '*does NOT give Tesela more permissions*')
+    Check 'taskbar pinning line (English)' ((Get-Prop $sEn 'TxExitPin') -clike '*Pin to taskbar*')
+    Check 'honest scope text (English) says it does NOT grant more permissions' ((Get-Prop $sEn 'TxScopeHonest') -clike '*does NOT give Tesela more permissions*')
     Invoke-Action $sEn 'TeselaEs_TxScopeHonest'
-    Check 'el texto honesto del ambito (espanol) dice que NO da mas permisos' ((Get-Prop $sEn 'TxScopeHonest') -clike '*NO da a Tesela m*permisos para limpiar*')
+    Check 'honest scope text (Spanish) says it does NOT grant more permissions' ((Get-Prop $sEn 'TxScopeHonest') -clike '*NO da a Tesela m*permisos para limpiar*')
 
     # === 4. Scope dialog: Next ================================================================================================
     $scopeCases = @(
@@ -324,25 +323,25 @@ try {
     foreach ($c in $scopeCases) {
         $s = New-UiCase $c.Props
         $dis = Test-ControlCond $s 'ScopeDlg' 'Next' 'Disable'
-        Check "ventana de ambito: $($c.Name) (Siguiente desactivado: $($c.Disabled))" ($dis -eq $c.Disabled) "desactivado = $dis"
+        Check "scope dialog: $($c.Name) (Next disabled: $($c.Disabled))" ($dis -eq $c.Disabled) "disabled = $dis"
         if (-not $c.Disabled) {
             $done = Invoke-Button $s 'ScopeDlg' 'Next'
-            Check "ventana de ambito: $($c.Name) (abre la ventana de carpeta)" (($done -join ',') -ceq 'NewDialog:FolderDlg') "eventos: $($done -join ',')"
+            Check "scope dialog: $($c.Name) (opens the directory dialog)" (($done -join ',') -ceq 'NewDialog:FolderDlg') "events: $($done -join ',')"
             foreach ($k in $c.Expect.Keys) {
-                Check "ventana de ambito: $($c.Name) [$k]" ((Get-Prop $s $k) -ceq $c.Expect[$k]) "es '$(Get-Prop $s $k)', se esperaba '$($c.Expect[$k])'"
+                Check "scope dialog: $($c.Name) [$k]" ((Get-Prop $s $k) -ceq $c.Expect[$k]) "is '$(Get-Prop $s $k)', expected '$($c.Expect[$k])'"
             }
         }
     }
     # Scope dialog warnings.
     $s = New-UiCase @{ TESELA_SCOPE = 'machine'; TESELA_PREV_USER = 'C:\A\' }
-    Check 'ventana de ambito: aviso "ya esta instalada por usuario" al elegir para todos' ((Test-ControlCond $s 'ScopeDlg' 'ConflictUser' 'Show') -and -not (Test-ControlCond $s 'ScopeDlg' 'ConflictMachine' 'Show'))
+    Check 'scope dialog: warns "already installed per-user" when choosing per-machine' ((Test-ControlCond $s 'ScopeDlg' 'ConflictUser' 'Show') -and -not (Test-ControlCond $s 'ScopeDlg' 'ConflictMachine' 'Show'))
     $s = New-UiCase @{ TESELA_SCOPE = 'user'; TESELA_PREV_MACHINE = 'C:\B\' }
-    Check 'ventana de ambito: aviso "ya esta instalada para todos" al elegir por usuario' ((Test-ControlCond $s 'ScopeDlg' 'ConflictMachine' 'Show') -and -not (Test-ControlCond $s 'ScopeDlg' 'ConflictUser' 'Show'))
+    Check 'scope dialog: warns "already installed per-machine" when choosing per-user' ((Test-ControlCond $s 'ScopeDlg' 'ConflictMachine' 'Show') -and -not (Test-ControlCond $s 'ScopeDlg' 'ConflictUser' 'Show'))
     $s = New-UiCase @{ TESELA_SCOPE = 'user' }
     $s = New-UiCase @{ TESELA_SCOPE = 'user'; TESELA_PREV_USER = 'C:\A\'; TESELA_PREV_MACHINE = 'C:\B\' }
-    Check 'ventana de ambito: M2, con la suya por usuario no sale el aviso de para todos' (-not (Test-ControlCond $s 'ScopeDlg' 'ConflictMachine' 'Show') -and -not (Test-ControlCond $s 'ScopeDlg' 'ConflictUser' 'Show'))
+    Check 'scope dialog: M2, no per-machine warning when the per-user install belongs to this user' (-not (Test-ControlCond $s 'ScopeDlg' 'ConflictMachine' 'Show') -and -not (Test-ControlCond $s 'ScopeDlg' 'ConflictUser' 'Show'))
     $s = New-UiCase @{ TESELA_SCOPE = 'user' }
-    Check 'ventana de ambito: sin conflicto no sale ningun aviso' (-not (Test-ControlCond $s 'ScopeDlg' 'ConflictMachine' 'Show') -and -not (Test-ControlCond $s 'ScopeDlg' 'ConflictUser' 'Show'))
+    Check 'scope dialog: no warning when there is no conflict' (-not (Test-ControlCond $s 'ScopeDlg' 'ConflictMachine' 'Show') -and -not (Test-ControlCond $s 'ScopeDlg' 'ConflictUser' 'Show'))
 
     # === 5. Directory dialog: Next and warnings ============================================================================
     $folderCases = @(
@@ -368,35 +367,35 @@ try {
     foreach ($c in $folderCases) {
         $s = New-UiCase $c.Props
         $done = @((Invoke-Button $s 'FolderDlg' 'Next') | Where-Object { $_ -cnotlike 'SetTargetPath:*' })
-        Check "ventana de carpeta: $($c.Name) (eventos de ventana: $($c.Result))" (($done -join ',') -ceq $c.Result) "eventos: $($done -join ',')"
-        Check "ventana de carpeta: $($c.Name) (aviso de carpeta protegida: $($c.Protected))" ((Test-ControlCond $s 'FolderDlg' 'FolderProtected' 'Show') -eq $c.Protected)
+        Check "directory dialog: $($c.Name) (dialog events: $($c.Result))" (($done -join ',') -ceq $c.Result) "events: $($done -join ',')"
+        Check "directory dialog: $($c.Name) (protected-directory warning: $($c.Protected))" ((Test-ControlCond $s 'FolderDlg' 'FolderProtected' 'Show') -eq $c.Protected)
     }
     $s = New-UiCase @{ TESELA_SCOPE = 'user'; TESELA_PREV_USER = 'C:\A\'; INSTALLFOLDER = 'C:\A\' }
-    Check 'ventana de carpeta: en una actualizacion el campo y Examinar se desactivan y sale la nota' ((Test-ControlCond $s 'FolderDlg' 'FolderEdit' 'Disable') -and (Test-ControlCond $s 'FolderDlg' 'ChangeFolder' 'Disable') -and (Test-ControlCond $s 'FolderDlg' 'FolderFixed' 'Show'))
+    Check 'directory dialog: during an upgrade, the field and Browse button are disabled and the note appears' ((Test-ControlCond $s 'FolderDlg' 'FolderEdit' 'Disable') -and (Test-ControlCond $s 'FolderDlg' 'ChangeFolder' 'Disable') -and (Test-ControlCond $s 'FolderDlg' 'FolderFixed' 'Show'))
     $s = New-UiCase @{ TESELA_SCOPE = 'user'; INSTALLFOLDER = $userDefault }
-    Check 'ventana de carpeta: sin instalacion previa el campo y Examinar estan activos y no hay nota' (-not (Test-ControlCond $s 'FolderDlg' 'FolderEdit' 'Disable') -and -not (Test-ControlCond $s 'FolderDlg' 'ChangeFolder' 'Disable') -and -not (Test-ControlCond $s 'FolderDlg' 'FolderFixed' 'Show'))
+    Check 'directory dialog: without a previous install, the field and Browse button are enabled and no note appears' (-not (Test-ControlCond $s 'FolderDlg' 'FolderEdit' 'Disable') -and -not (Test-ControlCond $s 'FolderDlg' 'ChangeFolder' 'Disable') -and -not (Test-ControlCond $s 'FolderDlg' 'FolderFixed' 'Show'))
     $s = New-UiCase @{ TESELA_SCOPE = 'machine'; TESELA_PREV_USER = 'C:\A\' }
-    Check 'ventana de carpeta: una instalacion previa del OTRO ambito no fija la carpeta' (-not (Test-ControlCond $s 'FolderDlg' 'FolderEdit' 'Disable'))
+    Check 'directory dialog: a previous install in the OTHER scope does not lock the directory' (-not (Test-ControlCond $s 'FolderDlg' 'FolderEdit' 'Disable'))
     # Browse button: sets _BrowseProperty to INSTALLFOLDER and opens the native dialog.
     $s = New-UiCase @{ TESELA_SCOPE = 'user' }
     $done = Invoke-Button $s 'FolderDlg' 'ChangeFolder'
-    Check 'Examinar abre el dialogo nativo sobre INSTALLFOLDER' ((($done -join ',') -ceq 'SpawnDialog:BrowseDlg') -and (Get-Prop $s '_BrowseProperty') -ceq 'INSTALLFOLDER')
+    Check 'Browse opens the native dialog for INSTALLFOLDER' ((($done -join ',') -ceq 'SpawnDialog:BrowseDlg') -and (Get-Prop $s '_BrowseProperty') -ceq 'INSTALLFOLDER')
 
     # === 6. Ready and completion dialogs =====================================================================================
     $s = New-Case @{ TESELA_SCOPE = 'machine'; DESKTOPSHORTCUT = '1'; WIX_UPGRADE_DETECTED = '{X}' }
-    Check 'ventana de listo: para todos, con escritorio y actualizacion' ((Test-ControlCond $s 'VerifyReadyDlg' 'ScopeMachine' 'Show') -and -not (Test-ControlCond $s 'VerifyReadyDlg' 'ScopeUser' 'Show') -and (Test-ControlCond $s 'VerifyReadyDlg' 'Desktop' 'Show') -and (Test-ControlCond $s 'VerifyReadyDlg' 'Upgrade' 'Show'))
+    Check 'ready dialog: per-machine, with desktop shortcut and upgrade' ((Test-ControlCond $s 'VerifyReadyDlg' 'ScopeMachine' 'Show') -and -not (Test-ControlCond $s 'VerifyReadyDlg' 'ScopeUser' 'Show') -and (Test-ControlCond $s 'VerifyReadyDlg' 'Desktop' 'Show') -and (Test-ControlCond $s 'VerifyReadyDlg' 'Upgrade' 'Show'))
     $s = New-Case @{ TESELA_SCOPE = 'user' }
-    Check 'ventana de listo: por usuario, sin escritorio ni actualizacion' ((Test-ControlCond $s 'VerifyReadyDlg' 'ScopeUser' 'Show') -and -not (Test-ControlCond $s 'VerifyReadyDlg' 'Desktop' 'Show') -and -not (Test-ControlCond $s 'VerifyReadyDlg' 'Upgrade' 'Show'))
+    Check 'ready dialog: per-user, without desktop shortcut or upgrade' ((Test-ControlCond $s 'VerifyReadyDlg' 'ScopeUser' 'Show') -and -not (Test-ControlCond $s 'VerifyReadyDlg' 'Desktop' 'Show') -and -not (Test-ControlCond $s 'VerifyReadyDlg' 'Upgrade' 'Show'))
     $s = New-Case @{ TESELA_SCOPE = 'machine' }
-    Check 'ventana de listo: para todos se muestra el boton Instalar CON el escudo de UAC y se oculta el normal' ((Test-ControlCond $s 'VerifyReadyDlg' 'InstallElevated' 'Show') -and (Test-ControlCond $s 'VerifyReadyDlg' 'Install' 'Hide'))
+    Check 'ready dialog: per-machine shows the Install button WITH the UAC shield and hides the regular button' ((Test-ControlCond $s 'VerifyReadyDlg' 'InstallElevated' 'Show') -and (Test-ControlCond $s 'VerifyReadyDlg' 'Install' 'Hide'))
     $s = New-Case @{ TESELA_SCOPE = 'user' }
-    Check 'ventana de listo: por usuario se muestra el boton Instalar normal (sin escudo)' (-not (Test-ControlCond $s 'VerifyReadyDlg' 'InstallElevated' 'Show') -and -not (Test-ControlCond $s 'VerifyReadyDlg' 'Install' 'Hide'))
+    Check 'ready dialog: per-user shows the regular Install button (without shield)' (-not (Test-ControlCond $s 'VerifyReadyDlg' 'InstallElevated' 'Show') -and -not (Test-ControlCond $s 'VerifyReadyDlg' 'Install' 'Hide'))
     $s = New-Case @{}
-    Check 'ventana de fin: instalacion nueva muestra el titulo de instalada, el inicio y la linea de anclar' ((Test-ControlCond $s 'ExitDialog' 'TitleInstalled' 'Show') -and (Test-ControlCond $s 'ExitDialog' 'Pin' 'Show') -and -not (Test-ControlCond $s 'ExitDialog' 'TitleRemoved' 'Show'))
+    Check 'exit dialog: a new install shows the installed title, Start option, and pinning line' ((Test-ControlCond $s 'ExitDialog' 'TitleInstalled' 'Show') -and (Test-ControlCond $s 'ExitDialog' 'Pin' 'Show') -and -not (Test-ControlCond $s 'ExitDialog' 'TitleRemoved' 'Show'))
     $s = New-Case @{ REMOVE = 'ALL' }
-    Check 'ventana de fin: al desinstalar muestra el titulo de desinstalada y NO la linea de anclar' ((Test-ControlCond $s 'ExitDialog' 'TitleRemoved' 'Show') -and -not (Test-ControlCond $s 'ExitDialog' 'Pin' 'Show') -and -not (Test-ControlCond $s 'ExitDialog' 'TitleInstalled' 'Show'))
+    Check 'exit dialog: uninstall shows the removed title and NOT the pinning line' ((Test-ControlCond $s 'ExitDialog' 'TitleRemoved' 'Show') -and -not (Test-ControlCond $s 'ExitDialog' 'Pin' 'Show') -and -not (Test-ControlCond $s 'ExitDialog' 'TitleInstalled' 'Show'))
     $s = New-Case @{ REINSTALL = 'ALL' }
-    Check 'ventana de fin: al reparar muestra el titulo de reparada' ((Test-ControlCond $s 'ExitDialog' 'TitleRepaired' 'Show') -and -not (Test-ControlCond $s 'ExitDialog' 'TitleInstalled' 'Show'))
+    Check 'exit dialog: repair shows the repaired title' ((Test-ControlCond $s 'ExitDialog' 'TitleRepaired' 'Show') -and -not (Test-ControlCond $s 'ExitDialog' 'TitleInstalled' 'Show'))
 } finally {
     # The session has the MSI open: release it before deleting the copy.
     Close-Session
@@ -410,9 +409,9 @@ try {
 $MinChecks = 187
 if ($total -lt $MinChecks) { $failures.Add("only $total checks ran; expected at least $MinChecks") }
 if ($failures.Count -gt 0) {
-    Write-Host "msi-logic.tests: $($failures.Count) de $total comprobaciones fallan:" -ForegroundColor Red
+    Write-Host "msi-logic.tests: $($failures.Count) of $total checks failed:" -ForegroundColor Red
     $failures | ForEach-Object { Write-Host "  $_" }
     exit 1
 }
-Write-Host "msi-logic.tests: OK ($total comprobaciones)"
+Write-Host "msi-logic.tests: OK ($total checks)"
 exit 0

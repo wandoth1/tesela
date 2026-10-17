@@ -365,10 +365,10 @@ impl Elevation for RealElevation {
     }
 }
 
-/// SOLO PRUEBAS: "no elevado", el valor POR DEFECTO de todo `Cleaner` en las pruebas. Los ejecutores de integración continua
-/// (`windows-latest`) corren ELEVADOS (UAC desactivado) y, con la consulta real, toda prueba que limpia daría `Elevated`: las
-/// pruebas no dependen del proceso que las lanza. Solo las pruebas de E1 inyectan "elevado" (`Cleaner::with_elevation`). En
-/// producción el valor por defecto es siempre [`RealElevation`].
+/// Tests only: "not elevated," the DEFAULT value for every test `Cleaner`. Continuous integration runners
+/// (`windows-latest`) run elevated (UAC disabled), so using the real query would make every test that cleans return
+/// `Elevated`; tests do not depend on the process that launches them. Only E1 tests inject an elevated state
+/// (`Cleaner::with_elevation`). In production, the default is always [`RealElevation`].
 #[cfg(test)]
 pub(crate) struct NotElevated;
 

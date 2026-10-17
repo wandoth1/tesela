@@ -406,13 +406,13 @@ mod tests {
             AddOutcome::Added { absorbed: 0 }
         );
         assert_eq!(b.len(), 3);
-        // El ancestro `a` absorbe a los dos archivos.
+        // Ancestor `a` absorbs both files.
         assert_eq!(
             b.add_path(p(r"C:\datos\a"), &pr),
             AddOutcome::Added { absorbed: 2 }
         );
         assert_eq!(b.len(), 2);
-        // Un descendiente de `a` ya está cubierto; igual que el propio `a`.
+        // A descendant of `a` is already covered, as is `a` itself.
         assert_eq!(
             b.add_path(p(r"C:\datos\a\z.bin"), &pr),
             AddOutcome::AlreadyCovered
@@ -425,13 +425,13 @@ mod tests {
             b.add_path(p(r"c:/datos/a/sub/deep.bin"), &pr),
             AddOutcome::AlreadyCovered
         );
-        // Un hermano con prefijo de nombre parecido no se confunde.
+        // A sibling with a similar name prefix is not confused with it.
         assert_eq!(
             b.add_path(p(r"C:\datos\ab"), &pr),
             AddOutcome::Added { absorbed: 0 }
         );
         assert_eq!(b.len(), 3);
-        // El padre de todo absorbe todo.
+        // The top-level parent absorbs everything.
         assert_eq!(
             b.add_path(p(r"C:\datos"), &pr),
             AddOutcome::Added { absorbed: 3 }
@@ -460,7 +460,7 @@ mod tests {
             AddOutcome::Rejected(Verdict::ContentsOnly)
         );
         assert!(b.is_empty());
-        // Su contenido sí.
+        // Its contents are allowed.
         assert_eq!(
             b.add_path(p(r"C:\Users\<usuario>\Videos\viaje"), &pr),
             AddOutcome::Added { absorbed: 0 }
@@ -472,7 +472,7 @@ mod tests {
         let pr = prot();
         let mut b = Basket::new();
         let sep = '\\';
-        // Hacia un disco del propio equipo por su compartición administrativa, por IP, por un servidor y en forma verbatim.
+        // A local disk accessed through its administrative share, by IP address, through a server, and with a verbatim path.
         for host in ["localhost", "127.0.0.1", "servidor"] {
             for q in [
                 format!("{sep}{sep}{host}{sep}c${sep}datos{sep}x.bin"),
@@ -482,7 +482,7 @@ mod tests {
                 assert_eq!(b.add_contents_of(p(&q), &pr), AddOutcome::NotLocal, "{q}");
             }
         }
-        // Un volumen sin letra y una ruta relativa tampoco.
+        // A volume without a drive letter and a relative path are rejected too.
         assert_eq!(
             b.add_path(
                 p(r"\\?\Volume{00000000-0000-0000-0000-000000000000}\x"),
@@ -492,7 +492,7 @@ mod tests {
         );
         assert_eq!(b.add_path(p(r"datos\x.bin"), &pr), AddOutcome::NotLocal);
         assert!(b.is_empty());
-        // La misma ruta con letra de unidad sí se acepta (y la forma verbatim con letra también).
+        // The same path with a drive letter is accepted (including its verbatim form).
         assert_eq!(
             b.add_path(p(r"C:\datos\x.bin"), &pr),
             AddOutcome::Added { absorbed: 0 }
@@ -509,7 +509,7 @@ mod tests {
         let mut b = Basket::new();
         b.add_path(p(r"C:\Users\<usuario>\Videos\viaje"), &pr);
         b.add_path(p(r"C:\Users\<usuario>\Videos\fiesta.mp4"), &pr);
-        // "Contenido de Videos" absorbe lo suelto de dentro y cubre lo que se añada después.
+        // "Contents of Videos" absorbs standalone items inside it and covers later additions.
         assert_eq!(
             b.add_contents_of(p(r"C:\Users\<usuario>\Videos"), &pr),
             AddOutcome::Added { absorbed: 2 }
@@ -523,7 +523,7 @@ mod tests {
             AddOutcome::AlreadyCovered
         );
         assert_eq!(b.len(), 1);
-        // Solo las carpetas conocidas admiten "Contenido de".
+        // Only known folders accept "Contents of."
         assert_eq!(
             b.add_contents_of(p(r"C:\datos"), &pr),
             AddOutcome::Rejected(Verdict::Allowed)
@@ -548,8 +548,8 @@ mod tests {
         assert!(b.is_empty());
     }
 
-    /// El lote da el mismo resultado que añadir uno a uno en orden: mismas comprobaciones de protección por elemento,
-    /// misma absorción de lo que ya había y misma lista final.
+    /// A batch produces the same result as adding items one at a time in order: the same per-item protection checks,
+    /// the same absorption of existing items, and the same final list.
     #[test]
     fn un_lote_equivale_a_anadir_uno_a_uno() {
         let pr = prot();
@@ -572,7 +572,7 @@ mod tests {
             (p(r"C:\datos"), BatchKind::ContentsOf),
             (p(&format!("{sep}{sep}srv{sep}c${sep}x")), BatchKind::Path),
             (p(r"C:\Users\<usuario>\Videos\viaje"), BatchKind::Path),
-            // Un descendiente ANTES que su ancestro en el mismo lote: uno a uno entra y luego lo absorbe el ancestro.
+            // A descendant BEFORE its ancestor in the same batch: added one by one, it is accepted and then absorbed by the ancestor.
             (p(r"C:\datos\d\x.bin"), BatchKind::Path),
             (p(r"C:\datos\d"), BatchKind::Path),
         ];
@@ -591,7 +591,7 @@ mod tests {
         let rev = batch.rev();
         let got = batch.add_batch(items, &pr);
         assert_ne!(batch.rev(), rev, "el lote cambia la versión");
-        // Mismos rechazos y mismos "ya cubierta"; en lo añadido solo puede variar el recuento de absorbidos.
+        // Same rejections and "already covered" results; only the absorbed-item count can differ among additions.
         assert_eq!(got[nested_first], AddOutcome::AlreadyCovered);
         assert!(matches!(expect[nested_first], AddOutcome::Added { .. }));
         for (i, (g, e)) in got.iter().zip(&expect).enumerate() {
@@ -654,14 +654,14 @@ mod tests {
         assert!(b.covers(&v.join("viaje")));
         b.clear();
         assert!(!b.has_contents_of(&v) && !b.covers(&v.join("viaje")));
-        // Dos cestas distintas no comparten versión aunque hagan lo mismo.
+        // Two different baskets do not share a version, even if they contain the same items.
         let (mut x, mut y) = (Basket::new(), Basket::new());
         x.add_path(p(r"C:\datos\q"), &pr);
         y.add_path(p(r"C:\datos\q"), &pr);
         assert_ne!(x.rev(), y.rev());
     }
 
-    /// Escala: 5 000 hermanos en un lote y la cesta sigue respondiendo (con el recorrido lineal de antes eran segundos).
+    /// Scale test: 5,000 siblings in one batch; the basket remains responsive (the previous linear scan took seconds).
     #[test]
     fn cinco_mil_hermanos_en_un_lote_y_otro_lote_sobre_la_cesta_llena() {
         let pr = prot();
@@ -678,7 +678,7 @@ mod tests {
         let r = b.add_batch(items.clone(), &pr);
         assert!(r.iter().all(|o| matches!(o, AddOutcome::Added { .. })));
         assert_eq!(b.len(), 5000);
-        // Otra vez el mismo lote: todo cubierto; y un ancestro lo absorbe de una vez.
+        // Repeat the same batch: everything is covered, and an ancestor absorbs it all at once.
         let r = b.add_batch(items, &pr);
         assert!(r.iter().all(|o| *o == AddOutcome::AlreadyCovered));
         assert_eq!(

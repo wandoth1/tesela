@@ -1268,7 +1268,7 @@ mod fit_tests {
 
     #[test]
     fn ante_cualquier_duda_no_cabe() {
-        // Volumen desconocido o límite indeterminado: Unfit(Unknown), nunca Fits.
+        // Unknown volume or indeterminate limit: Unfit(Unknown), never Fits.
         let mut f = facts(BinLimit::Max(1 << 40));
         f.volume_known = false;
         assert_eq!(fit_decide(1, &f), Fit::Unfit(UnfitReason::Unknown));
@@ -1276,7 +1276,7 @@ mod fit_tests {
             fit_decide(1, &facts(BinLimit::Indeterminate)),
             Fit::Unfit(UnfitReason::Unknown)
         );
-        // Sin Papelera o con la Papelera desactivada.
+        // No Recycle Bin, or the Recycle Bin is disabled.
         assert_eq!(
             fit_decide(1, &facts(BinLimit::NoBin)),
             Fit::Unfit(UnfitReason::NoBin)
@@ -1295,8 +1295,8 @@ mod fit_tests {
         assert_eq!(fit_decide(1, &f), Fit::Unfit(UnfitReason::Policy));
     }
 
-    /// B2: sin `MaxCapacity` en el registro no hay capacidad que garantizar: no cabe, con su propio motivo, sea cual sea
-    /// el tamaño (ya no se asume el 5 % del volumen).
+    /// B2: without `MaxCapacity` in the registry, capacity cannot be guaranteed: the item does not fit, with its own reason, regardless of
+    /// its size (the volume's 5% is no longer assumed).
     #[test]
     fn sin_capacidad_configurada_no_cabe_nada_con_su_propio_motivo() {
         let f = facts(BinLimit::Unknown);
@@ -1307,7 +1307,7 @@ mod fit_tests {
                 "{bytes}"
             );
         }
-        // Con límite configurado sí cabe lo pequeño; el motivo nuevo es distinto del de "no se pudo comprobar".
+        // With a configured limit, small items fit; the new reason differs from "could not verify."
         assert_eq!(
             fit_decide(1_000, &facts(BinLimit::Max(100_000_000_000))),
             Fit::Fits
@@ -1322,7 +1322,7 @@ mod fit_tests {
         assert_eq!(fit_decide(1, &f), Fit::Unfit(UnfitReason::PathTooLong));
         f.path_len = 258;
         assert_eq!(fit_decide(1, &f), Fit::Fits);
-        // Con cualquier otra duda a la vez, gana la ruta larga (el motivo más concreto).
+        // If any other uncertainty is present too, the long path takes precedence (the more specific reason).
         f.path_len = 300;
         f.volume_known = false;
         assert_eq!(fit_decide(1, &f), Fit::Unfit(UnfitReason::PathTooLong));
@@ -1330,11 +1330,11 @@ mod fit_tests {
 
     #[test]
     fn el_mismo_calculo_sobre_el_volumen_real_no_falla_abierto() {
-        // El temporal de la prueba existe: la respuesta es una de las dos, y un tamaño absurdo nunca "cabe".
+        // The test temp folder exists: either result is valid, but an absurdly large item never "fits."
         let tmp = dunce::canonicalize(std::env::temp_dir()).unwrap();
         assert!(matches!(fit_for(&tmp, 1), Fit::Fits | Fit::Unfit(_)));
         assert!(matches!(fit_for(&tmp, u64::MAX / 2), Fit::Unfit(_)));
-        // Una ruta sin volumen conocido no cabe.
+        // A path with no known volume does not fit.
         assert!(matches!(
             fit_for(Path::new("ZZ:\\no\\existe"), 1),
             Fit::Unfit(_)

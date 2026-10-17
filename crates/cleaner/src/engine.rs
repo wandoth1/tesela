@@ -1492,9 +1492,9 @@ fn process_child(
     true
 }
 
-/// Ganchos de las pruebas de carreras: se ejecutan justo ANTES de abrir cada entrada (ya listada y aprobada), que es
-/// donde un atacante (o un programa) podría sustituirla. Solo existen en las pruebas y solo actúan sobre rutas que
-/// cuelgan de la carpeta de la prueba que los instaló (las demás pruebas corren en paralelo).
+/// Hooks for race-condition tests: they run just BEFORE opening each entry (already listed and approved),
+/// where an attacker (or a program) could replace it. They exist only in tests and act only on paths under
+/// the test folder that installed them (other tests run in parallel).
 #[cfg(test)]
 pub(crate) mod test_hooks {
     use crate::paths::PathKey;
@@ -1502,20 +1502,20 @@ pub(crate) mod test_hooks {
     use std::sync::{Arc, Mutex};
 
     type Hook = Arc<dyn Fn(&Path) + Send + Sync>;
-    /// (id, etapa, raíz, gancho). Etapa 0: justo antes de abrir una entrada; etapa 1: justo antes de entregar una ruta a
-    /// la shell (con el handle ya soltado: la ventana que el diseño de la Papelera acota por el destino).
+    /// (id, stage, root, hook). Stage 0: just before opening an entry; stage 1: just before passing a path to
+    /// the shell (after releasing the handle: the window the Recycle Bin design bounds by destination).
     static HOOKS: Mutex<Vec<(u64, u8, PathKey, Hook)>> = Mutex::new(Vec::new());
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
-    /// Quita el gancho al soltarla.
+    /// Removes the hook when dropped.
     pub struct HookGuard(u64);
 
-    /// Instala un gancho que solo se ejecuta para rutas bajo `root`, antes de abrirlas.
+    /// Installs a hook that runs only for paths under `root`, before they are opened.
     pub fn install(root: PathBuf, f: impl Fn(&Path) + Send + Sync + 'static) -> HookGuard {
         install_at(0, root, f)
     }
 
-    /// Instala un gancho que solo se ejecuta para rutas bajo `root`, justo antes de que el receptor de la shell las compruebe.
+    /// Installs a hook that runs only for paths under `root`, just before the shell event sink checks them.
     pub fn install_before_pre_delete(
         root: PathBuf,
         f: impl Fn(&Path) + Send + Sync + 'static,
@@ -1523,7 +1523,7 @@ pub(crate) mod test_hooks {
         install_at(2, root, f)
     }
 
-    /// Instala un gancho que solo se ejecuta para rutas bajo `root`, justo antes de entregarlas a la shell.
+    /// Installs a hook that runs only for paths under `root`, just before passing them to the shell.
     pub fn install_before_shell(
         root: PathBuf,
         f: impl Fn(&Path) + Send + Sync + 'static,
@@ -1573,8 +1573,8 @@ pub(crate) mod test_hooks {
         run(0, p);
     }
 
-    /// Etapa 2: justo ANTES de que el receptor de la shell compruebe un elemento (`PreDeleteItem`), ya con la operación en
-    /// marcha (A3-M1: la ventana entre la última comprobación del ejecutor y la del receptor).
+    /// Stage 2: just BEFORE the shell event sink checks an item (`PreDeleteItem`), after the operation has started
+    /// (A3-M1: the window between the executor's last check and the sink's check).
     pub fn before_pre_delete(p: &Path) {
         run(2, p);
     }
