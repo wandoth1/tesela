@@ -771,15 +771,15 @@ struct WatchInner {
 // `buf` mientras `pending` es cierto, la caja no se mueve y todo acceso desde Rust pasa por el `Mutex` de `DirWatch`.
 unsafe impl Send for WatchInner {}
 
-/// SOLO PRUEBAS: raíces bajo las que `DirWatch::start` falla con "acceso denegado" (para probar que sin vigilancia no se
-/// envía). Solo actúa sobre rutas que cuelgan de la carpeta de la prueba que lo instaló.
+/// Tests only: roots under which `DirWatch::start` fails with "access denied" (to verify that an item is not sent without
+/// monitoring). Acts only on paths under the test folder that installed it.
 #[cfg(test)]
 static FAIL_WATCH: std::sync::Mutex<Vec<(u64, crate::paths::PathKey)>> =
     std::sync::Mutex::new(Vec::new());
 #[cfg(test)]
 static FAIL_WATCH_NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
-/// SOLO PRUEBAS: guarda que quita el fallo forzado al soltarla.
+/// Tests only: guard that removes the forced failure when dropped.
 #[cfg(test)]
 pub struct FailWatchGuard(u64);
 
@@ -793,7 +793,7 @@ impl Drop for FailWatchGuard {
     }
 }
 
-/// SOLO PRUEBAS: hace que `DirWatch::start` falle para lo que cuelgue de `root`.
+/// Tests only: makes `DirWatch::start` fail for paths under `root`.
 #[cfg(test)]
 pub fn fail_watch_under(root: &Path) -> FailWatchGuard {
     let id = FAIL_WATCH_NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -997,7 +997,7 @@ fn open_dir_for_watch(path: &Path) -> Result<Handle, Win32> {
     Ok(Handle(h))
 }
 
-/// SOLO PARA PRUEBAS: preasigna `bytes` en disco (`FileAllocationInfo`) SIN cambiar el tamaño lógico (`EndOfFile`).
+/// Tests only: preallocates `bytes` on disk (`FileAllocationInfo`) WITHOUT changing the logical size (`EndOfFile`).
 #[cfg(test)]
 pub fn preallocate_for_test(path: &Path, bytes: i64) -> Result<(), Win32> {
     use windows_sys::Win32::Storage::FileSystem::{
@@ -1007,7 +1007,7 @@ pub fn preallocate_for_test(path: &Path, bytes: i64) -> Result<(), Win32> {
     let info = FILE_ALLOCATION_INFO {
         AllocationSize: bytes,
     };
-    // SAFETY: `h.0` es un handle válido abierto con FILE_WRITE_DATA; el puntero apunta a `info` y se pasa su tamaño.
+    // SAFETY: `h.0` is a valid handle opened with FILE_WRITE_DATA; the pointer refers to `info`, whose size is passed.
     let ok = unsafe {
         SetFileInformationByHandle(
             h.0,
@@ -1019,13 +1019,13 @@ pub fn preallocate_for_test(path: &Path, bytes: i64) -> Result<(), Win32> {
     if ok == 0 { Err(last_error()) } else { Ok(()) }
 }
 
-/// SOLO PARA PRUEBAS: borra `path` con la semántica CLÁSICA de Windows (`FileDispositionInfo`, sin POSIX), como hace la shell:
-/// si otro handle sigue abierto, el nombre queda visible como "pendiente de borrar" hasta que se cierre.
+/// Tests only: deletes `path` with classic Windows semantics (`FileDispositionInfo`, without POSIX), as the shell does:
+/// if another handle remains open, the name stays visible as "delete pending" until that handle is closed.
 #[cfg(test)]
 pub fn delete_legacy_for_test(path: &Path) -> Result<(), Win32> {
     let h = open_path(path, DELETE | FILE_READ_ATTRIBUTES, FILE_SHARE_ALL)?;
     let legacy = FILE_DISPOSITION_INFO { DeleteFile: true };
-    // SAFETY: `h.0` es un handle válido abierto con DELETE; el puntero apunta a `legacy` y se pasa su tamaño.
+    // SAFETY: `h.0` is a valid handle opened with DELETE; the pointer refers to `legacy`, whose size is passed.
     let ok = unsafe {
         SetFileInformationByHandle(
             h.0,
@@ -1037,7 +1037,7 @@ pub fn delete_legacy_for_test(path: &Path) -> Result<(), Win32> {
     if ok == 0 { Err(last_error()) } else { Ok(()) }
 }
 
-/// SOLO PARA PRUEBAS: fija creación, último acceso, última escritura y cambio del objeto a `filetime` (FILETIME).
+/// Tests only: sets the object's creation, last-access, last-write, and change times to `filetime` (FILETIME).
 #[cfg(test)]
 pub fn set_all_times_for_test(path: &Path, filetime: i64) -> Result<(), Win32> {
     use windows_sys::Win32::Storage::FileSystem::FILE_WRITE_ATTRIBUTES;
@@ -1053,7 +1053,7 @@ pub fn set_all_times_for_test(path: &Path, filetime: i64) -> Result<(), Win32> {
         ChangeTime: filetime,
         FileAttributes: 0,
     };
-    // SAFETY: `h.0` es un handle válido con FILE_WRITE_ATTRIBUTES; el puntero apunta a `info` y se pasa su tamaño.
+    // SAFETY: `h.0` is a valid handle with FILE_WRITE_ATTRIBUTES; the pointer refers to `info`, whose size is passed.
     let ok = unsafe {
         SetFileInformationByHandle(
             h.0,
@@ -1077,7 +1077,7 @@ mod tests {
 
     #[test]
     fn rutas_largas_con_prefijo_y_unc() {
-        // Las rutas de red se construyen por partes: el repositorio no admite rutas UNC literales.
+        // Network paths are assembled in parts: the repository does not allow literal UNC paths.
         let net_in = ["\\\\", "srv", "\\", "share", "\\", "x"].concat();
         let net_out = ["\\\\?\\", "UNC", "\\", "srv", "\\", "share", "\\", "x"].concat();
         let v = wide_long(Path::new(r"C:\a\b"));
@@ -1124,20 +1124,20 @@ mod tests {
         assert!(m.alloc >= 5000);
         assert_ne!(m.identity.file_id, 0);
         assert_eq!(final_path(&h).unwrap(), sb.long("a/uno.bin"));
-        // La misma identidad por otro handle.
+        // The same identity through another handle.
         let m2 = meta(&open_for_query(&f).unwrap()).unwrap();
         assert_eq!(m.identity, m2.identity);
-        // Un directorio.
+        // A directory.
         let d = open_for_query(&sb.path("a")).unwrap();
         let md = meta(&d).unwrap();
         assert!(md.is_dir);
         assert_ne!(md.identity, m.identity);
-        // Un enlace duro cuenta 2 enlaces y conserva la identidad.
+        // A hard link has two links and retains the same identity.
         sb.hard_link("a/uno.bin", "a/dos.bin");
         let m3 = meta(&open_for_query(&f).unwrap()).unwrap();
         assert_eq!(m3.links, 2);
         assert_eq!(m3.identity, m.identity);
-        // Un archivo inexistente falla con "no encontrado".
+        // Opening a nonexistent file fails with "not found".
         assert_eq!(open_for_query(&sb.path("a/no.bin")).err(), Some(2));
     }
 
@@ -1157,7 +1157,7 @@ mod tests {
         assert_eq!(names, ["sub", "x.bin", "y.bin"]);
         assert!(es[0].is_dir() && !es[1].is_dir());
         assert_eq!(es[2].logical, 9000);
-        // Abrir cada hijo RELATIVO y comparar la identidad con la del listado.
+        // Open each child RELATIVE to its parent and compare its identity with the listing.
         for e in &es {
             let ex = if e.is_dir() {
                 Expect::Dir
@@ -1167,10 +1167,10 @@ mod tests {
             let h = open_child_for_query(&dh, &e.name, ex).unwrap();
             assert_eq!(meta(&h).unwrap().identity.file_id, e.file_id);
         }
-        // El tipo impuesto por el sistema: un archivo no se abre como directorio ni al revés.
+        // The system-enforced type: a file cannot be opened as a directory, or vice versa.
         assert!(open_child_for_query(&dh, &w("x.bin"), Expect::Dir).is_err());
         assert!(open_child_for_query(&dh, &w("sub"), Expect::File).is_err());
-        // Nombres con separadores o vacíos se rechazan antes del kernel.
+        // Names containing separators or empty names are rejected before reaching the kernel.
         assert_eq!(
             open_child_for_query(&dh, &w(r"sub\x"), Expect::File).err(),
             Some(ERROR_INVALID_PARAMETER)
@@ -1180,8 +1180,8 @@ mod tests {
             Some(ERROR_INVALID_PARAMETER)
         );
         assert!(open_child_for_query(&dh, &w(".."), Expect::Dir).is_err());
-        // H6.10: un `:` (flujo de datos alternativo, `::$INDEX_ALLOCATION`) no es un nombre de entrada: se rechaza antes
-        // del kernel aunque el flujo exista.
+        // H6.10: `:` (an alternate data stream, `::$INDEX_ALLOCATION`) is not an entry name: reject it before the kernel,
+        // even when the stream exists.
         std::fs::write(sb.path("d/x.bin:flujo"), b"oculto").unwrap();
         for bad in [
             "x.bin:flujo",
@@ -1208,7 +1208,7 @@ mod tests {
         let sb = Sandbox::new();
         let f = sb.write("e/uso.bin", 2000);
         let dh = open_dir_for_listing(&sb.path("e")).unwrap();
-        // `std::fs::File::open` comparte lectura, escritura Y borrado (el caso de Chromium).
+        // `std::fs::File::open` shares read, write, AND delete access (the Chromium case).
         let other = fs::File::open(&f).unwrap();
         assert_eq!(
             open_file_exclusive(&dh, &w("uso.bin")).err(),
@@ -1225,7 +1225,7 @@ mod tests {
         let f = sb.write("b/f.bin", 3000);
         sb.write("b/dir/g.bin", 10);
         let bh = open_dir_for_listing(&sb.path("b")).unwrap();
-        // Un archivo de solo lectura se borra igual (IGNORE_READONLY).
+        // A read-only file is still deleted (IGNORE_READONLY).
         let mut perm = fs::metadata(&f).unwrap().permissions();
         perm.set_readonly(true);
         fs::set_permissions(&f, perm).unwrap();
@@ -1233,11 +1233,11 @@ mod tests {
         delete_on_handle(&fh).unwrap();
         drop(fh);
         assert!(!f.exists());
-        // Un directorio no vacío no se borra.
+        // A nonempty directory is not deleted.
         let dh = open_dir_for_delete(&bh, &w("dir")).unwrap();
         assert_eq!(delete_on_handle(&dh).err(), Some(DIR_NOT_EMPTY));
         assert!(sb.path("b/dir/g.bin").exists());
-        // Vacío sí.
+        // An empty one is.
         let gh = open_file_exclusive(&dh, &w("g.bin")).unwrap();
         delete_on_handle(&gh).unwrap();
         drop(gh);
@@ -1251,7 +1251,7 @@ mod tests {
         let sb = Sandbox::new();
         let f = sb.write("r/pequeno.bin", 9_000);
         let h = open_path_exclusive_read(&f).unwrap();
-        // Con el handle abierto en exclusiva nadie más lo abre (ni para leer).
+        // While the handle is open exclusively, nobody else can open it (even for reading).
         assert_eq!(
             fs::File::open(&f).err().and_then(|e| e.raw_os_error()),
             Some(SHARING_VIOLATION as i32)
@@ -1259,7 +1259,7 @@ mod tests {
         let bytes = read_small(&h, 70_000).unwrap();
         assert_eq!(bytes.len(), 9_000);
         assert_eq!(bytes[0], 1);
-        // Pasarse del tope falla.
+        // Exceeding the limit fails.
         let g = sb.write("r/otro.bin", 5_000);
         let h2 = open_path_exclusive_read(&g).unwrap();
         assert_eq!(read_small(&h2, 100).err(), Some(ERROR_FILE_TOO_LARGE));
@@ -1294,9 +1294,9 @@ mod tests {
         let m = meta(&h).unwrap();
         assert!(m.is_reparse());
         assert_eq!(m.reparse_tag, 0xA000_0003);
-        // La ruta final del propio enlace es la del enlace, no la del destino.
+        // The link's final path is the link itself, not its target.
         assert_eq!(final_path(&h).unwrap(), sb.long("l/enlace"));
-        // Y su identidad es distinta de la del destino.
+        // Its identity also differs from the target's.
         let target = meta(&open_for_query(&sb.path("t")).unwrap()).unwrap();
         assert_ne!(m.identity, target.identity);
     }
@@ -1307,27 +1307,27 @@ mod tests {
         sb.mkdir("real/a/b");
         sb.mkdir("destino/dentro");
         sb.junction("real/enlace", "destino");
-        // Una cadena limpia (incluida la del propio `%TEMP%` de la prueba) se abre y da la ruta canónica.
+        // A clean path (including the test's own `%TEMP%`) opens and returns the canonical path.
         let h = open_reparse_free_dir(&sb.path("real/a/b")).unwrap();
         assert_eq!(final_path(&h).unwrap(), sb.long("real/a/b"));
-        // Con el prefijo verbatim y otra capitalización, igual.
+        // The same holds with a verbatim prefix and different casing.
         let upper = PathBuf::from(sb.long("real/a").to_string_lossy().to_uppercase());
         assert!(open_reparse_free_dir(&upper).is_ok());
-        // Un junction como ÚLTIMO componente se rechaza (se abre a sí mismo, no a su destino).
+        // A junction as the LAST component is rejected (it opens itself, not its target).
         assert_eq!(
             open_reparse_free_dir(&sb.path("real/enlace")).err(),
             Some(ChainError::Reparse {
                 component: "enlace".into()
             })
         );
-        // Un junction ANCESTRO también, aunque el destino exista y sea un directorio normal.
+        // An ANCESTOR junction is also rejected, even if its target exists and is a normal directory.
         assert_eq!(
             open_reparse_free_dir(&sb.path("real/enlace/dentro")).err(),
             Some(ChainError::Reparse {
                 component: "enlace".into()
             })
         );
-        // Rutas que no son absolutas con letra de unidad, o que no existen.
+        // Paths that are not absolute drive-letter paths, or do not exist.
         assert_eq!(
             open_reparse_free_dir(Path::new(r"real\a")).err(),
             Some(ChainError::BadPath)
@@ -1340,7 +1340,7 @@ mod tests {
             open_reparse_free_dir(&sb.path("real/no-existe")).err(),
             Some(ChainError::Os(2 | 3))
         ));
-        // Un archivo no es un directorio de la cadena.
+        // A file is not a directory in the path chain.
         sb.write("real/f.bin", 10);
         assert!(open_reparse_free_dir(&sb.path("real/f.bin")).is_err());
     }
@@ -1356,8 +1356,8 @@ mod tests {
         (dir, id)
     }
 
-    /// Espera (poco) a que la vigilancia vea algo: las altas y bajas se notifican al momento, pero el sistema entrega la
-    /// finalización de forma asíncrona.
+    /// Wait briefly for the watcher to observe a change: additions and removals are reported immediately, but the system
+    /// delivers the completion asynchronously.
     fn sees_change(w: &DirWatch) -> bool {
         for _ in 0..40 {
             if w.changed() {
@@ -1368,10 +1368,10 @@ mod tests {
         w.changed()
     }
 
-    /// Lo que hizo ya la APROBACIÓN, que precede siempre a la vigilancia: abrir y cerrar cada directorio y cada archivo. NTFS
-    /// retrasa la actualización de la copia de la fecha de escritura y del tamaño de una entrada en el índice de su padre
-    /// hasta que alguien abre y cierra el objeto: medido, esa actualización pendiente llega como notificación al primer
-    /// cierre. Como la medida de la aprobación ya la provocó, no queda pendiente cuando arranca la vigilancia de la ejecución.
+    /// What APPROVAL has already done before monitoring starts: open and close every directory and file. NTFS delays updating
+    /// an entry's cached write time and size in its parent's index until someone opens and closes the object. In this test,
+    /// that pending update arrives as a notification on the first close. Approval's measurement has already triggered it,
+    /// so no update remains pending when execution monitoring starts.
     fn settle(sb: &Sandbox) {
         for rel in ["W", "W/sub", "W/sub/hondo"] {
             drop(open_dir_for_listing(&sb.long(rel)).unwrap());
@@ -1381,15 +1381,15 @@ mod tests {
         }
     }
 
-    /// A3-M1: lo que NO es un cambio. El recorrido de medida (aperturas de solo lectura de cada hijo, listados, lecturas de
-    /// atributos y de contenido) no genera ninguna notificación con estos filtros: si no, ninguna carpeta se enviaría nunca.
+    /// A3-M1: what is NOT a change. The measurement walk (read-only opens of each child, listings, and reads of attributes
+    /// and contents) generates no notifications with these filters; otherwise, no directory would ever be sent.
     #[test]
     fn la_vigilancia_no_ve_los_accesos_de_solo_lectura() {
         let sb = Sandbox::new();
         let (dir, id) = watch_tree(&sb);
         settle(&sb);
         let w = DirWatch::start(&dir, id).expect("arranca");
-        // Lo que hace el recorrido de medida y la guarda: abrir, leer metadatos, listar.
+        // What the measurement walk and guard do: open, read metadata, and list.
         let root = open_dir_for_listing(&dir).unwrap();
         let _ = list_dir(&root).unwrap();
         for rel in ["W/a.bin", "W/sub/b.bin", "W/sub/hondo/c.bin"] {
@@ -1400,7 +1400,7 @@ mod tests {
         }
         let guard = open_path_for_rename(&dir).unwrap();
         let _ = meta(&guard).unwrap();
-        // Y lecturas de contenido y de metadatos de la biblioteca estándar.
+        // Also read contents and metadata through the standard library.
         assert_eq!(fs::read(sb.path("W/a.bin")).unwrap().len(), 1_000);
         let _ = fs::metadata(sb.path("W/sub")).unwrap();
         let _ = fs::read_dir(sb.path("W/sub/hondo")).unwrap().count();
@@ -1408,8 +1408,8 @@ mod tests {
         assert!(!w.changed(), "los accesos de solo lectura no son cambios");
     }
 
-    /// A3-M1: lo que SÍ es un cambio, en cualquier profundidad del subárbol: alta, baja, renombrado, directorio nuevo y un
-    /// archivo existente que se agranda (y se cierra).
+    /// A3-M1: what IS a change at any depth in the subtree: an addition, removal, rename, new directory, or an existing file
+    /// that grows and is closed.
     #[test]
     fn la_vigilancia_ve_altas_bajas_renombrados_y_escrituras() {
         type Change = (&'static str, fn(&Sandbox));
@@ -1449,13 +1449,13 @@ mod tests {
             assert!(!w.changed(), "{name}: antes del cambio no hay nada");
             change(&sb);
             assert!(sees_change(&w), "{name}: debe verse");
-            // Y no vuelve a `false`.
+            // It does not return to `false`.
             assert!(w.changed(), "{name}");
         }
     }
 
-    /// A3-M1: sin identidad aprobada no hay vigilancia (falla cerrado): identidad distinta, un directorio que no existe y un
-    /// junction (no se sigue).
+    /// A3-M1: without an approved identity there is no monitoring (fail closed): a different identity, a nonexistent
+    /// directory, or a junction (which is not followed).
     #[test]
     fn la_vigilancia_exige_la_identidad_y_no_sigue_enlaces() {
         let mut sb = Sandbox::new();
@@ -1478,16 +1478,16 @@ mod tests {
             DirWatch::start(&link, id),
             Err(WatchError::Changed)
         ));
-        // Un archivo no es un directorio.
+        // A file is not a directory.
         let f = sb.long("W/a.bin");
         let fid = meta(&open_for_query(&f).unwrap()).unwrap().identity;
         assert!(DirWatch::start(&f, fid).is_err());
-        // Control: con la identidad buena, arranca.
+        // Control: with the correct identity, it starts.
         assert!(DirWatch::start(&dir, id).is_ok());
     }
 
-    /// A3-M1: parar la vigilancia cancela la lectura pendiente y suelta el handle (el directorio se puede mover); soltarla sin
-    /// parar también termina sin colgarse. Lo que cambió ANTES de parar se recuerda; lo posterior no se mira.
+    /// A3-M1: stopping the watcher cancels the pending read and releases the handle (so the directory can be moved); dropping
+    /// it without stopping also completes without hanging. Changes made BEFORE stopping are remembered; later ones are ignored.
     #[test]
     fn parar_la_vigilancia_suelta_el_handle_y_recuerda_lo_anterior() {
         let sb = Sandbox::new();
@@ -1497,16 +1497,16 @@ mod tests {
         assert!(!w.changed(), "sin cambios antes de parar");
         sb.write("W/despues.bin", 10);
         assert!(!w.changed(), "tras parar ya no se mira");
-        // Sin handle abierto: se puede mover el directorio.
+        // With no handle open, the directory can be moved.
         fs::rename(sb.path("W"), sb.path("W2")).expect("el directorio se mueve");
         fs::rename(sb.path("W2"), sb.path("W")).unwrap();
-        // Lo que cambió antes de parar consta después.
+        // Changes made before stopping are still reported afterward.
         let w2 = DirWatch::start(&dir, id).expect("arranca");
         sb.write("W/antes.bin", 10);
         assert!(sees_change(&w2));
         w2.stop();
         assert!(w2.changed());
-        // Soltar sin parar: no se cuelga y suelta el handle.
+        // Dropping without stopping does not hang and releases the handle.
         let t = std::time::Instant::now();
         let w3 = DirWatch::start(&dir, id).expect("arranca");
         drop(w3);
@@ -1514,15 +1514,15 @@ mod tests {
         fs::rename(sb.path("W"), sb.path("W3")).expect("sin handles abiertos");
     }
 
-    /// A3-M1 (medición, no afirmación): la vigilancia pendiente NO impide mover el directorio (comparte `FILE_SHARE_DELETE`,
-    /// como la guarda); aun así se para tras el último `PreDeleteItem`. Y lo que NTFS retrasa: un escritor que mantiene el
-    /// archivo abierto y lo agranda. Se imprime lo observado.
+    /// A3-M1 (measurement, not an assertion): pending monitoring does NOT prevent moving the directory (it shares
+    /// `FILE_SHARE_DELETE`, like the guard); it is still stopped after the last `PreDeleteItem`. Also observe NTFS's delay:
+    /// a writer keeps a file open and grows it. Print what happens.
     #[test]
     fn medicion_de_la_vigilancia_pendiente_y_de_un_escritor_abierto() {
         use std::io::Write;
         let sb = Sandbox::new();
         let (dir, id) = watch_tree(&sb);
-        // 1. Con la lectura pendiente, ¿se puede renombrar el directorio?
+        // 1. Can the directory be renamed while the read is pending?
         let w = DirWatch::start(&dir, id).expect("arranca");
         let moved = fs::rename(sb.path("W"), sb.path("W2"));
         eprintln!("renombrar con la vigilancia pendiente: {moved:?}");
@@ -1530,7 +1530,7 @@ mod tests {
             fs::rename(sb.path("W2"), sb.path("W")).unwrap();
         }
         drop(w);
-        // 2. Un escritor con el archivo abierto: ¿cuándo se ve el crecimiento?
+        // 2. With a writer keeping the file open, when does the growth become visible?
         let w = DirWatch::start(&dir, id).expect("arranca");
         let mut f = fs::OpenOptions::new()
             .append(true)
