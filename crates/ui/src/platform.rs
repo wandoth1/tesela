@@ -12,7 +12,7 @@ use windows_sys::Win32::Storage::FileSystem::{
     GetDriveTypeW, GetLogicalDrives, GetVolumeInformationW,
 };
 use windows_sys::Win32::System::Com::{
-    COINIT_APARTMENTTHREADED, CoInitializeEx, CoTaskMemFree, CoUninitialize,
+    COINIT_APARTMENTTHREADED, COINIT_DISABLE_OLE1DDE, CoInitializeEx, CoTaskMemFree, CoUninitialize,
 };
 use windows_sys::Win32::System::Diagnostics::Debug::{SEM_FAILCRITICALERRORS, SetThreadErrorMode};
 use windows_sys::Win32::UI::Shell::Common::ITEMIDLIST;
@@ -296,8 +296,14 @@ fn recycle_bin_request() -> (Vec<u16>, Vec<u16>) {
 pub fn open_recycle_bin() {
     std::thread::spawn(|| {
         let (verb, file) = recycle_bin_request();
+        // `COINIT_DISABLE_OLE1DDE`: la combinación que recomienda la documentación de `ShellExecuteExW` (sin el soporte de DDE de OLE1).
         // SAFETY: `CoInitializeEx` no recibe punteros (nulo = reservado) y se empareja con `CoUninitialize` solo si tuvo éxito.
-        let hr = unsafe { CoInitializeEx(std::ptr::null(), COINIT_APARTMENTTHREADED as u32) };
+        let hr = unsafe {
+            CoInitializeEx(
+                std::ptr::null(),
+                (COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE) as u32,
+            )
+        };
         // SAFETY: `SHELLEXECUTEINFOW` es una estructura de enteros y punteros para la que todo cero es un valor válido
         // (punteros nulos); se rellenan a continuación los campos que usa esta llamada.
         let mut info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };

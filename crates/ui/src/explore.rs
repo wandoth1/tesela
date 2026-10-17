@@ -353,12 +353,12 @@ impl Explore {
 
     // --- Navegación ---------------------------------------------------------------------------------------------
 
-    /// ¿Se puede subir un nivel?
     /// ¿Se puede volver a la pantalla de inicio? No mientras se ejecuta una limpieza (como el cierre de la ventana).
     pub(crate) fn can_go_home(&self) -> bool {
         !self.flow.is_running()
     }
 
+    /// ¿Se puede subir un nivel?
     pub fn can_up(&self) -> bool {
         self.root.is_group() || self.root.node != 0
     }
@@ -931,7 +931,8 @@ impl Explore {
             resp.widget_info(|| {
                 egui::WidgetInfo::selected(
                     egui::WidgetType::Button,
-                    true,
+                    // La unidad actual no es pulsable: el lector de pantalla no la anuncia como botón habilitado.
+                    drive_row_is_interactive(selected),
                     selected,
                     env.tr.ta("analyze-drive", args!["name" => title.clone()]),
                 )
@@ -1206,12 +1207,12 @@ fn legend_cell(
     }
 }
 
-/// Elemento de la barra lateral. Devuelve `true` si se pulsó (y está habilitado).
 /// ¿Se puede pulsar la fila de esta unidad en la barra lateral? Solo si NO es la unidad que ya se está explorando.
 pub(crate) fn drive_row_is_interactive(selected: bool) -> bool {
     !selected
 }
 
+/// Elemento de la barra lateral. Devuelve `true` si se pulsó (y está habilitado).
 fn sidebar_item(
     ui: &mut Ui,
     env: &mut Env,
