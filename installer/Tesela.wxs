@@ -1,50 +1,50 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Instalador MSI de Tesela (WiX Toolset 5.0.2, MS-RL; solo es una herramienta de compilacion, no se redistribuye).
-  Se compila con scripts/build-msi.ps1, que pasa estas variables del preprocesador y compila ESTE archivo junto con
-  installer/TeselaUI.wxs (las ventanas y los textos):
-    -d Version=<x.y.z>    version del producto (sale del workspace de Cargo; la 4a cifra la ignora Windows Installer)
-    -d SourceDir=<carpeta> carpeta con EXACTAMENTE los 5 archivos que se instalan (la prepara el script a partir de lo que
-                          produce scripts/build-release.ps1)
-    -d IconFile=<ruta.ico> icono extraido de tesela.exe con scripts/extract-ico.py
+  Tesela MSI installer (WiX Toolset 5.0.2, MS-RL; a build tool only and not redistributed).
+  It is built with scripts/build-msi.ps1, which passes these preprocessor variables and compiles THIS file together with
+  installer/TeselaUI.wxs (dialogs and text):
+    -d Version=<x.y.z>     product version (from the Cargo workspace; Windows Installer ignores the 4th digit)
+    -d SourceDir=<folder>  folder containing EXACTLY the 5 installed files (prepared by the script from the output of
+                           scripts/build-release.ps1)
+    -d IconFile=<path.ico> icon extracted from tesela.exe with scripts/extract-ico.py
 
-  Decisiones (PLAN.md §1 y §3.11, ronda 14):
-    * AMBITO DUAL: "solo para mi" (por defecto, sin administrador, %LOCALAPPDATA%\Programs\Tesela) o "para todos los usuarios"
-      (pide administrador, Program Files\Tesela). Es el mecanismo estandar de Windows Installer para un paquete de doble
-      proposito, el que declara Scope="perUserOrMachine" en WiX 5: ALLUSERS=2 y MSIINSTALLPERUSER=1 (por usuario salvo que se
-      pida otra cosa), claves de registro en HKMU y carpetas calculadas por ambito. Elegir "para todos" NO da a Tesela mas
-      permisos para limpiar: Tesela siempre corre con permisos normales y se niega a limpiar si se ejecuta como administrador
-      (decision de seguridad E1).
-    * El paquete NO se declara "compatible con UAC / no hace falta elevar" (bit 8 del contador de palabras del Summary Information):
-      un paquete de doble modo no puede llevarlo. Con el bit, Windows Installer trata el paquete como UAC-compatible, ignora
-      MSIINSTALLPERUSER y no pide credenciales al elegir "para todos" (error 1925). Sin el, la peticion de administrador sale
-      DESPUES de la interfaz, al empezar la instalacion para todos, y la instalacion por usuario no eleva nunca (el motor tiene
-      su propia rama para eso: "dual mode package ... installed in Per-User mode. No elevation is required"). WiX 5.0.2 con
-      Scope="perUserOrMachine" da exactamente eso (contador de palabras 2, sin ALLUSERS/MSIINSTALLPERUSER marcadas como seguras).
-      msi-validate.ps1 exige: bit 8 limpio, ALLUSERS=2 y MSIINSTALLPERUSER=1.
-    * SIN CODIGO PROPIO: no hay DLL ni ejecutables (ni tabla Binary), no se usa WixToolset.UI.wixext (sus ventanas WixUI_*
-      meten acciones personalizadas con DLL). Las unicas acciones personalizadas son de tipo 51 (fijan una propiedad) y de
-      tipo 35 (fijan una carpeta); msi-validate.ps1 las compara una a una. La interfaz esta en installer/TeselaUI.wxs.
-    * Sin acceso en el PATH. El acceso directo del escritorio es OPCIONAL (casilla de la interfaz o DESKTOPSHORTCUT=1 en la
-      linea de comandos) y se recuerda en las actualizaciones.
-    * Al DESINSTALAR no se borran %APPDATA%\Tesela\config.toml ni %LOCALAPPDATA%\Tesela (historial y registros): el
-      instalador no los conoce, son del usuario (README, "Instalacion").
-    * MajorUpgrade: una version nueva sustituye a la anterior (se desinstala la vieja y se instala la nueva) sin
-      duplicados; instalar una anterior se bloquea con un mensaje. Con la aplicacion abierta, Windows Installer usa el
-      Administrador de reinicio (Restart Manager) para pedirle que se cierre y, si no puede, deja los archivos en uso
-      para sustituirlos al reiniciar.
-    * CAMBIO DE AMBITO: Windows Installer no actualiza entre contextos (un producto por usuario no se sustituye desde una
-      instalacion para todos, ni al reves). Se DETECTA la instalacion previa (HKCU\Software\Tesela y HKLM\Software\Tesela,
-      que ya escribia la v0.1.4) y se BLOQUEA el cambio con un mensaje que dice que hay que desinstalar antes. Se prefiere
-      bloquear a "fijar" el ambito: sin interfaz (/qn) no hay a quien explicarselo y fijarlo en silencio cambiaria lo que
-      pide la linea de comandos; con interfaz, la ventana de ambito PREELIGE el de la instalacion existente (asi actualizar
-      es pulsar Siguiente) y avisa si se elige el otro.
+  Decisions (PLAN.md §1 and §3.11, round 14):
+    * DUAL SCOPE: "current user only" (default, no administrator access, %LOCALAPPDATA%\Programs\Tesela) or "all users"
+      (administrator access required, Program Files\Tesela). This is Windows Installer's standard mechanism for a
+      dual-purpose package, declared with Scope="perUserOrMachine" in WiX 5: ALLUSERS=2 and MSIINSTALLPERUSER=1 (per-user
+      unless requested otherwise), registry keys in HKMU, and folders resolved by scope. Choosing "all users" does NOT give
+      Tesela more permission to clean: Tesela always runs with normal permissions and refuses to clean when run as
+      administrator (security decision E1).
+    * The package is NOT declared "UAC compliant / no elevation required" (bit 8 of the Summary Information word count): a
+      dual-purpose package cannot use that bit. With it set, Windows Installer treats the package as UAC-compatible,
+      ignores MSIINSTALLPERUSER, and does not request credentials when "all users" is selected (error 1925). Without it,
+      the administrator prompt appears AFTER the UI, when the all-users installation starts, and a per-user installation
+      never elevates (the engine has its own branch for this: "dual mode package ... installed in Per-User mode. No
+      elevation is required"). WiX 5.0.2 with Scope="perUserOrMachine" does exactly this (word count 2, with neither
+      ALLUSERS nor MSIINSTALLPERUSER marked secure). msi-validate.ps1 requires bit 8 clear, ALLUSERS=2, and
+      MSIINSTALLPERUSER=1.
+    * NO CUSTOM CODE: no DLLs or executables (and no Binary table); WixToolset.UI.wixext is not used (its WixUI_* dialogs
+      add custom actions with a DLL). The only custom actions are type 51 (set a property) and type 35 (set a folder);
+      msi-validate.ps1 compares them one by one. The UI is in installer/TeselaUI.wxs.
+    * No PATH shortcut. The desktop shortcut is OPTIONAL (UI checkbox or DESKTOPSHORTCUT=1 on the command line) and is
+      remembered during upgrades.
+    * On UNINSTALL, do not delete %APPDATA%\Tesela\config.toml or %LOCALAPPDATA%\Tesela (history and logs): the installer
+      does not know about them; they belong to the user (README, "Installation").
+    * MajorUpgrade: a new version replaces the previous one (the old version is uninstalled and the new one installed),
+      with no duplicates; installing an older version is blocked with a message. If the application is open, Windows
+      Installer uses Restart Manager to ask it to close and, if it cannot, leaves files in use to be replaced at restart.
+    * SCOPE CHANGE: Windows Installer does not upgrade across contexts (a per-user product cannot be replaced by an
+      all-users installation, or vice versa). The previous installation (HKCU\Software\Tesela and HKLM\Software\Tesela,
+      already written by v0.1.4) is DETECTED and a scope change is BLOCKED with a message saying to uninstall first.
+      Blocking is preferred to silently "fixing" the scope: in silent mode (/qn) there is no one to explain it to and
+      silently fixing it would change the command-line request; in the UI, the scope dialog PRESELECTS the existing
+      installation's scope (so upgrading means pressing Next) and warns if the other scope is selected.
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <!--
-    UpgradeCode: identifica a Tesela como PRODUCTO para siempre. NO CAMBIARLO NUNCA: con otro valor, una version nueva no
-    reconoceria a la anterior y las dos quedarian instaladas a la vez. El ProductCode, en cambio, es nuevo en cada
-    compilacion (Id="*" por defecto), como exige MajorUpgrade.
+    UpgradeCode: identifies Tesela as a PRODUCT forever. NEVER CHANGE IT: with a different value, a new version would not
+    recognize the previous one and both would remain installed. ProductCode, by contrast, is new on every build
+    (Id="*" by default), as required by MajorUpgrade.
   -->
   <Package
     Name="Tesela"
@@ -65,48 +65,48 @@
 
     <MediaTemplate EmbedCab="yes" CompressionLevel="high" />
 
-    <!-- Icono de Aplicaciones instaladas y del acceso directo: el MISMO que lleva tesela.exe, extraido del ejecutable ya
-         compilado (scripts/extract-ico.py). Apuntar la tabla Icon al .exe incrustaria una copia entera de el. -->
+    <!-- Icon for Installed apps and the shortcut: the SAME one embedded in tesela.exe, extracted from the compiled
+         executable (scripts/extract-ico.py). Pointing the Icon table at the .exe would embed a complete copy of it. -->
     <Icon Id="TeselaIcon.ico" SourceFile="$(IconFile)" />
     <Property Id="ARPPRODUCTICON" Value="TeselaIcon.ico" />
     <Property Id="ARPURLINFOABOUT" Value="https://github.com/wandoth1/tesela" />
     <Property Id="ARPHELPLINK" Value="https://github.com/wandoth1/tesela/issues" />
-    <!-- No hay nada que "modificar": solo reparar o desinstalar. -->
+    <!-- There is nothing to "modify": only repair or uninstall. -->
     <Property Id="ARPNOMODIFY" Value="1" />
 
     <!--
-      Ambito: Scope="perUserOrMachine" de arriba define ALLUSERS=2 y MSIINSTALLPERUSER=1 (por usuario salvo que se pida otra
-      cosa). `ALLUSERS=1` en la linea de comandos (o la ventana de ambito) da la instalacion para todos. Ninguna de las dos es
-      Secure a proposito: ALLUSERS es de las propiedades que Windows Installer pasa SIEMPRE al servidor (lista de "propiedades
-      publicas restringidas"), y MSIINSTALLPERUSER solo se lee con ALLUSERS=2; para "para todos" la interfaz fija ALLUSERS=1.
-      Por eso la unica forma documentada de pedir "para todos" sin interfaz es ALLUSERS=1.
+      Scope: Scope="perUserOrMachine" above sets ALLUSERS=2 and MSIINSTALLPERUSER=1 (per-user unless requested otherwise).
+      `ALLUSERS=1` on the command line (or the scope dialog) selects all users. Neither is marked Secure by design: ALLUSERS
+      is one of the properties Windows Installer ALWAYS passes to the server (the "restricted public properties" list),
+      and MSIINSTALLPERUSER is read only with ALLUSERS=2; for "all users," the UI sets ALLUSERS=1. Therefore the only
+      documented way to request "all users" without the UI is ALLUSERS=1.
     -->
 
     <!--
-      PROPIEDADES SEGURAS (revierte la decision R-S3 de la v0.1.4, que dejaba INSTALLFOLDER sin Secure).
-      Antes no habia interfaz y el paquete era solo por usuario y sin elevar, asi que no habia nada que traspasar al servidor.
-      Ahora la interfaz (o la linea de comandos) fija INSTALLFOLDER y DESKTOPSHORTCUT en la fase de interfaz y, en una
-      instalacion PARA TODOS elevada, solo llegan a la fase del servidor si son seguras: sin Secure, "para todos" ignoraria
-      la carpeta y el acceso directo elegidos y se quedaria con los valores por defecto sin avisar.
-      RIESGO con la directiva AlwaysInstallElevated (HKLM y HKCU, desactivada por defecto en Windows): con ella cualquier
-      usuario instala CUALQUIER .msi con permisos de SYSTEM (es una escalada de privilegios conocida de esa directiva, no de
-      este paquete), y Secure le deja ademas elegir la carpeta donde el servidor escribe. Se ACEPTA porque no anade nada
-      nuevo: (1) el contenido lo fija el MSI (5 archivos de Tesela; el usuario no puede cambiarlo), (2) con esa directiva el
-      usuario ya podria instalar su propio MSI como SYSTEM, (3) RemoveFolder solo quita carpetas VACIAS y (4) la carpeta se
-      compara con una lista de sitios protegidos solo para dar un aviso, no como barrera. Quien tenga esa directiva activa ya
-      tiene un problema mayor que este instalador. Sin Secure, "para todos" con interfaz no funcionaria, y la
-      alternativa (una accion personalizada que releyera el valor) esta prohibida por la regla de no llevar codigo.
-      msi-validate.ps1 exige exactamente estas dos (y las de MajorUpgrade) en SecureCustomProperties.
+      SECURE PROPERTIES (reverses v0.1.4 decision R-S3, which left INSTALLFOLDER unsecured).
+      Previously there was no UI and the package was per-user and non-elevated, so there was nothing to pass to the server.
+      Now the UI (or command line) sets INSTALLFOLDER and DESKTOPSHORTCUT in the UI phase; in an elevated ALL-USERS install,
+      they reach the server only if secure. Without Secure, "all users" would silently ignore the selected folder and
+      shortcut and use the defaults.
+      RISK with the AlwaysInstallElevated policy (HKLM and HKCU, disabled by default in Windows): any user can install ANY
+      .msi with SYSTEM permissions (a known privilege escalation from that policy, not this package), and Secure also lets
+      the user choose the folder where the server writes. This is ACCEPTED because it adds nothing new: (1) the MSI fixes
+      the contents (5 Tesela files; the user cannot change them), (2) with that policy the user could already install their
+      own MSI as SYSTEM, (3) RemoveFolder removes only EMPTY folders, and (4) the folder is compared with a protected-location
+      list only to display a warning, not as a guard. Anyone with that policy enabled already has a larger problem than this
+      installer. Without Secure, the UI's all-users installation would not work; the alternative (a custom action that
+      rereads the value) is prohibited by the no-custom-code rule. msi-validate.ps1 requires exactly these two (and the
+      MajorUpgrade properties) in SecureCustomProperties.
     -->
     <Property Id="INSTALLFOLDER" Secure="yes" />
     <Property Id="DESKTOPSHORTCUT" Secure="yes" />
 
     <!--
-      Instalaciones previas (la deteccion que usan el bloqueo del cambio de ambito y la carpeta de las actualizaciones). Los
-      valores los escriben los propios componentes (InstallFolder y DesktopShortcut, en HKMU: HKCU para una instalacion por
-      usuario, HKLM para una para todos). Son busquedas de registro (AppSearch, tambien en la fase del servidor), sin accion
-      personalizada. Se buscan LAS DOS raices a proposito: AppSearch corre ANTES de que la interfaz decida el ambito, asi que
-      no puede usar HKMU. La v0.1.4 ya escribia HKCU\Software\Tesela\InstallFolder: se reconoce y se actualiza encima.
+      Previous installations (used to detect scope conflicts and choose the folder during upgrades). Values are written by
+      the components themselves (InstallFolder and DesktopShortcut, in HKMU: HKCU for per-user installs, HKLM for all-users
+      installs). These are registry searches (AppSearch, also in the server sequence), with no custom action. Both roots
+      are searched deliberately: AppSearch runs BEFORE the UI selects a scope, so it cannot use HKMU. v0.1.4 already wrote
+      HKCU\Software\Tesela\InstallFolder; it is recognized and upgraded in place.
     -->
     <Property Id="TESELA_PREV_USER">
       <RegistrySearch Id="PrevUserFolder" Root="HKCU" Key="Software\Tesela" Name="InstallFolder" Type="raw" />
@@ -123,10 +123,10 @@
     <!--
        A remembered folder WITHOUT tesela.exe does not count (for example, a folder deleted without uninstalling).
        This checks file existence, NOT Windows Installer product registration. A registry value plus an orphaned executable
-       still counts; see the installer README recovery procedure before changing orphaned metadata. Es otra busqueda de
-      registro con un FileSearch, sin codigo; AppSearch las procesa por orden alfabetico de la propiedad, y _EXE va despues de
-      su carpeta. Si el archivo no esta, las acciones TeselaStale* de abajo vacian TESELA_PREV_USER / TESELA_PREV_MACHINE y la
-      clave se ignora (no bloquea el cambio de ambito ni fija una carpeta que ya no existe).
+       still counts; see the installer README recovery procedure before changing orphaned metadata. This is another registry
+      search with a FileSearch, with no code; AppSearch processes them in alphabetical property order, and _EXE follows its
+      folder property. If the file is missing, the TeselaStale* actions below clear TESELA_PREV_USER / TESELA_PREV_MACHINE
+      and the key is ignored (it does not block a scope change or select a folder that no longer exists).
     -->
     <Property Id="TESELA_PREV_USER_EXE">
       <RegistrySearch Id="PrevUserExe" Root="HKCU" Key="Software\Tesela" Name="InstallFolder" Type="directory">
@@ -140,29 +140,29 @@
     </Property>
 
     <!--
-      Arbol de carpetas. INSTALLFOLDER cuelga de TARGETDIR y su ruta REAL la fijan las acciones de tipo 51 de abajo (la propiedad
-      INSTALLFOLDER, que Windows Installer usa como ruta del Directory al calcular los costes) segun el ambito:
-      [LocalAppDataFolder]Programs\Tesela\ (por usuario) o %ProgramW6432%\Tesela\ (para todos), o la carpeta de la instalacion
-      anterior, o la que pida INSTALLFOLDER= / la ventana. El nombre "Tesela" solo vale si nada la fija. (Se usa el tipo 51 y no el
-      35 porque ICE12 exige el 35 DESPUES de CostFinalize y la carpeta tiene que estar fijada ANTES.)
-      ProgramMenuFolder y DesktopFolder dependen de ALLUSERS (menu y escritorio del usuario, o los comunes del equipo).
+      Directory tree. INSTALLFOLDER is under TARGETDIR and its REAL path is set by the type 51 actions below (the
+      INSTALLFOLDER property, which Windows Installer uses as the Directory path when calculating costs), according to
+      scope: [LocalAppDataFolder]Programs\Tesela\ (per-user), %ProgramW6432%\Tesela\ (all-users), the previous install's
+      folder, or the value passed as INSTALLFOLDER= / selected in the dialog. "Tesela" is the name only when nothing sets
+      it. (Type 51 is used instead of 35 because ICE12 requires type 35 AFTER CostFinalize, but the folder must be set
+      BEFORE then.) ProgramMenuFolder and DesktopFolder depend on ALLUSERS (the user's or computer-wide menu and desktop).
     -->
     <Directory Id="INSTALLFOLDER" Name="Tesela" />
     <StandardDirectory Id="ProgramMenuFolder" />
     <StandardDirectory Id="DesktopFolder" />
 
-    <!-- Carpeta de instalacion: por ambito, la de la instalacion anterior (una actualizacion se queda donde estaba; la
-         linea de comandos NO la cambia, igual que en la v0.1.4: hay que desinstalar e instalar de nuevo) y, si nada la fija,
-         la de por defecto. Todo en las DOS secuencias (la interfaz y el servidor): al ser idempotentes, el servidor de una
-         instalacion para todos repite el calculo con el valor seguro que le llega y no lo cambia. -->
-    <!-- OJO: en el contexto POR USUARIO (el de partida: MSIINSTALLPERUSER=1) Windows Installer REDIRIGE [ProgramFilesFolder] y
-         [ProgramFiles64Folder] a %LOCALAPPDATA%\Programs\ (comprobado con una sesion del propio paquete). Por eso la carpeta de
-         "para todos" y las carpetas protegidas NO salen de esas propiedades sino de las variables de entorno del sistema
-         (%ProgramW6432%, %SystemRoot%), que no dependen del contexto.
-         Carpetas protegidas: se compara por PREFIJO y SIN barra final (`C:\Program Files`, `C:\WINDOWS`), de modo que cubre
-         `C:\Program Files`, `C:\Program Files\X`, `C:\Program Files (x86)\X` y `C:\Program Files (Arm)\X` (ARM64), sin barra
-         final y sin distinguir mayusculas. Coste aceptado: una carpeta cuyo NOMBRE empiece igual (`C:\Program Files2`,
-         `C:\Windows.old`) tambien se trata como protegida. Es un aviso, no una barrera (ver README). -->
+    <!-- Installation folder: use the previous installation's folder for that scope (an upgrade stays where it was; the
+         command line does NOT change it, as in v0.1.4: uninstall and reinstall to move it), or the default folder if
+         nothing sets it. Run in BOTH sequences (UI and server): because these actions are idempotent, the server repeats
+         the calculation for an all-users install with the secure value it receives and does not change it. -->
+    <!-- NOTE: in per-user context (the initial state: MSIINSTALLPERUSER=1), Windows Installer REDIRECTS [ProgramFilesFolder]
+         and [ProgramFiles64Folder] to %LOCALAPPDATA%\Programs\ (verified with a session of this package). Therefore the
+         all-users folder and protected folders do NOT come from those properties, but from system environment variables
+         (%ProgramW6432%, %SystemRoot%), which do not depend on context.
+         Protected folders are compared by PREFIX and WITHOUT a trailing slash (`C:\Program Files`, `C:\WINDOWS`), covering
+         `C:\Program Files`, `C:\Program Files\X`, `C:\Program Files (x86)\X`, and `C:\Program Files (Arm)\X` (ARM64),
+         case-insensitively. Accepted tradeoff: a folder whose NAME begins the same way (`C:\Program Files2`,
+         `C:\Windows.old`) is also treated as protected. This is a warning, not a guard (see README). -->
     <CustomAction Id="TeselaStaleUser" Property="TESELA_PREV_USER" Value="" Execute="immediate" />
     <CustomAction Id="TeselaStaleMachine" Property="TESELA_PREV_MACHINE" Value="" Execute="immediate" />
     <CustomAction Id="TeselaSetDefaultUser" Property="TESELA_DEFAULT_USER" Value="[LocalAppDataFolder]Programs\Tesela\" Execute="immediate" />
@@ -173,14 +173,14 @@
     <CustomAction Id="TeselaFolderPrevMachine" Property="INSTALLFOLDER" Value="[TESELA_PREV_MACHINE]" Execute="immediate" />
     <CustomAction Id="TeselaFolderDefaultUser" Property="INSTALLFOLDER" Value="[TESELA_DEFAULT_USER]" Execute="immediate" />
     <CustomAction Id="TeselaFolderDefaultMachine" Property="INSTALLFOLDER" Value="[TESELA_DEFAULT_MACHINE]" Execute="immediate" />
-    <!-- Acceso directo del escritorio: se recuerda. Si DESKTOPSHORTCUT no viene fijado (vacio) y la instalacion anterior lo
-         tenia (y existe: tesela.exe en su carpeta), se mantiene. Un valor explicito (DESKTOPSHORTCUT=0, o la casilla de la
-         interfaz) manda. Solo cuando NO hay interfaz completa (UILevel < 5) en la secuencia del servidor: con interfaz, la casilla
-         ya parte del valor recordado y el servidor NO debe volver a ponerlo si el usuario la desmarco. -->
+    <!-- Desktop shortcut: remembered. If DESKTOPSHORTCUT is not set (empty) and the previous installation had one (and it
+         exists: tesela.exe is in its folder), keep it. An explicit value (DESKTOPSHORTCUT=0 or the UI checkbox) takes
+         precedence. Only in the server sequence when there is NO full UI (UILevel < 5): with the UI, the checkbox already
+         starts from the remembered value, and the server must NOT set it again if the user cleared it. -->
     <CustomAction Id="TeselaRememberDesktop" Property="DESKTOPSHORTCUT" Value="1" Execute="immediate" />
 
-    <!-- Desde cuando se aplican (tras AppSearch, que rellena TESELA_PREV_*, y antes de LaunchConditions y de CostInitialize).
-         Primero se descartan las claves sin producto. -->
+    <!-- When these actions run (after AppSearch fills TESELA_PREV_*, and before LaunchConditions and CostInitialize).
+         First discard keys with no product. -->
     <InstallUISequence>
       <Custom Action="TeselaStaleUser" Sequence="51" Condition="TESELA_PREV_USER&lt;&gt;&quot;&quot; AND TESELA_PREV_USER_EXE=&quot;&quot;" />
       <Custom Action="TeselaStaleMachine" Sequence="52" Condition="TESELA_PREV_MACHINE&lt;&gt;&quot;&quot; AND TESELA_PREV_MACHINE_EXE=&quot;&quot;" />
@@ -209,22 +209,23 @@
     </InstallExecuteSequence>
 
     <!--
-      Condiciones de lanzamiento (ademas de la del bloqueo de versiones anteriores que anade MajorUpgrade). Dejan pasar siempre
-      una reparacion o desinstalacion (Installed) y TODA instalacion con la interfaz completa (UILevel 5): con interfaz son las
-      propias ventanas las que avisan y no dejan seguir (la ventana de ambito y la de carpeta), y estas condiciones se evaluan
-      ANTES de que el usuario elija. Sin interfaz (/qn, /qb) no hay nadie a quien avisar y mandan ellas.
-      "Instalacion para todos" = ALLUSERS=1, o ALLUSERS=2 con MSIINSTALLPERUSER vacio.
-      * Cambio de ambito: de por usuario a para todos se bloquea siempre que ESTE usuario tenga la suya. De para todos a por
-        usuario se bloquea solo si ESTE usuario no tiene ya una por usuario: la suya manda y puede actualizarla aunque otra
-        cuenta haya instalado para todos.
-      * La carpeta protegida (Archivos de programa, Windows) se rechaza en "solo para mi" para QUIEN SEA, administrador incluido:
-        no se usa la propiedad Privileged (segun la documentacion de Windows Installer vale lo mismo que AdminUser: el USUARIO es
-        administrador, no que el proceso este elevado, y un administrador sin elevar tampoco puede escribir en Archivos de
-        programa). Ademas, en "solo para mi" una carpeta de Archivos de programa es un error de eleccion: lo suyo es "para todos".
-      * Formato de la ruta: tiene que ser completa con unidad (C:\...) y sin "/", "..", "?" ni ruta de red (\\): sin ello el aviso de
-        carpeta protegida se esquivaria con `C:/Program Files/X`, `C:\x\..\Program Files`, `?\C:\...` con prefijo de ruta larga o un recurso administrativo de red (C$). Los
-        nombres cortos 8.3 (`C:\PROGRA~1`) NO se detectan sin codigo; es un aviso, no una barrera.
-      Los mensajes van en espanol e ingles juntos (no hay forma de elegir idioma aqui sin acciones personalizadas).
+      Launch conditions (in addition to the downgrade condition added by MajorUpgrade). They always allow repair or
+      uninstall (Installed) and EVERY install with full UI (UILevel 5): with the UI, the dialogs themselves warn and block
+      continuation (scope and folder dialogs), and these conditions are evaluated BEFORE the user makes a choice. Without
+      UI (/qn, /qb), there is no one to warn, so these conditions apply.
+      "All-users installation" = ALLUSERS=1, or ALLUSERS=2 with MSIINSTALLPERUSER empty.
+      * Scope change: per-user to all-users is always blocked when THIS user has a per-user install. All-users to per-user
+        is blocked only if THIS user does not already have a per-user install: theirs takes precedence and can be upgraded
+        even if another account installed for all users.
+      * A protected folder (Program Files, Windows) is rejected for "current user only" for ANY user, including
+        administrators: do not use Privileged (Windows Installer docs say it has the same value as AdminUser: the USER is
+        an administrator, not that the process is elevated; an unelevated administrator also cannot write to Program Files).
+        Also, choosing Program Files for "current user only" is a user error: "all users" is the right choice.
+      * Path format: must be an absolute drive path (C:\...) without "/", "..", "?", or a network path (\\). Otherwise the
+        protected-folder warning could be bypassed with `C:/Program Files/X`, `C:\x\..\Program Files`, `?\C:\...` using a
+        long-path prefix, or a network administrative share (C$). 8.3 short names (`C:\PROGRA~1`) are NOT detected without
+        code; this is a warning, not a guard.
+      Messages are bilingual (Spanish and English together); choosing a language here without custom actions is not possible.
     -->
     <Launch
       Condition="Installed OR UILevel&gt;=5 OR NOT (ALLUSERS=1 OR (ALLUSERS=2 AND NOT MSIINSTALLPERUSER)) OR TESELA_PREV_USER=&quot;&quot;"
@@ -240,22 +241,22 @@
       Message="INSTALLFOLDER tiene que ser una ruta completa con unidad (C:\Carpeta), sin /, .., ? ni ruta de red. / INSTALLFOLDER must be a full path with a drive letter (C:\Folder), without /, .., ? or a network path." />
 
     <!--
-      Un componente por archivo. Cada componente lleva como KeyPath un valor de HKMU (HKCU en la instalacion por usuario, HKLM
-      en la de todos): ICE38 (los archivos del perfil no pueden ser su propio KeyPath) y la mezcla de datos por usuario y por
-      equipo (ICE57) se evitan, y Windows Installer los quita al desinstalar. Con archivo Y valor de registro WiX no puede
-      generar el GUID del componente, asi que van FIJOS (no cambiarlos: Windows Installer identifica el componente por su
-      GUID entre versiones; son los mismos que en la v0.1.4).
+      One component per file. Each component uses an HKMU value as its KeyPath (HKCU for per-user installs, HKLM for
+      all-users): this avoids ICE38 (profile files cannot be their own KeyPath) and mixing per-user and per-machine data
+      (ICE57); Windows Installer removes these values on uninstall. With both a file AND a registry value, WiX cannot
+      generate the component GUID, so they are FIXED (do not change them: Windows Installer identifies a component across
+      versions by its GUID; these are the same as in v0.1.4).
     -->
     <ComponentGroup Id="AppFiles" Directory="INSTALLFOLDER">
       <Component Id="TeselaExe" Guid="B684DA7F-4E1F-49DD-9ED7-A7D2C72A1B22">
         <File Id="TeselaExe" Source="$(SourceDir)\tesela.exe" />
         <RegistryValue Root="HKMU" Key="Software\Tesela" Name="tesela.exe" Type="integer" Value="1" KeyPath="yes" />
-        <!-- La carpeta se RECUERDA aqui y se recupera con la busqueda de registro de arriba (en las actualizaciones, las
-             reparaciones y la desinstalacion): sin ella, al desinstalar o actualizar sin repetir INSTALLFOLDER Windows
-             Installer buscaria la carpeta por defecto y los archivos de la personalizada quedarian huerfanos. -->
+        <!-- The folder is REMEMBERED here and retrieved by the registry search above (during upgrades, repairs, and
+             uninstall): without it, uninstalling or upgrading without repeating INSTALLFOLDER would make Windows
+             Installer look for the default folder and leave custom-folder files behind. -->
         <RegistryValue Root="HKMU" Key="Software\Tesela" Name="InstallFolder" Type="string" Value="[INSTALLFOLDER]" />
-        <!-- Quita la carpeta SOLO si queda vacia (si el usuario dejo algo suyo dentro, se respeta). La carpeta padre
-             (Programs, o la que sea) no se toca: ya no cuelga de una carpeta conocida del perfil. -->
+        <!-- Remove the folder ONLY if empty (preserve anything the user left inside). The parent folder (Programs or
+             another folder) is untouched: it is no longer under a known profile folder. -->
         <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
       </Component>
       <Component Id="TeselaScanExe" Guid="F6AC4BAC-3E83-4784-ACA7-50ED49A1D3D9">
@@ -276,8 +277,8 @@
       </Component>
     </ComponentGroup>
 
-    <!-- Acceso directo del menu Inicio (directamente en Programas, sin carpeta propia): el del usuario o el comun del equipo
-         segun el ambito. GUID FIJO como el de los demas componentes (no cambiarlo). -->
+    <!-- Start menu shortcut (directly under Programs, with no separate folder): the user's or computer-wide shortcut,
+         depending on scope. FIXED GUID like the other components (do not change it). -->
     <ComponentGroup Id="StartMenu" Directory="ProgramMenuFolder">
       <Component Id="StartMenuShortcut" Guid="089416B7-8B88-4F2D-9636-96931BE9FCC0">
         <Shortcut
@@ -291,9 +292,9 @@
       </Component>
     </ComponentGroup>
 
-    <!-- Acceso directo del escritorio (OPCIONAL, desmarcado por defecto: casilla de la interfaz o DESKTOPSHORTCUT=1). El
-         valor de registro DesktopShortcut="1" es su KeyPath Y la marca que busca TESELA_PREV_DESKTOP_*: asi se recuerda en
-         las actualizaciones (el instalador nuevo lo ve y lo vuelve a crear) y desaparece con el componente al desinstalar. -->
+    <!-- Desktop shortcut (OPTIONAL, unchecked by default: UI checkbox or DESKTOPSHORTCUT=1). The DesktopShortcut="1"
+         registry value is its KeyPath AND the marker searched by TESELA_PREV_DESKTOP_*: this remembers it during upgrades
+         (the new installer finds it and recreates it) and removes it with the component on uninstall. -->
     <ComponentGroup Id="DesktopShortcutGroup" Directory="DesktopFolder">
       <Component Id="DesktopShortcut" Guid="5C2D6C0B-7C3E-4B6B-9B7A-3E0D1A9F6D41" Condition="DESKTOPSHORTCUT=&quot;1&quot;">
         <Shortcut

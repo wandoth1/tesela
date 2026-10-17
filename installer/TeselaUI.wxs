@@ -1,49 +1,49 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Interfaz del instalador de Tesela (WiX Toolset 5.0.2): ventanas propias y minimas, sin WixToolset.UI.wixext y sin una sola
-  accion personalizada de codigo. Se compila junto con installer/Tesela.wxs (scripts/build-msi.ps1 pasa los dos archivos a
-  `wix build`); Tesela.wxs la enlaza con <UIRef Id="TeselaUI" />. La explicacion de las decisiones (ambito, carpeta,
-  propiedades seguras, bloqueo del cambio de ambito) esta en la cabecera de Tesela.wxs.
+  Tesela installer UI (WiX Toolset 5.0.2): minimal custom dialogs, without WixToolset.UI.wixext and without any custom
+  action that runs code. It is compiled with installer/Tesela.wxs (scripts/build-msi.ps1 passes both files to `wix build`);
+  Tesela.wxs links it with <UIRef Id="TeselaUI" />. The rationale for the decisions (scope, folder, secure properties,
+  blocking scope changes) is in the header of Tesela.wxs.
 
-  Idioma: UN solo MSI. Los textos en INGLES son propiedades normales (tabla Property); si el idioma de usuario de Windows
-  (UserLanguageID) es el espanol, una accion de tipo 51 por texto (solo en la secuencia de interfaz) los sustituye por el texto
-  en espanol, y los controles muestran la propiedad (`[TxAlgo]`). No hay codigo ni transformaciones. Lo unico que no se puede
-  elegir por idioma son las tablas ActionText y UIText (los textos de la barra de progreso): van en los dos idiomas a la vez.
-  Para anadir o cambiar un texto hay que tocar TRES sitios: la propiedad en ingles, la accion `TeselaEs_<Id>` y su fila en
-  InstallUISequence (las tres siguen el mismo patron y msi-validate.ps1 comprueba que van juntas).
+  Language: ONE MSI. ENGLISH texts are ordinary properties (Property table); if the Windows user language (UserLanguageID)
+  is Spanish, a type 51 action per text (only in the UI sequence) replaces them with Spanish, and controls display the
+  property (`[TxAlgo]`). No code or transforms are involved. The only tables that cannot be selected by language are
+  ActionText and UIText (progress-bar text): they show both languages together. To add or change a text, update THREE
+  places: the English property, the `TeselaEs_<Id>` action, and its InstallUISequence row (all follow the same pattern, and
+  msi-validate.ps1 checks that they stay in sync).
 
-  Estructura: Bienvenida > Ambito > Carpeta y opciones > Listo > Progreso > Fin, mas Mantenimiento (reparar o desinstalar),
-  Examinar y las obligatorias (error, cancelacion, fin con error, usuario que sale, archivos en uso, esperar el calculo).
-  Las coordenadas de los botones de opcion son relativas al grupo.
+  Structure: Welcome > Scope > Folder and options > Ready > Progress > Exit, plus Maintenance (repair or uninstall), Browse,
+  and required dialogs (error, cancellation, fatal error, user exit, files in use, waiting for calculation). Radio-button
+  coordinates are relative to their group.
 -->
 <Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
   <Fragment>
     <!-- ======================================================================================================== -->
-    <!-- Idioma: el de usuario de Windows (UserLanguageID). Espanol en cualquiera de sus variantes; ingles en cualquier otro caso.
-         TESELA_LANG=es o TESELA_LANG=en en la linea de comandos lo fuerza (util para probar). -->
-    <!-- Propiedades que usan los controles. TESELA_SCOPE (user o machine) es la que muestra el grupo de opciones del ambito:
-         por usuario salvo que la accion TeselaScopeMachine la cambie. -->
+    <!-- Language: Windows user language (UserLanguageID). Any Spanish variant; English otherwise.
+         TESELA_LANG=es or TESELA_LANG=en on the command line overrides this (useful for testing). -->
+    <!-- Properties used by controls. TESELA_SCOPE (user or machine) selects the scope options group:
+         per-user unless the TeselaScopeMachine action changes it. -->
     <Property Id="TESELA_SCOPE" Value="user" />
     <Property Id="RestartManagerOption" Value="CloseRestart" />
     <CustomAction Id="TeselaLangEs1" Property="TESELA_LANG" Value="es" Execute="immediate" />
     <CustomAction Id="TeselaLangEs2" Property="TESELA_LANG" Value="es" Execute="immediate" />
     <CustomAction Id="TeselaLangEs3" Property="TESELA_LANG" Value="es" Execute="immediate" />
     <CustomAction Id="TeselaLangEn" Property="TESELA_LANG" Value="en" Execute="immediate" />
-    <!-- Ambito PREELEGIDO en la ventana de ambito: el de la instalacion existente (para que actualizar sea pulsar Siguiente) o
-         el pedido con ALLUSERS=1; si no, por usuario (el valor por defecto de la propiedad). -->
+    <!-- PRESELECTED scope in the scope dialog: the existing installation's scope (so upgrading means pressing Next), or
+         the requested scope when ALLUSERS=1; otherwise per-user (the property's default). -->
     <CustomAction Id="TeselaScopeMachine" Property="TESELA_SCOPE" Value="machine" Execute="immediate" />
 
     <InstallUISequence>
       <Custom Action="TeselaScopeMachine" Sequence="1001" Condition='TESELA_SCOPE="user" AND (ALLUSERS=1 OR (TESELA_PREV_MACHINE&lt;&gt;"" AND TESELA_PREV_USER=""))' />
-      <!-- Ids de idioma de Windows (LANGID) del espanol: 1034 y 3082 (Espana) y las variantes de America Latina y EE. UU.
-           (la condicion admite 255 caracteres: van en tres acciones). -->
+      <!-- Windows language IDs (LANGID) for Spanish: 1034 and 3082 (Spain), plus Latin American and US variants
+           (the condition allows 255 characters, so these are split across three actions). -->
       <Custom Action="TeselaLangEs1" Sequence="1003" Condition='TESELA_LANG="" AND (UserLanguageID=1034 OR UserLanguageID=3082 OR UserLanguageID=2058 OR UserLanguageID=4106 OR UserLanguageID=5130 OR UserLanguageID=6154 OR UserLanguageID=7178 OR UserLanguageID=8202)' />
       <Custom Action="TeselaLangEs2" Sequence="1004" Condition='TESELA_LANG="" AND (UserLanguageID=9226 OR UserLanguageID=10250 OR UserLanguageID=11274 OR UserLanguageID=12298 OR UserLanguageID=13322 OR UserLanguageID=14346 OR UserLanguageID=15370 OR UserLanguageID=16394)' />
       <Custom Action="TeselaLangEs3" Sequence="1005" Condition='TESELA_LANG="" AND (UserLanguageID=17418 OR UserLanguageID=18442 OR UserLanguageID=19466 OR UserLanguageID=20490 OR UserLanguageID=21514 OR UserLanguageID=22538 OR UserLanguageID=23562)' />
       <Custom Action="TeselaLangEn" Sequence="1006" Condition='TESELA_LANG=""' />
     </InstallUISequence>
 
-    <!-- Textos en ingles (por defecto: es lo que sale si el idioma de Windows no es el espanol). -->
+    <!-- English text (default: shown when the Windows language is not Spanish). -->
     <Property Id="TxSetupTitle" Value="Tesela Setup" />
     <Property Id="TxNext" Value="Next &gt;" />
     <Property Id="TxBack" Value="&lt; Back" />
@@ -113,7 +113,7 @@
     <Property Id="TxFilesClose" Value="Close the applications and restart them afterwards." />
     <Property Id="TxFilesNoClose" Value="Do not close them. A restart will be needed to finish." />
 
-    <!-- Textos en espanol: acciones de tipo 51, solo en la secuencia de interfaz y solo si TESELA_LANG=es. -->
+    <!-- Spanish text: type 51 actions, only in the UI sequence and only when TESELA_LANG=es. -->
     <CustomAction Id="TeselaEs_TxSetupTitle" Property="TxSetupTitle" Value="Instalación de Tesela" Execute="immediate" />
     <CustomAction Id="TeselaEs_TxNext" Property="TxNext" Value="Siguiente &gt;" Execute="immediate" />
     <CustomAction Id="TeselaEs_TxBack" Property="TxBack" Value="&lt; Atrás" Execute="immediate" />
@@ -255,7 +255,7 @@
     </InstallUISequence>
 
     <!-- ======================================================================================================== -->
-    <!-- Estilos de texto (sin imagenes ni iconos: no hay tabla Binary). -->
+    <!-- Text styles (no images or icons: there is no Binary table). -->
     <Property Id="DefaultUIFont" Value="TeselaFont" />
     <Property Id="ErrorDialog" Value="ErrorDlg" />
 
@@ -264,8 +264,8 @@
     <TextStyle Id="TeselaBold" FaceName="Tahoma" Size="8" Bold="yes" />
     <TextStyle Id="TeselaTitle" FaceName="Tahoma" Size="13" Bold="yes" />
 
-    <!-- Texto de la barra de progreso. Los textos de progreso y de error de Windows Installer (ActionText, UIText) son UNA
-         sola tabla: no se pueden elegir por idioma sin codigo, asi que van en espanol e ingles a la vez. -->
+    <!-- Progress-bar text. Windows Installer progress and error text (ActionText, UIText) share ONE table: without code,
+         they cannot be selected by language, so both Spanish and English are included together. -->
     <ProgressText Action="InstallInitialize" Message="Preparando / Preparing" />
     <ProgressText Action="RemoveExistingProducts" Message="Quitando la version anterior / Removing the previous version" />
     <ProgressText Action="ProcessComponents" Message="Actualizando componentes / Updating components" />
@@ -283,10 +283,10 @@
     <UIText Id="NewFolder" Value="Folder|New Folder" />
 
     <!-- ======================================================================================================== -->
-    <!-- Ventanas. Solo eventos de control NATIVOS de Windows Installer (SetTargetPath, NewDialog, EndDialog, SpawnDialog,
-         Reinstall, Remove...) y propiedades: ni una accion personalizada de codigo. -->
+    <!-- Dialogs. Only NATIVE Windows Installer control events (SetTargetPath, NewDialog, EndDialog, SpawnDialog,
+         Reinstall, Remove...) and properties: no custom action that runs code. -->
 
-    <!-- 1. Bienvenida -->
+    <!-- 1. Welcome -->
     <Dialog Id="WelcomeDlg" Width="370" Height="270" Title="[TxSetupTitle]" NoMinimize="yes">
       <Control Id="Title" Type="Text" X="20" Y="15" Width="330" Height="40" Transparent="yes" NoPrefix="yes" Text="{\TeselaTitle}[TxWelcomeTitle]" />
       <Control Id="Body" Type="Text" X="20" Y="65" Width="330" Height="44" Transparent="yes" NoPrefix="yes" Text="[TxWelcomeBody]" />
@@ -301,8 +301,8 @@
       </Control>
     </Dialog>
 
-    <!-- 2. Ambito. Las coordenadas de los botones de opcion son relativas al grupo. Si el ambito elegido choca con una
-         instalacion existente del otro ambito, se muestra el aviso y se desactiva Siguiente (no hace falta ninguna accion). -->
+    <!-- 2. Scope. Radio-button coordinates are relative to their group. If the selected scope conflicts with an existing
+         installation in the other scope, show the warning and disable Next (no action is needed). -->
     <Dialog Id="ScopeDlg" Width="370" Height="270" Title="[TxSetupTitle]" NoMinimize="yes">
       <Control Id="Title" Type="Text" X="20" Y="15" Width="330" Height="20" Transparent="yes" NoPrefix="yes" Text="{\TeselaTitle}[TxScopeTitle]" />
       <Control Id="ScopeGroup" Type="RadioButtonGroup" X="20" Y="44" Width="330" Height="106" Property="TESELA_SCOPE">
@@ -323,13 +323,13 @@
         <Publish Event="NewDialog" Value="WelcomeDlg" />
       </Control>
       <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="[TxNext]" DisableCondition="(TESELA_SCOPE=&quot;machine&quot; AND TESELA_PREV_USER&lt;&gt;&quot;&quot;) OR (TESELA_SCOPE=&quot;user&quot; AND TESELA_PREV_MACHINE&lt;&gt;&quot;&quot; AND TESELA_PREV_USER=&quot;&quot;)">
-        <!-- Contexto: para todos = ALLUSERS=1 y MSIINSTALLPERUSER vacio; solo para mi = ALLUSERS=2 y MSIINSTALLPERUSER=1. -->
+    <!-- Context: all-users = ALLUSERS=1 and MSIINSTALLPERUSER empty; current-user-only = ALLUSERS=2 and MSIINSTALLPERUSER=1. -->
         <Publish Property="ALLUSERS" Value="1" Order="1" Condition='TESELA_SCOPE="machine"' />
         <Publish Property="MSIINSTALLPERUSER" Value="{}" Order="2" Condition='TESELA_SCOPE="machine"' />
         <Publish Property="ALLUSERS" Value="2" Order="3" Condition='TESELA_SCOPE="user"' />
         <Publish Property="MSIINSTALLPERUSER" Value="1" Order="4" Condition='TESELA_SCOPE="user"' />
-        <!-- Carpeta: la de la instalacion existente de ese ambito; si no hay, la de por defecto del ambito, salvo que la
-             carpeta actual sea una personalizada (distinta de las dos de por defecto), que se respeta. -->
+    <!-- Folder: use the existing installation's folder for that scope; otherwise use its default folder, unless the
+         current folder is custom (different from both defaults), in which case preserve it. -->
         <Publish Property="INSTALLFOLDER" Value="[TESELA_PREV_MACHINE]" Order="5" Condition="TESELA_SCOPE=&quot;machine&quot; AND TESELA_PREV_MACHINE&lt;&gt;&quot;&quot;" />
         <Publish Property="INSTALLFOLDER" Value="[TESELA_PREV_USER]" Order="6" Condition="TESELA_SCOPE=&quot;user&quot; AND TESELA_PREV_USER&lt;&gt;&quot;&quot;" />
         <Publish Property="INSTALLFOLDER" Value="[TESELA_DEFAULT_MACHINE]" Order="7" Condition="TESELA_SCOPE=&quot;machine&quot; AND TESELA_PREV_MACHINE=&quot;&quot; AND (INSTALLFOLDER=&quot;&quot; OR INSTALLFOLDER~=TESELA_DEFAULT_USER)" />
@@ -341,8 +341,8 @@
       </Control>
     </Dialog>
 
-    <!-- 3. Carpeta y opciones. Siguiente: SetTargetPath fija la carpeta; solo se avanza si la ruta parece completa (con unidad o de red) y,
-         en "solo para mi", no esta en un sitio protegido (Archivos de programa, Windows); si no, ventana de carpeta no valida. -->
+    <!-- 3. Folder and options. Next: SetTargetPath sets the folder; continue only if the path appears complete (drive or
+         network path) and, for "current user only," is not protected (Program Files, Windows); otherwise show InvalidDirDlg. -->
     <Dialog Id="FolderDlg" Width="370" Height="270" Title="[TxSetupTitle]" NoMinimize="yes">
       <Control Id="Title" Type="Text" X="20" Y="15" Width="330" Height="20" Transparent="yes" NoPrefix="yes" Text="{\TeselaTitle}[TxFolderTitle]" />
       <Control Id="FolderLabel" Type="Text" X="20" Y="50" Width="330" Height="11" Transparent="yes" NoPrefix="yes" Text="[TxFolderLabel]" />
@@ -363,8 +363,9 @@
       </Control>
       <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="[TxNext]">
         <Publish Event="SetTargetPath" Value="INSTALLFOLDER" Order="1" />
-        <!-- La ruta se da por buena (TESELA_FOLDER_OK=1) si es completa con unidad y sin "/", "..", "?" ni ruta de red; y se
-             retira si en "solo para mi" cae en un sitio protegido. Va en dos pasos porque una condicion admite 255 caracteres. -->
+        <!-- Accept the path (TESELA_FOLDER_OK=1) if it is a complete drive path without "/", "..", "?", or a network path;
+             clear it if "current user only" selects a protected location. This uses two steps because a condition allows
+             only 255 characters. -->
         <Publish Property="TESELA_FOLDER_OK" Value="{}" Order="2" />
         <Publish Property="TESELA_FOLDER_OK" Value="1" Order="3" Condition="INSTALLFOLDER&gt;&lt;&quot;:\&quot; AND NOT (INSTALLFOLDER&lt;&lt;&quot;\\&quot; OR INSTALLFOLDER&gt;&lt;&quot;/&quot; OR INSTALLFOLDER&gt;&lt;&quot;..&quot; OR INSTALLFOLDER&gt;&lt;&quot;?&quot;)" />
         <Publish Property="TESELA_FOLDER_OK" Value="{}" Order="4" Condition="TESELA_SCOPE=&quot;user&quot; AND (INSTALLFOLDER~&lt;&lt;TESELA_PF64 OR INSTALLFOLDER~&lt;&lt;TESELA_WIN)" />
@@ -383,7 +384,7 @@
       </Control>
     </Dialog>
 
-    <!-- Examinar: el dialogo nativo de Windows Installer (PathEdit, DirectoryCombo y DirectoryList sobre _BrowseProperty). -->
+    <!-- Browse: Windows Installer's native dialog (PathEdit, DirectoryCombo, and DirectoryList on _BrowseProperty). -->
     <Dialog Id="BrowseDlg" Width="370" Height="270" Title="[TxBrowseTitle]" NoMinimize="yes">
       <Control Id="ComboLabel" Type="Text" X="25" Y="58" Width="44" Height="10" Transparent="yes" NoPrefix="yes" Text="[TxBrowseLookIn]" />
       <Control Id="DirectoryCombo" Type="DirectoryCombo" X="70" Y="55" Width="185" Height="80" Property="_BrowseProperty" Indirect="yes" Fixed="yes" Remote="yes">
@@ -409,7 +410,7 @@
       </Control>
     </Dialog>
 
-    <!-- 4. Listo para instalar. -->
+    <!-- 4. Ready to install. -->
     <Dialog Id="VerifyReadyDlg" Width="370" Height="270" Title="[TxSetupTitle]" NoMinimize="yes">
       <Control Id="Title" Type="Text" X="20" Y="15" Width="330" Height="20" Transparent="yes" NoPrefix="yes" Text="{\TeselaTitle}[TxReadyTitle]" />
       <Control Id="Intro" Type="Text" X="20" Y="48" Width="330" Height="22" Transparent="yes" NoPrefix="yes" Text="[TxReadyIntro]" />
@@ -430,7 +431,7 @@
         <Publish Event="SpawnWaitDialog" Value="WaitForCostingDlg" Order="1" Condition="CostingComplete=1" />
         <Publish Event="EndDialog" Value="Return" Order="2" />
       </Control>
-      <!-- Con "para todos", el boton lleva el escudo de UAC (ElevationShield): Windows pedira administrador. -->
+      <!-- For "all users," the button has the UAC shield (ElevationShield): Windows will request administrator access. -->
       <Control Id="InstallElevated" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" ElevationShield="yes" Text="[TxInstall]" Hidden="yes" ShowCondition="TESELA_SCOPE=&quot;machine&quot;">
         <Publish Event="SpawnWaitDialog" Value="WaitForCostingDlg" Order="1" Condition="CostingComplete=1" />
         <Publish Event="EndDialog" Value="Return" Order="2" />
@@ -447,7 +448,7 @@
       </Control>
     </Dialog>
 
-    <!-- Mantenimiento (abrir el MSI de la version ya instalada): reparar o desinstalar. -->
+    <!-- Maintenance (open the MSI for the installed version): repair or uninstall. -->
     <Dialog Id="MaintenanceDlg" Width="370" Height="270" Title="[TxSetupTitle]" NoMinimize="yes">
       <Control Id="Title" Type="Text" X="20" Y="15" Width="330" Height="20" Transparent="yes" NoPrefix="yes" Text="{\TeselaTitle}[TxMaintTitle]" />
       <Control Id="Body" Type="Text" X="20" Y="48" Width="330" Height="33" Transparent="yes" NoPrefix="yes" Text="[TxMaintBody]" />
@@ -466,7 +467,7 @@
       </Control>
     </Dialog>
 
-    <!-- 5. Progreso. -->
+    <!-- 5. Progress. -->
     <Dialog Id="ProgressDlg" Width="370" Height="270" Title="[TxSetupTitle]" Modeless="yes" NoMinimize="yes">
       <Control Id="TitleInstalling" Type="Text" X="20" Y="15" Width="330" Height="20" Transparent="yes" NoPrefix="yes" Hidden="yes" Text="{\TeselaTitle}[TxProgInstalling]" ShowCondition="NOT REMOVE AND NOT REINSTALL">
       </Control>
@@ -490,7 +491,7 @@
       </Control>
     </Dialog>
 
-    <!-- 6. Fin. Aqui va la linea de anclar a la barra de tareas: Windows prohibe que un instalador lo haga. -->
+    <!-- 6. Exit. This is where the taskbar-pinning instruction goes: Windows prohibits installers from pinning apps. -->
     <Dialog Id="ExitDialog" Width="370" Height="270" Title="[TxSetupTitle]" NoMinimize="yes">
       <Control Id="TitleInstalled" Type="Text" X="20" Y="15" Width="330" Height="20" Transparent="yes" NoPrefix="yes" Hidden="yes" Text="{\TeselaTitle}[TxExitInstalled]" ShowCondition="NOT REMOVE AND NOT REINSTALL">
       </Control>
@@ -538,7 +539,7 @@
       </Control>
     </Dialog>
 
-    <!-- Errores (la propiedad ErrorDialog apunta aqui). El motor rellena ErrorText y coloca solo los botones que hacen falta. -->
+    <!-- Errors (the ErrorDialog property points here). The engine fills ErrorText and displays only the needed buttons. -->
     <Dialog Id="ErrorDlg" Width="270" Height="105" Title="[TxSetupTitle]" ErrorDialog="yes" NoMinimize="yes">
       <Control Id="ErrorText" Type="Text" X="15" Y="15" Width="240" Height="60" Transparent="yes" NoPrefix="yes" TabSkip="no" Text="Information text" />
       <Control Id="Y" Type="PushButton" X="100" Y="80" Width="56" Height="17" TabSkip="yes" Text="[TxYes]">
@@ -564,8 +565,8 @@
       </Control>
     </Dialog>
 
-    <!-- Archivos en uso (Tesela abierta durante una actualizacion): lo usa el Administrador de reinicio (MsiRMFilesInUse) y,
-         si no, la ventana clasica (FilesInUse). Sin ellas el motor decide por su cuenta. -->
+    <!-- Files in use (Tesela is open during an upgrade): used by Restart Manager (MsiRMFilesInUse), or otherwise by the
+         classic dialog (FilesInUse). Without these dialogs, the engine decides on its own. -->
     <Dialog Id="FilesInUse" Width="370" Height="270" Title="[TxFilesTitle]" KeepModeless="yes" NoMinimize="yes">
       <Control Id="Title" Type="Text" X="20" Y="15" Width="330" Height="20" Transparent="yes" NoPrefix="yes" Text="{\TeselaTitle}[TxFilesTitle]" />
       <Control Id="Body" Type="Text" X="20" Y="45" Width="330" Height="22" Transparent="yes" NoPrefix="yes" Text="[TxFilesBody]" />
@@ -604,9 +605,8 @@
 
     </UI>
 
-    <!-- Secuencia de interfaz: bienvenida (o mantenimiento si ya esta instalada) y progreso; la ventana final y las de
-         error y cancelacion salen solas al terminar. Una desinstalacion desde Aplicaciones instaladas (REMOVE=ALL) salta
-         directamente al progreso. -->
+    <!-- UI sequence: welcome (or maintenance if already installed) and progress; the final, error, and cancellation dialogs
+         appear automatically at the end. Uninstall from Installed apps (REMOVE=ALL) goes straight to progress. -->
     <InstallUISequence>
       <Show Dialog="WelcomeDlg" After="MigrateFeatureStates" Condition="NOT Installed" />
       <Show Dialog="MaintenanceDlg" After="MigrateFeatureStates" Condition="Installed AND NOT RESUME AND NOT Preselected AND NOT PATCH" />
@@ -615,7 +615,7 @@
       <Show Dialog="FatalError" OnExit="error" />
       <Show Dialog="UserExit" OnExit="cancel" />
     </InstallUISequence>
-    <!-- ICE20 exige las tres tambien en AdminUISequence (instalacion administrativa: msiexec /a, que Tesela no usa). -->
+    <!-- ICE20 requires all three in AdminUISequence too (administrative installation: msiexec /a, which Tesela does not use). -->
     <AdminUISequence>
       <Show Dialog="ExitDialog" OnExit="success" />
       <Show Dialog="FatalError" OnExit="error" />
