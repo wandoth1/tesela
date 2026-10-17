@@ -4180,6 +4180,69 @@ fn medicion_a3_m1_coste_de_la_vigilancia_por_directorio() {
     );
 }
 
+/// M1 (auditoría): solo las carpetas de sincronización de la nube se toleran como ancestro reparse. Junction, symlink, punto de
+/// montaje, enlace de WSL, otras etiquetas y un archivo con etiqueta de nube NO. Prueba pura sobre los metadatos.
+#[test]
+fn solo_la_nube_se_tolera_como_ancestro_reparse() {
+    use crate::plan::tolerated_ancestor;
+    let meta = |tag: u32, is_dir: bool| sys::Meta {
+        identity: FileIdentity {
+            volume_serial: 1,
+            file_id: 1,
+        },
+        links: 1,
+        attrs: 0x400 | if is_dir { 0x10 } else { 0 },
+        reparse_tag: tag,
+        is_dir,
+        delete_pending: false,
+        alloc: 0,
+        logical: 0,
+        newest_filetime: 0,
+    };
+    // Las dos etiquetas de OneDrive medidas en una raíz de sincronización y en sus subcarpetas.
+    assert!(tolerated_ancestor(&meta(0x9000_701A, true)));
+    assert!(tolerated_ancestor(&meta(0x9000_601A, true)));
+    // Mount point / junction (0xA0000003), symlink (0xA000000C), enlace de WSL (0xA000001D), una etiqueta de tercero: no.
+    for tag in [0xA000_0003u32, 0xA000_000C, 0xA000_001D, 0x0000_0123, 0] {
+        assert!(!tolerated_ancestor(&meta(tag, true)), "{tag:#x}");
+    }
+    // Un ARCHIVO con etiqueta de nube no es un ancestro posible.
+    assert!(!tolerated_ancestor(&meta(0x9000_601A, false)));
+}
+
+/// M1: la cadena de ancestros sigue rechazando por defecto cualquier reparse point y solo lo acepta si quien llama lo permite.
+/// Con la política de la aprobación (`tolerated_ancestor`) un reparse point de otra etiqueta se rechaza; un junction, también.
+#[test]
+fn la_cadena_de_ancestros_solo_acepta_lo_que_la_politica_permite() {
+    let mut sb = Sandbox::new();
+    let tag = sb.path("Docs/etiquetada");
+    sb.register_junction("Docs/etiquetada");
+    if !crate::testutil::make_reparse_dir(&tag) {
+        eprintln!("el volumen no admite reparse points de prueba en directorios: se omite");
+        return;
+    }
+    let long = sb.long("Docs/etiquetada");
+    // Por defecto, rechazada (es un reparse point).
+    assert!(matches!(
+        sys::open_reparse_free_dir(&long),
+        Err(sys::ChainError::Reparse { .. })
+    ));
+    // Con la política de la aprobación, también (su etiqueta no es de la nube).
+    assert!(matches!(
+        sys::open_chain_dir(&long, crate::plan::tolerated_ancestor),
+        Err(sys::ChainError::Reparse { .. })
+    ));
+    // Si quien llama la permite, se acepta (el mecanismo de tolerancia existe y es explícito).
+    assert!(sys::open_chain_dir(&long, |_| true).is_ok());
+    // Un junction: rechazado con la política de la aprobación.
+    sb.mkdir("Docs/real");
+    sb.junction("Docs/enlace", "Docs/real");
+    assert!(matches!(
+        sys::open_chain_dir(&sb.long("Docs/enlace"), crate::plan::tolerated_ancestor),
+        Err(sys::ChainError::Reparse { .. })
+    ));
+}
+
 /// GM-B2: un ANCESTRO que es un junction se rechaza al aprobar (`ReparseAncestor`). Antes `GetFinalPathNameByHandleW` resolvía
 /// en silencio el junction y el plan sustituía la ruta pedida por la resuelta: lo aprobado y enviado a la Papelera era OTRA
 /// carpeta que la que el usuario marcó (`Real\...` en vez de `Enlace\...`).

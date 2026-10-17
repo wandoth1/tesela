@@ -381,6 +381,14 @@ pub enum ChainError {
 /// `User Data` o de `%TEMP%`. Hay que mirar cada componente de la ruta TAL COMO SE ESCRIBIÓ (los nombres 8.3 de `%TEMP%`
 /// valen: los resuelve el sistema de archivos al abrir).
 pub fn open_reparse_free_dir(path: &Path) -> Result<Handle, ChainError> {
+    open_chain_dir(path, |_| false)
+}
+
+/// Como [`open_reparse_free_dir`], pero un componente que es un reparse point SE ACEPTA si `tolerate` lo permite (se le pasan
+/// sus metadatos). La identidad de cada salto se sigue verificando al abrir relativo al anterior. Lo usa la aprobación de la
+/// cesta para dejar pasar las carpetas de sincronización de la nube (M1): un placeholder de nube no redirige la resolución de
+/// nombres; junction, symlink y punto de montaje sí y se siguen rechazando.
+pub fn open_chain_dir(path: &Path, tolerate: impl Fn(&Meta) -> bool) -> Result<Handle, ChainError> {
     use std::path::{Component, Prefix};
     let plain = strip_verbatim(path.to_path_buf());
     let mut comps = plain.components();
@@ -400,7 +408,7 @@ pub fn open_reparse_free_dir(path: &Path) -> Result<Handle, ChainError> {
     let mut cur = open_for_query(&root).map_err(ChainError::Os)?;
     let check = |h: &Handle, name: &str| -> Result<(), ChainError> {
         let m = meta(h).map_err(ChainError::Os)?;
-        if m.is_reparse() {
+        if m.is_reparse() && !tolerate(&m) {
             return Err(ChainError::Reparse {
                 component: name.to_string(),
             });

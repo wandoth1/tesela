@@ -623,7 +623,7 @@ impl Cleaner {
     }
 
     /// GM-B2: la cadena de ANCESTROS de `path` (tal como se escribió, componente a componente desde la raíz del volumen, con
-    /// aperturas relativas y sin ningún reparse point) y el propio elemento abierto RELATIVO a ese padre verificado, con la
+    /// aperturas relativas y sin ningún reparse point, salvo las carpetas de la nube: ver [`tolerated_ancestor`]) y el propio elemento abierto RELATIVO a ese padre verificado, con la
     /// misma identidad que el handle ya abierto por ruta. `GetFinalPathNameByHandleW` resuelve EN SILENCIO los junctions de los
     /// ancestros y sustituía la ruta pedida por la resuelta: el plan acababa actuando sobre otra carpeta que la que el usuario
     /// marcó. Compararlo con `PathKey` no vale (en el CI `%TEMP%` es 8.3 y las dos formas de una misma ruta difieren), así
@@ -633,7 +633,7 @@ impl Cleaner {
             // Una raíz de unidad no tiene ancestros (y la protección ya la deniega).
             return Ok(());
         };
-        let ph = match sys::open_reparse_free_dir(parent) {
+        let ph = match sys::open_chain_dir(parent, tolerated_ancestor) {
             Ok(ph) => ph,
             Err(sys::ChainError::Reparse { .. } | sys::ChainError::BadPath) => {
                 return Err(RejectReason::ReparseAncestor);
@@ -916,6 +916,15 @@ impl Cleaner {
             }
         }
     }
+}
+
+/// M1: ¿se tolera este ancestro que es un reparse point al aprobar un elemento de la cesta? Solo las carpetas de
+/// sincronización de la nube (OneDrive y similares: etiqueta `IO_REPARSE_TAG_CLOUD*`): son placeholders que no redirigen la
+/// resolución de nombres, y rechazarlas dejaba sin llegar a `cloud_file` ni a `confirm-cloud` todo archivo suelto bajo la
+/// nube (regresión de la primera versión de GM-B2). Junction, symlink, punto de montaje, enlace de WSL y cualquier otra
+/// etiqueta se siguen rechazando. La identidad de cada salto se verifica igualmente.
+pub(crate) fn tolerated_ancestor(m: &sys::Meta) -> bool {
+    m.is_dir && sys::is_cloud_tag(m.reparse_tag)
 }
 
 struct Candidate {
