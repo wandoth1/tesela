@@ -369,9 +369,7 @@ fn build_mesh(
 fn refresh_marks(ex: &mut Explore, layout: &Layout) {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    for s in ex.flow.basket.sources() {
-        format!("{s:?}").hash(&mut h);
-    }
+    ex.flow.basket.rev().hash(&mut h);
     (ex.version, ex.root.node, ex.root.start, ex.root.end).hash(&mut h);
     let stamp = h.finish() | 1;
     if ex.map.marks.0 == stamp {
@@ -890,7 +888,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
             }
         }
         // Espacio marca o desmarca el elemento activo (la vía de teclado de Ctrl+clic).
-        if ctx.input(|i| i.key_pressed(Key::Space))
+        if ctx.input(crate::multisel::space_pressed_once)
             && let Some(sel) = ex.selection
         {
             ex.marks_toggle(sel);

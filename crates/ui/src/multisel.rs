@@ -5,10 +5,13 @@
 //!   descendiente (una celda insinuada del mapa), se marca su ascendiente de esta carpeta. Entre hermanos nunca hay
 //!   anidación, así que un tamaño no se puede sumar dos veces. Lo único que puede solaparse es la cesta, y de eso se
 //!   encarga `add_state` (`InBasket`): lo que ya está en ella se excluye y se explica.
-//! * Se vacía al cambiar de carpeta (entrar, subir, migas, abrir "Otros"): lo marcado habla de ESTA carpeta, y una marca
-//!   invisible haría que "Añadir" tocase elementos que ya no se ven. Reescanear o volver a Inicio sueltan la exploración
-//!   entera, y una limpieza solo retira lo que desapareció de verdad.
-//! * Añadir usa el mismo camino que el menú y el panel de detalles (`Explore::basket_add_one`): ninguna protección se salta.
+//! * **Nunca hay una marca invisible**: se vacía al cambiar de carpeta (entrar, subir, migas, abrir "Otros") y, al
+//!   cambiar la búsqueda, solo se conservan las marcas que siguen entre los aciertos (así "Añadir N" no añade nada que la
+//!   lista no enseñe). Reescanear o volver a Inicio sueltan la exploración entera, y una limpieza solo retira lo que
+//!   desapareció de verdad. Si navegar suelta marcas, un aviso breve dice cuántas.
+//! * Añadir comprueba cada elemento con `add_state` y lo da de alta por lotes (`Basket::add_batch`), que repite por
+//!   elemento las comprobaciones de `add_path` y `add_contents_of`: ninguna protección se salta. Para una sola ruta, el
+//!   menú y el panel de detalles usan `Explore::basket_add_one`.
 
 use crate::app::Env;
 use crate::args;
@@ -21,8 +24,9 @@ use egui::{
     Align, Color32, CornerRadius, Layout, Rect, Sense, Stroke, StrokeKind, Ui, UiBuilder,
     WidgetInfo, WidgetType, pos2, vec2,
 };
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use tesela_cleaner::{AddOutcome, BatchKind};
 use tesela_layout::Others;
 use tesela_model::NodeId;
 
@@ -42,6 +46,12 @@ pub(crate) struct Marks {
     /// Cambia con cada modificación (clave de la caché del resumen).
     rev: u64,
     cache: Option<(u64, Arc<Summary>)>,
+    /// Las marcas de antes de una ráfaga de Mayús+flechas: lo marcado es eso más el rango, así el rango también encoge.
+    run_base: Option<HashSet<NodeId>>,
+    /// Qué es cada marcado respecto a la cesta (`add_state`), válido mientras no cambien el árbol ni la cesta: marcar o
+    /// desmarcar uno solo clasifica ese, no los demás.
+    cls_key: (u64, u64),
+    cls: HashMap<NodeId, AddState>,
 }
 
 impl Marks {
@@ -66,6 +76,7 @@ impl Marks {
 
     /// Vacía lo marcado (el modo "Seleccionar" se queda como está).
     pub(crate) fn clear(&mut self) {
+        self.run_base = None;
         if !self.set.is_empty() {
             self.set.clear();
             self.rev += 1;
@@ -75,6 +86,7 @@ impl Marks {
 
     /// Marca `id` si no lo estaba y lo desmarca si lo estaba. Pasa a ser el ancla de los rangos.
     pub(crate) fn toggle(&mut self, id: NodeId) {
+        self.run_base = None;
         if !self.set.remove(&id) {
             self.set.insert(id);
         }
@@ -83,11 +95,13 @@ impl Marks {
     }
 
     pub(crate) fn add(&mut self, ids: impl IntoIterator<Item = NodeId>) {
+        self.run_base = None;
         self.set.extend(ids);
         self.rev += 1;
     }
 
     pub(crate) fn remove_all(&mut self, ids: &[NodeId]) {
+        self.run_base = None;
         for id in ids {
             self.set.remove(id);
         }
@@ -96,6 +110,7 @@ impl Marks {
 
     /// Marca lo que no estaba marcado entre `ids` y desmarca lo que sí.
     pub(crate) fn invert(&mut self, ids: &[NodeId]) {
+        self.run_base = None;
         for &id in ids {
             if !self.set.remove(&id) {
                 self.set.insert(id);
@@ -106,12 +121,68 @@ impl Marks {
 
     /// Conserva solo lo que cumple `keep` (tras una limpieza: lo que ya no existe deja de estar marcado).
     pub(crate) fn retain(&mut self, mut keep: impl FnMut(NodeId) -> bool) {
+        self.run_base = None;
         let before = self.set.len();
         self.set.retain(|&id| keep(id));
         if self.set.len() != before {
             self.rev += 1;
         }
     }
+
+    /// El elemento activo se movió sin Mayús: es el ancla nueva y acaba la ráfaga de Mayús+flechas.
+    pub(crate) fn plain_move(&mut self, id: NodeId) {
+        self.anchor = Some(id);
+        self.run_base = None;
+    }
+
+    /// Mayús+flechas: lo marcado pasa a ser lo de antes de la ráfaga más `range` (el rango entre el ancla y el extremo).
+    pub(crate) fn set_run(&mut self, range: &[NodeId]) {
+        let base = match self.run_base.take() {
+            Some(b) => b,
+            None => self.set.clone(),
+        };
+        self.set = base.iter().copied().chain(range.iter().copied()).collect();
+        self.run_base = Some(base);
+        self.rev += 1;
+    }
+}
+
+/// ¿Debe alternar la marca de una fila un `clicked()` SIN puntero? Sí si es el clic por defecto de un lector de pantalla
+/// (no hay teclas) o la primera pulsación de Espacio; no con Intro (es "entrar") ni con la autorrepetición de Espacio.
+pub(crate) fn keyboard_click_toggles(i: &egui::InputState) -> bool {
+    let (mut first, mut repeat, mut enter) = (false, false, false);
+    for e in &i.events {
+        if let egui::Event::Key {
+            key,
+            pressed: true,
+            repeat: r,
+            ..
+        } = e
+        {
+            match key {
+                egui::Key::Enter => enter = true,
+                egui::Key::Space if *r => repeat = true,
+                egui::Key::Space => first = true,
+                _ => {}
+            }
+        }
+    }
+    !enter && (first || !repeat)
+}
+
+/// ¿Se pulsó Espacio (la pulsación, no la autorrepetición de mantenerlo)?
+pub(crate) fn space_pressed_once(i: &egui::InputState) -> bool {
+    i.events.iter().any(|e| {
+        matches!(
+            e,
+            egui::Event::Key {
+                key: egui::Key::Space,
+                pressed: true,
+                repeat: false,
+                ..
+            }
+        )
+    })
 }
 
 /// Elementos de `order` entre `a` y `b`, ambos incluidos y en cualquier sentido. Vacío si alguno no está en `order`.
@@ -132,8 +203,8 @@ pub(crate) struct Summary {
     pub marked: usize,
     /// Los que SÍ se pueden añadir (en orden de identificador).
     pub add: Vec<NodeId>,
-    /// De ellos, cuántos son carpetas conocidas de las que se añade el contenido y no la carpeta.
-    pub contents: usize,
+    /// De ellos, las carpetas conocidas de las que se añade el contenido y no la carpeta.
+    pub contents_of: HashSet<NodeId>,
     /// Lo que ocupan los que se añaden (cada hermano una sola vez).
     pub bytes: u64,
     /// Alguno de los que se añaden tiene una cifra incompleta (mínimo).
@@ -149,6 +220,11 @@ impl Summary {
     pub(crate) fn cannot(&self) -> usize {
         self.in_basket + self.protected + self.info + self.cloud
     }
+
+    /// Cuántos de los que se añaden son carpetas conocidas (se añade su contenido).
+    pub(crate) fn contents(&self) -> usize {
+        self.contents_of.len()
+    }
 }
 
 /// Las dos líneas de la barra: el recuento con el tamaño y, si hace falta, lo que no se puede añadir y por qué.
@@ -157,6 +233,17 @@ pub(crate) fn summary_lines(tr: &Tr, s: &Summary) -> (String, Option<String>) {
     let count = tr.int(n);
     let first = if s.add.is_empty() {
         tr.ta("sel-count-only", args!["n" => n, "count" => count])
+    } else if s.cannot() > 0 {
+        // Con algo excluido, el tamaño es solo el de lo que se añadiría.
+        let size = if s.lower {
+            tr.size_min(s.bytes)
+        } else {
+            tr.size(s.bytes)
+        };
+        tr.ta(
+            "sel-count-partial",
+            args!["n" => n, "count" => count, "size" => size],
+        )
     } else {
         let size = if s.lower {
             tr.size_min(s.bytes)
@@ -186,11 +273,9 @@ pub(crate) fn summary_lines(tr: &Tr, s: &Summary) -> (String, Option<String>) {
             args!["n" => cannot as u64, "count" => tr.int(cannot as u64), "detail" => why.join(", ")],
         ));
     }
-    if s.contents > 0 {
-        parts.push(tr.ta(
-            "sel-contents",
-            args!["n" => s.contents as u64, "count" => tr.int(s.contents as u64)],
-        ));
+    if s.contents() > 0 {
+        let c = s.contents() as u64;
+        parts.push(tr.ta("sel-contents", args!["n" => c, "count" => tr.int(c)]));
     }
     let second = (!parts.is_empty()).then(|| parts.join(" · "));
     (first, second)
@@ -247,7 +332,12 @@ impl Explore {
                 }
             }
             Sel::Group(o) => {
-                let members = self.others_members(o);
+                let mut members = self.others_members(o);
+                // Con búsqueda, solo los elementos del grupo que son aciertos (nunca se marca lo que no se ve).
+                if let Some(hits) = self.search_matches() {
+                    let hits: HashSet<NodeId> = hits.iter().copied().collect();
+                    members.retain(|id| hits.contains(id));
+                }
                 if members.is_empty() {
                     return;
                 }
@@ -272,6 +362,35 @@ impl Explore {
         self.multi.anchor = Some(anchor);
     }
 
+    /// Mayús+flechas: lo marcado es lo de antes de la ráfaga más el rango entre el ancla y `target` (también encoge).
+    pub(crate) fn marks_shift_extend(&mut self, order: &[NodeId], target: NodeId) {
+        let anchor = self
+            .multi
+            .anchor
+            .filter(|a| order.contains(a))
+            .unwrap_or(target);
+        let range = range_between(order, anchor, target).to_vec();
+        self.multi.set_run(&range);
+        self.multi.anchor = Some(anchor);
+    }
+
+    /// Al cambiar la búsqueda solo se conservan las marcas que siguen entre los aciertos: así lo que "Añadir N" añade es
+    /// siempre algo que se ve. (Si se borra la búsqueda no vuelve nada: las marcas ya quitadas se quedan quitadas.)
+    pub(crate) fn sync_marks_with_search(&mut self) {
+        let q = crate::describe::fold(self.search.trim());
+        if q == self.marks_search {
+            return;
+        }
+        self.marks_search.clone_from(&q);
+        if q.is_empty() || self.multi.is_empty() {
+            return;
+        }
+        if let Some(hits) = self.search_matches() {
+            let hits: HashSet<NodeId> = hits.iter().copied().collect();
+            self.multi.retain(|id| hits.contains(&id));
+        }
+    }
+
     /// "Seleccionar todo aquí": todo lo que se ve (los aciertos si hay búsqueda).
     pub(crate) fn marks_all_here(&mut self) {
         let ids = self.visible_order();
@@ -285,16 +404,23 @@ impl Explore {
     }
 
     /// Qué pasaría con lo marcado al añadirlo, clasificado con las mismas reglas que el icono de la cesta (`add_state`).
+    /// Sin caché: lo usa Añadir (cuenta el estado de ahora mismo) y las pruebas.
     pub(crate) fn compute_summary(&self) -> Summary {
+        self.summarize(&mut HashMap::new())
+    }
+
+    fn summarize(&self, cls: &mut HashMap<NodeId, AddState>) -> Summary {
         let view = self.view();
         let mut s = Summary::default();
         for id in self.multi.sorted() {
             s.marked += 1;
-            let state = self.add_state(Sel::Node(id));
+            let state = *cls
+                .entry(id)
+                .or_insert_with(|| self.add_state(Sel::Node(id)));
             match state {
                 AddState::Addable | AddState::ContentsOf => {
                     if state == AddState::ContentsOf {
-                        s.contents += 1;
+                        s.contents_of.insert(id);
                     }
                     s.add.push(id);
                     s.bytes += view.alloc(id);
@@ -310,46 +436,76 @@ impl Explore {
         s
     }
 
-    /// El resumen de lo marcado, calculado una vez por cambio de la selección, del árbol o de la cesta.
+    /// El resumen de lo marcado, recalculado solo si cambió la selección, el árbol o la cesta (versiones, sin formatear la
+    /// cesta). La clasificación de cada marcado se conserva mientras no cambien el árbol ni la cesta: marcar o
+    /// desmarcar uno no vuelve a clasificar los demás.
     pub(crate) fn marks_summary(&mut self) -> Arc<Summary> {
-        use std::hash::{Hash, Hasher};
         if self.multi.is_empty() {
             return Arc::default();
         }
-        let mut h = std::collections::hash_map::DefaultHasher::new();
-        for s in self.flow.basket.sources() {
-            format!("{s:?}").hash(&mut h);
-        }
-        (self.multi.rev, self.version).hash(&mut h);
-        let stamp = h.finish();
+        let key = (self.version, self.flow.basket.rev());
+        let stamp = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            (self.multi.rev, key).hash(&mut h);
+            h.finish()
+        };
         if let Some((k, s)) = &self.multi.cache
             && *k == stamp
         {
             return s.clone();
         }
-        let s = Arc::new(self.compute_summary());
+        let mut cls = std::mem::take(&mut self.multi.cls);
+        if self.multi.cls_key != key {
+            cls.clear();
+            self.multi.cls_key = key;
+        }
+        let s = Arc::new(self.summarize(&mut cls));
+        self.multi.cls = cls;
         self.multi.cache = Some((stamp, s.clone()));
         s
     }
 
-    /// Añade a la cesta lo marcado que se puede añadir, uno a uno por el mismo camino que el icono de la cesta, y vacía
-    /// la selección. Devuelve cuántos entraron.
-    pub(crate) fn marks_add_to_basket(&mut self, env: &Env, now: f64) -> usize {
+    /// Añade a la cesta lo marcado que se puede añadir, por lotes, y vacía la selección. Devuelve (los que entraron, los
+    /// marcados). Cada elemento pasa por `add_state` y por las comprobaciones de `Basket` (ruta de unidad local,
+    /// protección, ya cubierta), las mismas que el icono de la cesta.
+    pub(crate) fn marks_add_core(&mut self) -> (usize, usize) {
         // Se recalcula en el momento (no con la caché): lo que cuenta es el estado de ahora.
         let s = self.compute_summary();
-        let mut added = 0usize;
-        for &id in &s.add {
-            if self.basket_add_one(Sel::Node(id)) {
-                added += 1;
-            }
-        }
+        let items: Vec<(std::path::PathBuf, BatchKind)> = s
+            .add
+            .iter()
+            .map(|&id| {
+                let kind = if s.contents_of.contains(&id) {
+                    BatchKind::ContentsOf
+                } else {
+                    BatchKind::Path
+                };
+                (self.tree.path(id), kind)
+            })
+            .collect();
+        let prot = self.protection.clone();
+        let out = self.flow.basket.add_batch(items, &prot);
+        let added = out
+            .iter()
+            .filter(|o| matches!(o, AddOutcome::Added { .. }))
+            .count();
         self.multi.clear();
-        let tr = env.tr;
+        (added, s.marked)
+    }
+
+    /// "Añadir N a la cesta" de la barra: como [`Explore::marks_add_core`], con el aviso. No hace nada mientras hay una
+    /// limpieza en curso. Devuelve cuántos entraron.
+    pub(crate) fn marks_add_to_basket(&mut self, tr: &Tr, now: f64) -> usize {
+        if self.flow.busy() {
+            return 0;
+        }
+        let (added, marked) = self.marks_add_core();
         let mut msg = tr.ta(
             "sel-added",
             args!["n" => added as u64, "count" => tr.int(added as u64)],
         );
-        let skipped = s.marked - added;
+        let skipped = marked - added;
         if skipped > 0 {
             msg.push_str(" · ");
             msg.push_str(&tr.ta(
@@ -363,70 +519,46 @@ impl Explore {
 
     /// La barra de selección (bajo el mapa o la lista): el interruptor "Seleccionar" y, con algo marcado, el recuento, lo
     /// que no se puede añadir y los botones. Ocupa siempre el mismo alto: así el mapa no se recoloca al marcar el primero.
+    /// Los controles se crean en orden de lectura (interruptor, Añadir, Desmarcar) para que Tab los recorra así.
     pub(crate) fn selection_bar(&mut self, ui: &mut Ui, env: &mut Env) {
         let pal = env.pal;
         let tr = env.tr;
         let summary = self.marks_summary();
         let has = !self.multi.is_empty();
+        let busy = self.flow.busy();
         let mut do_add = false;
         let mut do_clear = false;
+        let mut refocus = false;
         let full = ui.available_rect_before_wrap();
         // La barra ocupa la columna central: según su ancho se acorta el texto de los controles (el nombre accesible no
-        // cambia): el interruptor pierde su texto por debajo de 900 px y los botones por debajo de 600.
-        let toggle_text = full.width() >= 900.0;
+        // cambia). Los botones pierden el texto por debajo de 600 px; el interruptor lo enseña en cuanto cabe junto al
+        // espacio que ocupan los botones (unos 350 px con texto, 90 sin él) y unos 210 px de texto del resumen.
         let button_text = full.width() >= 600.0;
-        let mut left_rect = full;
-        if has {
-            let right = ui.scope_builder(
-                UiBuilder::new()
-                    .max_rect(full)
-                    .layout(Layout::right_to_left(Align::Center)),
-                |ui| {
-                    ui.spacing_mut().item_spacing.x = 8.0;
-                    let clear = tr.t("sel-clear");
-                    let r = if button_text {
-                        widgets::button(ui, env, ButtonStyle::Ghost, None, &clear, true)
-                    } else {
-                        widgets::icon_button(ui, env, Icon::Dismiss, &clear, true)
-                    };
-                    if r.clicked() {
-                        do_clear = true;
-                    }
-                    let can = !summary.add.is_empty();
-                    let label = if can {
-                        let n = summary.add.len() as u64;
-                        tr.ta("sel-add", args!["n" => n, "count" => tr.int(n)])
-                    } else {
-                        tr.t("sel-add-none")
-                    };
-                    let r = if button_text {
-                        widgets::button(
-                            ui,
-                            env,
-                            ButtonStyle::Secondary,
-                            Some(Icon::Cart),
-                            &label,
-                            can,
-                        )
-                    } else {
-                        widgets::icon_button(ui, env, Icon::Cart, &label, can)
-                    };
-                    if !can {
-                        r.clone().on_hover_text(tr.t("sel-add-none-tip"));
-                    }
-                    if r.clicked() {
-                        do_add = true;
-                    }
-                },
-            );
-            left_rect = Rect::from_min_max(
+        let toggle_text = full.width() - if button_text { 352.0 } else { 92.0 } >= 338.0;
+        let clear = tr.t("sel-clear");
+        let can = !summary.add.is_empty() && !busy;
+        let add_label = if summary.add.is_empty() {
+            tr.t("sel-add-none")
+        } else {
+            let n = summary.add.len() as u64;
+            tr.ta("sel-add", args!["n" => n, "count" => tr.int(n)])
+        };
+        // Ancho de la zona de botones (se mide igual que `widgets::button`) para repartir el hueco antes de dibujar.
+        let right_w = if !has {
+            0.0
+        } else if button_text {
+            text_button_w(ui, &clear, false) + text_button_w(ui, &add_label, true) + 8.0 + 2.0
+        } else {
+            36.0 + 36.0 + 8.0 + 2.0
+        };
+        let left_rect = if has {
+            Rect::from_min_max(
                 full.min,
-                pos2(
-                    (right.response.rect.left() - 12.0).max(full.min.x),
-                    full.max.y,
-                ),
-            );
-        }
+                pos2((full.right() - right_w - 12.0).max(full.min.x), full.max.y),
+            )
+        } else {
+            full
+        };
         ui.scope_builder(
             UiBuilder::new()
                 .max_rect(left_rect)
@@ -454,6 +586,7 @@ impl Explore {
                             .truncate(),
                         );
                         l.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &first));
+                        l.on_hover_text(&full_text);
                         if let Some(sec) = second {
                             let l2 = ui.add(
                                 egui::Label::new(
@@ -479,17 +612,68 @@ impl Explore {
                             .truncate(),
                         );
                         l.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &text));
+                        // La pista se corta en ventanas estrechas: completa, a la vista del ratón.
+                        l.on_hover_text(format!("{text} · {}", tr.t("sel-keys-tip")));
                     }
                 });
             },
         );
+        if has {
+            let right_rect = Rect::from_min_max(pos2(full.right() - right_w, full.top()), full.max);
+            ui.scope_builder(
+                UiBuilder::new()
+                    .max_rect(right_rect)
+                    .layout(Layout::left_to_right(Align::Center)),
+                |ui| {
+                    ui.spacing_mut().item_spacing.x = 8.0;
+                    let r = if button_text {
+                        widgets::button(
+                            ui,
+                            env,
+                            ButtonStyle::Secondary,
+                            Some(Icon::Cart),
+                            &add_label,
+                            can,
+                        )
+                    } else {
+                        widgets::icon_button(ui, env, Icon::Cart, &add_label, can)
+                    };
+                    if !can {
+                        // Sin nada que añadir, o con una limpieza en curso: la pista dice cuál de las dos.
+                        let why = if busy {
+                            "sel-add-busy-tip"
+                        } else {
+                            "sel-add-none-tip"
+                        };
+                        r.clone().on_hover_text(tr.t(why));
+                    }
+                    if r.clicked() {
+                        do_add = true;
+                        refocus |= r.interact_pointer_pos().is_none();
+                    }
+                    let r = if button_text {
+                        widgets::button(ui, env, ButtonStyle::Ghost, None, &clear, true)
+                    } else {
+                        widgets::icon_button(ui, env, Icon::Dismiss, &clear, true)
+                    };
+                    if r.clicked() {
+                        do_clear = true;
+                        refocus |= r.interact_pointer_pos().is_none();
+                    }
+                },
+            );
+        }
         ui.advance_cursor_after_rect(full);
         if do_clear {
             self.multi.clear();
         }
         if do_add {
             let now = ui.input(|i| i.time);
-            self.marks_add_to_basket(env, now);
+            self.marks_add_to_basket(tr, now);
+        }
+        // Con teclado, los botones desaparecen al pulsarlos: el foco pasa al interruptor en vez de perderse.
+        if refocus {
+            ui.memory_mut(|m| m.request_focus(egui::Id::new(TOGGLE_ID)));
         }
     }
 
@@ -509,7 +693,8 @@ impl Explore {
         } else {
             34.0
         };
-        let (rect, resp) = ui.allocate_exact_size(vec2(w, 34.0), Sense::click());
+        let (rect, _) = ui.allocate_exact_size(vec2(w, 34.0), Sense::hover());
+        let resp = ui.interact(rect, egui::Id::new(TOGGLE_ID), Sense::click());
         resp.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, true, on, label.clone()));
         if ui.is_rect_visible(rect) {
             let fill = if on || resp.hovered() {
@@ -555,9 +740,26 @@ impl Explore {
         if resp.clicked() {
             self.multi.mode = !on;
         }
-        let tip = format!("{label} · {}", env.tr.t("sel-toggle-tip"));
+        let tip = format!(
+            "{label} · {} {}",
+            env.tr.t("sel-toggle-tip"),
+            env.tr.t("sel-keys-tip")
+        );
         resp.on_hover_text(tip);
     }
+}
+
+/// Identificador del interruptor "Seleccionar" (para devolverle el foco tras Añadir o Desmarcar con el teclado).
+const TOGGLE_ID: &str = "tesela-sel-toggle";
+
+/// Ancho de un botón de texto de `widgets::button` (con icono de 18 px y su hueco, o sin él).
+fn text_button_w(ui: &Ui, text: &str, icon: bool) -> f32 {
+    let g = ui.painter().layout_no_wrap(
+        text.to_string(),
+        theme::font_semibold(14.0),
+        Color32::PLACEHOLDER,
+    );
+    (24.0 + if icon { 26.0 } else { 0.0 } + g.size().x).max(40.0)
 }
 
 /// Casilla de 16 px: marcada con el relleno de acento y una marca blanca; sin marcar, solo el borde.
@@ -638,7 +840,7 @@ mod tests {
         let s = Summary {
             marked: 4,
             add: vec![1, 2],
-            contents: 1,
+            contents_of: HashSet::from([2]),
             bytes: 3 << 30,
             lower: false,
             in_basket: 1,
@@ -647,7 +849,7 @@ mod tests {
             cloud: 0,
         };
         let (a, b) = summary_lines(&tr, &s);
-        assert_eq!(a, "4 seleccionados · 3,0 GB");
+        assert_eq!(a, "4 seleccionados · se añadirían 3,0 GB");
         assert_eq!(
             b.as_deref(),
             Some(
@@ -665,7 +867,7 @@ mod tests {
         assert_eq!(b.as_deref(), Some("1 no se puede añadir: 1 protegido"));
         let en = Tr::new(crate::Lang::En);
         let (a, b) = summary_lines(&en, &s);
-        assert_eq!(a, "4 selected · 3.0 GB");
+        assert_eq!(a, "4 selected · 3.0 GB would be added");
         assert!(
             b.unwrap()
                 .starts_with("2 cannot be added: 1 protected, 1 already in the basket")
@@ -678,5 +880,64 @@ mod tests {
             ..Summary::default()
         };
         assert!(summary_lines(&tr, &ok).1.is_none());
+    }
+
+    fn key_events(keys: &[(egui::Key, bool)]) -> egui::InputState {
+        let mut i = egui::InputState::default();
+        for &(key, repeat) in keys {
+            i.events.push(egui::Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat,
+                modifiers: egui::Modifiers::NONE,
+            });
+        }
+        i
+    }
+
+    #[test]
+    fn un_clic_sin_puntero_alterna_salvo_con_intro_o_la_autorrepeticion_de_espacio() {
+        use egui::Key::{Enter, Space};
+        // Sin teclas: el clic por defecto de un lector de pantalla.
+        assert!(keyboard_click_toggles(&key_events(&[])));
+        // La primera pulsación de Espacio sí; la autorrepetición sola, no.
+        assert!(keyboard_click_toggles(&key_events(&[(Space, false)])));
+        assert!(keyboard_click_toggles(&key_events(&[
+            (Space, false),
+            (Space, true)
+        ])));
+        assert!(!keyboard_click_toggles(&key_events(&[(Space, true)])));
+        // Intro nunca alterna.
+        assert!(!keyboard_click_toggles(&key_events(&[(Enter, false)])));
+        assert!(space_pressed_once(&key_events(&[(Space, false)])));
+        assert!(!space_pressed_once(&key_events(&[(Space, true)])));
+        assert!(!space_pressed_once(&key_events(&[(Enter, false)])));
+    }
+
+    #[test]
+    fn una_rafaga_de_mayus_flechas_amplia_y_encoge_sobre_lo_marcado_antes() {
+        let order: Vec<NodeId> = (1..=8).collect();
+        let mut m = Marks::default();
+        m.toggle(7); // ya estaba marcado antes de la ráfaga
+        m.anchor = Some(2);
+        let run = |m: &mut Marks, to: NodeId| {
+            let r = range_between(&order, 2, to).to_vec();
+            m.set_run(&r);
+        };
+        run(&mut m, 3);
+        assert_eq!(m.sorted(), vec![2, 3, 7]);
+        run(&mut m, 5);
+        assert_eq!(m.sorted(), vec![2, 3, 4, 5, 7]);
+        run(&mut m, 4);
+        assert_eq!(
+            m.sorted(),
+            vec![2, 3, 4, 7],
+            "encoge y conserva lo de antes"
+        );
+        // Cualquier otra acción acaba la ráfaga: la siguiente parte de lo que hay.
+        m.toggle(8);
+        run(&mut m, 3);
+        assert_eq!(m.sorted(), vec![2, 3, 4, 7, 8]);
     }
 }

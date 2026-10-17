@@ -175,6 +175,11 @@ sel-count =
         [one] { $count } seleccionado · { $size }
        *[other] { $count } seleccionados · { $size }
     }
+sel-count-partial =
+    { $n ->
+        [one] { $count } seleccionado · se añadirían { $size }
+       *[other] { $count } seleccionados · se añadirían { $size }
+    }
 sel-count-only =
     { $n ->
         [one] { $count } seleccionado
@@ -191,7 +196,11 @@ sel-why-protected =
        *[other] { $count } protegidos
     }
 sel-why-in-basket = { $count } ya en la cesta
-sel-why-info = { $count } solo informar o del sistema
+sel-why-info =
+    { $n ->
+        [one] { $count } solo informativo o del sistema
+       *[other] { $count } solo informativos o del sistema
+    }
 sel-why-cloud = { $count } solo en la nube
 sel-contents =
     { $n ->
@@ -201,7 +210,10 @@ sel-contents =
 sel-add = Añadir { $count } a la cesta
 sel-add-none = Añadir selección a la cesta
 sel-add-none-tip = Ninguno de los elementos seleccionados se puede añadir a la cesta: la barra dice por qué.
-sel-clear = Quitar selección
+sel-add-busy-tip = No se puede añadir mientras se prepara o se ejecuta una limpieza.
+sel-clear = Desmarcar todo
+sel-keys-tip = Espacio marca la fila o la celda activa; Mayús+flechas amplían o reducen el rango en la lista.
+sel-dropped = Se quitó la selección ({ $count })
 sel-added =
     { $n ->
         [one] { $count } elemento añadido a la cesta
@@ -212,9 +224,9 @@ sel-added-skipped =
         [one] { $count } no se podía añadir
        *[other] { $count } no se podían añadir
     }
-sel-row-marked = seleccionado para la cesta
 sel-map-count = Seleccionados para la cesta: { $count }.
 sel-map-this = Este elemento está seleccionado para la cesta.
+list-select-all-rows = Seleccionar todas las filas
 menu-sel-this = Seleccionar este elemento
 menu-sel-unthis = Quitar de la selección
 menu-sel-all = Seleccionar todo aquí

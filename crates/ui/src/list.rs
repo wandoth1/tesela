@@ -149,7 +149,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
             ui.id().with("casilla-cabecera"),
             Sense::click(),
         );
-        let label = env.tr.t("menu-sel-all");
+        let label = env.tr.t("list-select-all-rows");
         hit.widget_info(|| {
             egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, all, label.clone())
         });
@@ -269,14 +269,10 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
                         s.push_str(&env.tr.t("details-in-basket"));
                     }
                 }
-                if marked {
-                    s.push_str(", ");
-                    s.push_str(&env.tr.t("sel-row-marked"));
-                }
                 s
             };
-            // Con las casillas visibles la fila es una casilla (su estado accesible es "marcada"); sin ellas, el de siempre
-            // (el elemento activo).
+            // Con las casillas visibles la fila es una casilla y su estado ("marcada") lo da `toggled`, no la etiqueta; sin
+            // ellas, el de siempre (`toggled` = elemento activo). El elemento activo se expone siempre como `selected`.
             resp.widget_info(|| {
                 if checks {
                     egui::WidgetInfo::selected(
@@ -294,6 +290,8 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
                     )
                 }
             });
+            ui.ctx()
+                .accesskit_node_builder(resp.id, |node| node.set_selected(selected));
             if ui.is_rect_visible(rect) {
                 if selected {
                     ui.painter()
@@ -433,21 +431,24 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
             // Selección múltiple. Con el puntero: Mayús+clic marca el rango desde el ancla, Ctrl+clic (o el modo "Seleccionar",
             // o pulsar la casilla) alterna la fila y un clic normal solo fija el ancla. Con el teclado, Espacio alterna.
             let mods = ui.input(|i| i.modifiers);
-            if resp.clicked()
-                && let Some(p) = resp.interact_pointer_pos()
-            {
-                let on_check = checks && p.x < rect.left() + off;
-                if mods.shift {
-                    let order: Vec<NodeId> = (0..n).map(|k| items.get(k)).collect();
-                    ex.marks_range_in(&order, id);
-                } else if mods.command || ex.multi.mode || on_check {
+            if resp.clicked() {
+                if let Some(p) = resp.interact_pointer_pos() {
+                    // Un clic de ratón enfoca la fila: así Espacio y Mayús+flechas funcionan sin pasar por Tab.
+                    resp.request_focus();
+                    let on_check = checks && p.x < rect.left() + off;
+                    if mods.shift {
+                        let order: Vec<NodeId> = (0..n).map(|k| items.get(k)).collect();
+                        ex.marks_range_in(&order, id);
+                    } else if mods.command || ex.multi.mode || on_check {
+                        ex.marks_toggle(sel);
+                    } else {
+                        ex.multi.plain_move(id);
+                    }
+                } else if ui.input(crate::multisel::keyboard_click_toggles) {
+                    // Sin puntero: el clic por defecto de un lector de pantalla o la pulsación de Espacio alternan la marca
+                    // (Intro entra en la carpeta y la autorrepetición de Espacio no vuelve a alternar).
                     ex.marks_toggle(sel);
-                } else {
-                    ex.multi.anchor = Some(id);
                 }
-            }
-            if resp.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Space)) {
-                ex.marks_toggle(sel);
             }
             // Con Ctrl o Mayús un doble clic son dos marcas seguidas, no "entrar".
             if resp.double_clicked() && !(mods.command || mods.shift) {
@@ -470,14 +471,15 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
             ex.selection = Some(Sel::Node(items.get(to)));
             ex.list_focus = Some(items.get(to));
             if shift {
-                // Mayús+flechas: marca el rango desde el ancla (la fila de la que se salió, si aún no hay ancla).
+                // Mayús+flechas: lo marcado es lo de antes más el rango desde el ancla (la fila de la que se salió, si aún
+                // no hay ancla); con la flecha contraria el rango encoge.
                 if ex.multi.anchor.is_none() {
                     ex.multi.anchor = Some(items.get(fi));
                 }
                 let order: Vec<NodeId> = (0..n).map(|k| items.get(k)).collect();
-                ex.marks_range_in(&order, items.get(to));
+                ex.marks_shift_extend(&order, items.get(to));
             } else {
-                ex.multi.anchor = Some(items.get(to));
+                ex.multi.plain_move(items.get(to));
             }
             if to < range.start || to >= range.end {
                 ex.scroll_to_selection = true;

@@ -3,6 +3,7 @@
 //! AppData...).
 
 use super::*;
+use crate::app::CleanStart;
 use crate::explore::AddState;
 use crate::theme::Palette;
 use egui::accesskit::Toggled;
@@ -93,14 +94,22 @@ fn ctrl_clic_alterna_filas_y_un_clic_normal_no_toca_lo_marcado() {
     // Ctrl+clic también mueve el elemento activo (los detalles lo enseñan), como en el Explorador.
     assert_eq!(explore(&h).selection, Some(Sel::Node(d)));
     h.get_by_label_contains("2 seleccionados · ");
-    // La fila marcada lo dice con su estado accesible y con texto.
+    // La fila marcada lo dice con su estado accesible (`toggled`) y no repite "seleccionado" en la etiqueta; el elemento
+    // activo (el último con Ctrl+clic) se sigue exponiendo como `selected` aunque las filas sean casillas.
     let row = h.get_by_label_contains("Vídeos, ");
     assert_eq!(row.accesskit_node().toggled(), Some(Toggled::True));
     assert!(
-        row.accesskit_node()
+        !row.accesskit_node()
             .label()
             .unwrap()
-            .contains("seleccionado para la cesta")
+            .contains("seleccionado")
+    );
+    assert_eq!(row.accesskit_node().is_selected(), Some(false));
+    assert_eq!(
+        h.get_by_label_contains("Descargas, ")
+            .accesskit_node()
+            .is_selected(),
+        Some(true)
     );
     // Ctrl+clic otra vez la desmarca (se deja pasar el tiempo de doble clic: no es "entrar").
     h.run_steps(30);
@@ -179,6 +188,9 @@ fn ctrl_a_marca_todo_ctrl_clic_quita_uno_e_invertir_deja_solo_ese_y_esc_vacia() 
     h.run_steps(3);
     h.get_by_label_contains("Proyectos, ").click_secondary();
     h.run_steps(3);
+    // La casilla de cabecera y la opción del menú tienen nombres distintos.
+    h.get_by_label("Seleccionar todas las filas");
+    h.get_by_label("Seleccionar todo aquí");
     h.get_by_label("Invertir selección").click();
     h.run_steps(4);
     assert_eq!(marked(&h), vec![p]);
@@ -255,14 +267,18 @@ fn la_barra_cuenta_los_bytes_explica_lo_protegido_y_anade_solo_lo_que_se_puede()
     assert_eq!(s.marked, 3);
     assert_eq!(s.add, sorted(vec![p, v]));
     assert_eq!(
-        s.contents, 1,
+        s.contents(),
+        1,
         "Vídeos es una carpeta conocida: su contenido"
     );
     assert_eq!(s.protected, 1, "AppData es intocable");
     let alloc = |id| explore(&h).view().alloc(id);
     assert_eq!(s.bytes, alloc(p) + alloc(v), "sin AppData y sin duplicados");
     // La barra lo dice: recuento, tamaño de lo que se añadiría y por qué no entra el resto.
-    h.get_by_label_contains(&format!("3 seleccionados · {}", es().size(s.bytes)));
+    h.get_by_label_contains(&format!(
+        "3 seleccionados · se añadirían {}",
+        es().size(s.bytes)
+    ));
     h.get_by_label_contains("1 no se puede añadir: 1 protegido");
     h.get_by_label_contains("1 carpeta conocida: se añade su contenido");
     // Añadir: dos entradas en la cesta, por el mismo camino que el icono (Vídeos como "Contenido de").
@@ -290,7 +306,7 @@ fn la_barra_cuenta_los_bytes_explica_lo_protegido_y_anade_solo_lo_que_se_puede()
             .accesskit_node()
             .is_disabled()
     );
-    h.get_by_label("Quitar selección").click();
+    h.get_by_label("Desmarcar todo").click();
     h.run_steps(3);
     assert!(explore(&h).multi.is_empty());
     assert_eq!(explore(&h).flow.basket.len(), 2);
@@ -320,6 +336,8 @@ fn navegar_vacia_lo_marcado_pero_el_modo_seleccionar_se_conserva() {
     h.run_steps(3);
     assert_eq!(explore(&h).root.node, p);
     assert!(explore(&h).multi.is_empty(), "entrar vacía lo marcado");
+    // Y lo avisa: no se pierde una selección en silencio.
+    h.get_by_label_contains("Se quitó la selección (1)");
     assert!(explore(&h).multi.mode, "el modo no se pierde");
     // Subir con Retroceso también.
     h.key_press_modifiers(Modifiers::COMMAND, Key::A);
@@ -346,7 +364,7 @@ fn el_modo_seleccionar_da_casillas_y_la_de_la_cabecera_marca_todo_y_quita_todo()
     h.get_by_label("Seleccionar").click();
     h.run_steps(3);
     // La casilla de la cabecera marca todo lo que se ve...
-    h.get_by_label("Seleccionar todo aquí").click();
+    h.get_by_label("Seleccionar todas las filas").click();
     h.run_steps(3);
     assert_eq!(marked(&h).len(), n);
     // ...y en modo selección un clic normal en una fila la quita: "todo menos una", solo con el ratón.
@@ -366,10 +384,10 @@ fn el_modo_seleccionar_da_casillas_y_la_de_la_cabecera_marca_todo_y_quita_todo()
         Some(Toggled::False)
     );
     // Con alguna sin marcar, la casilla de la cabecera marca todas; con todas, las quita.
-    h.get_by_label("Seleccionar todo aquí").click();
+    h.get_by_label("Seleccionar todas las filas").click();
     h.run_steps(3);
     assert_eq!(marked(&h).len(), n);
-    h.get_by_label("Seleccionar todo aquí").click();
+    h.get_by_label("Seleccionar todas las filas").click();
     h.run_steps(3);
     assert!(explore(&h).multi.is_empty());
 }
@@ -469,11 +487,28 @@ fn con_el_teclado_se_llega_a_los_botones_de_la_barra_y_se_usan() {
     h.run_steps(4);
     assert_eq!(explore(&h).flow.basket.len(), 2);
     assert!(explore(&h).multi.is_empty());
+    assert_eq!(
+        focused_label(&h),
+        "Seleccionar",
+        "tras Añadir con el teclado el foco pasa al interruptor"
+    );
     mark_api(&mut h, &["Descargas"]);
-    tab_to(&mut h, "Quitar selección");
+    // Tab recorre la barra en orden de lectura: interruptor, Añadir, Desmarcar todo.
+    tab_to(&mut h, "Seleccionar");
+    h.key_press(Key::Tab);
+    h.run_steps(2);
+    assert_eq!(focused_label(&h), "Añadir 1 a la cesta");
+    h.key_press(Key::Tab);
+    h.run_steps(2);
+    assert_eq!(focused_label(&h), "Desmarcar todo");
     h.key_press(Key::Space);
     h.run_steps(3);
     assert!(explore(&h).multi.is_empty());
+    assert_eq!(
+        focused_label(&h),
+        "Seleccionar",
+        "tras Desmarcar con el teclado el foco pasa al interruptor"
+    );
     // El interruptor también se alcanza con Tab y Espacio lo activa.
     tab_to(&mut h, "Seleccionar");
     h.key_press(Key::Space);
@@ -557,7 +592,7 @@ fn la_barra_de_seleccion_cabe_sin_solaparse_a_960x600_y_1280x800_en_los_dos_idio
             items.push(in_bar(&h, l, band));
         }
         let clear = if es {
-            "Quitar selección"
+            "Desmarcar todo"
         } else {
             "Clear selection"
         };
@@ -595,4 +630,194 @@ fn una_limpieza_retira_lo_marcado_que_ya_no_existe_y_conserva_el_resto() {
         vec![v],
         "Proyectos ya no existe; Vídeos sigue marcado"
     );
+}
+
+fn descargas_start() -> StartScreen {
+    StartScreen::Map(MapStart {
+        list: true,
+        open: vec!["Users".into(), crate::demo::USER.into(), "Descargas".into()],
+        select: None,
+    })
+}
+
+#[test]
+fn la_busqueda_deja_solo_las_marcas_que_siguen_visibles_y_anadir_no_anade_lo_oculto() {
+    let mut h = harness(opts(list_start()));
+    let d = kid(&h, "Descargas");
+    for n in ["Vídeos", "Descargas", "Proyectos"] {
+        click_row(&mut h, n, Modifiers::COMMAND);
+    }
+    assert_eq!(marked(&h).len(), 3);
+    h.get_by_label("Buscar").focus();
+    h.run_steps(2);
+    h.get_by_label("Buscar").type_text("desc");
+    h.run_steps(4);
+    // La lista solo enseña Descargas: lo demás deja de estar marcado, y la barra lo cuenta así.
+    assert_eq!(marked(&h), vec![d]);
+    h.get_by_label_contains("1 seleccionado · ");
+    h.get_by_label("Añadir 1 a la cesta").click();
+    h.run_steps(4);
+    let ex = explore(&h);
+    assert_eq!(ex.flow.basket.len(), 1, "no se añadió nada oculto");
+    assert!(ex.basket_has_own(Sel::Node(d)));
+}
+
+#[test]
+fn el_clic_de_accesibilidad_alterna_intro_no_y_espacio_alterna_una_sola_vez() {
+    let mut h = harness(opts(descargas_start()));
+    let here = explore(&h).root.node;
+    let (a, b) = (
+        kid(&h, "distro-linux-24.04.iso"),
+        kid(&h, "instalador-sistema.iso"),
+    );
+    // Con alguna marca las filas son casillas; el clic por defecto de un lector de pantalla alterna la fila.
+    click_row(&mut h, "instalador-sistema.iso", Modifiers::COMMAND);
+    assert_eq!(marked(&h), vec![b]);
+    h.get_by_label_contains("distro-linux-24.04.iso, ")
+        .click_accesskit();
+    h.run_steps(3);
+    assert_eq!(marked(&h), sorted(vec![a, b]));
+    h.get_by_label_contains("distro-linux-24.04.iso, ")
+        .click_accesskit();
+    h.run_steps(3);
+    assert_eq!(marked(&h), vec![b]);
+    // Intro con la fila enfocada no alterna (y en un archivo tampoco entra).
+    h.get_by_label_contains("distro-linux-24.04.iso, ").focus();
+    h.run_steps(3);
+    h.key_press(Key::Enter);
+    h.run_steps(3);
+    assert_eq!(marked(&h), vec![b], "Intro no alterna la marca");
+    assert_eq!(explore(&h).root.node, here);
+    // Espacio alterna UNA vez aunque se mantenga pulsado (la autorrepetición no cuenta).
+    for _ in 0..3 {
+        h.key_down(Key::Space);
+        h.run_steps(1);
+    }
+    h.key_up(Key::Space);
+    h.run_steps(2);
+    assert_eq!(marked(&h), sorted(vec![a, b]), "una pulsación, una marca");
+}
+
+#[test]
+fn un_clic_enfoca_la_fila_y_con_el_teclado_se_marca_y_mayus_flechas_amplian_y_encogen() {
+    let mut h = harness(opts(list_start()));
+    let kids: Vec<NodeId> = explore(&h).shown_children().iter().collect();
+    let name = |h: &Harness<'static, App>, id| explore(h).tree.name_lossy(id).into_owned();
+    let n1 = name(&h, kids[1]);
+    click_row(&mut h, &n1, Modifiers::NONE);
+    assert!(
+        h.get_by_label_contains(&format!("{n1}, ")).is_focused(),
+        "un clic de ratón enfoca la fila"
+    );
+    // Sin pasar por Tab: Espacio marca, Mayús+flecha abajo amplía y Mayús+flecha arriba encoge.
+    h.key_press(Key::Space);
+    h.run_steps(3);
+    assert_eq!(marked(&h), vec![kids[1]]);
+    for _ in 0..2 {
+        h.key_press_modifiers(Modifiers::SHIFT, Key::ArrowDown);
+        h.run_steps(3);
+    }
+    assert_eq!(marked(&h), sorted(kids[1..=3].to_vec()));
+    h.key_press_modifiers(Modifiers::SHIFT, Key::ArrowUp);
+    h.run_steps(3);
+    assert_eq!(marked(&h), sorted(kids[1..=2].to_vec()), "el rango encoge");
+    // Una flecha sin Mayús mueve el elemento activo y deja lo marcado como está.
+    h.key_press(Key::ArrowDown);
+    h.run_steps(3);
+    assert_eq!(explore(&h).selection, Some(Sel::Node(kids[3])));
+    assert_eq!(marked(&h), sorted(kids[1..=2].to_vec()));
+}
+
+#[test]
+fn con_una_limpieza_en_curso_anadir_esta_desactivado_y_no_hace_nada() {
+    let mut h = harness(opts(StartScreen::Clean(CleanStart::Confirm)));
+    assert!(explore(&h).flow.busy());
+    let id = explore(&h)
+        .tree
+        .child_by_name(0, "Juegos".as_bytes())
+        .unwrap();
+    explore_mut(&mut h).marks_toggle(Sel::Node(id));
+    h.run_steps(3);
+    assert_eq!(explore(&h).compute_summary().add, vec![id]);
+    assert!(
+        h.get_by_label("Añadir 1 a la cesta")
+            .accesskit_node()
+            .is_disabled()
+    );
+    let before = explore(&h).flow.basket.len();
+    assert_eq!(explore_mut(&mut h).marks_add_to_basket(&es(), 0.0), 0);
+    assert_eq!(
+        marked(&h),
+        vec![id],
+        "con la limpieza en curso no se toca nada"
+    );
+    assert_eq!(explore(&h).flow.basket.len(), before);
+}
+
+#[test]
+fn la_pista_cortada_lleva_tooltip_y_el_interruptor_enseña_su_texto_en_cuanto_cabe() {
+    // A 1280 x 800 cabe: el interruptor lleva su texto. A 960 x 600 es solo la casilla (el nombre accesible sigue).
+    let h = harness(opts(user_folder()));
+    assert!(painted(&h, "Seleccionar"));
+    let mut h = harness_sized(opts(user_folder()), vec2(960.0, 600.0));
+    assert!(!painted(&h, "Seleccionar"));
+    h.get_by_label("Seleccionar");
+    // La pista (cortada a esa anchura) lleva su texto completo y las teclas nuevas en la pista flotante.
+    h.get_by_label_contains("Ctrl+clic marca varios").hover();
+    h.run_steps(14);
+    assert!(
+        h.query_all_by_label_contains("Espacio marca la fila")
+            .count()
+            >= 1
+    );
+}
+
+/// Escala: 5 000 hijos. Marcar todo y añadir va por lotes, la cesta llena no recalcula su estimación en cada fotograma
+/// y la ventana "Ver" solo construye las filas que se ven. (Con el recorrido lineal de antes eran segundos y decenas
+/// de milisegundos por fotograma con 40 000.)
+#[test]
+fn con_miles_de_hijos_anadir_va_por_lotes_y_la_cesta_llena_no_recalcula_cada_fotograma() {
+    let mut h = harness(opts(StartScreen::Map(MapStart::default())));
+    let req = explore(&h).info.req.clone();
+    *explore_mut(&mut h) = crate::explore::Explore::demo_from_tree(
+        req,
+        crate::demo::flat_tree(5000),
+        false,
+        false,
+        test_backend(),
+    );
+    h.run_steps(3);
+    h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+    h.run_steps(3);
+    assert_eq!(marked(&h).len(), 5000);
+    h.get_by_label_contains("5.000 seleccionados");
+    let t = std::time::Instant::now();
+    let (added, total) = explore_mut(&mut h).marks_add_core();
+    assert_eq!((added, total), (5000, 5000));
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(10),
+        "añadir 5 000 tardó {:?}",
+        t.elapsed()
+    );
+    assert_eq!(explore(&h).flow.basket.len(), 5000);
+    assert!(explore(&h).multi.is_empty());
+    // Con la cesta llena y fotogramas seguidos, la estimación se calcula una vez (no una por fotograma).
+    h.run_steps(2);
+    let before = explore(&h).estimate_computes;
+    h.run_steps(10);
+    assert_eq!(
+        explore(&h).estimate_computes,
+        before,
+        "estimación recalculada"
+    );
+    // Marcar todo otra vez: todo está ya en la cesta, y se explica sin volver a clasificar en cada fotograma.
+    h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+    h.run_steps(3);
+    let s = explore_mut(&mut h).marks_summary();
+    assert_eq!((s.in_basket, s.add.len()), (5000, 0));
+    // La ventana "Ver" no construye 5 000 filas.
+    explore_mut(&mut h).basket_open = true;
+    h.run_steps(3);
+    let rows = h.query_all_by_label_contains("Quitar carpeta-").count();
+    assert!((1..80).contains(&rows), "{rows} filas construidas");
 }

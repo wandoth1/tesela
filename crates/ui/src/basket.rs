@@ -121,12 +121,22 @@ impl Explore {
     pub(crate) fn recheck_browsers(&mut self, env: &Env) {
         self.browsers_open = env.backend.running_browsers();
         self.recs = None;
+        self.estimate = None;
         self.ensure_recs(env);
     }
 
-    /// Tamaño estimado de la cesta con el árbol (la cifra definitiva la mide el `cleaner` al confirmar).
+    /// Tamaño estimado de la cesta con el árbol (la cifra definitiva la mide el `cleaner` al confirmar). Se recalcula solo
+    /// si cambió la cesta o el árbol (versiones): con decenas de miles de entradas no se puede localizar cada ruta en
+    /// cada fotograma.
     pub(crate) fn basket_estimate(&mut self, env: &Env) -> (usize, u64) {
         self.ensure_recs(env);
+        let stamp = (self.flow.basket.rev(), self.version);
+        if let Some((k, v)) = self.estimate
+            && k == stamp
+        {
+            return v;
+        }
+        self.estimate_computes += 1;
         let recs = self.recs.as_ref().map(|r| r.1.clone()).unwrap_or_default();
         let tree = self.tree.clone();
         let view = self.view();
@@ -142,7 +152,9 @@ impl Explore {
                 Source::EmptyBin => recs.recycle.map_or(0, |r| r.1),
             };
         }
-        (self.flow.basket.len(), bytes)
+        let out = (self.flow.basket.len(), bytes);
+        self.estimate = Some((stamp, out));
+        out
     }
 
     /// Empieza la limpieza de lo que hay en la cesta (aprobación y confirmación).
@@ -200,7 +212,9 @@ impl Explore {
         });
     }
 
-    /// La lista de la cesta agrupada por destino, con las frases de PLAN.md §2.5.
+    /// La lista de la cesta agrupada por destino, con las frases de PLAN.md §2.5. Lo que el usuario añadió ("Tu archivo" y
+    /// "Contenido de") puede ser de decenas de miles de entradas: esa lista se virtualiza (solo se construyen y miden las
+    /// filas que se ven).
     pub(crate) fn basket_window(&mut self, ctx: &egui::Context, env: &mut Env) {
         if !self.basket_open {
             return;
@@ -209,7 +223,6 @@ impl Explore {
             self.basket_open = false;
             return;
         }
-        let pal = env.pal;
         self.ensure_recs(env);
         let recs = self.recs.as_ref().map(|r| r.1.clone()).unwrap_or_default();
         let tree = self.tree.clone();
@@ -225,88 +238,20 @@ impl Explore {
             .resizable(true)
             .default_width(520.0)
             .show(ctx, |ui| {
-                let mut group =
-                    |ui: &mut Ui,
-                     env: &mut Env,
-                     icon: Icon,
-                     head: &str,
-                     phrase: &str,
-                     items: Vec<(Source, String, String, u64)>| {
-                        if items.is_empty() {
-                            return;
-                        }
-                        ui.horizontal(|ui| {
-                            env.icons.show(ui, icon, 18.0, pal.text);
-                            ui.label(
-                                RichText::new(head)
-                                    .font(theme::font_semibold(15.0))
-                                    .color(pal.text),
-                            );
-                        });
-                        ui.label(RichText::new(phrase).size(13.0).color(pal.text_muted));
-                        ui.add_space(4.0);
-                        for (src, name, sub, bytes) in items {
-                            ui.horizontal(|ui| {
-                                ui.set_min_height(28.0);
-                                ui.vertical(|ui| {
-                                    ui.spacing_mut().item_spacing.y = 0.0;
-                                    ui.label(RichText::new(&name).color(pal.text));
-                                    if !sub.is_empty() {
-                                        ui.add(
-                                            egui::Label::new(
-                                                RichText::new(&sub)
-                                                    .size(11.0)
-                                                    .color(pal.text_muted),
-                                            )
-                                            .truncate(),
-                                        );
-                                    }
-                                });
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    let label = env
-                                        .tr
-                                        .ta("basket-remove-item", args!["name" => name.clone()]);
-                                    if widgets::icon_button(ui, env, Icon::Dismiss, &label, true)
-                                        .clicked()
-                                    {
-                                        remove = Some(src.clone());
-                                    }
-                                    ui.label(RichText::new(env.tr.size(bytes)).color(pal.text));
-                                });
-                            });
-                        }
-                        ui.add_space(10.0);
-                    };
-                let mut cats: Vec<(Source, String, String, u64)> = Vec::new();
-                let mut user: Vec<(Source, String, String, u64)> = Vec::new();
-                let mut bin: Vec<(Source, String, String, u64)> = Vec::new();
+                let mut cats: Vec<(Source, String, u64)> = Vec::new();
+                let mut bin: Vec<(Source, String, u64)> = Vec::new();
+                let mut user: Vec<&Source> = Vec::new();
                 for s in self.flow.basket.sources() {
                     match s {
                         Source::Category(id) => {
                             let b = recs.row(*id).map_or(0, |r| r.bytes);
-                            cats.push((s.clone(), category_name(env, *id), String::new(), b));
+                            cats.push((s.clone(), category_name(env, *id), b));
                         }
-                        Source::Path(p) | Source::ContentsOf(p) => {
-                            let b = loc
-                                .locate(p)
-                                .filter(|n| view.is_visible(*n))
-                                .map_or(0, |n| view.alloc(n));
-                            let base = p.file_name().map_or_else(
-                                || p.display().to_string(),
-                                |n| n.to_string_lossy().into_owned(),
-                            );
-                            let name = if matches!(s, Source::ContentsOf(_)) {
-                                env.tr.ta("basket-contents-of", args!["name" => base])
-                            } else {
-                                base
-                            };
-                            user.push((s.clone(), name, p.display().to_string(), b));
-                        }
+                        Source::Path(_) | Source::ContentsOf(_) => user.push(s),
                         Source::EmptyBin => {
                             bin.push((
                                 s.clone(),
                                 env.tr.t("known-recycle-bin"),
-                                String::new(),
                                 recs.recycle.map_or(0, |r| r.1),
                             ));
                         }
@@ -316,20 +261,123 @@ impl Explore {
                     env.tr.t("confirm-group-permanent"),
                     env.tr.t("basket-phrase-permanent"),
                 );
-                group(ui, env, Icon::DeleteOff, &h1, &p1, cats);
+                if !cats.is_empty() {
+                    basket_head(ui, env, Icon::DeleteOff, &h1, &p1);
+                    for (src, name, bytes) in &cats {
+                        basket_row(ui, env, &mut remove, src, name, "", *bytes);
+                    }
+                    ui.add_space(10.0);
+                }
                 let (h2, p2) = (
                     env.tr.t("confirm-group-recycle"),
                     env.tr.t("basket-phrase-recycle"),
                 );
-                group(ui, env, Icon::Delete, &h2, &p2, user);
+                if !user.is_empty() {
+                    basket_head(ui, env, Icon::Delete, &h2, &p2);
+                    egui::ScrollArea::vertical()
+                        .id_salt("tesela-basket-user")
+                        .max_height(BASKET_ROW_H * 8.0)
+                        .auto_shrink([false, true])
+                        .show_rows(ui, BASKET_ROW_H, user.len(), |ui, range| {
+                            for src in &user[range] {
+                                let (p, contents) = match src {
+                                    Source::Path(p) => (p, false),
+                                    Source::ContentsOf(p) => (p, true),
+                                    _ => continue,
+                                };
+                                let b = loc
+                                    .locate(p)
+                                    .filter(|n| view.is_visible(*n))
+                                    .map_or(0, |n| view.alloc(n));
+                                let base = p.file_name().map_or_else(
+                                    || p.display().to_string(),
+                                    |n| n.to_string_lossy().into_owned(),
+                                );
+                                let name = if contents {
+                                    env.tr.ta("basket-contents-of", args!["name" => base])
+                                } else {
+                                    base
+                                };
+                                basket_row(
+                                    ui,
+                                    env,
+                                    &mut remove,
+                                    src,
+                                    &name,
+                                    &p.display().to_string(),
+                                    b,
+                                );
+                            }
+                        });
+                    ui.add_space(10.0);
+                }
                 let (h3, p3) = (env.tr.t("confirm-group-bin"), env.tr.t("basket-phrase-bin"));
-                group(ui, env, Icon::BinRecycle, &h3, &p3, bin);
+                if !bin.is_empty() {
+                    basket_head(ui, env, Icon::BinRecycle, &h3, &p3);
+                    for (src, name, bytes) in &bin {
+                        basket_row(ui, env, &mut remove, src, name, "", *bytes);
+                    }
+                    ui.add_space(10.0);
+                }
             });
         if let Some(s) = remove {
             self.flow.basket.remove(&s);
         }
         self.basket_open = open;
     }
+}
+
+/// Alto de una fila de la lista de la cesta (nombre, ruta y botón de quitar): fijo, para poder virtualizar la lista.
+const BASKET_ROW_H: f32 = 40.0;
+
+/// Cabecera de un grupo de la cesta: icono, título y la frase de lo que pasará con él.
+fn basket_head(ui: &mut Ui, env: &mut Env, icon: Icon, head: &str, phrase: &str) {
+    let pal = env.pal;
+    ui.horizontal(|ui| {
+        env.icons.show(ui, icon, 18.0, pal.text);
+        ui.label(
+            RichText::new(head)
+                .font(theme::font_semibold(15.0))
+                .color(pal.text),
+        );
+    });
+    ui.label(RichText::new(phrase).size(13.0).color(pal.text_muted));
+    ui.add_space(4.0);
+}
+
+/// Una fila de la cesta: nombre, ruta (si hay), tamaño y el botón de quitarla.
+fn basket_row(
+    ui: &mut Ui,
+    env: &mut Env,
+    remove: &mut Option<Source>,
+    src: &Source,
+    name: &str,
+    sub: &str,
+    bytes: u64,
+) {
+    let pal = env.pal;
+    ui.horizontal(|ui| {
+        ui.set_min_height(BASKET_ROW_H);
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            ui.label(RichText::new(name).color(pal.text));
+            if !sub.is_empty() {
+                ui.add(
+                    egui::Label::new(RichText::new(sub).size(11.0).color(pal.text_muted))
+                        .truncate(),
+                );
+            }
+        });
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let label = env
+                .tr
+                .ta("basket-remove-item", args!["name" => name.to_string()]);
+            if widgets::icon_button(ui, env, Icon::Dismiss, &label, true).clicked() {
+                *remove = Some(src.clone());
+            }
+            ui.label(RichText::new(env.tr.size(bytes)).color(pal.text));
+        });
+    });
 }
 
 /// Nombre de una categoría en la cesta y en las recomendaciones.

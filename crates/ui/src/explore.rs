@@ -112,6 +112,14 @@ pub struct Explore {
     pub(crate) selection: Option<Sel>,
     /// Selección múltiple: lo marcado para añadirlo junto a la cesta (hijos de la carpeta actual; ver `multisel`).
     pub(crate) multi: crate::multisel::Marks,
+    /// La búsqueda (plegada) con la que se ajustaron las marcas por última vez.
+    pub(crate) marks_search: String,
+    /// Marcas que soltó una navegación y todavía no se avisaron (el aviso sale en el siguiente fotograma).
+    pub(crate) marks_dropped: usize,
+    /// Estimación de la cesta (entradas, bytes) con la versión de la cesta y del árbol con que se calculó.
+    pub(crate) estimate: Option<((u64, u64), (usize, u64))>,
+    /// Cuántas veces se recalculó la estimación (las pruebas comprueban que no es una vez por fotograma).
+    pub(crate) estimate_computes: u32,
     pub(crate) view: View,
     /// El flujo de limpieza: cesta, confirmación, ejecución y resumen.
     pub(crate) flow: CleanFlow,
@@ -188,6 +196,10 @@ impl Explore {
             details_overflow: false,
             selection: None,
             multi: crate::multisel::Marks::default(),
+            marks_search: String::new(),
+            marks_dropped: 0,
+            estimate: None,
+            estimate_computes: 0,
             view: View::Map,
             flow: CleanFlow::default(),
             recs: None,
@@ -239,6 +251,23 @@ impl Explore {
         backend: Arc<dyn Backend>,
     ) -> Explore {
         let tree = demo::tree(variant);
+        Explore::demo_from_tree(
+            req,
+            tree,
+            variant == demo::Variant::Stopped,
+            animate,
+            backend,
+        )
+    }
+
+    /// Como [`Explore::demo`] con un árbol dado (las pruebas de escala usan uno con miles de hijos).
+    pub(crate) fn demo_from_tree(
+        req: ScanRequest,
+        tree: Tree,
+        cancelled: bool,
+        animate: bool,
+        backend: Arc<dyn Backend>,
+    ) -> Explore {
         let files = tree.stats().files;
         let volume = req.drive.as_ref().map(|d| (d.total, d.free));
         let volume_scope = req.drive.as_ref().is_none_or(|d| d.volume_scope);
@@ -247,7 +276,7 @@ impl Explore {
             full_volume: true,
             volume,
             volume_scope,
-            cancelled: variant == demo::Variant::Stopped,
+            cancelled,
             approximate: false,
             dir_errors: 0,
             files,
@@ -385,7 +414,7 @@ impl Explore {
         self.root = target;
         self.selection = select;
         // Lo marcado habla de la carpeta que se deja: no se arrastra a la nueva.
-        self.multi.clear();
+        self.drop_marks_for_navigation();
         self.scroll_to_selection = true;
     }
 
@@ -408,7 +437,7 @@ impl Explore {
         }
         self.root = target;
         self.selection = None;
-        self.multi.clear();
+        self.drop_marks_for_navigation();
         self.scroll_to_selection = true;
         true
     }
@@ -436,8 +465,14 @@ impl Explore {
         self.root = Root::node(id);
         self.group_stack.clear();
         self.selection = None;
-        self.multi.clear();
+        self.drop_marks_for_navigation();
         self.scroll_to_selection = true;
+    }
+
+    /// Navegar suelta lo marcado (habla de la carpeta que se deja) y lo anota para avisarlo.
+    fn drop_marks_for_navigation(&mut self) {
+        self.marks_dropped += self.multi.len();
+        self.multi.clear();
     }
 
     /// Selecciona (o limpia la selección).
@@ -607,6 +642,8 @@ impl Explore {
             .exact_size(56.0)
             .frame(bar_frame(pal.surface))
             .show(ui, |ui| self.toolbar(ui, env));
+        // La búsqueda pudo cambiar en la barra superior: lo marcado que ya no es un acierto deja de estarlo.
+        self.sync_marks_with_search();
         egui::Panel::left("tesela-sidebar")
             .exact_size(232.0)
             .resizable(false)
@@ -677,12 +714,24 @@ impl Explore {
                 ctx.request_repaint_after(Duration::from_millis(100));
             }
         }
-        // Aviso temporal ("Ruta copiada").
+        // Navegar soltó marcas: un aviso breve (no se pisa otro aviso más reciente de la propia navegación).
+        if self.marks_dropped > 0 {
+            let n = std::mem::take(&mut self.marks_dropped) as u64;
+            let msg = env.tr.ta("sel-dropped", args!["count" => env.tr.int(n)]);
+            self.toast = Some((msg, ctx.input(|i| i.time) + 3.0));
+        }
+        // Aviso temporal ("Ruta copiada"): encima de la barra de la cesta y, si hay, de la barra de selección.
+        let toast_lift = -110.0
+            - if self.view == View::Recommendations {
+                0.0
+            } else {
+                46.0
+            };
         if let Some((msg, until)) = &self.toast {
             let now = ctx.input(|i| i.time);
             if now < *until {
                 egui::Area::new(egui::Id::new("tesela-toast"))
-                    .anchor(egui::Align2::CENTER_BOTTOM, vec2(0.0, -156.0))
+                    .anchor(egui::Align2::CENTER_BOTTOM, vec2(0.0, toast_lift))
                     .order(egui::Order::Tooltip)
                     .show(&ctx, |ui| {
                         egui::Frame::popup(ui.style()).show(ui, |ui| {
