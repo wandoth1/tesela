@@ -118,6 +118,16 @@ fn browser_zone_rel(id: CategoryId) -> Option<&'static str> {
     }
 }
 
+/// La carpeta de WER de cada usuario, relativa a `%LOCALAPPDATA%`: DENEGADA entera (su configuración y todo lo que no sea un
+/// informe no se toca). Solo `ReportArchive` y `ReportQueue` son excepciones ([`WER_REPORT_DIRS`]).
+const WER_ZONE_REL: &str = r"Microsoft\Windows\WER";
+
+/// Las únicas carpetas de informes de errores del usuario, dentro de [`WER_ZONE_REL`]. No incluye `Temp`, `ERC` ni nada más.
+const WER_REPORT_DIRS: [&str; 2] = ["ReportArchive", "ReportQueue"];
+
+/// Volcados locales de bloqueo de aplicaciones (`DumpFolder` por defecto de WER), relativa a `%LOCALAPPDATA%`.
+const CRASH_DUMPS_REL: &str = "CrashDumps";
+
 fn kf(id: &windows_sys::core::GUID) -> Option<PathBuf> {
     known_folder(id).and_then(|p| canon(&p))
 }
@@ -208,6 +218,8 @@ impl Roots {
         }
         if let Some(l) = &local {
             denied.push(l.join("Tesela"));
+            // WER: la carpeta entera se deniega; solo sus dos carpetas de informes son excepciones (ver `zone_of`).
+            denied.push(l.join(WER_ZONE_REL));
         }
         denied.extend(exe_dir.map(Path::to_path_buf));
 
@@ -293,6 +305,18 @@ impl Roots {
                     .map(|(_, p)| p)
                     .collect()
             }
+            CategoryId::WerReports => self
+                .browser
+                .local_appdata
+                .iter()
+                .flat_map(|l| WER_REPORT_DIRS.map(|d| l.join(WER_ZONE_REL).join(d)))
+                .collect(),
+            CategoryId::CrashDumps => self
+                .browser
+                .local_appdata
+                .iter()
+                .map(|l| l.join(CRASH_DUMPS_REL))
+                .collect(),
             _ => Vec::new(),
         };
         let startup = self
@@ -338,6 +362,13 @@ impl Roots {
                 let local = self.browser.local_appdata.as_ref()?;
                 browser_zone_rel(id).map(|z| local.join(z))
             }
+            // Las carpetas de informes viven dentro de la zona denegada `WER`; solo esa zona se levanta.
+            CategoryId::WerReports => self
+                .browser
+                .local_appdata
+                .as_ref()
+                .map(|l| l.join(WER_ZONE_REL)),
+            // `%LOCALAPPDATA%\CrashDumps` no está dentro de ninguna denegación (como `%TEMP%`: `Local` es intocable, no denegada).
             _ => None,
         }
     }
@@ -360,6 +391,8 @@ impl Roots {
             CategoryId::ChromeCache,
             CategoryId::EdgeCache,
             CategoryId::FirefoxCache,
+            CategoryId::WerReports,
+            CategoryId::CrashDumps,
         ] {
             pr.exempt.extend(
                 self.category_root_checks(id)

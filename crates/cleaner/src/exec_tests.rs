@@ -1729,6 +1729,214 @@ fn las_raices_sin_reparse_points_siguen_siendo_categorias() {
     assert!(plan.rejected.is_empty());
 }
 
+/// Informes de errores de WER y volcados de bloqueo (v0.1.5): «Revisar», a la Papelera, por elementos y solo lo de más de 7
+/// días. `WER` está denegada entera y solo `ReportArchive` y `ReportQueue` levantan esa zona; nada de lo demás (`ERC`, `Temp`,
+/// la configuración) se aprueba. Una carpeta de informe con un archivo de hoy se queda entera, un enlace dentro de la raíz se
+/// rechaza y un enlace EN la ruta descarta la raíz. Todo con una shell simulada y carpetas sintéticas del sandbox.
+#[test]
+fn informes_de_wer_y_volcados_van_a_la_papelera_por_elementos_y_solo_los_de_mas_de_7_dias() {
+    use crate::paths::PathKey;
+    let mut sb = Sandbox::new();
+    let wer = "Local/Microsoft/Windows/WER";
+    // Informes: uno viejo entero, uno con un archivo de hoy dentro, uno reciente y uno viejo en la cola.
+    sb.write_aged(
+        &format!("{wer}/ReportArchive/Informe_viejo/Report.wer"),
+        3_000,
+        240,
+    );
+    sb.write_aged(
+        &format!("{wer}/ReportArchive/Informe_viejo/mem.hdmp"),
+        8_000,
+        240,
+    );
+    sb.write_aged(
+        &format!("{wer}/ReportArchive/Informe_mixto/Report.wer"),
+        3_000,
+        240,
+    );
+    sb.write(
+        &format!("{wer}/ReportArchive/Informe_mixto/mem.hdmp"),
+        2_000,
+    );
+    sb.write(
+        &format!("{wer}/ReportArchive/Informe_reciente/Report.wer"),
+        3_000,
+    );
+    sb.write_aged(
+        &format!("{wer}/ReportQueue/Cola_vieja/Report.wer"),
+        2_000,
+        240,
+    );
+    // Lo que NO es un informe: nunca se toca.
+    sb.write_aged(&format!("{wer}/ERC/ajustes.dat"), 500, 240);
+    sb.write_aged(&format!("{wer}/Temp/t.tmp"), 500, 240);
+    sb.write_aged(&format!("{wer}/config.ini"), 100, 240);
+    // Volcados: uno viejo y uno de hoy.
+    sb.write_aged("Local/CrashDumps/app.1111.dmp", 6_000, 240);
+    sb.write("Local/CrashDumps/app.2222.dmp", 6_000);
+    // Un enlace dentro de la raíz hacia una carpeta ajena.
+    sb.write_aged("Prot/ajeno/secreto.dat", 4_000, 240);
+    sb.junction(&format!("{wer}/ReportArchive/enlace"), "Prot/ajeno");
+    // Las fechas de las carpetas se fijan al final (escribir dentro las cambia).
+    for d in [
+        "ReportArchive/Informe_viejo",
+        "ReportArchive/Informe_mixto",
+        "ReportQueue/Cola_vieja",
+    ] {
+        sb.set_age(&sb.path(&format!("{wer}/{d}")), 240);
+    }
+    let mut roots = roots_with_raw(&sb, sb.long("Local"), None);
+    roots.protection.denied.push(sb.long(wer));
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = Cleaner::new(roots).with_threads(4).with_shell(fake.clone());
+
+    // Las raíces: exactamente las dos carpetas de informes (con la zona `WER`) y la de volcados (sin zona).
+    let wer_checks = c.roots().category_root_checks(CategoryId::WerReports);
+    let paths: Vec<PathBuf> = wer_checks
+        .iter()
+        .map(|k| k.result.as_ref().unwrap().path.clone())
+        .collect();
+    assert_eq!(
+        paths,
+        vec![
+            sb.long(&format!("{wer}/ReportArchive")),
+            sb.long(&format!("{wer}/ReportQueue"))
+        ]
+    );
+    for k in &wer_checks {
+        assert_eq!(
+            k.result.as_ref().unwrap().zone.as_deref(),
+            Some(sb.long(wer).as_path())
+        );
+    }
+    let dumps = c.roots().category_root_checks(CategoryId::CrashDumps);
+    assert_eq!(dumps.len(), 1);
+    let v = dumps[0].result.as_ref().unwrap();
+    assert_eq!(v.path, sb.long("Local/CrashDumps"));
+    assert_eq!(v.zone, None);
+
+    // La protección: `WER` y todo lo que no es una de las dos carpetas, denegado; ellas y lo que cuelga, permitido.
+    let prot = c.protection();
+    let verdict = |rel: &str| prot.target_verdict(&PathKey::new(&sb.long(rel)));
+    for denied in [
+        wer.to_string(),
+        format!("{wer}/ERC"),
+        format!("{wer}/ERC/ajustes.dat"),
+        format!("{wer}/Temp"),
+        format!("{wer}/Temp/t.tmp"),
+        format!("{wer}/config.ini"),
+    ] {
+        assert_eq!(verdict(&denied), Verdict::Denied, "{denied}");
+    }
+    for allowed in [
+        format!("{wer}/ReportArchive"),
+        format!("{wer}/ReportArchive/Informe_viejo"),
+        format!("{wer}/ReportArchive/Informe_viejo/Report.wer"),
+        format!("{wer}/ReportQueue/Cola_vieja"),
+        "Local/CrashDumps".to_string(),
+        "Local/CrashDumps/app.1111.dmp".to_string(),
+    ] {
+        assert_eq!(verdict(&allowed), Verdict::Allowed, "{allowed}");
+    }
+    // Los ancestros de lo denegado no se pueden borrar como tal.
+    assert_eq!(verdict("Local/Microsoft/Windows"), Verdict::Untouchable);
+
+    // Aprobar: tres elementos sueltos (el informe viejo, el de la cola y el volcado viejo), todos «Revisar» a la Papelera,
+    // con su categoría. Quedan fuera lo reciente, la carpeta con un archivo de hoy y el enlace.
+    let mut b = Basket::new();
+    b.set_category(CategoryId::WerReports, true);
+    b.set_category(CategoryId::CrashDumps, true);
+    let plan = approve(&c, &b);
+    let mut got: Vec<(PathBuf, Option<CategoryId>)> = plan
+        .items
+        .iter()
+        .map(|i| (i.path.clone(), i.category))
+        .collect();
+    got.sort();
+    let mut want = vec![
+        (
+            sb.long("Local/CrashDumps/app.1111.dmp"),
+            Some(CategoryId::CrashDumps),
+        ),
+        (
+            sb.long(&format!("{wer}/ReportArchive/Informe_viejo")),
+            Some(CategoryId::WerReports),
+        ),
+        (
+            sb.long(&format!("{wer}/ReportQueue/Cola_vieja")),
+            Some(CategoryId::WerReports),
+        ),
+    ];
+    want.sort();
+    assert_eq!(got, want, "{:?}", plan.rejected);
+    for it in &plan.items {
+        assert_eq!(it.risk, Risk::Review);
+        assert_eq!(it.destination, Destination::Recycle);
+        assert_eq!(it.fit, Fit::Fits);
+        assert!(!it.min_age.is_zero());
+    }
+    // El único rechazo es el enlace de dentro de la raíz.
+    assert_eq!(plan.rejected.len(), 1, "{:?}", plan.rejected);
+    assert_eq!(plan.rejected[0].reason, RejectReason::Reparse);
+
+    // Simulación y ejecución real (shell simulada): lo aprobado va a su «Papelera» y TODO lo demás queda donde estaba.
+    exec(&c, &plan, true, false, None).unwrap();
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    assert_eq!(rep.items.len(), 3);
+    assert!(
+        rep.items.iter().all(|i| i.status == ItemStatus::Recycled),
+        "{:?}",
+        rep.items.iter().map(|i| &i.status).collect::<Vec<_>>()
+    );
+    for gone in [
+        format!("{wer}/ReportArchive/Informe_viejo"),
+        format!("{wer}/ReportQueue/Cola_vieja"),
+        "Local/CrashDumps/app.1111.dmp".to_string(),
+    ] {
+        assert!(!sb.path(&gone).exists(), "{gone}");
+    }
+    for kept in [
+        format!("{wer}/ReportArchive"),
+        format!("{wer}/ReportQueue"),
+        format!("{wer}/ReportArchive/Informe_mixto/Report.wer"),
+        format!("{wer}/ReportArchive/Informe_mixto/mem.hdmp"),
+        format!("{wer}/ReportArchive/Informe_reciente/Report.wer"),
+        format!("{wer}/ERC/ajustes.dat"),
+        format!("{wer}/Temp/t.tmp"),
+        format!("{wer}/config.ini"),
+        "Local/CrashDumps".to_string(),
+        "Local/CrashDumps/app.2222.dmp".to_string(),
+        "Prot/ajeno/secreto.dat".to_string(),
+    ] {
+        assert!(sb.path(&kept).exists(), "{kept}");
+    }
+
+    // Un enlace EN la ruta de una raíz la descarta (capa 1): `ReportQueue` -> carpeta ajena.
+    let mut sb2 = Sandbox::new();
+    sb2.mkdir(&format!("{wer}/ReportArchive"));
+    sb2.write_aged("Prot/q/ajeno.dat", 1_000, 240);
+    sb2.junction(&format!("{wer}/ReportQueue"), "Prot/q");
+    let mut roots2 = roots_with_raw(&sb2, sb2.long("Local"), None);
+    roots2.protection.denied.push(sb2.long(wer));
+    let c2 = Cleaner::new(roots2).with_shell(FakeShell::new(&sb2, Some(1 << 40), 0, "nunca"));
+    let checks = c2.roots().category_root_checks(CategoryId::WerReports);
+    assert_eq!(checks.len(), 2);
+    assert!(checks[0].result.is_ok(), "{:?}", checks[0].result);
+    assert!(
+        matches!(
+            &checks[1].result,
+            Err(crate::roots::RootRejection::ReparseInChain { component }) if component == "ReportQueue"
+        ),
+        "{:?}",
+        checks[1].result
+    );
+    let mut b2 = Basket::new();
+    b2.set_category(CategoryId::WerReports, true);
+    let plan2 = approve(&c2, &b2);
+    assert!(plan2.items.is_empty(), "{:?}", plan2.rejected);
+    assert!(sb2.path("Prot/q/ajeno.dat").exists());
+}
+
 // ---- El receptor de eventos: identidad (no nombre), carreras tras soltar el handle, y el juicio por elemento ----------
 
 /// B1: `.lnk`, `.url` y extensiones conocidas (`.txt`, `.jpg`...): el elemento se reconoce en la Papelera por su

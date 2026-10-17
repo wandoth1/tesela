@@ -461,6 +461,15 @@ impl Cleaner {
             let est = u.stats.snapshot();
             let id = plan.items.len();
             let dest = c.destination;
+            // Una categoría que va a la Papelera por elementos (informes de errores, volcados) solo ofrece un hijo si NADA de su
+            // interior es más reciente que la antigüedad mínima: una carpeta de informe con un archivo de hoy se queda entera.
+            if c.category.is_some()
+                && dest == Destination::Recycle
+                && !c.min_age.is_zero()
+                && est.young > 0
+            {
+                continue;
+            }
             // m-4: lo que va a la Papelera exige una medida COMPLETA (ver `StatsSnapshot::is_complete`).
             if dest == Destination::Recycle && !est.is_complete() {
                 plan.rejected.push(Rejected {
@@ -568,6 +577,26 @@ impl Cleaner {
                         RejectReason::Protected(Verdict::Denied)
                     },
                 });
+                continue;
+            }
+            // La Papelera solo recibe elementos sueltos (`prepare_recycle` no admite "el contenido de una raíz"): una categoría con
+            // destino Papelera se expande en sus hijos, cada uno con su identidad, y conserva su categoría, su riesgo y su
+            // antigüedad mínima (que `approve` aplica a cada hijo entero tras medirlo). La raíz no se envía nunca.
+            if dest == Destination::Recycle {
+                let start = out.len();
+                self.children_as_entries(
+                    &h,
+                    &canon,
+                    m.identity.volume_serial,
+                    rule.min_age,
+                    out,
+                    plan,
+                );
+                for c in &mut out[start..] {
+                    c.category = Some(id);
+                    c.risk = rule.risk;
+                    c.min_age = rule.min_age;
+                }
                 continue;
             }
             out.push(Candidate {
@@ -694,16 +723,41 @@ impl Cleaner {
             });
             return;
         }
-        let entries = match sys::list_dir(&h) {
+        self.children_as_entries(
+            &h,
+            &canon,
+            m.identity.volume_serial,
+            Duration::ZERO,
+            out,
+            plan,
+        );
+    }
+
+    /// Los hijos de la carpeta abierta `h` (`canon`) como elementos sueltos con destino Papelera: cada hijo se abre RELATIVO
+    /// a `h` y con el `FileId` del listado (GM-B2). Los enlaces se rechazan. Lo usan "Contenido de X" (Descargas...) y las
+    /// categorías de riesgo "Revisar" que van a la Papelera (informes de errores y volcados). Con `min_age` > 0, un hijo
+    /// cuya fecha más reciente (creación, escritura o cambio) es más nueva se deja en su sitio sin más; lo de DENTRO de una
+    /// carpeta lo comprueba `approve` al medirla.
+    fn children_as_entries(
+        &self,
+        h: &sys::Handle,
+        canon: &Path,
+        volume_serial: u64,
+        min_age: Duration,
+        out: &mut Vec<Candidate>,
+        plan: &mut Plan,
+    ) {
+        let entries = match sys::list_dir(h) {
             Ok(e) => e,
             Err(c) => {
                 plan.rejected.push(Rejected {
-                    path: canon,
+                    path: canon.to_path_buf(),
                     reason: reason_of(c),
                 });
                 return;
             }
         };
+        let (min_ft, now_ft) = (engine::duration_to_ft(min_age), engine::now_filetime());
         for e in entries {
             let child = canon.join(OsString::from_wide(&e.name));
             if e.is_reparse() && (e.is_dir() || !sys::is_cloud_tag(e.reparse_tag)) {
@@ -713,7 +767,10 @@ impl Cleaner {
                 });
                 continue;
             }
-            self.candidate_child(&h, m.identity.volume_serial, &child, &e, out, plan);
+            if min_ft > 0 && now_ft - e.newest_filetime < min_ft {
+                continue;
+            }
+            self.candidate_child(h, volume_serial, &child, &e, out, plan);
         }
     }
 
