@@ -6,6 +6,16 @@ app-name = Tesela
 settings = Ajustes
 settings-theme = Tema
 settings-language = Idioma
+
+# Comprobación de actualizaciones (opcional, desactivada por defecto). Qué se consulta y qué se envía se dice con honestidad.
+settings-update-check = Buscar actualizaciones al abrir Tesela
+settings-update-explain = Si lo activas, Tesela pregunta a GitHub cuál es la última versión publicada: al marcar la casilla y, después, al abrirse (como mucho una vez al día). Solo se envía el nombre «Tesela»: ni versión ni datos de tu equipo. GitHub ve tu dirección IP, como cualquier página web. Solo se descarga el número de la última versión; nunca se descarga ni se instala ninguna actualización.
+update-available = Hay una versión nueva de Tesela: { $v }
+update-view = Ver novedades
+update-view-hover = Abre la página de esa versión en tu navegador. Tesela no descarga nada.
+update-dismiss = Descartar
+update-failed = No se pudo comprobar si hay una versión nueva.
+
 about = Acerca de Tesela
 about-version = Versión { $v }
 about-description = Analizador de espacio en disco para Windows. Te enseña qué ocupa espacio y te ayuda a liberarlo: lo regenerable se borra, tus archivos van a la Papelera y las carpetas del sistema están protegidas.
@@ -76,6 +86,7 @@ scan-known-title = Sitios donde suele haber archivos temporales
 scan-known-sum = Hasta { $size } en candidatos de bajo riesgo (se comprueba al limpiar)
 scan-known-note = Es una estimación, no un mínimo garantizado, y solo cuenta lo de bajo riesgo: temporales de más de 7 días y cachés de navegador. Qué se borra y qué va a la Papelera te lo enseñamos antes de limpiar, y la cifra real se mide al limpiar.
 scan-known-excluded = Descargas y la Papelera son datos tuyos: se muestran, pero no cuentan en la cifra de arriba.
+scan-known-excluded-diag = Los informes de errores y los volcados de bloqueo sirven para diagnosticar fallos: se muestran, pero no cuentan en la cifra de arriba.
 risk-review-tag = Revisar
 scan-clean-safe = Limpiar lo seguro
 scan-checking = Revisando { $done } de { $total } sitios conocidos…
@@ -98,6 +109,8 @@ known-edge-cache = Caché de Edge
 known-firefox-cache = Caché de Firefox
 known-downloads = Descargas
 known-recycle-bin = Papelera de reciclaje
+known-wer-reports = Informes de errores de Windows
+known-crash-dumps = Volcados de bloqueo de programas
 known-other = Otro sitio conocido
 
 # Ventana principal
@@ -164,6 +177,73 @@ menu-properties = Propiedades
 menu-add-basket = Añadir a la cesta
 menu-unavailable-system = No disponible para este elemento
 path-copied = Ruta copiada
+
+# Selección múltiple: marcar varios elementos y añadirlos juntos a la cesta
+sel-toggle = Seleccionar
+sel-toggle-tip = Modo selección: pulsar un elemento lo marca o lo desmarca, sin tener que mantener Ctrl.
+sel-hint = Ctrl+clic marca varios · Mayús+clic, un rango en la lista · Ctrl+A los marca todos · Esc quita la selección
+sel-hint-mode = Pulsa los elementos para marcarlos · Ctrl+A los marca todos · Esc quita la selección
+sel-count =
+    { $n ->
+        [one] { $count } seleccionado · { $size }
+       *[other] { $count } seleccionados · { $size }
+    }
+sel-count-partial =
+    { $n ->
+        [one] { $count } seleccionado · se añadirían { $size }
+       *[other] { $count } seleccionados · se añadirían { $size }
+    }
+sel-count-only =
+    { $n ->
+        [one] { $count } seleccionado
+       *[other] { $count } seleccionados
+    }
+sel-cannot =
+    { $n ->
+        [one] { $count } no se puede añadir: { $detail }
+       *[other] { $count } no se pueden añadir: { $detail }
+    }
+sel-why-protected =
+    { $n ->
+        [one] { $count } protegido
+       *[other] { $count } protegidos
+    }
+sel-why-in-basket = { $count } ya en la cesta
+sel-why-info =
+    { $n ->
+        [one] { $count } solo informativo o del sistema
+       *[other] { $count } solo informativos o del sistema
+    }
+sel-why-cloud = { $count } solo en la nube
+sel-contents =
+    { $n ->
+        [one] { $count } carpeta conocida: se añade su contenido
+       *[other] { $count } carpetas conocidas: se añade su contenido
+    }
+sel-add = Añadir { $count } a la cesta
+sel-add-none = Añadir selección a la cesta
+sel-add-none-tip = Ninguno de los elementos seleccionados se puede añadir a la cesta: la barra dice por qué.
+sel-add-busy-tip = No se puede añadir mientras se prepara o se ejecuta una limpieza.
+sel-clear = Desmarcar todo
+sel-keys-tip = Espacio marca la fila o la celda activa; Mayús+flechas amplían o reducen el rango en la lista.
+sel-dropped = Se quitó la selección ({ $count })
+sel-added =
+    { $n ->
+        [one] { $count } elemento añadido a la cesta
+       *[other] { $count } elementos añadidos a la cesta
+    }
+sel-added-skipped =
+    { $n ->
+        [one] { $count } no se podía añadir
+       *[other] { $count } no se podían añadir
+    }
+sel-map-count = Seleccionados para la cesta: { $count }.
+sel-map-this = Este elemento está seleccionado para la cesta.
+list-select-all-rows = Seleccionar todas las filas
+menu-sel-this = Seleccionar este elemento
+menu-sel-unthis = Quitar de la selección
+menu-sel-all = Seleccionar todo aquí
+menu-sel-invert = Invertir selección
 list-col-name = Nombre
 list-col-share = Porcentaje
 list-col-size = En disco
@@ -263,6 +343,8 @@ rule-user-temp-why = Archivos temporales sin modificar en la última semana (má
 rule-windows-temp-why = Archivos temporales de Windows sin modificar en la última semana (más de 7 días). Los recientes se dejan por si un instalador los está usando.
 rule-downloads-why = Archivos tuyos: míralos y elige. Nada de aquí se marca solo.
 rule-recycle-bin-why = Vaciarla es definitivo. Solo se vacía lo que hay al confirmar; lo que entre después no se toca.
+rule-wer-reports-why = Informes que Windows guarda cuando un programa falla, ya enviados o en cola. Sirven para diagnosticar el fallo y el soporte de un programa puede pedirlos. Solo se ofrecen carpetas sin cambios en más de 7 días. Van a la Papelera, nunca se borran definitivamente (si no caben, se dejan donde están) y no se marcan solos: cada uno guarda un fallo concreto y no se puede regenerar.
+rule-crash-dumps-why = Volcados de memoria de programas que se cerraron por un fallo (carpeta CrashDumps, que suele existir solo si se activó esa función de Windows). Pueden ocupar mucho y son lo que pide un desarrollador para entender el fallo. Solo se ofrecen los que llevan más de 7 días sin cambios. Van a la Papelera, nunca se borran definitivamente (si no caben, se dejan donde están) y no se marcan solos: cada uno guarda un fallo concreto y no se puede regenerar.
 
 # Confirmación
 confirm-title = Revisa antes de limpiar
@@ -274,6 +356,7 @@ confirm-subtitle =
 confirm-elevated = Tesela se está ejecutando como administrador; por seguridad la limpieza solo funciona sin elevar. Ciérrala y ábrela normalmente.
 confirm-no-log = No se pudo crear el registro de la limpieza, así que no se ha hecho nada. Comprueba que se puede escribir en la carpeta de datos de Tesela (en tu carpeta de datos locales) y vuelve a intentarlo. La simulación sigue funcionando sin registro.
 confirm-empty = No hay nada que limpiar con esta cesta.
+confirm-empty-young = No hay nada que limpiar ahora: lo que hay se modificó hace menos de 7 días.
 confirm-dry-banner = Modo simulación: no se borrará ni se moverá nada; solo se registra lo que se haría.
 confirm-reconfirm = Algo cambió desde que lo confirmaste (lo que cabe en la Papelera). Revisa de nuevo antes de limpiar.
 confirm-group-permanent = Se borra y se vuelve a crear sola
@@ -297,6 +380,20 @@ confirm-more =
     }
 confirm-group-unfit = Se eliminará definitivamente porque no se puede enviar a la Papelera
 confirm-unfit-capacity-hint = Para poder enviarlo a la Papelera: abre las propiedades de la Papelera de reciclaje y fija un tamaño máximo para la unidad.
+confirm-group-recycle-diag = Informes y volcados de fallos · van a la Papelera
+basket-phrase-recycle-diag = Puedes recuperarlos mientras estén en la Papelera; si no caben, se dejan donde están
+confirm-only-kept = No hay nada que limpiar ahora: lo que hay no cabe en la Papelera y no se borra definitivamente. Si quieres limpiarlo, haz sitio en la Papelera (o fija un tamaño máximo mayor) y vuelve a intentarlo.
+confirm-group-kept = No caben en la Papelera: se dejan donde están
+confirm-kept-note = No caben en la Papelera; no se borran definitivamente porque sirven para diagnosticar fallos.
+confirm-diag-note = Cada informe o volcado guarda un fallo concreto y no se vuelve a crear; puede ser lo que pida el soporte de un programa. El espacio se libera de verdad al vaciar la Papelera.
+confirm-diag-many = Son { $count } informes o volcados y van a la Papelera de uno en uno: puede tardar unos minutos. Puedes cancelar cuando quieras; lo que ya se haya enviado se queda en la Papelera.
+confirm-young =
+    { $n ->
+        [one] { $count } informe o volcado se deja donde está: algo de él se modificó hace menos de 7 días.
+       *[other] { $count } informes o volcados se dejan donde están: algo de ellos se modificó hace menos de 7 días.
+    }
+reject-young = modificado hace menos de 7 días
+dest-recycle-diag = Va a la Papelera · si no cabe, se deja donde está
 confirm-unfit-check = Entiendo que esto no se podrá recuperar
 confirm-unfit-note = Sin marcar la casilla, estos elementos no se tocan.
 unfit-no-bin = la unidad no tiene Papelera
@@ -514,3 +611,13 @@ ago-days =
     }
 settings-clear-history = Borrar el historial y los registros de limpieza
 home-last-clean = Última limpieza: { $ago } · cambio medido del espacio libre: { $size }
+
+# Approval and mail data confirmation
+approve-title = Comprobando…
+approve-progress = { $count } entradas comprobadas
+confirm-unfit-pending = Los elementos que no caben en la Papelera se quedarán intactos salvo que marques su casilla de confirmación.
+confirm-mail-cache = Incluye { $count } archivos de caché de Outlook (.ost/.nst, { $size }). Se vuelven a descargar del servidor y puede tardar. Se pierde lo no sincronizado, como borradores o correo pendiente de envío. Cierra Outlook antes: los archivos en uso se omiten.
+confirm-mail-local = Incluye { $count } archivos de datos de Outlook (.pst, { $size }). Pueden contener correo guardado solo en este equipo. El borrado definitivo es irrecuperable. Haz una copia antes si no estás seguro.
+confirm-mail-check = Entiendo que los archivos .pst eliminados definitivamente (correo local) no se podrán recuperar.
+confirm-outlook-open = Outlook está abierto. Ciérralo antes; de lo contrario, los archivos en uso se pueden omitir y la carpeta se limpiará solo en parte.
+run-file-wait = Eliminar un archivo grande puede tardar. Una operación en curso no se puede interrumpir; la cancelación se aplica entre entradas.

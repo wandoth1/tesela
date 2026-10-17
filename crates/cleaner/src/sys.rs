@@ -1,19 +1,19 @@
-//! Capa de Windows del `cleaner`: apertura de objetos por handle, identidad, borrado y renombrado SOBRE EL HANDLE.
+//! Windows layer for `cleaner`: open objects by handle, identify, delete, and rename THROUGH THE HANDLE.
 //!
-//! Es el único módulo del crate con `unsafe` junto a `recycle` (COM) y `process` (lista de procesos). Cada llamada
-//! es una función pequeña con su `// SAFETY:` y el módulo de pruebas las recorre todas sobre un árbol temporal.
+//! This is the only module in the crate with `unsafe`, alongside `recycle` (COM) and `process` (process listing). Each
+//! call is a small function with its own `// SAFETY:` explanation, and the test module exercises them all on a temp tree.
 //!
-//! # Principio (PLAN.md §3.7)
-//! Se verifica y se actúa sobre el MISMO handle: nunca "comprobar por ruta y borrar por ruta".
-//! * [`open_path`] abre por ruta SOLO para capturar una identidad o abrir la raíz de una categoría: con
-//!   `FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS`, así que un enlace se abre a sí mismo, no su destino.
-//! * [`open_rel`] es la apertura relativa a un handle (`NtCreateFile` con `RootDirectory`): ninguna ruta se vuelve a
-//!   resolver desde la raíz, de modo que cambiar un ancestro por un junction no redirige la operación.
-//! * [`open_file_exclusive`]: acceso `DELETE` con `dwShareMode = 0`. La apertura exclusiva es a la vez la comprobación de
-//!   "en uso" (`ERROR_SHARING_VIOLATION`), cierra el caso `FILE_SHARE_DELETE` y evita la sustitución entre comprobar y
-//!   actuar.
-//! * [`delete_on_handle`]: `FileDispositionInfoEx` (DELETE | POSIX_SEMANTICS | IGNORE_READONLY_ATTRIBUTE) sobre el
-//!   handle abierto; en sistemas de archivos sin POSIX cae a `FileDispositionInfo` (borra al cerrar el handle).
+//! # Principle (PLAN.md §3.7)
+//! Verify and act on the SAME handle: never "check by path and delete by path".
+//! * [`open_path`] opens by path ONLY to capture an identity or open a category root. It uses
+//!   `FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS`, so a link is opened itself, not its target.
+//! * [`open_rel`] opens relative to a handle (`NtCreateFile` with `RootDirectory`): paths are never resolved again from the
+//!   root, so replacing an ancestor with a junction cannot redirect the operation.
+//! * [`open_file_exclusive`]: `DELETE` access with `dwShareMode = 0`. Exclusive opening also checks whether the item is
+//!   "in use" (`ERROR_SHARING_VIOLATION`), closes the `FILE_SHARE_DELETE` case, and prevents replacement between checking
+//!   and acting.
+//! * [`delete_on_handle`]: applies `FileDispositionInfoEx` (DELETE | POSIX_SEMANTICS | IGNORE_READONLY_ATTRIBUTE) to the
+//!   open handle; on file systems without POSIX support, it falls back to `FileDispositionInfo` (deletes when the handle closes).
 #![allow(unsafe_code)]
 
 use std::ffi::c_void;
@@ -55,21 +55,21 @@ use windows_sys::Win32::System::Threading::{
     CreateEventW, GetCurrentProcess, OpenProcessToken, WaitForSingleObject,
 };
 
-/// ¿Se ejecuta ESTE proceso con privilegios elevados (el token tiene `TokenElevation`)? `None` si no se pudo consultar. El
-/// manifiesto es `asInvoker`: un proceso elevado que lance Tesela se lo pasa al hijo.
+/// Is THIS process running elevated (does its token have `TokenElevation`)? Returns `None` if the query failed. The
+/// manifest is `asInvoker`: an elevated process that launches Tesela passes its elevation to the child.
 pub fn process_elevation() -> Option<bool> {
     let mut token: HANDLE = std::ptr::null_mut();
-    // SAFETY: `token` es escribible; `GetCurrentProcess` devuelve un pseudo-handle que no hay que cerrar.
+    // SAFETY: `token` is writable; `GetCurrentProcess` returns a pseudo-handle that must not be closed.
     if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
         return None;
     }
-    // Se cierra al soltarlo, pase lo que pase.
+    // It is closed on drop, regardless of what happens.
     let token = Handle(token);
-    // SAFETY: `TOKEN_ELEVATION` es un POD (un entero): todo-ceros es válido.
+    // SAFETY: `TOKEN_ELEVATION` is a POD (one integer); all-zero is valid.
     let mut elevation: TOKEN_ELEVATION = unsafe { std::mem::zeroed() };
     let mut returned = 0u32;
-    // SAFETY: `token.0` es un token válido abierto con `TOKEN_QUERY`; el puntero apunta a `elevation` y se pasa su tamaño
-    // exacto; `returned` es escribible.
+    // SAFETY: `token.0` is a valid token opened with `TOKEN_QUERY`; the pointer refers to `elevation` and its exact size is
+    // passed; `returned` is writable.
     let ok = unsafe {
         GetTokenInformation(
             token.0,
@@ -82,10 +82,10 @@ pub fn process_elevation() -> Option<bool> {
     (ok != 0).then_some(elevation.TokenIsElevated != 0)
 }
 
-/// Código de error de Windows (`GetLastError` / `RtlNtStatusToDosError`).
+/// Windows error code (`GetLastError` / `RtlNtStatusToDosError`).
 pub type Win32 = u32;
 
-/// `ERROR_SHARING_VIOLATION`: alguien tiene el objeto abierto sin compartir lo que pedimos.
+/// `ERROR_SHARING_VIOLATION`: another handle has the object open without sharing the access we requested.
 pub const SHARING_VIOLATION: Win32 = 32;
 /// `ERROR_ACCESS_DENIED`.
 pub const ACCESS_DENIED: Win32 = 5;
@@ -94,52 +94,52 @@ pub const DIR_NOT_EMPTY: Win32 = 145;
 
 const SYNCHRONIZE: u32 = 0x0010_0000;
 const FILE_SHARE_ALL: u32 = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
-/// Tamaño del búfer de enumeración (64 KiB, como el escáner).
+/// Enumeration buffer size (64 KiB, matching the scanner).
 const BUF_BYTES: usize = 64 * 1024;
 
-/// Identidad de un objeto del sistema de archivos: número de serie del volumen + `FileId` de 128 bits (`FileIdInfo`).
-/// Es lo que aprueba el usuario al confirmar; las rutas solo sirven para volver a encontrar el objeto.
+/// Identity of a file-system object: volume serial number + 128-bit `FileId` (`FileIdInfo`). This is what the user approves
+/// at confirmation; paths are only used to find the object again.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct FileIdentity {
     pub volume_serial: u64,
     pub file_id: u128,
 }
 
-/// Handle del kernel que se cierra al soltarlo.
+/// Kernel handle that is closed on drop.
 pub struct Handle(HANDLE);
 
-// SAFETY: un HANDLE de archivo se puede usar y cerrar desde cualquier hilo. Varios hilos pueden abrir hijos relativos
-// al mismo handle de directorio a la vez (`NtCreateFile` con `RootDirectory`); la enumeración y el borrado se hacen
-// desde un solo hilo por handle (lo garantiza el motor).
+// SAFETY: a file HANDLE can be used and closed from any thread. Multiple threads can open children relative to the same
+// directory handle at once (`NtCreateFile` with `RootDirectory`); enumeration and deletion run on one thread per handle
+// (guaranteed by the engine).
 unsafe impl Send for Handle {}
-// SAFETY: ver arriba; las llamadas del kernel sobre un mismo handle están serializadas por el propio sistema.
+// SAFETY: see above; the system itself serializes kernel calls on the same handle.
 unsafe impl Sync for Handle {}
 
 impl Drop for Handle {
     fn drop(&mut self) {
-        // SAFETY: `self.0` es un handle válido que abrió este módulo y solo se cierra aquí, una vez.
+        // SAFETY: `self.0` is a valid handle opened by this module and is closed only here, exactly once.
         unsafe { CloseHandle(self.0) };
     }
 }
 
-/// Metadatos de un objeto abierto: identidad, enlaces, atributos, tamaños y la fecha más reciente de las tres que
-/// pueden delatar actividad (creación, escritura, cambio de metadatos).
+/// Metadata for an open object: identity, link count, attributes, sizes, and the newest of three timestamps that may
+/// indicate activity (creation, write, metadata change).
 #[derive(Clone, Copy, Debug)]
 pub struct Meta {
     pub identity: FileIdentity,
     /// `NumberOfLinks` (`FileStandardInfo`).
     pub links: u32,
     pub attrs: u32,
-    /// Etiqueta de reparse; 0 si no es un reparse point.
+    /// Reparse tag; 0 if this is not a reparse point.
     pub reparse_tag: u32,
     pub is_dir: bool,
-    /// `FileStandardInfo.DeletePending`: alguien ya marcó el objeto para borrar y desaparecerá al cerrarse el último handle
-    /// (hasta entonces el NOMBRE sigue visible y abrirlo da acceso denegado). Es la forma de saber, con un handle abierto,
-    /// que un objeto ya se eliminó.
+    /// `FileStandardInfo.DeletePending`: the object has been marked for deletion and will disappear when the last handle
+    /// closes (until then, its NAME remains visible and opening it returns access denied). This tells us, while a handle is
+    /// open, that an object has already been deleted.
     pub delete_pending: bool,
     pub alloc: u64,
     pub logical: u64,
-    /// El mayor de `CreationTime`, `LastWriteTime` y `ChangeTime` (FILETIME).
+    /// The latest of `CreationTime`, `LastWriteTime`, and `ChangeTime` (FILETIME).
     pub newest_filetime: i64,
 }
 
@@ -149,16 +149,16 @@ impl Meta {
     }
 }
 
-/// Entrada de un directorio tal como la da su listado (`FileIdExtdDirectoryInfo`).
+/// Directory entry as returned by its listing (`FileIdExtdDirectoryInfo`).
 #[derive(Clone, Debug)]
 pub struct DirEntry {
-    /// Nombre en UTF-16, tal cual lo guarda el sistema.
+    /// Name in UTF-16, exactly as stored by the system.
     pub name: Box<[u16]>,
     pub attrs: u32,
     pub reparse_tag: u32,
     pub alloc: u64,
     pub logical: u64,
-    /// `FileId` de 128 bits que da el listado (se compara con el del handle al abrirlo).
+    /// 128-bit `FileId` returned by the listing (compared with the handle's ID when opened).
     pub file_id: u128,
     pub newest_filetime: i64,
 }
@@ -172,13 +172,13 @@ impl DirEntry {
     }
 }
 
-/// `true` si la etiqueta de reparse es la de un archivo de la nube (OneDrive y similares: `IO_REPARSE_TAG_CLOUD*`).
+/// `true` if the reparse tag belongs to a cloud file (OneDrive and similar: `IO_REPARSE_TAG_CLOUD*`).
 pub fn is_cloud_tag(tag: u32) -> bool {
     tag & !0xF000 == 0x9000_001A
 }
 
-/// Ruta en UTF-16 con NUL final y prefijo `\\?\` (rutas largas, sin normalización de Win32: por eso las `/` se
-/// convierten antes en `\`).
+/// Path in UTF-16 with a trailing NUL and `\\?\` prefix (long paths, without Win32 normalization; therefore `/` is
+/// converted to `\` first).
 fn wide_long(path: &Path) -> Vec<u16> {
     let mut v: Vec<u16> = path
         .as_os_str()
@@ -188,7 +188,7 @@ fn wide_long(path: &Path) -> Vec<u16> {
     let verbatim = [b'\\' as u16, b'\\' as u16, b'?' as u16, b'\\' as u16];
     if !v.starts_with(&verbatim) {
         if v.starts_with(&[b'\\' as u16, b'\\' as u16]) {
-            // Forma UNC (dos barras, servidor y recurso) -> forma `verbatim` con `UNC`.
+            // UNC form (two slashes, server, and share) -> `verbatim` form with `UNC`.
             let mut out: Vec<u16> = r"\\?\UNC\".encode_utf16().collect();
             out.extend_from_slice(&v[2..]);
             v = out;
@@ -203,22 +203,22 @@ fn wide_long(path: &Path) -> Vec<u16> {
 }
 
 fn last_error() -> Win32 {
-    // SAFETY: `GetLastError` no tiene precondiciones.
+    // SAFETY: `GetLastError` has no preconditions.
     unsafe { GetLastError() }
 }
 
 fn nt_to_win32(status: i32) -> Win32 {
-    // SAFETY: `RtlNtStatusToDosError` es una función pura de traducción, sin precondiciones.
+    // SAFETY: `RtlNtStatusToDosError` is a pure translation function with no preconditions.
     unsafe { RtlNtStatusToDosError(status) }
 }
 
-/// Abre `path` (por ruta) sin seguir un reparse point final. `access` y `share` son los de `CreateFileW`.
-/// Para capturar identidades y abrir raíces de categoría; las operaciones destructivas usan [`open_rel`] o
-/// [`open_file_exclusive`] y verifican la identidad del handle.
+/// Opens `path` by path without following a final reparse point. `access` and `share` are the `CreateFileW` values.
+/// Used to capture identities and open category roots; destructive operations use [`open_rel`] or
+/// [`open_file_exclusive`] and verify the handle's identity.
 pub fn open_path(path: &Path, access: u32, share: u32) -> Result<Handle, Win32> {
     let p = wide_long(path);
-    // SAFETY: `p` es una cadena UTF-16 terminada en NUL que vive durante la llamada; el resto de argumentos son
-    // constantes o punteros nulos permitidos (sin atributos de seguridad ni plantilla).
+    // SAFETY: `p` is a NUL-terminated UTF-16 string that remains alive for the call; the other arguments are constants or
+    // permitted null pointers (no security attributes or template).
     let h = unsafe {
         CreateFileW(
             p.as_ptr(),
@@ -236,12 +236,12 @@ pub fn open_path(path: &Path, access: u32, share: u32) -> Result<Handle, Win32> 
     Ok(Handle(h))
 }
 
-/// Abre `path` solo para consultar atributos e identidad (lo comparte todo: no estorba a nadie).
+/// Opens `path` only to query attributes and identity (shares everything, so it does not block other access).
 pub fn open_for_query(path: &Path) -> Result<Handle, Win32> {
     open_path(path, FILE_READ_ATTRIBUTES, FILE_SHARE_ALL)
 }
 
-/// Abre un directorio para listarlo y consultarlo (compartiendo todo). Sin `DELETE`: no se puede borrar con él.
+/// Opens a directory for listing and querying (sharing everything). It has no `DELETE` access and cannot be used to delete.
 pub fn open_dir_for_listing(path: &Path) -> Result<Handle, Win32> {
     open_path(
         path,
@@ -250,16 +250,16 @@ pub fn open_dir_for_listing(path: &Path) -> Result<Handle, Win32> {
     )
 }
 
-/// Qué se espera encontrar al abrir una entrada relativa.
+/// Expected type when opening a relative entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Expect {
     File,
     Dir,
 }
 
-/// Apertura RELATIVA a `parent` (`NtCreateFile` con `RootDirectory`): `name` es un nombre de entrada, sin separadores.
-/// Siempre `FILE_OPEN_REPARSE_POINT` (un enlace se abre a sí mismo) y con el tipo esperado impuesto por el sistema
-/// (`FILE_DIRECTORY_FILE` / `FILE_NON_DIRECTORY_FILE`): si el tipo cambió desde el listado, falla.
+/// Opens RELATIVE to `parent` (`NtCreateFile` with `RootDirectory`): `name` is an entry name without separators.
+/// Always uses `FILE_OPEN_REPARSE_POINT` (a link is opened itself) and asks the system to enforce the expected type
+/// (`FILE_DIRECTORY_FILE` / `FILE_NON_DIRECTORY_FILE`): if the type changed since listing, the open fails.
 fn open_rel(
     parent: &Handle,
     name: &[u16],
@@ -267,9 +267,9 @@ fn open_rel(
     share: u32,
     expect: Expect,
 ) -> Result<Handle, Win32> {
-    // Un nombre con separadores o vacío no es un nombre de entrada: se rechaza antes de llegar al kernel. Tampoco con `:`:
-    // en NTFS abre un flujo de datos alternativo (`archivo:flujo`) o un atributo (`carpeta::$INDEX_ALLOCATION`), no la
-    // entrada (H6.10).
+    // An empty name or one containing separators is not an entry name, so reject it before reaching the kernel. The same
+    // applies to `:`: on NTFS it opens an alternate data stream (`file:stream`) or an attribute
+    // (`folder::$INDEX_ALLOCATION`), not the listed entry (H6.10).
     if name.is_empty()
         || name
             .iter()
@@ -297,10 +297,10 @@ fn open_rel(
         Expect::Dir => FILE_DIRECTORY_FILE,
     };
     let mut h: HANDLE = std::ptr::null_mut();
-    // SAFETY: IO_STATUS_BLOCK es un POD (entero y puntero): todo-ceros es un valor válido.
+    // SAFETY: IO_STATUS_BLOCK is a POD (integer and pointer); all-zero is valid.
     let mut iosb: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
-    // SAFETY: `oa` apunta a `us` y `name`, que viven durante la llamada; `parent.0` es un handle de directorio válido
-    // (lo posee `parent`); `h` e `iosb` son escribibles; no hay EA ni tamaño de asignación.
+    // SAFETY: `oa` refers to `us` and `name`, which remain alive for the call; `parent.0` is a valid directory handle
+    // owned by `parent`; `h` and `iosb` are writable; there are no EA or allocation size.
     let status = unsafe {
         NtCreateFile(
             &mut h,
@@ -322,14 +322,14 @@ fn open_rel(
     Ok(Handle(h))
 }
 
-/// Abre un ARCHIVO hijo de `parent` en exclusiva para borrarlo: `DELETE`, `dwShareMode = 0`. Falla con
-/// [`SHARING_VIOLATION`] si alguien lo tiene abierto (también con `FILE_SHARE_DELETE`).
+/// Opens a child FILE of `parent` exclusively for deletion: `DELETE`, `dwShareMode = 0`. Returns
+/// [`SHARING_VIOLATION`] if anyone else has it open (including with `FILE_SHARE_DELETE`).
 pub fn open_file_exclusive(parent: &Handle, name: &[u16]) -> Result<Handle, Win32> {
     open_rel(parent, name, DELETE | FILE_READ_ATTRIBUTES, 0, Expect::File)
 }
 
-/// Abre un DIRECTORIO hijo de `parent` para listarlo y, al final, borrarlo (vacío) por este mismo handle. Se comparte
-/// todo para poder enumerar aunque el Explorador o un antivirus lo estén observando; la identidad se verifica igual.
+/// Opens a child DIRECTORY of `parent` for listing and, once empty, deleting through this same handle. Shares everything
+/// so it can be enumerated while Explorer or antivirus software is watching it; identity is still verified.
 pub fn open_dir_for_delete(parent: &Handle, name: &[u16]) -> Result<Handle, Win32> {
     open_rel(
         parent,
@@ -340,7 +340,7 @@ pub fn open_dir_for_delete(parent: &Handle, name: &[u16]) -> Result<Handle, Win3
     )
 }
 
-/// Abre un hijo (archivo o directorio) solo para consultar sus metadatos, compartiéndolo todo.
+/// Opens a child (file or directory) only to query its metadata, sharing everything.
 pub fn open_child_for_query(
     parent: &Handle,
     name: &[u16],
@@ -349,7 +349,7 @@ pub fn open_child_for_query(
     open_rel(parent, name, FILE_READ_ATTRIBUTES, FILE_SHARE_ALL, expect)
 }
 
-/// Abre un directorio hijo solo para listarlo (sin `DELETE`), compartiéndolo todo.
+/// Opens a child directory only for listing (without `DELETE`), sharing everything.
 pub fn open_child_dir_for_listing(parent: &Handle, name: &[u16]) -> Result<Handle, Win32> {
     open_rel(
         parent,
@@ -360,34 +360,33 @@ pub fn open_child_dir_for_listing(parent: &Handle, name: &[u16]) -> Result<Handl
     )
 }
 
-/// Por qué falla [`open_reparse_free_dir`].
+/// Why [`open_reparse_free_dir`] failed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ChainError {
-    /// La ruta no es absoluta con letra de unidad y componentes normales (UNC, relativa, `..`, `\\.\`...).
+    /// The path is not an absolute drive-letter path with normal components (UNC, relative, `..`, `\\.\`, etc.).
     BadPath,
-    /// El componente `component` (nombre tal como se escribió en la ruta) es un reparse point (junction, symlink, punto de
-    /// montaje, nube): la cadena no es de confianza.
+    /// Component `component` (the name as written in the path) is a reparse point (junction, symlink, mount point, cloud):
+    /// the chain cannot be trusted.
     Reparse { component: String },
-    /// Error del sistema al abrir un componente (o al leer su identidad).
+    /// System error while opening a component (or reading its identity).
     Os(Win32),
 }
 
-/// Abre el directorio `path` recorriendo la cadena COMPONENTE A COMPONENTE desde la raíz del volumen, con aperturas
-/// RELATIVAS (`NtCreateFile` + `RootDirectory` + `FILE_OPEN_REPARSE_POINT`), y exige que NINGÚN componente (ni la raíz de
-/// la unidad ni el último) sea un reparse point. Devuelve el handle del último.
+/// Opens directory `path` by walking its components one by one from the volume root, using RELATIVE opens
+/// (`NtCreateFile` + `RootDirectory` + `FILE_OPEN_REPARSE_POINT`), and requires that NO component (including the drive root
+/// and final component) is a reparse point. Returns the final handle.
 ///
-/// Es la comprobación de las raíces de categoría (PLAN.md §3.7.3): `GetFinalPathNameByHandleW` resuelve en silencio los
-/// enlaces de los ANCESTROS, así que comparar la ruta canónica con la léxica no basta para ver un junction por encima de
-/// `User Data` o de `%TEMP%`. Hay que mirar cada componente de la ruta TAL COMO SE ESCRIBIÓ (los nombres 8.3 de `%TEMP%`
-/// valen: los resuelve el sistema de archivos al abrir).
+/// This checks category roots (PLAN.md §3.7.3): `GetFinalPathNameByHandleW` silently resolves links in ANCESTORS, so
+/// comparing canonical and lexical paths is not enough to detect a junction above `User Data` or `%TEMP%`. Each component
+/// must be checked AS WRITTEN (8.3 names in `%TEMP%` are accepted because the file system resolves them when opened).
 pub fn open_reparse_free_dir(path: &Path) -> Result<Handle, ChainError> {
     open_chain_dir(path, |_| false)
 }
 
-/// Como [`open_reparse_free_dir`], pero un componente que es un reparse point SE ACEPTA si `tolerate` lo permite (se le pasan
-/// sus metadatos). La identidad de cada salto se sigue verificando al abrir relativo al anterior. Lo usa la aprobación de la
-/// cesta para dejar pasar las carpetas de sincronización de la nube (M1): un placeholder de nube no redirige la resolución de
-/// nombres; junction, symlink y punto de montaje sí y se siguen rechazando.
+/// Like [`open_reparse_free_dir`], but a component that is a reparse point is ACCEPTED if `tolerate` allows it (its metadata
+/// is passed in). Each step's identity is still verified when opened relative to the previous one. Basket approval uses
+/// this to allow cloud sync folders (M1): a cloud placeholder does not redirect name resolution, while junctions, symlinks,
+/// and mount points do and remain rejected.
 pub fn open_chain_dir(path: &Path, tolerate: impl Fn(&Meta) -> bool) -> Result<Handle, ChainError> {
     use std::path::{Component, Prefix};
     let plain = strip_verbatim(path.to_path_buf());
@@ -403,8 +402,8 @@ pub fn open_chain_dir(path: &Path, tolerate: impl Fn(&Meta) -> bool) -> Result<H
         return Err(ChainError::BadPath);
     }
     let root = PathBuf::from(format!("{}:\\", drive as char));
-    // Solo se piden atributos (no `FILE_LIST_DIRECTORY`): hay carpetas que un usuario sin elevar no puede listar
-    // (`Windows\Temp`) y la cadena no necesita listar nada.
+    // Request attributes only (not `FILE_LIST_DIRECTORY`): a non-elevated user may be unable to list some directories
+    // (`Windows\Temp`), and the chain does not need to list anything.
     let mut cur = open_for_query(&root).map_err(ChainError::Os)?;
     let check = |h: &Handle, name: &str| -> Result<(), ChainError> {
         let m = meta(h).map_err(ChainError::Os)?;
@@ -428,32 +427,31 @@ pub fn open_chain_dir(path: &Path, tolerate: impl Fn(&Meta) -> bool) -> Result<H
     Ok(cur)
 }
 
-/// Abre por ruta con acceso `DELETE` y compartiendo todo: comprobación previa de un elemento que va a la Papelera (se
-/// captura la identidad y se SUELTA el handle antes de entregar la ruta a la shell).
+/// Opens by path with `DELETE` access and full sharing: a pre-check for an item going to the Recycle Bin (captures identity
+/// and RELEASES the handle before submitting the path to the shell).
 pub fn open_path_for_rename(path: &Path) -> Result<Handle, Win32> {
     open_path(path, DELETE | FILE_READ_ATTRIBUTES, FILE_SHARE_ALL)
 }
 
-/// Abre por ruta un ARCHIVO en exclusiva con acceso `DELETE` y `dwShareMode = 0` (borrado definitivo de un elemento de
-/// la cesta que es un archivo).
+/// Opens a FILE by path exclusively with `DELETE` access and `dwShareMode = 0` (permanent deletion of a file in the basket).
 pub fn open_path_exclusive(path: &Path) -> Result<Handle, Win32> {
     open_path(path, DELETE | FILE_READ_ATTRIBUTES, 0)
 }
 
-/// Abre por ruta un archivo en exclusiva (`dwShareMode = 0`) para LEERLO y borrarlo por el mismo handle.
+/// Opens a file by path exclusively (`dwShareMode = 0`) to READ it and delete it through the same handle.
 pub fn open_path_exclusive_read(path: &Path) -> Result<Handle, Win32> {
     open_path(path, DELETE | FILE_READ_ATTRIBUTES | FILE_READ_DATA, 0)
 }
 
-/// Lee el contenido de un archivo pequeño (hasta `max` bytes) por un handle abierto con `FILE_READ_DATA`. Falla con
-/// `ERROR_FILE_TOO_LARGE` si hay más de `max` bytes.
+/// Reads a small file (up to `max` bytes) through a handle opened with `FILE_READ_DATA`. Returns `ERROR_FILE_TOO_LARGE` if
+/// it contains more than `max` bytes.
 pub fn read_small(h: &Handle, max: usize) -> Result<Vec<u8>, Win32> {
     let mut out = Vec::new();
     let mut buf = [0u8; 4096];
     loop {
         let mut got = 0u32;
-        // SAFETY: `h.0` es un handle válido abierto con `FILE_READ_DATA`; `buf` es escribible con `buf.len()` bytes y
-        // `got` también; no hay estructura OVERLAPPED (lectura síncrona).
+        // SAFETY: `h.0` is a valid handle opened with `FILE_READ_DATA`; `buf` is writable for `buf.len()` bytes and `got` is
+        // writable as well; there is no OVERLAPPED structure (synchronous read).
         let ok = unsafe {
             ReadFile(
                 h.0,
@@ -476,7 +474,7 @@ pub fn read_small(h: &Handle, max: usize) -> Result<Vec<u8>, Win32> {
     }
 }
 
-/// Abre por ruta un DIRECTORIO para listarlo y borrarlo (vacío) por este mismo handle.
+/// Opens a DIRECTORY by path for listing and deleting it (when empty) through this same handle.
 pub fn open_path_dir_for_delete(path: &Path) -> Result<Handle, Win32> {
     open_path(
         path,
@@ -486,9 +484,9 @@ pub fn open_path_dir_for_delete(path: &Path) -> Result<Handle, Win32> {
 }
 
 fn query_info<T>(h: &Handle, class: i32) -> Result<T, Win32> {
-    // SAFETY: `T` es una de las estructuras POD de la API (enteros y arrays de bytes): todo-ceros es válido.
+    // SAFETY: `T` is one of the API's POD structures (integers and byte arrays); all-zero is valid.
     let mut v: T = unsafe { std::mem::zeroed() };
-    // SAFETY: `h.0` es un handle válido; el puntero apunta a `v` y se pasa su tamaño exacto.
+    // SAFETY: `h.0` is a valid handle; the pointer refers to `v` and its exact size is passed.
     let ok = unsafe {
         GetFileInformationByHandleEx(
             h.0,
@@ -503,8 +501,8 @@ fn query_info<T>(h: &Handle, class: i32) -> Result<T, Win32> {
     Ok(v)
 }
 
-/// Metadatos del objeto abierto. `FileIdInfo` es OBLIGATORIO (sin identidad no se aprueba nada): si el sistema de
-/// archivos no lo soporta (FAT, exFAT) devuelve su error y el elemento no es elegible.
+/// Metadata for the open object. `FileIdInfo` is REQUIRED (nothing is approved without identity): if the file system does
+/// not support it (FAT, exFAT), its error is returned and the item is ineligible.
 pub fn meta(h: &Handle) -> Result<Meta, Win32> {
     let basic: FILE_BASIC_INFO = query_info(h, FileBasicInfo)?;
     let std_info: FILE_STANDARD_INFO = query_info(h, FileStandardInfo)?;
@@ -535,24 +533,24 @@ pub fn meta(h: &Handle) -> Result<Meta, Win32> {
     })
 }
 
-/// Lo que ocupa AHORA el objeto abierto, leído por su handle (solo `FileStandardInfo`: una consulta, sin reabrir la ruta).
+/// The open object's CURRENT size, read through its handle (only `FileStandardInfo`: one query, without reopening the path).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Sizes {
-    /// `AllocationSize`: bytes en disco.
+    /// `AllocationSize`: bytes on disk.
     pub alloc: u64,
-    /// `EndOfFile`: tamaño lógico.
+    /// `EndOfFile`: logical size.
     pub logical: u64,
 }
 
 impl Sizes {
-    /// El mayor de los dos tamaños: lo que se cuenta contra el presupuesto de la Papelera.
+    /// The larger of the two sizes: the amount counted against the Recycle Bin budget.
     pub fn charge(&self) -> u64 {
         self.alloc.max(self.logical)
     }
 }
 
-/// Tamaños actuales del objeto abierto (A2-B1: el receptor de la shell vuelve a medir cada archivo por su handle de guarda justo
-/// antes de que la shell lo toque).
+/// Current sizes of the open object (A2-B1: the shell receiver remeasures each file through its guard handle just before the
+/// shell acts on it).
 pub fn sizes(h: &Handle) -> Result<Sizes, Win32> {
     let std_info: FILE_STANDARD_INFO = query_info(h, FileStandardInfo)?;
     Ok(Sizes {
@@ -561,12 +559,12 @@ pub fn sizes(h: &Handle) -> Result<Sizes, Win32> {
     })
 }
 
-/// Ruta canónica LARGA del objeto abierto (`GetFinalPathNameByHandleW`, normalizada y sin `\\?\`). Resuelve los
-/// ancestros y los nombres 8.3, y para un enlace abierto con `OPEN_REPARSE_POINT` es la ruta del propio enlace.
+/// LONG canonical path of the open object (`GetFinalPathNameByHandleW`, normalized and without `\\?\`). Resolves ancestors
+/// and 8.3 names; for a link opened with `OPEN_REPARSE_POINT`, this is the link's own path.
 pub fn final_path(h: &Handle) -> Result<PathBuf, Win32> {
     let mut buf = vec![0u16; 512];
     loop {
-        // SAFETY: `h.0` es un handle válido; `buf` es escribible con `buf.len()` unidades UTF-16.
+        // SAFETY: `h.0` is a valid handle; `buf` is writable for `buf.len()` UTF-16 units.
         let n = unsafe {
             GetFinalPathNameByHandleW(
                 h.0,
@@ -587,9 +585,9 @@ pub fn final_path(h: &Handle) -> Result<PathBuf, Win32> {
     Ok(strip_verbatim(std::ffi::OsString::from_wide(&buf).into()))
 }
 
-/// Quita el prefijo `verbatim` (`\\?\C:\x` -> `C:\x`; la forma con `UNC` vuelve a la de dos barras).
+/// Removes the `verbatim` prefix (`\\?\C:\x` -> `C:\x`; the `UNC` form returns to the two-slash form).
 ///
-/// Trabaja sobre UTF-16: un nombre con unidades sueltas (válido en NTFS) pasa tal cual, sin `U+FFFD`.
+/// Operates on UTF-16: names with unpaired code units (valid in NTFS) are preserved without `U+FFFD`.
 pub fn strip_verbatim(p: PathBuf) -> PathBuf {
     let w: Vec<u16> = p.as_os_str().encode_wide().collect();
     let unc: Vec<u16> = r"\\?\UNC\".encode_utf16().collect();
@@ -616,9 +614,9 @@ fn read_i64(b: &[u8], at: usize) -> i64 {
     i64::from_ne_bytes(b[at..at + 8].try_into().expect("8 bytes"))
 }
 
-/// Lista TODAS las entradas de un directorio abierto con `FILE_LIST_DIRECTORY` (sin `.` ni `..`) con
-/// `FileIdExtdDirectoryInfo`. Devuelve el código de error de Windows si falla. Los campos se leen con índices
-/// comprobados: un búfer inconsistente da un error, nunca una lectura fuera de rango.
+/// Lists ALL entries in a directory opened with `FILE_LIST_DIRECTORY` (excluding `.` and `..`) using
+/// `FileIdExtdDirectoryInfo`. Returns the Windows error code on failure. Fields are read with checked indices: an
+/// inconsistent buffer returns an error and never causes an out-of-bounds read.
 pub fn list_dir(h: &Handle) -> Result<Vec<DirEntry>, Win32> {
     const HDR: usize = offset_of!(FILE_ID_EXTD_DIR_INFO, FileName);
     const NEXT: usize = offset_of!(FILE_ID_EXTD_DIR_INFO, NextEntryOffset);
@@ -635,8 +633,8 @@ pub fn list_dir(h: &Handle) -> Result<Vec<DirEntry>, Win32> {
     let buf_len = std::mem::size_of_val(buf.as_slice());
     let mut out = Vec::new();
     loop {
-        // SAFETY: `h.0` es un handle de directorio válido; `buf` es memoria escribible de `buf_len` bytes alineada a 8
-        // (es un `[u64]`), como exige la API.
+        // SAFETY: `h.0` is a valid directory handle; `buf` is writable memory of `buf_len` bytes, aligned to 8
+        // (it is a `[u64]`), as required by the API.
         let ok = unsafe {
             GetFileInformationByHandleEx(
                 h.0,
@@ -653,8 +651,8 @@ pub fn list_dir(h: &Handle) -> Result<Vec<DirEntry>, Win32> {
                 Err(e)
             };
         }
-        // SAFETY: `buf` es memoria inicializada de `buf_len` bytes y no se modifica mientras viva esta vista (la
-        // siguiente llamada a la API solo ocurre después de soltarla).
+        // SAFETY: `buf` is initialized memory of `buf_len` bytes and is not modified while this view exists (the next API
+        // call occurs only after the view is dropped).
         let bytes: &[u8] =
             unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const u8, buf_len) };
         let mut off = 0usize;
@@ -697,16 +695,16 @@ pub fn list_dir(h: &Handle) -> Result<Vec<DirEntry>, Win32> {
     }
 }
 
-/// Marca para borrar el objeto abierto: `FileDispositionInfoEx` (DELETE | POSIX_SEMANTICS | IGNORE_READONLY) sobre
-/// ESTE handle. Un directorio solo se borra si está vacío (`DIR_NOT_EMPTY` si no). Si el sistema de archivos no
-/// admite la clase extendida (o la semántica POSIX), cae a `FileDispositionInfo`, que borra al cerrar el handle.
+/// Marks the open object for deletion: applies `FileDispositionInfoEx` (DELETE | POSIX_SEMANTICS | IGNORE_READONLY) to
+/// THIS handle. A directory is deleted only if empty (`DIR_NOT_EMPTY` otherwise). If the file system does not support the
+/// extended class (or POSIX semantics), falls back to `FileDispositionInfo`, which deletes when the handle closes.
 pub(crate) fn delete_on_handle(h: &Handle) -> Result<(), Win32> {
     let info = FILE_DISPOSITION_INFO_EX {
         Flags: FILE_DISPOSITION_FLAG_DELETE
             | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS
             | FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
     };
-    // SAFETY: `h.0` es un handle válido abierto con acceso DELETE; el puntero apunta a `info` y se pasa su tamaño.
+    // SAFETY: `h.0` is a valid handle opened with DELETE access; the pointer refers to `info` and its size is passed.
     let ok = unsafe {
         SetFileInformationByHandle(
             h.0,
@@ -726,7 +724,7 @@ pub(crate) fn delete_on_handle(h: &Handle) -> Result<(), Win32> {
         return Err(e);
     }
     let legacy = FILE_DISPOSITION_INFO { DeleteFile: true };
-    // SAFETY: igual que arriba, con la estructura de la clase clásica.
+    // SAFETY: same as above, using the structure for the legacy class.
     let ok = unsafe {
         SetFileInformationByHandle(
             h.0,
@@ -738,48 +736,48 @@ pub(crate) fn delete_on_handle(h: &Handle) -> Result<(), Win32> {
     if ok == 0 { Err(last_error()) } else { Ok(()) }
 }
 
-// ---- Vigilancia de cambios de un directorio (A3-M1) -------------------------------------------------------------------
+// ---- Directory change monitoring (A3-M1) -----------------------------------------------------------------------------
 
-/// Por qué no se pudo vigilar un directorio. FALLA CERRADO: sin vigilancia no se envía.
+/// Why a directory could not be monitored. FAILS CLOSED: without monitoring, it is not submitted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WatchError {
-    /// El objeto abierto no es el aprobado (identidad, tipo o reparse point).
+    /// The open object is not the approved one (identity, type, or reparse point).
     Changed,
-    /// Error del sistema al abrirlo, leer su identidad o arrancar la vigilancia.
+    /// System error while opening it, reading its identity, or starting monitoring.
     Os(Win32),
 }
 
-/// Palabras de 32 bits del búfer de `ReadDirectoryChangesW`. No se lee nunca (cualquier finalización invalida la medida):
-/// solo tiene que existir y estar alineado a DWORD mientras la lectura esté pendiente.
+/// 32-bit words in the `ReadDirectoryChangesW` buffer. They are never read (any completion invalidates the measurement): the
+/// buffer only needs to exist and remain DWORD-aligned while the read is pending.
 const WATCH_BUF_WORDS: usize = 256;
 
-/// Lo que el kernel toca mientras hay una lectura pendiente: su dirección NO puede cambiar hasta que termine (por eso vive en
-/// una `Box` que no se mueve nunca).
+/// Memory touched by the kernel while a read is pending: its address MUST NOT change until completion (therefore it lives in
+/// a `Box` that is never moved).
 struct WatchInner {
-    /// El directorio, abierto con `FILE_FLAG_OVERLAPPED`.
+    /// Directory opened with `FILE_FLAG_OVERLAPPED`.
     handle: Handle,
-    /// Estructura de la lectura pendiente (su `hEvent` es `event`).
+    /// Structure for the pending read (its `hEvent` is `event`).
     ov: OVERLAPPED,
-    /// Evento de reinicio manual de `ov`.
+    /// Manual-reset event for `ov`.
     event: Handle,
     buf: [u32; WATCH_BUF_WORDS],
-    /// ¿Hay una lectura pendiente en el kernel? Solo entonces el kernel escribe en `ov` y `buf`.
+    /// Is a read pending in the kernel? Only then does the kernel write to `ov` and `buf`.
     pending: bool,
 }
 
-// SAFETY: `OVERLAPPED` lleva un `HANDLE` (puntero crudo) y por eso no es `Send` por sí solo. El kernel solo escribe en `ov` y
-// `buf` mientras `pending` es cierto, la caja no se mueve y todo acceso desde Rust pasa por el `Mutex` de `DirWatch`.
+// SAFETY: `OVERLAPPED` contains a `HANDLE` (raw pointer), so it is not `Send` by itself. The kernel writes to `ov` and
+// `buf` only while `pending` is true; the box does not move, and all Rust access goes through `DirWatch`'s `Mutex`.
 unsafe impl Send for WatchInner {}
 
-/// SOLO PRUEBAS: raíces bajo las que `DirWatch::start` falla con "acceso denegado" (para probar que sin vigilancia no se
-/// envía). Solo actúa sobre rutas que cuelgan de la carpeta de la prueba que lo instaló.
+/// Tests only: roots under which `DirWatch::start` fails with "access denied" (to verify that an item is not sent without
+/// monitoring). Acts only on paths under the test folder that installed it.
 #[cfg(test)]
 static FAIL_WATCH: std::sync::Mutex<Vec<(u64, crate::paths::PathKey)>> =
     std::sync::Mutex::new(Vec::new());
 #[cfg(test)]
 static FAIL_WATCH_NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
-/// SOLO PRUEBAS: guarda que quita el fallo forzado al soltarla.
+/// Tests only: guard that removes the forced failure when dropped.
 #[cfg(test)]
 pub struct FailWatchGuard(u64);
 
@@ -793,7 +791,7 @@ impl Drop for FailWatchGuard {
     }
 }
 
-/// SOLO PRUEBAS: hace que `DirWatch::start` falle para lo que cuelgue de `root`.
+/// Tests only: makes `DirWatch::start` fail for paths under `root`.
 #[cfg(test)]
 pub fn fail_watch_under(root: &Path) -> FailWatchGuard {
     let id = FAIL_WATCH_NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -804,24 +802,24 @@ pub fn fail_watch_under(root: &Path) -> FailWatchGuard {
     FailWatchGuard(id)
 }
 
-/// Vigilancia de TODO lo que cuelga de un directorio (subárbol) mientras se mide y hasta justo antes de que la shell actúe
-/// (A3-M1). Es un segundo handle del directorio con `ReadDirectoryChangesW` (tamaño, última escritura, altas, bajas y
-/// renombrados de archivos y de directorios). CUALQUIER finalización de la lectura (una notificación, el desbordamiento del
-/// búfer o un error) significa que la medida ya no es cierta: [`DirWatch::changed`] pasa a `true` y no vuelve a `false`. Los
-/// accesos de solo lectura del propio recorrido (atributos, listados) no generan notificaciones con estos filtros.
+/// Watches EVERYTHING beneath a directory (its subtree) while it is measured and until just before the shell acts
+/// (A3-M1). This is a second handle to the directory using `ReadDirectoryChangesW` (size, last write, additions, removals,
+/// and renames of files and directories). ANY completion of the read (a notification, buffer overflow, or error) means
+/// the measurement is no longer valid: [`DirWatch::changed`] becomes `true` and never returns to `false`. Read-only access
+/// by the traversal itself (attributes, listings) does not generate notifications with these filters.
 ///
-/// Límite del sistema (documentado, no oculto): NTFS retrasa las notificaciones de TAMAÑO y de ÚLTIMA ESCRITURA de un archivo
-/// que alguien sigue teniendo abierto hasta que lo cierra o se vuelca la caché; las altas, bajas y renombrados se notifican
-/// al momento. Un escritor que mantenga abierto un archivo y lo agrande puede no notificar dentro de la ventana.
+/// System limitation (documented, not hidden): NTFS delays SIZE and LAST-WRITE notifications for a file that someone still
+/// has open until it is closed or the cache is flushed; additions, removals, and renames are reported immediately. A writer
+/// that keeps a file open and enlarges it may not generate a notification during the monitoring window.
 pub struct DirWatch {
     inner: std::sync::Mutex<Option<Box<WatchInner>>>,
-    /// Hubo un cambio (o la vigilancia falló): no vuelve a `false`.
+    /// A change occurred (or monitoring failed): this never returns to `false`.
     changed: std::sync::atomic::AtomicBool,
 }
 
 impl DirWatch {
-    /// Abre `path` por segunda vez (sin seguir enlaces), exige que sea el directorio de identidad `expect` y arranca la
-    /// vigilancia. Hay que llamarla ANTES de empezar a medir: lo que cambie antes no se vería.
+    /// Opens `path` a second time (without following links), requires it to be the directory with identity `expect`, and
+    /// starts monitoring. Call this BEFORE measuring begins; changes made earlier would not be observed.
     pub fn start(path: &Path, expect: FileIdentity) -> Result<DirWatch, WatchError> {
         #[cfg(test)]
         {
@@ -840,12 +838,12 @@ impl DirWatch {
         if m.identity != expect || !m.is_dir || m.is_reparse() {
             return Err(WatchError::Changed);
         }
-        // SAFETY: sin atributos de seguridad ni nombre; evento de reinicio manual, no señalado.
+        // SAFETY: no security attributes or name; manual-reset, non-signaled event.
         let ev = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
         if ev.is_null() {
             return Err(WatchError::Os(last_error()));
         }
-        // SAFETY: `OVERLAPPED` es un POD (enteros y punteros): todo-ceros es válido.
+        // SAFETY: `OVERLAPPED` is POD (integers and pointers); all-zero is valid.
         let ov: OVERLAPPED = unsafe { std::mem::zeroed() };
         let mut inner = Box::new(WatchInner {
             handle: h,
@@ -859,10 +857,10 @@ impl DirWatch {
             | FILE_NOTIFY_CHANGE_LAST_WRITE
             | FILE_NOTIFY_CHANGE_FILE_NAME
             | FILE_NOTIFY_CHANGE_DIR_NAME;
-        // SAFETY: el handle se abrió con `FILE_LIST_DIRECTORY` y `FILE_FLAG_OVERLAPPED`; `buf` y `ov` viven en la caja, que no
-        // se mueve ni se libera mientras la lectura esté pendiente (`finish_watch` espera a que termine antes de soltarla); el
-        // búfer es de `u32` (alineado a DWORD) y se pasa su tamaño exacto; `lpBytesReturned` es nulo, como exige la llamada
-        // asíncrona.
+        // SAFETY: the handle was opened with `FILE_LIST_DIRECTORY` and `FILE_FLAG_OVERLAPPED`; `buf` and `ov` live in the
+        // box, which is neither moved nor freed while the read is pending (`finish_watch` waits for it to complete before
+        // releasing it); the buffer consists of `u32`s (DWORD-aligned) and its exact size is passed; `lpBytesReturned` is
+        // null, as required for the asynchronous call.
         let ok = unsafe {
             ReadDirectoryChangesW(
                 inner.handle.0,
@@ -885,8 +883,8 @@ impl DirWatch {
         })
     }
 
-    /// ¿Cambió algo desde que arrancó la vigilancia (o falló)? Consulta sin esperar. Tras [`DirWatch::stop`] devuelve lo que
-    /// se supo hasta entonces.
+    /// Did anything change (or fail) since monitoring started? Checks without waiting. After [`DirWatch::stop`], returns
+    /// what was known up to that point.
     pub fn changed(&self) -> bool {
         use std::sync::atomic::Ordering;
         if self.changed.load(Ordering::SeqCst) {
@@ -898,13 +896,13 @@ impl DirWatch {
         };
         if inner.pending {
             let mut n = 0u32;
-            // SAFETY: handle y `ov` válidos de una lectura lanzada con esta misma estructura; `n` es escribible; sin esperar.
+            // SAFETY: `handle` and `ov` are valid for a read started with this same structure; `n` is writable; do not wait.
             let ok = unsafe { GetOverlappedResult(inner.handle.0, &inner.ov, &mut n, 0) };
             if ok == 0 && last_error() == ERROR_IO_INCOMPLETE {
                 return false;
             }
-            // Terminó: con notificaciones (`n > 0`), desbordada (`n == 0`, `ERROR_NOTIFY_ENUM_DIR`) o con un error. En los tres
-            // casos lo que se midió ya no es de fiar.
+            // Completed: with notifications (`n > 0`), overflow (`n == 0`, `ERROR_NOTIFY_ENUM_DIR`), or an error. In all
+            // three cases, the measurement can no longer be trusted.
             inner.pending = false;
             self.changed.store(true, Ordering::SeqCst);
             return true;
@@ -912,8 +910,8 @@ impl DirWatch {
         self.changed.load(Ordering::SeqCst)
     }
 
-    /// Para la vigilancia (cancela la lectura pendiente y suelta el handle). Se llama tras comprobar por última vez, justo
-    /// antes de que la shell mueva el directorio: así no queda un handle con E/S pendiente sobre él.
+    /// Stops monitoring (cancels the pending read and releases the handle). Called after the final check, just before the
+    /// shell moves the directory, so no handle has pending I/O against it.
     pub fn stop(&self) {
         let _ = self.changed();
         let taken = self.inner.lock().unwrap_or_else(|e| e.into_inner()).take();
@@ -950,36 +948,36 @@ impl Drop for DirWatch {
     }
 }
 
-/// Termina una vigilancia: si la lectura sigue pendiente la cancela y ESPERA a que el kernel acabe con el búfer antes de
-/// liberarlo. Devuelve `true` si la lectura había terminado con un cambio real (no por la cancelación). Si el kernel no
-/// termina (no debería), se PIERDE la memoria a propósito: liberar un búfer que el kernel aún puede escribir es peor.
+/// Finishes monitoring: if the read is still pending, cancels it and WAITS for the kernel to finish with the buffer before
+/// releasing it. Returns `true` if the read completed due to a real change (not cancellation). If the kernel does not
+/// finish (it should not happen), the memory is intentionally LEAKED: freeing a buffer the kernel may still write to is worse.
 fn finish_watch(mut inner: Box<WatchInner>) -> bool {
     if !inner.pending {
         return false;
     }
-    // SAFETY: handle y `ov` válidos de la lectura pendiente; cancelar solo esa lectura. Un error (`ERROR_NOT_FOUND`: ya había
-    // terminado) no importa: se espera igual.
+    // SAFETY: `handle` and `ov` are valid for the pending read; cancel only that read. An error (`ERROR_NOT_FOUND`: it had
+    // already completed) does not matter; still wait for completion.
     unsafe { CancelIoEx(inner.handle.0, &inner.ov) };
-    // SAFETY: `event` es el evento de `ov`, vivo.
+    // SAFETY: `event` is the live event referenced by `ov`.
     let waited = unsafe { WaitForSingleObject(inner.event.0, 5_000) };
     if waited != WAIT_OBJECT_0 {
         std::mem::forget(inner);
         return false;
     }
     let mut n = 0u32;
-    // SAFETY: handle y `ov` válidos; la lectura ya terminó (el evento está señalado), así que no espera.
+    // SAFETY: `handle` and `ov` are valid; the read has completed (the event is signaled), so this does not wait.
     let ok = unsafe { GetOverlappedResult(inner.handle.0, &inner.ov, &mut n, 0) };
     inner.pending = false;
-    // Cancelada (`ERROR_OPERATION_ABORTED`): nada cambió. Terminada con éxito o con cualquier otro error: algo pasó.
+    // Cancelled (`ERROR_OPERATION_ABORTED`): nothing changed. Completed successfully or with any other error: something changed.
     !(ok == 0 && last_error() == ERROR_OPERATION_ABORTED)
 }
 
-/// Abre un directorio solo para vigilarlo: listar, leer atributos, compartiéndolo TODO (también `FILE_SHARE_DELETE`, para no
-/// impedir que la shell lo mueva), sin seguir enlaces y para E/S asíncrona.
+/// Opens a directory only for monitoring: listing and reading attributes, sharing it for EVERYTHING (including
+/// `FILE_SHARE_DELETE`, so the shell can move it), without following links, and for asynchronous I/O.
 fn open_dir_for_watch(path: &Path) -> Result<Handle, Win32> {
     let p = wide_long(path);
-    // SAFETY: `p` es una cadena UTF-16 terminada en NUL que vive durante la llamada; el resto son constantes o nulos
-    // permitidos.
+    // SAFETY: `p` is a NUL-terminated UTF-16 string that remains alive for the call; all other arguments are constants or
+    // permitted nulls.
     let h = unsafe {
         CreateFileW(
             p.as_ptr(),
@@ -997,7 +995,7 @@ fn open_dir_for_watch(path: &Path) -> Result<Handle, Win32> {
     Ok(Handle(h))
 }
 
-/// SOLO PARA PRUEBAS: preasigna `bytes` en disco (`FileAllocationInfo`) SIN cambiar el tamaño lógico (`EndOfFile`).
+/// Tests only: preallocates `bytes` on disk (`FileAllocationInfo`) WITHOUT changing the logical size (`EndOfFile`).
 #[cfg(test)]
 pub fn preallocate_for_test(path: &Path, bytes: i64) -> Result<(), Win32> {
     use windows_sys::Win32::Storage::FileSystem::{
@@ -1007,7 +1005,7 @@ pub fn preallocate_for_test(path: &Path, bytes: i64) -> Result<(), Win32> {
     let info = FILE_ALLOCATION_INFO {
         AllocationSize: bytes,
     };
-    // SAFETY: `h.0` es un handle válido abierto con FILE_WRITE_DATA; el puntero apunta a `info` y se pasa su tamaño.
+    // SAFETY: `h.0` is a valid handle opened with FILE_WRITE_DATA; the pointer refers to `info`, whose size is passed.
     let ok = unsafe {
         SetFileInformationByHandle(
             h.0,
@@ -1019,13 +1017,13 @@ pub fn preallocate_for_test(path: &Path, bytes: i64) -> Result<(), Win32> {
     if ok == 0 { Err(last_error()) } else { Ok(()) }
 }
 
-/// SOLO PARA PRUEBAS: borra `path` con la semántica CLÁSICA de Windows (`FileDispositionInfo`, sin POSIX), como hace la shell:
-/// si otro handle sigue abierto, el nombre queda visible como "pendiente de borrar" hasta que se cierre.
+/// Tests only: deletes `path` with classic Windows semantics (`FileDispositionInfo`, without POSIX), as the shell does:
+/// if another handle remains open, the name stays visible as "delete pending" until that handle is closed.
 #[cfg(test)]
 pub fn delete_legacy_for_test(path: &Path) -> Result<(), Win32> {
     let h = open_path(path, DELETE | FILE_READ_ATTRIBUTES, FILE_SHARE_ALL)?;
     let legacy = FILE_DISPOSITION_INFO { DeleteFile: true };
-    // SAFETY: `h.0` es un handle válido abierto con DELETE; el puntero apunta a `legacy` y se pasa su tamaño.
+    // SAFETY: `h.0` is a valid handle opened with DELETE; the pointer refers to `legacy`, whose size is passed.
     let ok = unsafe {
         SetFileInformationByHandle(
             h.0,
@@ -1037,7 +1035,7 @@ pub fn delete_legacy_for_test(path: &Path) -> Result<(), Win32> {
     if ok == 0 { Err(last_error()) } else { Ok(()) }
 }
 
-/// SOLO PARA PRUEBAS: fija creación, último acceso, última escritura y cambio del objeto a `filetime` (FILETIME).
+/// Tests only: sets the object's creation, last-access, last-write, and change times to `filetime` (FILETIME).
 #[cfg(test)]
 pub fn set_all_times_for_test(path: &Path, filetime: i64) -> Result<(), Win32> {
     use windows_sys::Win32::Storage::FileSystem::FILE_WRITE_ATTRIBUTES;
@@ -1053,7 +1051,7 @@ pub fn set_all_times_for_test(path: &Path, filetime: i64) -> Result<(), Win32> {
         ChangeTime: filetime,
         FileAttributes: 0,
     };
-    // SAFETY: `h.0` es un handle válido con FILE_WRITE_ATTRIBUTES; el puntero apunta a `info` y se pasa su tamaño.
+    // SAFETY: `h.0` is a valid handle with FILE_WRITE_ATTRIBUTES; the pointer refers to `info`, whose size is passed.
     let ok = unsafe {
         SetFileInformationByHandle(
             h.0,
@@ -1077,7 +1075,7 @@ mod tests {
 
     #[test]
     fn rutas_largas_con_prefijo_y_unc() {
-        // Las rutas de red se construyen por partes: el repositorio no admite rutas UNC literales.
+        // Network paths are assembled in parts: the repository does not allow literal UNC paths.
         let net_in = ["\\\\", "srv", "\\", "share", "\\", "x"].concat();
         let net_out = ["\\\\?\\", "UNC", "\\", "srv", "\\", "share", "\\", "x"].concat();
         let v = wide_long(Path::new(r"C:\a\b"));
@@ -1124,20 +1122,20 @@ mod tests {
         assert!(m.alloc >= 5000);
         assert_ne!(m.identity.file_id, 0);
         assert_eq!(final_path(&h).unwrap(), sb.long("a/uno.bin"));
-        // La misma identidad por otro handle.
+        // The same identity through another handle.
         let m2 = meta(&open_for_query(&f).unwrap()).unwrap();
         assert_eq!(m.identity, m2.identity);
-        // Un directorio.
+        // A directory.
         let d = open_for_query(&sb.path("a")).unwrap();
         let md = meta(&d).unwrap();
         assert!(md.is_dir);
         assert_ne!(md.identity, m.identity);
-        // Un enlace duro cuenta 2 enlaces y conserva la identidad.
+        // A hard link has two links and retains the same identity.
         sb.hard_link("a/uno.bin", "a/dos.bin");
         let m3 = meta(&open_for_query(&f).unwrap()).unwrap();
         assert_eq!(m3.links, 2);
         assert_eq!(m3.identity, m.identity);
-        // Un archivo inexistente falla con "no encontrado".
+        // Opening a nonexistent file fails with "not found".
         assert_eq!(open_for_query(&sb.path("a/no.bin")).err(), Some(2));
     }
 
@@ -1157,7 +1155,7 @@ mod tests {
         assert_eq!(names, ["sub", "x.bin", "y.bin"]);
         assert!(es[0].is_dir() && !es[1].is_dir());
         assert_eq!(es[2].logical, 9000);
-        // Abrir cada hijo RELATIVO y comparar la identidad con la del listado.
+        // Open each child RELATIVE to its parent and compare its identity with the listing.
         for e in &es {
             let ex = if e.is_dir() {
                 Expect::Dir
@@ -1167,10 +1165,10 @@ mod tests {
             let h = open_child_for_query(&dh, &e.name, ex).unwrap();
             assert_eq!(meta(&h).unwrap().identity.file_id, e.file_id);
         }
-        // El tipo impuesto por el sistema: un archivo no se abre como directorio ni al revés.
+        // The system-enforced type: a file cannot be opened as a directory, or vice versa.
         assert!(open_child_for_query(&dh, &w("x.bin"), Expect::Dir).is_err());
         assert!(open_child_for_query(&dh, &w("sub"), Expect::File).is_err());
-        // Nombres con separadores o vacíos se rechazan antes del kernel.
+        // Names containing separators or empty names are rejected before reaching the kernel.
         assert_eq!(
             open_child_for_query(&dh, &w(r"sub\x"), Expect::File).err(),
             Some(ERROR_INVALID_PARAMETER)
@@ -1180,8 +1178,8 @@ mod tests {
             Some(ERROR_INVALID_PARAMETER)
         );
         assert!(open_child_for_query(&dh, &w(".."), Expect::Dir).is_err());
-        // H6.10: un `:` (flujo de datos alternativo, `::$INDEX_ALLOCATION`) no es un nombre de entrada: se rechaza antes
-        // del kernel aunque el flujo exista.
+        // H6.10: `:` (an alternate data stream, `::$INDEX_ALLOCATION`) is not an entry name: reject it before the kernel,
+        // even when the stream exists.
         std::fs::write(sb.path("d/x.bin:flujo"), b"oculto").unwrap();
         for bad in [
             "x.bin:flujo",
@@ -1208,7 +1206,7 @@ mod tests {
         let sb = Sandbox::new();
         let f = sb.write("e/uso.bin", 2000);
         let dh = open_dir_for_listing(&sb.path("e")).unwrap();
-        // `std::fs::File::open` comparte lectura, escritura Y borrado (el caso de Chromium).
+        // `std::fs::File::open` shares read, write, AND delete access (the Chromium case).
         let other = fs::File::open(&f).unwrap();
         assert_eq!(
             open_file_exclusive(&dh, &w("uso.bin")).err(),
@@ -1225,7 +1223,7 @@ mod tests {
         let f = sb.write("b/f.bin", 3000);
         sb.write("b/dir/g.bin", 10);
         let bh = open_dir_for_listing(&sb.path("b")).unwrap();
-        // Un archivo de solo lectura se borra igual (IGNORE_READONLY).
+        // A read-only file is still deleted (IGNORE_READONLY).
         let mut perm = fs::metadata(&f).unwrap().permissions();
         perm.set_readonly(true);
         fs::set_permissions(&f, perm).unwrap();
@@ -1233,11 +1231,11 @@ mod tests {
         delete_on_handle(&fh).unwrap();
         drop(fh);
         assert!(!f.exists());
-        // Un directorio no vacío no se borra.
+        // A nonempty directory is not deleted.
         let dh = open_dir_for_delete(&bh, &w("dir")).unwrap();
         assert_eq!(delete_on_handle(&dh).err(), Some(DIR_NOT_EMPTY));
         assert!(sb.path("b/dir/g.bin").exists());
-        // Vacío sí.
+        // An empty one is.
         let gh = open_file_exclusive(&dh, &w("g.bin")).unwrap();
         delete_on_handle(&gh).unwrap();
         drop(gh);
@@ -1251,7 +1249,7 @@ mod tests {
         let sb = Sandbox::new();
         let f = sb.write("r/pequeno.bin", 9_000);
         let h = open_path_exclusive_read(&f).unwrap();
-        // Con el handle abierto en exclusiva nadie más lo abre (ni para leer).
+        // While the handle is open exclusively, nobody else can open it (even for reading).
         assert_eq!(
             fs::File::open(&f).err().and_then(|e| e.raw_os_error()),
             Some(SHARING_VIOLATION as i32)
@@ -1259,7 +1257,7 @@ mod tests {
         let bytes = read_small(&h, 70_000).unwrap();
         assert_eq!(bytes.len(), 9_000);
         assert_eq!(bytes[0], 1);
-        // Pasarse del tope falla.
+        // Exceeding the limit fails.
         let g = sb.write("r/otro.bin", 5_000);
         let h2 = open_path_exclusive_read(&g).unwrap();
         assert_eq!(read_small(&h2, 100).err(), Some(ERROR_FILE_TOO_LARGE));
@@ -1294,9 +1292,9 @@ mod tests {
         let m = meta(&h).unwrap();
         assert!(m.is_reparse());
         assert_eq!(m.reparse_tag, 0xA000_0003);
-        // La ruta final del propio enlace es la del enlace, no la del destino.
+        // The link's final path is the link itself, not its target.
         assert_eq!(final_path(&h).unwrap(), sb.long("l/enlace"));
-        // Y su identidad es distinta de la del destino.
+        // Its identity also differs from the target's.
         let target = meta(&open_for_query(&sb.path("t")).unwrap()).unwrap();
         assert_ne!(m.identity, target.identity);
     }
@@ -1307,27 +1305,27 @@ mod tests {
         sb.mkdir("real/a/b");
         sb.mkdir("destino/dentro");
         sb.junction("real/enlace", "destino");
-        // Una cadena limpia (incluida la del propio `%TEMP%` de la prueba) se abre y da la ruta canónica.
+        // A clean path (including the test's own `%TEMP%`) opens and returns the canonical path.
         let h = open_reparse_free_dir(&sb.path("real/a/b")).unwrap();
         assert_eq!(final_path(&h).unwrap(), sb.long("real/a/b"));
-        // Con el prefijo verbatim y otra capitalización, igual.
+        // The same holds with a verbatim prefix and different casing.
         let upper = PathBuf::from(sb.long("real/a").to_string_lossy().to_uppercase());
         assert!(open_reparse_free_dir(&upper).is_ok());
-        // Un junction como ÚLTIMO componente se rechaza (se abre a sí mismo, no a su destino).
+        // A junction as the LAST component is rejected (it opens itself, not its target).
         assert_eq!(
             open_reparse_free_dir(&sb.path("real/enlace")).err(),
             Some(ChainError::Reparse {
                 component: "enlace".into()
             })
         );
-        // Un junction ANCESTRO también, aunque el destino exista y sea un directorio normal.
+        // An ANCESTOR junction is also rejected, even if its target exists and is a normal directory.
         assert_eq!(
             open_reparse_free_dir(&sb.path("real/enlace/dentro")).err(),
             Some(ChainError::Reparse {
                 component: "enlace".into()
             })
         );
-        // Rutas que no son absolutas con letra de unidad, o que no existen.
+        // Paths that are not absolute drive-letter paths, or do not exist.
         assert_eq!(
             open_reparse_free_dir(Path::new(r"real\a")).err(),
             Some(ChainError::BadPath)
@@ -1340,7 +1338,7 @@ mod tests {
             open_reparse_free_dir(&sb.path("real/no-existe")).err(),
             Some(ChainError::Os(2 | 3))
         ));
-        // Un archivo no es un directorio de la cadena.
+        // A file is not a directory in the path chain.
         sb.write("real/f.bin", 10);
         assert!(open_reparse_free_dir(&sb.path("real/f.bin")).is_err());
     }
@@ -1356,8 +1354,8 @@ mod tests {
         (dir, id)
     }
 
-    /// Espera (poco) a que la vigilancia vea algo: las altas y bajas se notifican al momento, pero el sistema entrega la
-    /// finalización de forma asíncrona.
+    /// Wait briefly for the watcher to observe a change: additions and removals are reported immediately, but the system
+    /// delivers the completion asynchronously.
     fn sees_change(w: &DirWatch) -> bool {
         for _ in 0..40 {
             if w.changed() {
@@ -1368,10 +1366,10 @@ mod tests {
         w.changed()
     }
 
-    /// Lo que hizo ya la APROBACIÓN, que precede siempre a la vigilancia: abrir y cerrar cada directorio y cada archivo. NTFS
-    /// retrasa la actualización de la copia de la fecha de escritura y del tamaño de una entrada en el índice de su padre
-    /// hasta que alguien abre y cierra el objeto: medido, esa actualización pendiente llega como notificación al primer
-    /// cierre. Como la medida de la aprobación ya la provocó, no queda pendiente cuando arranca la vigilancia de la ejecución.
+    /// What APPROVAL has already done before monitoring starts: open and close every directory and file. NTFS delays updating
+    /// an entry's cached write time and size in its parent's index until someone opens and closes the object. In this test,
+    /// that pending update arrives as a notification on the first close. Approval's measurement has already triggered it,
+    /// so no update remains pending when execution monitoring starts.
     fn settle(sb: &Sandbox) {
         for rel in ["W", "W/sub", "W/sub/hondo"] {
             drop(open_dir_for_listing(&sb.long(rel)).unwrap());
@@ -1381,15 +1379,15 @@ mod tests {
         }
     }
 
-    /// A3-M1: lo que NO es un cambio. El recorrido de medida (aperturas de solo lectura de cada hijo, listados, lecturas de
-    /// atributos y de contenido) no genera ninguna notificación con estos filtros: si no, ninguna carpeta se enviaría nunca.
+    /// A3-M1: what is NOT a change. The measurement walk (read-only opens of each child, listings, and reads of attributes
+    /// and contents) generates no notifications with these filters; otherwise, no directory would ever be sent.
     #[test]
     fn la_vigilancia_no_ve_los_accesos_de_solo_lectura() {
         let sb = Sandbox::new();
         let (dir, id) = watch_tree(&sb);
         settle(&sb);
         let w = DirWatch::start(&dir, id).expect("arranca");
-        // Lo que hace el recorrido de medida y la guarda: abrir, leer metadatos, listar.
+        // What the measurement walk and guard do: open, read metadata, and list.
         let root = open_dir_for_listing(&dir).unwrap();
         let _ = list_dir(&root).unwrap();
         for rel in ["W/a.bin", "W/sub/b.bin", "W/sub/hondo/c.bin"] {
@@ -1400,7 +1398,7 @@ mod tests {
         }
         let guard = open_path_for_rename(&dir).unwrap();
         let _ = meta(&guard).unwrap();
-        // Y lecturas de contenido y de metadatos de la biblioteca estándar.
+        // Also read contents and metadata through the standard library.
         assert_eq!(fs::read(sb.path("W/a.bin")).unwrap().len(), 1_000);
         let _ = fs::metadata(sb.path("W/sub")).unwrap();
         let _ = fs::read_dir(sb.path("W/sub/hondo")).unwrap().count();
@@ -1408,8 +1406,8 @@ mod tests {
         assert!(!w.changed(), "los accesos de solo lectura no son cambios");
     }
 
-    /// A3-M1: lo que SÍ es un cambio, en cualquier profundidad del subárbol: alta, baja, renombrado, directorio nuevo y un
-    /// archivo existente que se agranda (y se cierra).
+    /// A3-M1: what IS a change at any depth in the subtree: an addition, removal, rename, new directory, or an existing file
+    /// that grows and is closed.
     #[test]
     fn la_vigilancia_ve_altas_bajas_renombrados_y_escrituras() {
         type Change = (&'static str, fn(&Sandbox));
@@ -1449,13 +1447,13 @@ mod tests {
             assert!(!w.changed(), "{name}: antes del cambio no hay nada");
             change(&sb);
             assert!(sees_change(&w), "{name}: debe verse");
-            // Y no vuelve a `false`.
+            // It does not return to `false`.
             assert!(w.changed(), "{name}");
         }
     }
 
-    /// A3-M1: sin identidad aprobada no hay vigilancia (falla cerrado): identidad distinta, un directorio que no existe y un
-    /// junction (no se sigue).
+    /// A3-M1: without an approved identity there is no monitoring (fail closed): a different identity, a nonexistent
+    /// directory, or a junction (which is not followed).
     #[test]
     fn la_vigilancia_exige_la_identidad_y_no_sigue_enlaces() {
         let mut sb = Sandbox::new();
@@ -1478,16 +1476,16 @@ mod tests {
             DirWatch::start(&link, id),
             Err(WatchError::Changed)
         ));
-        // Un archivo no es un directorio.
+        // A file is not a directory.
         let f = sb.long("W/a.bin");
         let fid = meta(&open_for_query(&f).unwrap()).unwrap().identity;
         assert!(DirWatch::start(&f, fid).is_err());
-        // Control: con la identidad buena, arranca.
+        // Control: with the correct identity, it starts.
         assert!(DirWatch::start(&dir, id).is_ok());
     }
 
-    /// A3-M1: parar la vigilancia cancela la lectura pendiente y suelta el handle (el directorio se puede mover); soltarla sin
-    /// parar también termina sin colgarse. Lo que cambió ANTES de parar se recuerda; lo posterior no se mira.
+    /// A3-M1: stopping the watcher cancels the pending read and releases the handle (so the directory can be moved); dropping
+    /// it without stopping also completes without hanging. Changes made BEFORE stopping are remembered; later ones are ignored.
     #[test]
     fn parar_la_vigilancia_suelta_el_handle_y_recuerda_lo_anterior() {
         let sb = Sandbox::new();
@@ -1497,16 +1495,16 @@ mod tests {
         assert!(!w.changed(), "sin cambios antes de parar");
         sb.write("W/despues.bin", 10);
         assert!(!w.changed(), "tras parar ya no se mira");
-        // Sin handle abierto: se puede mover el directorio.
+        // With no handle open, the directory can be moved.
         fs::rename(sb.path("W"), sb.path("W2")).expect("el directorio se mueve");
         fs::rename(sb.path("W2"), sb.path("W")).unwrap();
-        // Lo que cambió antes de parar consta después.
+        // Changes made before stopping are still reported afterward.
         let w2 = DirWatch::start(&dir, id).expect("arranca");
         sb.write("W/antes.bin", 10);
         assert!(sees_change(&w2));
         w2.stop();
         assert!(w2.changed());
-        // Soltar sin parar: no se cuelga y suelta el handle.
+        // Dropping without stopping does not hang and releases the handle.
         let t = std::time::Instant::now();
         let w3 = DirWatch::start(&dir, id).expect("arranca");
         drop(w3);
@@ -1514,15 +1512,15 @@ mod tests {
         fs::rename(sb.path("W"), sb.path("W3")).expect("sin handles abiertos");
     }
 
-    /// A3-M1 (medición, no afirmación): la vigilancia pendiente NO impide mover el directorio (comparte `FILE_SHARE_DELETE`,
-    /// como la guarda); aun así se para tras el último `PreDeleteItem`. Y lo que NTFS retrasa: un escritor que mantiene el
-    /// archivo abierto y lo agranda. Se imprime lo observado.
+    /// A3-M1 (measurement, not an assertion): pending monitoring does NOT prevent moving the directory (it shares
+    /// `FILE_SHARE_DELETE`, like the guard); it is still stopped after the last `PreDeleteItem`. Also observe NTFS's delay:
+    /// a writer keeps a file open and grows it. Print what happens.
     #[test]
     fn medicion_de_la_vigilancia_pendiente_y_de_un_escritor_abierto() {
         use std::io::Write;
         let sb = Sandbox::new();
         let (dir, id) = watch_tree(&sb);
-        // 1. Con la lectura pendiente, ¿se puede renombrar el directorio?
+        // 1. Can the directory be renamed while the read is pending?
         let w = DirWatch::start(&dir, id).expect("arranca");
         let moved = fs::rename(sb.path("W"), sb.path("W2"));
         eprintln!("renombrar con la vigilancia pendiente: {moved:?}");
@@ -1530,7 +1528,7 @@ mod tests {
             fs::rename(sb.path("W2"), sb.path("W")).unwrap();
         }
         drop(w);
-        // 2. Un escritor con el archivo abierto: ¿cuándo se ve el crecimiento?
+        // 2. With a writer keeping the file open, when does the growth become visible?
         let w = DirWatch::start(&dir, id).expect("arranca");
         let mut f = fs::OpenOptions::new()
             .append(true)

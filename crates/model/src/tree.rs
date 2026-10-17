@@ -1,19 +1,17 @@
-//! El árbol final inmutable (CSR) que produce el `TreeBuilder` (PLAN.md §3.5).
+//! The immutable final tree (CSR) produced by `TreeBuilder` (PLAN.md §3.5).
 //!
-//! # Definiciones
-//! * Los ids son posiciones en un recorrido BFS; la raíz es el id 0 y su `parent` es [`NO_PARENT`].
-//! * Los hijos de un directorio ocupan ids contiguos `first_child..first_child + child_count` y están ordenados por
-//!   `alloc` descendente; a igual `alloc`, por nombre (bytes WTF-8) ascendente, para que el orden sea determinista.
-//!   El nodo [`flags::SYSTEM_INFO`] va siempre el último.
-//! * Un archivo tiene `first_child = 0`, `child_count = 0` y `files_below = 0`. Un directorio tiene en `files_below` el
-//!   número de entradas que no son directorios en su subárbol (los enlaces duros deduplicados cuentan; el nodo
-//!   sintético no).
-//! * `alloc` y `logical` de un directorio son los suyos propios más los de todo lo que contiene. Un enlace duro que no
-//!   conserva el tamaño (flag [`flags::HARDLINK`]) tiene ambos a 0: se deduplica `logical` igual que `alloc`, porque es
-//!   el mismo archivo y de otro modo `logical` sumaría de más.
-//! * Columnas laterales por id: `mtime` y `hist`. Para los archivos `hist` está vacío.
-//! * `Hist` guarda, además de los porcentajes (solo para dibujar), el RESULTADO de aplicar los umbrales sobre los
-//!   acumuladores `u64` (ver [`Hist::dominant_type`] y [`Hist::dominant_age`]); mide 14 B, no los 12 B del plan.
+//! # Definitions
+//! * Ids are positions in a BFS traversal; the root is id 0 and its `parent` is [`NO_PARENT`].
+//! * A directory's children occupy contiguous ids `first_child..first_child + child_count` and are sorted by descending
+//!   `alloc`; ties are sorted by name (WTF-8 bytes) ascending for deterministic order. [`flags::SYSTEM_INFO`] is always last.
+//! * A file has `first_child = 0`, `child_count = 0`, and `files_below = 0`. A directory's `files_below` is the number of
+//!   non-directory entries in its subtree (deduplicated hard links count; the synthetic node does not).
+//! * A directory's `alloc` and `logical` include its own values and those of everything it contains. A hard link that
+//!   does not retain the size ([`flags::HARDLINK`]) has both set to 0: `logical` is deduplicated like `alloc`, since it is
+//!   the same file and otherwise `logical` would be overcounted.
+//! * Side columns by id: `mtime` and `hist`. `hist` is empty for files.
+//! * In addition to percentages (for drawing only), `Hist` stores the RESULT of applying thresholds to the `u64`
+//!   accumulators (see [`Hist::dominant_type`] and [`Hist::dominant_age`]); it is 14 B, not the 12 B in the plan.
 
 use crate::flags;
 use crate::record::NO_PARENT;
@@ -22,66 +20,63 @@ use crate::wtf8;
 use std::borrow::Cow;
 use std::ops::Range;
 
-/// Identificador de un nodo del `Tree` final (posición BFS).
+/// Identifier of a node in the final `Tree` (BFS position).
 pub type NodeId = u32;
 
-/// Nodo del árbol (40 B).
+/// Tree node (40 B).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(C)]
 pub struct Node {
-    /// Bytes ocupados en disco, contando todo el subárbol.
+    /// Bytes allocated on disk, including the entire subtree.
     pub alloc: u64,
-    /// Tamaño lógico, contando todo el subárbol.
+    /// Logical size, including the entire subtree.
     pub logical: u64,
-    /// Padre ([`NO_PARENT`] en la raíz).
+    /// Parent ([`NO_PARENT`] for the root).
     pub parent: u32,
-    /// Id del primer hijo (0 si no tiene).
+    /// First child id (0 if there are none).
     pub first_child: u32,
-    /// Número de hijos.
+    /// Number of children.
     pub child_count: u32,
-    /// Posición del nombre en el arena de nombres.
+    /// Name position in the name arena.
     pub name_off: u32,
-    /// Longitud del nombre en bytes WTF-8.
+    /// Name length in WTF-8 bytes.
     pub name_len: u16,
-    /// Flags de [`crate::flags`].
+    /// Flags from [`crate::flags`].
     pub flags: u16,
-    /// Entradas que no son directorios por debajo (0 en los archivos).
+    /// Descendant entries that are not directories (0 for files).
     pub files_below: u32,
 }
 
-const _: () = assert!(
-    size_of::<Node>() == 40,
-    "Node debe medir 40 B (PLAN.md §3.5)"
-);
+const _: () = assert!(size_of::<Node>() == 40, "Node must be 40 B (PLAN.md §3.5)");
 
 impl Node {
-    /// ¿Es un directorio?
+    /// Is this a directory?
     pub fn is_dir(&self) -> bool {
         self.flags & flags::DIR != 0
     }
 }
 
-/// Resultado de "sin tipo dominante" / "sin tramo de antigüedad".
+/// Result for "no dominant type" / "no age band".
 pub const NONE: u8 = 255;
 
-/// Histogramas de un directorio: reparto de sus bytes por tipo y por antigüedad (solo archivos, ponderado por `alloc`).
+/// Directory histograms: byte distribution by type and age (files only, weighted by `alloc`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(C)]
 pub struct Hist {
-    /// Porcentaje de bytes por [`FileType`] (suma 100 si el directorio tiene bytes). Solo para dibujar.
+    /// Percentage of bytes by [`FileType`] (sums to 100 if the directory has bytes). For drawing only.
     pub type_pct: [u8; FileType::COUNT],
-    /// Porcentaje de bytes por tramo de antigüedad (suma 100 si hay bytes). Solo para dibujar.
+    /// Percentage of bytes by age band (sums to 100 if there are bytes). For drawing only.
     pub age_pct: [u8; AGE_BUCKETS],
-    /// Tipo dominante: el que supera el 50 % de los bytes (calculado sobre los `u64`), o [`NONE`] ("Mixto").
+    /// Dominant type: the one exceeding 50% of bytes (calculated from `u64` values), or [`NONE`] ("Mixed").
     pub(crate) dominant_type: u8,
-    /// Tramo de antigüedad (ver [`Hist::dominant_age`]), o [`NONE`] si no tiene bytes.
+    /// Age band (see [`Hist::dominant_age`]), or [`NONE`] if there are no bytes.
     pub(crate) dominant_age: u8,
 }
 
 const _: () = assert!(size_of::<Hist>() == 14);
 
 impl Hist {
-    /// Histograma vacío (archivos y directorios sin bytes).
+    /// Empty histogram (files and directories with no bytes).
     pub const EMPTY: Hist = Hist {
         type_pct: [0; FileType::COUNT],
         age_pct: [0; AGE_BUCKETS],
@@ -89,55 +84,55 @@ impl Hist {
         dominant_age: NONE,
     };
 
-    /// Tipo que supera ESTRICTAMENTE el 50 % de los bytes del directorio; `None` es "Mixto" (o sin bytes).
+    /// Type that STRICTLY exceeds 50% of the directory's bytes; `None` means "Mixed" (or no bytes).
     pub fn dominant_type(&self) -> Option<FileType> {
         FileType::from_index(self.dominant_type)
     }
 
-    /// Tramo de antigüedad (0 = menos de 1 mes ... 4 = más de 3 años) del directorio: el MÁS ANTIGUO tal que al menos
-    /// el 80 % de los bytes (calculado sobre los `u64`) están en ese tramo o en uno más antiguo. Los archivos con
-    /// `mtime` 0 (desconocido, o anterior a 1970) no cuentan para la antigüedad (sí para el tipo). Así "el 92 % de esto
-    /// no se modifica desde 2022" se corresponde con el tramo. Un directorio mitad reciente, mitad antiguo da el
-    /// tramo reciente (nunca se afirma más antigüedad de la que hay). `None` si no tiene bytes.
+    /// Directory age band (0 = less than 1 month ... 4 = more than 3 years): the OLDEST band such that at least 80% of
+    /// bytes (calculated from `u64` values) fall in that band or an older one. Files with `mtime` 0 (unknown or before
+    /// 1970) do not count toward age (they do count toward type). Thus, "92% of this has not changed since 2022" maps to
+    /// the band. A directory split evenly between recent and old data gets the recent band (we never claim more age than
+    /// the data supports). `None` if there are no bytes.
     pub fn dominant_age(&self) -> Option<usize> {
         (self.dominant_age != NONE).then_some(self.dominant_age as usize)
     }
 }
 
-/// Cifras agregadas del escaneo, calculadas por el builder.
+/// Aggregate scan statistics, calculated by the builder.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TreeStats {
-    /// Entradas que no son directorios (incluye enlaces duros deduplicados; excluye el nodo sintético).
+    /// Non-directory entries (includes deduplicated hard links; excludes the synthetic node).
     pub files: u64,
-    /// Directorios reales (sin los reparse points), incluida la raíz.
+    /// Real directories (excluding reparse points), including the root.
     pub dirs: u64,
-    /// Reparse points de directorio (no seguidos).
+    /// Directory reparse points (not followed).
     pub reparse_dirs: u64,
-    /// Archivos con el flag `REPARSE`.
+    /// Files with the `REPARSE` flag.
     pub reparse_files: u64,
-    /// Entradas con el flag `CLOUD`.
+    /// Entries with the `CLOUD` flag.
     pub cloud_entries: u64,
-    /// Directorios marcados `INCOMPLETE`.
+    /// Directories marked `INCOMPLETE`.
     pub incomplete_dirs: u64,
-    /// Directorios marcados `ERROR`.
+    /// Directories marked `ERROR`.
     pub error_dirs: u64,
-    /// Grupos de enlaces duros con más de una entrada.
+    /// Hard-link groups with more than one entry.
     pub hardlink_groups: u64,
-    /// Entradas que NO conservaron el tamaño (enlaces sobrantes).
+    /// Entries that did NOT retain their size (duplicate links).
     pub hardlink_extra_entries: u64,
-    /// Bytes de `alloc` que se habrían contado de más sin deduplicar.
+    /// `alloc` bytes that would have been overcounted without deduplication.
     pub hardlink_alloc_saved: u64,
-    /// Bytes de `logical` que se habrían contado de más sin deduplicar.
+    /// `logical` bytes that would have been overcounted without deduplication.
     pub hardlink_logical_saved: u64,
-    /// `alloc` total de lo escaneado (la raíz, sin el nodo sintético).
+    /// Total `alloc` scanned (the root, without the synthetic node).
     pub scanned_alloc: u64,
-    /// `alloc` del nodo sintético "espacio no explicado" (0 si no se añadió).
+    /// `alloc` of the synthetic "unexplained space" node (0 if not added).
     pub unexplained_alloc: u64,
-    /// Entradas recibidas que no cuelgan de la raíz (su padre no llegó): no están en el árbol.
+    /// Received entries not attached to the root (their parent never arrived): they are not in the tree.
     pub orphans: u64,
 }
 
-/// Árbol inmutable en formato CSR.
+/// Immutable tree in CSR format.
 #[derive(Clone, Debug)]
 pub struct Tree {
     pub(crate) nodes: Vec<Node>,
@@ -148,7 +143,7 @@ pub struct Tree {
 }
 
 impl Tree {
-    /// Árbol con solo una raíz sin nombre, `INCOMPLETE` (no llegó ni la raíz).
+    /// Tree with only an unnamed, `INCOMPLETE` root (not even the root arrived).
     pub(crate) fn placeholder() -> Tree {
         let root = Node {
             alloc: 0,
@@ -174,38 +169,38 @@ impl Tree {
         }
     }
 
-    /// Número de nodos.
+    /// Number of nodes.
     pub fn len(&self) -> usize {
         self.nodes.len()
     }
 
-    /// Siempre `false`: un `Tree` tiene al menos la raíz.
+    /// Always `false`: a `Tree` has at least the root.
     pub fn is_empty(&self) -> bool {
         self.nodes.is_empty()
     }
 
-    /// Id de la raíz.
+    /// Root id.
     pub fn root(&self) -> NodeId {
         0
     }
 
-    /// Todos los nodos, indexados por id.
+    /// All nodes, indexed by id.
     pub fn nodes(&self) -> &[Node] {
         &self.nodes
     }
 
-    /// Nodo `id` (panica si no existe).
+    /// Node `id` (panics if it does not exist).
     pub fn node(&self, id: NodeId) -> &Node {
         &self.nodes[id as usize]
     }
 
-    /// Padre de `id` (`None` en la raíz).
+    /// Parent of `id` (`None` for the root).
     pub fn parent(&self, id: NodeId) -> Option<NodeId> {
         let p = self.node(id).parent;
         (p != NO_PARENT).then_some(p)
     }
 
-    /// Ids de los hijos de `id`, contiguos y ordenados por tamaño.
+    /// Child ids of `id`, contiguous and sorted by size.
     pub fn children(&self, id: NodeId) -> Range<NodeId> {
         let n = self.node(id);
         if n.child_count == 0 {
@@ -215,51 +210,51 @@ impl Tree {
         }
     }
 
-    /// Hijo de `parent` con ese nombre exacto (búsqueda lineal entre sus hijos).
+    /// Child of `parent` with that exact name (linear search among its children).
     pub fn child_by_name(&self, parent: NodeId, name: &[u8]) -> Option<NodeId> {
         self.children(parent).find(|&c| self.name_bytes(c) == name)
     }
 
-    /// Nombre en bytes WTF-8.
+    /// Name as WTF-8 bytes.
     pub fn name_bytes(&self, id: NodeId) -> &[u8] {
         let n = self.node(id);
         &self.names[n.name_off as usize..n.name_off as usize + n.name_len as usize]
     }
 
-    /// El arena de nombres completo en WTF-8 (para recorrerlo de una vez, p. ej. detectar escrituras).
+    /// Complete name arena in WTF-8 (for scanning it at once, e.g. to detect writes).
     pub fn names_bytes(&self) -> &[u8] {
         &self.names
     }
 
-    /// Nombre como texto (los sustitutos desparejados se muestran como U+FFFD).
+    /// Name as text (unpaired surrogates are shown as U+FFFD).
     pub fn name_lossy(&self, id: NodeId) -> Cow<'_, str> {
         String::from_utf8_lossy(self.name_bytes(id))
     }
 
-    /// Nombre en UTF-16, tal cual lo guarda Windows (con sustitutos desparejados si los hay).
+    /// Name in UTF-16, exactly as stored by Windows (including unpaired surrogates).
     pub fn name_utf16(&self, id: NodeId) -> Vec<u16> {
         let mut v = Vec::new();
         wtf8::decode_to_utf16(self.name_bytes(id), &mut v);
         v
     }
 
-    /// Última modificación en segundos Unix.
+    /// Last modification time in Unix seconds.
     pub fn mtime(&self, id: NodeId) -> u32 {
         self.mtime[id as usize]
     }
 
-    /// Histogramas del nodo.
+    /// Node histograms.
     pub fn hist(&self, id: NodeId) -> &Hist {
         &self.hist[id as usize]
     }
 
-    /// Cifras agregadas.
+    /// Aggregate statistics.
     pub fn stats(&self) -> &TreeStats {
         &self.stats
     }
 
-    /// Ruta completa de `id` en UTF-16: el nombre de la raíz (la ruta escaneada) más los nombres hasta `id`,
-    /// separados por `\`. Para el nodo sintético es una ruta ficticia.
+    /// Full path of `id` in UTF-16: the root name (the scanned path) followed by names through `id`, separated by `\`.
+    /// The synthetic node has a fictitious path.
     pub fn path_utf16(&self, id: NodeId) -> Vec<u16> {
         let mut chain = Vec::new();
         let mut cur = id;
@@ -267,7 +262,7 @@ impl Tree {
             chain.push(cur);
             cur = p;
             if chain.len() > self.nodes.len() {
-                break; // salvaguarda ante un árbol corrupto
+                break; // Guard against a corrupt tree.
             }
         }
         let mut out = self.name_utf16(self.root());
@@ -280,19 +275,19 @@ impl Tree {
         out
     }
 
-    /// Ruta completa como texto (con U+FFFD en los sustitutos desparejados). Solo para mostrar.
+    /// Full path as text (with U+FFFD for unpaired surrogates). For display only.
     pub fn path_lossy(&self, id: NodeId) -> String {
         String::from_utf16_lossy(&self.path_utf16(id))
     }
 
-    /// Ruta completa como `PathBuf`, exacta incluso con sustitutos desparejados.
+    /// Full path as `PathBuf`, exact even with unpaired surrogates.
     #[cfg(windows)]
     pub fn path(&self, id: NodeId) -> std::path::PathBuf {
         use std::os::windows::ffi::OsStringExt;
         std::ffi::OsString::from_wide(&self.path_utf16(id)).into()
     }
 
-    /// Bytes de memoria dinámica que ocupa el árbol (capacidad reservada de sus vectores).
+    /// Dynamic memory used by the tree (reserved capacity of its vectors).
     pub fn heap_bytes(&self) -> usize {
         self.nodes.capacity() * size_of::<Node>()
             + self.names.capacity()
@@ -300,14 +295,14 @@ impl Tree {
             + self.hist.capacity() * size_of::<Hist>()
     }
 
-    /// ¿Tienen los dos árboles la misma forma y los mismos datos? Compara cada id (nombre por contenido, no por
-    /// posición en el arena de nombres), `mtime`, histogramas y cifras. Dos escaneos del mismo árbol lógico dan
-    /// árboles estructuralmente iguales aunque los ids provisionales o el arena difieran.
+    /// Do the two trees have the same shape and data? Compares each id (name by content, not position in the name arena),
+    /// `mtime`, histograms, and statistics. Scans of the same logical tree are structurally equal even if provisional ids
+    /// or the name arena differ.
     pub fn structural_eq(&self, other: &Tree) -> bool {
         self.first_difference(other).is_none()
     }
 
-    /// Primera diferencia estructural entre dos árboles (ver [`Tree::structural_eq`]), descrita en texto, o `None`.
+    /// First structural difference between two trees (see [`Tree::structural_eq`]), described as text, or `None`.
     pub fn first_difference(&self, other: &Tree) -> Option<String> {
         if self.nodes.len() != other.nodes.len() {
             return Some(format!(
@@ -357,9 +352,9 @@ impl Tree {
         None
     }
 
-    /// Comprueba las invariantes del formato; devuelve la primera que falle. Las usan los tests del builder y del
-    /// escáner. No exige que `alloc` de un directorio sea exactamente la suma de sus hijos (el directorio ocupa
-    /// también su propio espacio), solo que no sea menor.
+    /// Check format invariants; returns the first failure. Used by builder and scanner tests. Does not require a
+    /// directory's `alloc` to equal the sum of its children (the directory also occupies space itself), only that it is
+    /// not smaller.
     pub fn check_invariants(&self) -> Result<(), String> {
         let n = self.nodes.len();
         if n == 0 || self.mtime.len() != n || self.hist.len() != n {

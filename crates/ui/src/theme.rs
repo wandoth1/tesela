@@ -1,31 +1,31 @@
-//! Identidad visual (PLAN.md §2.10): paleta clara y oscura, colores por tipo (Okabe-Ito), grises con significado y
-//! los estilos de egui. Fondo sólido (Mica no funciona con wgpu).
+//! Visual identity (PLAN.md §2.10): light and dark palette, colors by type (Okabe-Ito), grays with meaning and
+//! egui's styles. Solid background (Mica does not work with wgpu).
 
 use egui::{Color32, Context, CornerRadius, FontFamily, FontId, Stroke, TextStyle, Theme, Visuals};
 use tesela_model::FileType;
 
-/// Colores de la interfaz en un tema.
+/// Interface colors in a theme.
 #[derive(Clone, Copy, Debug)]
 pub struct Palette {
     pub dark: bool,
-    /// Fondo de la ventana.
+    /// Window background.
     pub bg: Color32,
-    /// Superficie (tarjetas, barras, panel de detalles).
+    /// Surface (cards, bars, details panel).
     pub surface: Color32,
-    /// Barra de estado y zonas secundarias.
+    /// Status bar and secondary areas.
     pub surface_alt: Color32,
     pub border: Color32,
     pub text: Color32,
     pub text_muted: Color32,
     pub accent: Color32,
-    /// Fondo de un elemento activo en la barra lateral y chips suaves.
+    /// Background of an active element in the sidebar and smooth chips.
     pub accent_soft: Color32,
     pub safe: Color32,
     pub review: Color32,
     pub danger: Color32,
-    /// Pista de una barra de progreso.
+    /// Track a progress bar.
     pub track: Color32,
-    /// Texto sobre fondos claros de un mapa (celdas) y sobre fondos oscuros.
+    /// Text on light backgrounds of a map (cells) and on dark backgrounds.
     pub ink: Color32,
     pub ink_light: Color32,
 }
@@ -35,7 +35,7 @@ const fn rgb(hex: u32) -> Color32 {
 }
 
 impl Palette {
-    /// Paleta del tema (valores de PLAN.md §2.10 y de la maqueta aprobada).
+    /// Theme palette (values ​​from PLAN.md §2.10 and the approved layout).
     pub fn of(dark: bool) -> Palette {
         if dark {
             Palette {
@@ -76,12 +76,12 @@ impl Palette {
         }
     }
 
-    /// Color de un tipo de archivo (Okabe-Ito). Es el mismo en los dos temas, como en la maqueta.
+    /// Color of a file type (Okabe-Ito). It is the same in both themes, as in the model.
     pub fn type_color(&self, t: FileType) -> Color32 {
         TYPE_COLORS[t as usize]
     }
 
-    /// "Mixto": gris azulado más claro que "Otros" (carpeta sin tipo dominante).
+    /// "Mixed": Lighter blue-gray than "Other" (folder without dominant type).
     pub fn mixed(&self) -> Color32 {
         if self.dark {
             rgb(0x8E9DB0)
@@ -90,7 +90,7 @@ impl Palette {
         }
     }
 
-    /// Gris de "Solo informar" (`pagefile.sys`, `hiberfil.sys`): con un triángulo, nunca seleccionable para borrar.
+    /// "Report Only" Gray (`pagefile.sys`, `hiberfil.sys`): With a triangle, never selectable for deletion.
     pub fn info_only(&self) -> Color32 {
         if self.dark {
             rgb(0x5F6672)
@@ -99,7 +99,7 @@ impl Palette {
         }
     }
 
-    /// Gris del bloque "Windows y otros datos del sistema" (sin medir).
+    /// Gray from the "Windows and other system data" block (unmeasured).
     pub fn system_block(&self) -> Color32 {
         if self.dark {
             rgb(0x33373F)
@@ -108,7 +108,7 @@ impl Palette {
         }
     }
 
-    /// Borde del bloque del sistema.
+    /// Edge of the system block.
     pub fn system_border(&self) -> Color32 {
         if self.dark {
             rgb(0x4A4F59)
@@ -117,13 +117,13 @@ impl Palette {
         }
     }
 
-    /// Gris de la agrupación "Otros" (color del tipo "otros").
+    /// Gray from the "Others" grouping (color of the "others" type).
     pub fn others(&self) -> Color32 {
         TYPE_COLORS[FileType::Other as usize]
     }
 }
 
-/// Colores por tipo, en el orden de [`FileType`]: vídeo, imágenes, audio, documentos, comprimidos, programas, otros.
+/// Colors by type, in the order of [`FileType`]: video, images, audio, documents, tablets, programs, others.
 pub const TYPE_COLORS: [Color32; FileType::COUNT] = [
     rgb(0x0072B2),
     rgb(0xE69F00),
@@ -134,7 +134,7 @@ pub const TYPE_COLORS: [Color32; FileType::COUNT] = [
     rgb(0x8A8F98),
 ];
 
-/// Luminancia relativa (WCAG) de un color opaco.
+/// Relative luminance (WCAG) of an opaque color.
 pub fn luminance(c: Color32) -> f32 {
     fn ch(v: u8) -> f32 {
         let s = v as f32 / 255.0;
@@ -147,13 +147,13 @@ pub fn luminance(c: Color32) -> f32 {
     0.2126 * ch(c.r()) + 0.7152 * ch(c.g()) + 0.0722 * ch(c.b())
 }
 
-/// Relación de contraste WCAG entre dos colores.
+/// WCAG contrast ratio between two colors.
 pub fn contrast(a: Color32, b: Color32) -> f32 {
     let (la, lb) = (luminance(a), luminance(b));
     (la.max(lb) + 0.05) / (la.min(lb) + 0.05)
 }
 
-/// El texto (oscuro o claro) con más contraste sobre `fill`.
+/// The text (dark or light) with the most contrast on `fill`.
 pub fn text_on(p: &Palette, fill: Color32) -> Color32 {
     if contrast(fill, p.ink) >= contrast(fill, p.ink_light) {
         p.ink
@@ -162,18 +162,18 @@ pub fn text_on(p: &Palette, fill: Color32) -> Color32 {
     }
 }
 
-/// Mezcla `a` con `b` (`t` = 0 → a, 1 → b), opaca.
+/// Mixes `a` with `b` (`t` = 0 → a, 1 → b), opaque.
 pub fn mix(a: Color32, b: Color32, t: f32) -> Color32 {
     let l = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t).round() as u8;
     Color32::from_rgb(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
 }
 
-/// Familia de egui para el peso seminegrita (se define en [`crate::fonts`]).
+/// Egui family for the semi-bold peso (defined in [`crate::fonts`]).
 pub fn semibold() -> FontFamily {
     FontFamily::Name("semibold".into())
 }
 
-/// Tipografía con el peso seminegrita.
+/// Typography with semi-bold weight.
 pub fn font_semibold(size: f32) -> FontId {
     FontId::new(size, semibold())
 }
@@ -227,7 +227,7 @@ fn visuals(p: &Palette) -> Visuals {
     v
 }
 
-/// Instala los estilos (los dos temas) y la preferencia elegida.
+/// Install the styles (the two themes) and the chosen preference.
 pub fn install(ctx: &Context, pref: ThemePref) {
     ctx.set_visuals_of(Theme::Light, visuals(&Palette::of(false)));
     ctx.set_visuals_of(Theme::Dark, visuals(&Palette::of(true)));
@@ -246,12 +246,12 @@ pub fn install(ctx: &Context, pref: ThemePref) {
         s.spacing.button_padding = egui::vec2(12.0, 6.0);
         s.spacing.interact_size.y = 32.0;
         s.interaction.tooltip_delay = 0.15;
-        // Foco visible de 2 px (PLAN.md §2.10).
+        // 2 px visible focus (PLAN.md §2.10).
         s.visuals.selection.stroke = Stroke::new(2.0, s.visuals.selection.stroke.color);
     });
 }
 
-/// Aplica la preferencia de tema (sistema, claro u oscuro).
+/// Applies the theme preference (system, light or dark).
 pub fn apply_pref(ctx: &Context, pref: ThemePref) {
     ctx.options_mut(|o| {
         o.theme_preference = match pref {
@@ -262,15 +262,15 @@ pub fn apply_pref(ctx: &Context, pref: ThemePref) {
     });
 }
 
-/// Paleta del tema que egui está usando ahora.
+/// Theme palette that egui is using now.
 pub fn palette(ctx: &Context) -> Palette {
     Palette::of(ctx.theme() == Theme::Dark)
 }
 
-/// Preferencia de tema del usuario.
+/// User theme preference.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum ThemePref {
-    /// Sigue al sistema.
+    /// Follow the system.
     #[serde(rename = "system")]
     System,
     #[serde(rename = "light")]
@@ -327,7 +327,7 @@ mod tests {
 
     #[test]
     fn el_texto_de_las_celdas_tiene_contraste_aa() {
-        // Texto normal AA = 4,5. Cada color de tipo, "Mixto" y los grises con significado, en los dos temas.
+        // Normal text AA = 4.5. Each type color, "Mixed" and the grays with meaning, in both themes.
         for dark in [false, true] {
             let p = Palette::of(dark);
             let mut fills: Vec<Color32> = FileType::ALL.iter().map(|t| p.type_color(*t)).collect();
@@ -341,7 +341,7 @@ mod tests {
                 );
             }
         }
-        // Y los colores de la interfaz: texto sobre fondo y superficie.
+        // And the colors of the interface: text on background and surface.
         for dark in [false, true] {
             let p = Palette::of(dark);
             for bg in [p.bg, p.surface, p.surface_alt] {

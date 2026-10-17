@@ -1,32 +1,32 @@
-//! Hijos de un directorio tal como los ve la interfaz (mapa y lista): ordenados por tamaño descendente.
+//! Directory children as seen by the interface (map and list): sorted by descending size.
 //!
-//! El `TreeBuilder` ya los deja contiguos y ordenados, salvo el nodo sintético `SYSTEM_INFO` ("Windows y otros datos
-//! del sistema"), que va SIEMPRE el último aunque sea enorme. Para el mapa y la lista se coloca en su sitio por
-//! tamaño, y se oculta si pesa menos del 1 % del directorio (PLAN.md §2.8). Solo la raíz de un volumen lo tiene,
-//! así que en el caso normal esto es el rango contiguo del árbol, sin reservar memoria.
+//! `TreeBuilder` already leaves them contiguous and sorted, except for the synthetic `SYSTEM_INFO` node ("Windows and
+//! other system data"), which is ALWAYS last, even if it is huge. For the map and list it is placed by size and hidden
+//! when it weighs less than 1% of the directory (PLAN.md §2.8). Only a volume root has one, so normally this is the
+//! tree's contiguous range, with no memory allocation.
 
 use std::ops::Range;
 use tesela_model::{Kids, NodeId, Tree, View, flags};
 
-/// Por debajo de este porcentaje del tamaño del directorio, el bloque del sistema no se muestra.
+/// Below this percentage of the directory size, the system block is hidden.
 pub const SYSTEM_BLOCK_MIN_PERCENT: u64 = 1;
 
-/// Hijos visibles de un directorio, en orden de tamaño descendente.
+/// Visible directory children, in descending size order.
 #[derive(Clone, Debug)]
 pub enum Children {
-    /// El rango contiguo del árbol (sin bloque del sistema que recolocar).
+    /// The tree's contiguous range (no system block to reposition).
     Range(Range<NodeId>),
-    /// Orden propio: hay un bloque del sistema que se ha colocado por tamaño (o se ha ocultado).
+    /// Custom order: a system block was positioned by size (or hidden).
     List(Vec<NodeId>),
 }
 
 impl Children {
-    /// Hijos visibles de `node` (sin overlay de limpieza).
+    /// Visible children of `node` (without a cleanup overlay).
     pub fn of(tree: &Tree, node: NodeId) -> Children {
         Children::of_view(&View::new(tree, None), node)
     }
 
-    /// Hijos visibles de `node` a través de una vista (con el overlay de limpieza, si lo hay).
+    /// Visible children of `node` through a view (with its cleanup overlay, if any).
     pub fn of_view(view: &View, node: NodeId) -> Children {
         let tree = view.tree();
         let kids = view.kids(node);
@@ -47,15 +47,15 @@ impl Children {
                 >= (parent_alloc as u128) * SYSTEM_BLOCK_MIN_PERCENT as u128;
         let mut ids: Vec<NodeId> = kids.iter().take(kids.len() - 1).collect();
         if visible {
-            // `partition_point` exige que el criterio sea `true` primero y `false` después: es el caso, porque
-            // los hijos van en orden descendente de tamaño visible.
+            // `partition_point` requires the predicate to be `true` first and `false` after: this holds because
+            // children are sorted by descending visible size.
             let pos = ids.partition_point(|&c| view.alloc(c) >= sys_alloc);
             ids.insert(pos, last);
         }
         Children::List(ids)
     }
 
-    /// Número de hijos visibles.
+    /// Number of visible children.
     pub fn len(&self) -> usize {
         match self {
             Children::Range(r) => r.len(),
@@ -63,12 +63,12 @@ impl Children {
         }
     }
 
-    /// ¿No hay ninguno?
+    /// Are there none?
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    /// El hijo en la posición `i` (panica si no existe).
+    /// The child at position `i` (panics if it does not exist).
     pub fn get(&self, i: usize) -> NodeId {
         match self {
             Children::Range(r) => r.start + i as u32,
@@ -76,7 +76,7 @@ impl Children {
         }
     }
 
-    /// Iterador sobre los ids desde la posición `from`.
+    /// Iterator over ids starting at position `from`.
     pub fn iter_from(&self, from: usize) -> impl Iterator<Item = NodeId> + '_ {
         (from..self.len()).map(|i| self.get(i))
     }

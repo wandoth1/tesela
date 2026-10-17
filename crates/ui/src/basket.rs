@@ -1,5 +1,5 @@
-//! La cesta y la pantalla de Recomendaciones sobre la exploración: qué se puede añadir, la barra de la cesta, su lista
-//! ("Ver") y las tarjetas Seguro / Revisar / Solo informar (PLAN.md §2.3, §2.5 y §2.6).
+//! The basket and Browse Recommendations screen: what can be added, the basket bar, your list
+//! ("View") and the Secure / Review / Report Only cards (PLAN.md §2.3, §2.5 and §2.6).
 
 use crate::app::Env;
 use crate::args;
@@ -13,19 +13,19 @@ use crate::treepath::Locator;
 use crate::widgets::{self, ButtonStyle};
 use egui::{Align, CornerRadius, Layout, Margin, RichText, Stroke, Ui, vec2};
 use tesela_cleaner::paths::PathKey;
-use tesela_cleaner::{AddOutcome, Browser, CategoryId, Source, Verdict};
+use tesela_cleaner::{AddOutcome, Browser, CategoryId, Destination, Source, Verdict, rules};
 use tesela_model::{NodeId, flags};
 
-/// Ancho que se reserva a la derecha del titular de Recomendaciones para el botón "Limpiar lo seguro (X)" (unos 215 px) y su hueco.
+/// Width reserved to the right of the Recommendations headline for the "Clear safe (X)" button (about 215 px) and its gap.
 const RECS_BUTTON_RESERVE: f32 = 250.0;
 
 impl Explore {
-    /// Clave de comparación de la ruta de un nodo.
+    /// Comparison key of the path of a node.
     pub(crate) fn node_key(&self, id: NodeId) -> PathKey {
         PathKey::new(&self.tree.path(id))
     }
 
-    /// Qué se puede hacer con `sel` respecto a la cesta.
+    /// What can be done with `sel` regarding the basket.
     pub(crate) fn add_state(&self, sel: Sel) -> AddState {
         let id = match sel {
             Sel::Group(_) => return AddState::Group,
@@ -61,22 +61,33 @@ impl Explore {
         }
     }
 
-    /// Añade `sel` a la cesta (un archivo o carpeta, o el contenido de una carpeta conocida).
-    pub(crate) fn basket_add(&mut self, sel: Sel, env: &Env, now: f64) {
-        let Sel::Node(id) = sel else { return };
+    /// Adds `sel` to the basket (a file or folder, or the contents of a known folder) and says if it entered. It is the ONLY
+    /// path to basket from map and list: menu, details panel and multi selection go through here,
+    /// with the same checks (`add_state` and those of `Basket` itself).
+    pub(crate) fn basket_add_one(&mut self, sel: Sel) -> bool {
+        // With a cleaning in progress, the basket is not touched (the buttons are already deactivated; this guarantees it).
+        if self.flow.busy() {
+            return false;
+        }
+        let Sel::Node(id) = sel else { return false };
         let path = self.tree.path(id);
         let prot = self.protection.clone();
         let out = match self.add_state(sel) {
             AddState::Addable => self.flow.basket.add_path(path, &prot),
             AddState::ContentsOf => self.flow.basket.add_contents_of(path, &prot),
-            _ => return,
+            _ => return false,
         };
-        if matches!(out, AddOutcome::Added { .. }) {
+        matches!(out, AddOutcome::Added { .. })
+    }
+
+    /// Like [`Explore::basket_add_one`], with the notice "Added to cart".
+    pub(crate) fn basket_add(&mut self, sel: Sel, env: &Env, now: f64) {
+        if self.basket_add_one(sel) {
             self.toast = Some((env.tr.t("basket-added"), now + 2.0));
         }
     }
 
-    /// Quita `sel` de la cesta (solo si está como entrada propia).
+    /// Remove `sel` from the basket (only if it is as its own entry).
     pub(crate) fn basket_remove(&mut self, sel: Sel) {
         let Sel::Node(id) = sel else { return };
         let path = self.tree.path(id);
@@ -84,17 +95,13 @@ impl Explore {
         self.flow.basket.remove(&Source::ContentsOf(path));
     }
 
-    /// ¿Está `sel` en la cesta como entrada propia (se puede quitar)?
+    /// Is `sel` in the basket as its own entry (can be removed)?
     pub(crate) fn basket_has_own(&self, sel: Sel) -> bool {
         let Sel::Node(id) = sel else { return false };
-        let path = self.tree.path(id);
-        self.flow.basket.sources().any(|s| match s {
-            Source::Path(p) | Source::ContentsOf(p) => PathKey::new(p) == PathKey::new(&path),
-            _ => false,
-        })
+        self.flow.basket.has_own(&self.node_key(id))
     }
 
-    /// Recalcula las recomendaciones si cambió el árbol (o el overlay).
+    /// Recalculate the recommendations if you changed the tree (or the overlay).
     pub(crate) fn ensure_recs(&mut self, env: &Env) {
         if self.recs.as_ref().is_some_and(|(v, _)| *v == self.version) {
             return;
@@ -110,16 +117,26 @@ impl Explore {
         self.recs = Some((self.version, r));
     }
 
-    /// Vuelve a mirar qué navegadores están abiertos y recalcula ("Volver a comprobar").
+    /// Look again at which browsers are open and recalculate ("Recheck").
     pub(crate) fn recheck_browsers(&mut self, env: &Env) {
         self.browsers_open = env.backend.running_browsers();
         self.recs = None;
+        self.estimate = None;
         self.ensure_recs(env);
     }
 
-    /// Tamaño estimado de la cesta con el árbol (la cifra definitiva la mide el `cleaner` al confirmar).
+    /// Estimated size of the basket with the tree (the final figure is measured by `cleaner` upon confirmation). It recalculates itself
+    /// if you changed the basket or the tree (versions): with tens of thousands of entries you cannot locate every path in
+    /// every frame.
     pub(crate) fn basket_estimate(&mut self, env: &Env) -> (usize, u64) {
         self.ensure_recs(env);
+        let stamp = (self.flow.basket.rev(), self.version);
+        if let Some((k, v)) = self.estimate
+            && k == stamp
+        {
+            return v;
+        }
+        self.estimate_computes += 1;
         let recs = self.recs.as_ref().map(|r| r.1.clone()).unwrap_or_default();
         let tree = self.tree.clone();
         let view = self.view();
@@ -135,10 +152,12 @@ impl Explore {
                 Source::EmptyBin => recs.recycle.map_or(0, |r| r.1),
             };
         }
-        (self.flow.basket.len(), bytes)
+        let out = (self.flow.basket.len(), bytes);
+        self.estimate = Some((stamp, out));
+        out
     }
 
-    /// Empieza la limpieza de lo que hay en la cesta (aprobación y confirmación).
+    /// The cleaning of what is in the basket begins (approval and confirmation).
     pub(crate) fn start_clean(&mut self, ctx: &egui::Context, env: &Env) {
         let vol = self.volume_ctx();
         self.flow.start(ctx, env.backend, vol, false);
@@ -155,7 +174,7 @@ impl Explore {
         }
     }
 
-    /// Barra de la cesta (PLAN.md §2.3): resumen, "Ver", "Vaciar cesta" y el botón principal.
+    /// Basket bar (PLAN.md §2.3): overview, "View", "Empty basket" and the main button.
     pub(crate) fn basket_bar(&mut self, ui: &mut Ui, env: &mut Env) {
         let pal = env.pal;
         let (n, bytes) = self.basket_estimate(env);
@@ -193,21 +212,31 @@ impl Explore {
         });
     }
 
-    /// La lista de la cesta agrupada por destino, con las frases de PLAN.md §2.5.
+    /// The basket list grouped by destination, with the phrases from PLAN.md §2.5. What the user added ("Your file" and
+    /// "Contents of") can be tens of thousands of entries: that list is virtualized (only the
+    /// rows that are seen).
     pub(crate) fn basket_window(&mut self, ctx: &egui::Context, env: &mut Env) {
         if !self.basket_open {
+            self.locator_cache = None;
             return;
         }
         if self.flow.basket.is_empty() {
             self.basket_open = false;
+            self.locator_cache = None;
             return;
         }
-        let pal = env.pal;
         self.ensure_recs(env);
         let recs = self.recs.as_ref().map(|r| r.1.clone()).unwrap_or_default();
         let tree = self.tree.clone();
+        // The sibling index of the locator is preserved between frames while the window is open and does not change
+        // neither the tree nor the basket.
+        let key = (self.version, self.flow.basket.rev());
+        let index = match self.locator_cache.take() {
+            Some((k, idx)) if k == key => idx,
+            _ => Default::default(),
+        };
         let view = self.view();
-        let mut loc = Locator::new(&tree);
+        let mut loc = Locator::with_index(&tree, index);
         let mut remove: Option<Source> = None;
         let mut open = true;
         let title = env.tr.t("basket-window-title");
@@ -218,88 +247,29 @@ impl Explore {
             .resizable(true)
             .default_width(520.0)
             .show(ctx, |ui| {
-                let mut group =
-                    |ui: &mut Ui,
-                     env: &mut Env,
-                     icon: Icon,
-                     head: &str,
-                     phrase: &str,
-                     items: Vec<(Source, String, String, u64)>| {
-                        if items.is_empty() {
-                            return;
-                        }
-                        ui.horizontal(|ui| {
-                            env.icons.show(ui, icon, 18.0, pal.text);
-                            ui.label(
-                                RichText::new(head)
-                                    .font(theme::font_semibold(15.0))
-                                    .color(pal.text),
-                            );
-                        });
-                        ui.label(RichText::new(phrase).size(13.0).color(pal.text_muted));
-                        ui.add_space(4.0);
-                        for (src, name, sub, bytes) in items {
-                            ui.horizontal(|ui| {
-                                ui.set_min_height(28.0);
-                                ui.vertical(|ui| {
-                                    ui.spacing_mut().item_spacing.y = 0.0;
-                                    ui.label(RichText::new(&name).color(pal.text));
-                                    if !sub.is_empty() {
-                                        ui.add(
-                                            egui::Label::new(
-                                                RichText::new(&sub)
-                                                    .size(11.0)
-                                                    .color(pal.text_muted),
-                                            )
-                                            .truncate(),
-                                        );
-                                    }
-                                });
-                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                                    let label = env
-                                        .tr
-                                        .ta("basket-remove-item", args!["name" => name.clone()]);
-                                    if widgets::icon_button(ui, env, Icon::Dismiss, &label, true)
-                                        .clicked()
-                                    {
-                                        remove = Some(src.clone());
-                                    }
-                                    ui.label(RichText::new(env.tr.size(bytes)).color(pal.text));
-                                });
-                            });
-                        }
-                        ui.add_space(10.0);
-                    };
-                let mut cats: Vec<(Source, String, String, u64)> = Vec::new();
-                let mut user: Vec<(Source, String, String, u64)> = Vec::new();
-                let mut bin: Vec<(Source, String, String, u64)> = Vec::new();
+                let mut cats: Vec<(Source, String, u64)> = Vec::new();
+                let mut recycled_cats: Vec<(Source, String, u64)> = Vec::new();
+                let mut diag: Vec<(Source, String, u64)> = Vec::new();
+                let mut bin: Vec<(Source, String, u64)> = Vec::new();
+                let mut user: Vec<&Source> = Vec::new();
                 for s in self.flow.basket.sources() {
                     match s {
                         Source::Category(id) => {
                             let b = recs.row(*id).map_or(0, |r| r.bytes);
-                            cats.push((s.clone(), category_name(env, *id), String::new(), b));
-                        }
-                        Source::Path(p) | Source::ContentsOf(p) => {
-                            let b = loc
-                                .locate(p)
-                                .filter(|n| view.is_visible(*n))
-                                .map_or(0, |n| view.alloc(n));
-                            let base = p.file_name().map_or_else(
-                                || p.display().to_string(),
-                                |n| n.to_string_lossy().into_owned(),
-                            );
-                            let name = if matches!(s, Source::ContentsOf(_)) {
-                                env.tr.ta("basket-contents-of", args!["name" => base])
+                            let row = (s.clone(), category_name(env, *id), b);
+                            if id.is_diagnostic() {
+                                diag.push(row);
+                            } else if category_is_recycled(*id) {
+                                recycled_cats.push(row);
                             } else {
-                                base
-                            };
-                            user.push((s.clone(), name, p.display().to_string(), b));
+                                cats.push(row);
+                            }
                         }
+                        Source::Path(_) | Source::ContentsOf(_) => user.push(s),
                         Source::EmptyBin => {
                             bin.push((
                                 s.clone(),
                                 env.tr.t("known-recycle-bin"),
-                                String::new(),
                                 recs.recycle.map_or(0, |r| r.1),
                             ));
                         }
@@ -309,15 +279,78 @@ impl Explore {
                     env.tr.t("confirm-group-permanent"),
                     env.tr.t("basket-phrase-permanent"),
                 );
-                group(ui, env, Icon::DeleteOff, &h1, &p1, cats);
+                if !cats.is_empty() {
+                    basket_head(ui, env, Icon::DeleteOff, &h1, &p1);
+                    for (src, name, bytes) in &cats {
+                        basket_row(ui, env, &mut remove, src, name, "", *bytes);
+                    }
+                    ui.add_space(10.0);
+                }
                 let (h2, p2) = (
                     env.tr.t("confirm-group-recycle"),
                     env.tr.t("basket-phrase-recycle"),
                 );
-                group(ui, env, Icon::Delete, &h2, &p2, user);
+                if !user.is_empty() || !recycled_cats.is_empty() {
+                    basket_head(ui, env, Icon::Delete, &h2, &p2);
+                    for (src, name, bytes) in &recycled_cats {
+                        basket_row(ui, env, &mut remove, src, name, "", *bytes);
+                    }
+                    egui::ScrollArea::vertical()
+                        .id_salt("tesela-basket-user")
+                        .max_height(BASKET_ROW_H * 8.0)
+                        .auto_shrink([false, true])
+                        .show_rows(ui, BASKET_ROW_H, user.len(), |ui, range| {
+                            for src in &user[range] {
+                                let (p, contents) = match src {
+                                    Source::Path(p) => (p, false),
+                                    Source::ContentsOf(p) => (p, true),
+                                    _ => continue,
+                                };
+                                let b = loc
+                                    .locate(p)
+                                    .filter(|n| view.is_visible(*n))
+                                    .map_or(0, |n| view.alloc(n));
+                                let base = p.file_name().map_or_else(
+                                    || p.display().to_string(),
+                                    |n| n.to_string_lossy().into_owned(),
+                                );
+                                let name = if contents {
+                                    env.tr.ta("basket-contents-of", args!["name" => base])
+                                } else {
+                                    base
+                                };
+                                basket_row(
+                                    ui,
+                                    env,
+                                    &mut remove,
+                                    src,
+                                    &name,
+                                    &p.display().to_string(),
+                                    b,
+                                );
+                            }
+                        });
+                    ui.add_space(10.0);
+                }
+                if !diag.is_empty() {
+                    let h = env.tr.t("confirm-group-recycle-diag");
+                    let phrase = env.tr.t("basket-phrase-recycle-diag");
+                    basket_head(ui, env, Icon::Delete, &h, &phrase);
+                    for (src, name, bytes) in &diag {
+                        basket_row(ui, env, &mut remove, src, name, "", *bytes);
+                    }
+                    ui.add_space(10.0);
+                }
                 let (h3, p3) = (env.tr.t("confirm-group-bin"), env.tr.t("basket-phrase-bin"));
-                group(ui, env, Icon::BinRecycle, &h3, &p3, bin);
+                if !bin.is_empty() {
+                    basket_head(ui, env, Icon::BinRecycle, &h3, &p3);
+                    for (src, name, bytes) in &bin {
+                        basket_row(ui, env, &mut remove, src, name, "", *bytes);
+                    }
+                    ui.add_space(10.0);
+                }
             });
+        self.locator_cache = Some((key, loc.into_index()));
         if let Some(s) = remove {
             self.flow.basket.remove(&s);
         }
@@ -325,7 +358,65 @@ impl Explore {
     }
 }
 
-/// Nombre de una categoría en la cesta y en las recomendaciones.
+/// Height of a row of the basket list (name, path and remove button): fixed, to be able to virtualize the list.
+const BASKET_ROW_H: f32 = 40.0;
+
+/// Header of a basket group: icon, title and the phrase of what will happen to it.
+fn basket_head(ui: &mut Ui, env: &mut Env, icon: Icon, head: &str, phrase: &str) {
+    let pal = env.pal;
+    ui.horizontal(|ui| {
+        env.icons.show(ui, icon, 18.0, pal.text);
+        ui.label(
+            RichText::new(head)
+                .font(theme::font_semibold(15.0))
+                .color(pal.text),
+        );
+    });
+    ui.label(RichText::new(phrase).size(13.0).color(pal.text_muted));
+    ui.add_space(4.0);
+}
+
+/// A basket row: name, path (if any), size and the remove button.
+fn basket_row(
+    ui: &mut Ui,
+    env: &mut Env,
+    remove: &mut Option<Source>,
+    src: &Source,
+    name: &str,
+    sub: &str,
+    bytes: u64,
+) {
+    let pal = env.pal;
+    ui.horizontal(|ui| {
+        ui.set_min_height(BASKET_ROW_H);
+        ui.vertical(|ui| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            ui.label(RichText::new(name).color(pal.text));
+            if !sub.is_empty() {
+                ui.add(
+                    egui::Label::new(RichText::new(sub).size(11.0).color(pal.text_muted))
+                        .truncate(),
+                );
+            }
+        });
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            let label = env
+                .tr
+                .ta("basket-remove-item", args!["name" => name.to_string()]);
+            if widgets::icon_button(ui, env, Icon::Dismiss, &label, true).clicked() {
+                *remove = Some(src.clone());
+            }
+            ui.label(RichText::new(env.tr.size(bytes)).color(pal.text));
+        });
+    });
+}
+
+/// Whether this category goes to the Recycle Bin instead of being deleted and recreated.
+pub(crate) fn category_is_recycled(id: CategoryId) -> bool {
+    rules().get(id).destination == Some(Destination::Recycle)
+}
+
+/// Name of a category in the basket and in recommendations.
 pub(crate) fn category_name(env: &Env, id: CategoryId) -> String {
     env.tr.t(match id {
         CategoryId::UserTemp => "known-user-temp",
@@ -335,6 +426,8 @@ pub(crate) fn category_name(env: &Env, id: CategoryId) -> String {
         CategoryId::FirefoxCache => "known-firefox-cache",
         CategoryId::RecycleBin => "known-recycle-bin",
         CategoryId::Downloads => "known-downloads",
+        CategoryId::WerReports => "known-wer-reports",
+        CategoryId::CrashDumps => "known-crash-dumps",
         CategoryId::Pagefile => "info-name-pagefile",
         CategoryId::Hiberfil => "info-name-hiberfil",
         CategoryId::Swapfile => "info-name-swapfile",
@@ -342,7 +435,7 @@ pub(crate) fn category_name(env: &Env, id: CategoryId) -> String {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
-// Recomendaciones
+// Recommendations
 // ---------------------------------------------------------------------------------------------------------------------
 
 fn card_frame(pal: &Palette) -> egui::Frame {
@@ -371,12 +464,12 @@ fn tag(
 }
 
 impl Explore {
-    /// La pantalla de Recomendaciones (PLAN.md §2.3 y la maqueta aprobada).
+    /// The Recommendations screen (PLAN.md §2.3 and the approved layout).
     pub(crate) fn recs_ui(&mut self, ui: &mut Ui, env: &mut Env) {
         let pal = env.pal;
         self.ensure_recs(env);
         let recs: Recs = self.recs.as_ref().map(|r| r.1.clone()).unwrap_or_default();
-        // "Ya marcado": la primera vez, lo seguro que se puede limpiar ahora entra en la cesta.
+        // "Already marked": the first time, the safe thing that can be cleaned now goes into the basket.
         if !self.recs_preselected {
             self.recs_preselected = true;
             for id in recs.preselected() {
@@ -393,8 +486,8 @@ impl Explore {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
-                        // R-1: el titular (largo: "Hasta X en candidatos de bajo riesgo...") se limita al ancho que deja el botón
-                        // principal y pasa a varias líneas; con la ventana mínima (960 px) ocupaba su sitio y lo pisaba.
+                        // R-1: the headline (length: "Up to X in low-risk candidates...") is limited to the width left by the button
+                        // main and goes to several lines; with the minimum window (960 px) it took its place and stepped on it.
                         ui.set_max_width((ui.available_width() - RECS_BUTTON_RESERVE).max(240.0));
                         let title = if safe > 0 {
                             env.tr
@@ -508,7 +601,7 @@ impl Explore {
         if !browsers.is_empty() {
             self.safe_card(ui, env, &browsers, CategoryId::ChromeCache);
         }
-        // H4: lo que existe pero Tesela no ofrece, con su motivo, en vez de desaparecer en silencio.
+        // H4: what exists but Tesela does not offer, with its reason, instead of disappearing in silence.
         if !recs.unavailable.is_empty() {
             card_frame(&pal).show(ui, |ui| {
                 ui.set_width(ui.available_width());
@@ -542,7 +635,7 @@ impl Explore {
         }
     }
 
-    /// Una tarjeta "Seguro". `rows` tiene una fila (temporales) o las de los navegadores (agrupadas en una tarjeta).
+    /// An "Insurance" card. `rows` has one row (temporary) or those of browsers (grouped in a card).
     fn safe_card(&mut self, ui: &mut Ui, env: &mut Env, rows: &[&RecRow], lead: CategoryId) {
         let pal = env.pal;
         let grouped = rows.len() > 1 || rows.first().is_some_and(|r| r.id.is_browser_cache());
@@ -673,7 +766,15 @@ impl Explore {
                     || empty = true,
                 );
             }
-            if recs.downloads.is_none() && recs.recycle.is_none() {
+            let mut any = recs.downloads.is_some() || recs.recycle.is_some();
+            for row in recs.diagnostics() {
+                if any {
+                    ui.separator();
+                }
+                any = true;
+                self.review_category_row(ui, env, row.id, row.bytes);
+            }
+            if !any {
                 ui.label(RichText::new(env.tr.t("recs-review-none")).color(pal.text_muted));
             }
         });
@@ -725,13 +826,70 @@ impl Explore {
     }
 }
 
+impl Explore {
+    /// A Review category with a checkbox, estimated size and Recycle Bin-only destination.
+    fn review_category_row(&mut self, ui: &mut Ui, env: &mut Env, id: CategoryId, bytes: u64) {
+        let pal = env.pal;
+        let name = category_name(env, id);
+        let why = env.tr.t(match id {
+            CategoryId::WerReports => "rule-wer-reports-why",
+            _ => "rule-crash-dumps-why",
+        });
+        let mut checked = self.flow.basket.contains_category(id);
+        let before = checked;
+        ui.horizontal_top(|ui| {
+            let cb = ui.add_enabled(bytes > 0, egui::Checkbox::without_text(&mut checked));
+            let label = env.tr.ta("recs-include", args!["name" => name.clone()]);
+            cb.widget_info(|| {
+                egui::WidgetInfo::selected(
+                    egui::WidgetType::Checkbox,
+                    bytes > 0,
+                    checked,
+                    label.clone(),
+                )
+            });
+            ui.vertical(|ui| {
+                ui.horizontal(|ui| {
+                    ui.label(
+                        RichText::new(&name)
+                            .font(theme::font_semibold(15.0))
+                            .color(pal.text),
+                    );
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.label(
+                            RichText::new(env.tr.size(bytes))
+                                .font(theme::font_semibold(15.0))
+                                .color(pal.text),
+                        );
+                    });
+                });
+                ui.add(
+                    egui::Label::new(RichText::new(&why).size(13.0).color(pal.text_muted)).wrap(),
+                );
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    env.icons.show(ui, Icon::Delete, 13.0, pal.text);
+                    ui.label(
+                        RichText::new(env.tr.t("dest-recycle-diag"))
+                            .size(12.0)
+                            .color(pal.text),
+                    );
+                });
+            });
+        });
+        if checked != before {
+            self.flow.basket.set_category(id, checked);
+        }
+    }
+}
+
 fn browser_label(env: &Env, id: CategoryId) -> String {
     Browser::from_category(id).map_or_else(String::new, |b| {
         env.tr.ta("recs-browser-cache", args!["name" => b.name()])
     })
 }
 
-/// Una fila de las tarjetas "Revisar" y "Solo informar": nombre, explicación, tamaño y, si lo hay, un botón.
+/// A row of "Review" and "Report Only" cards: name, explanation, size, and, if present, a button.
 #[allow(clippy::too_many_arguments)]
 fn review_row(
     ui: &mut Ui,

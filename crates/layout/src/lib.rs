@@ -1,13 +1,12 @@
-//! Layout del treemap de Tesela (PLAN.md §2.9 y §3.8). Puro: sin GPU, sin E/S y sin `unsafe`.
+//! Tesela treemap layout (PLAN.md §2.9 and §3.8). Pure: no GPU, I/O, or `unsafe`.
 //!
-//! * [`squarify`]: el algoritmo squarified de Bruls et al., lineal porque los hijos llegan ordenados.
-//! * [`Layout::compute`]: profundidad 2 (un nivel con etiqueta y uno insinuado), agrupación "Otros" para los
-//!   bloques de menos de 24×24 px (un sufijo de la lista ordenada, que se puede abrir) y LOD de dibujo (nada por
-//!   debajo de ~3×3 px, tope de ~15 000 rectángulos).
-//! * [`Layout::hit`]: hit-test con una rejilla espacial.
-//! * [`LayoutCache`]: caché por `(raíz, viewport, profundidad, versión)`.
-//! * [`Children`]: los hijos de un directorio como los ven el mapa y la lista (con el bloque del sistema en su
-//!   sitio por tamaño y oculto si pesa menos del 1 %).
+//! * [`squarify`]: the squarified algorithm by Bruls et al., linear because children arrive sorted.
+//! * [`Layout::compute`]: depth 2 (one labeled level and one hinted level), grouping "Other" for blocks smaller than
+//!   24×24 px (a suffix of the sorted list that can be opened), and drawing LOD (nothing below ~3×3 px, capped at ~15,000 rectangles).
+//! * [`Layout::hit`]: hit testing with a spatial grid.
+//! * [`LayoutCache`]: cache keyed by `(root, viewport, depth, version)`.
+//! * [`Children`]: a directory's children as shown by the map and list (with the system block placed by size and hidden
+//!   when it weighs less than 1%).
 
 mod cache;
 mod geom;

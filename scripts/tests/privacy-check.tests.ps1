@@ -1,15 +1,14 @@
 <#
 .SYNOPSIS
-  Pruebas de scripts/privacy-check.ps1 sobre un repositorio de pruebas en %TEMP%\tesela-test-<uuid>.
+  Tests for scripts/privacy-check.ps1 using a test repository under %TEMP%\tesela-test-<uuid>.
 
 .DESCRIPTION
-  Crea un repositorio git desechable, copia el script y comprueba que los fixtures "malos" hacen fallar al check y los
-  "buenos" lo pasan, en modo staging, -All, -GenericOnly y -MessageFile. Los fixtures malos viven en hexadecimal en
-  `fixtures.json` (contienen justo lo que el check rechaza, y asi este directorio se puede revisar como el resto del
-  repositorio).
+  Creates a disposable Git repository, copies the script, and checks that "bad" fixtures fail and "good" fixtures pass
+  in staging, -All, -GenericOnly, and -MessageFile modes. Bad fixtures are stored as hexadecimal in `fixtures.json`
+  (they contain exactly what the checker rejects, so this directory can be reviewed like the rest of the repository).
 
 .PARAMETER Shell
-  Ejecutable con el que se lanza privacy-check.ps1: `pwsh` (por defecto) o `powershell` (Windows PowerShell 5.1).
+  Executable used to run privacy-check.ps1: `pwsh` (default) or `powershell` (Windows PowerShell 5.1).
 
 .EXAMPLE
   pwsh -File scripts/tests/privacy-check.tests.ps1
@@ -20,7 +19,7 @@ param([string]$Shell = 'pwsh')
 
 $ErrorActionPreference = 'Stop'
 $srcScript = Join-Path (Split-Path -Parent $PSScriptRoot) 'privacy-check.ps1'
-if (-not (Test-Path -LiteralPath $srcScript)) { throw "no encuentro $srcScript" }
+if (-not (Test-Path -LiteralPath $srcScript)) { throw "cannot find $srcScript" }
 
 function Decode([string]$Hex) {
     $bytes = New-Object byte[] ($Hex.Length / 2)
@@ -37,8 +36,8 @@ $opaqueHex = @{}
 foreach ($p in $raw.opaque.PSObject.Properties) { $opaqueHex[$p.Name] = $p.Value }
 $lookalike = @($raw.'opaque-lookalike' | ForEach-Object { Decode $_ })
 
-# --- Ningun archivo de texto versionado lleva bytes NUL (solo las capturas docs/img/*.png) -----------------------------------
-# Un NUL suelto hace que grep y otras herramientas traten el archivo como binario y oculten su contenido o su diff.
+# --- No versioned text file contains NUL bytes (except docs/img/*.png screenshots) --------------------------------------
+# A stray NUL makes grep and other tools treat a file as binary and hide its contents or diff.
 $realRepo = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
 $nulFiles = New-Object System.Collections.Generic.List[string]
 if (Test-Path -LiteralPath (Join-Path $realRepo '.git')) {
@@ -61,7 +60,7 @@ if (Test-Path -LiteralPath (Join-Path $realRepo '.git')) {
     }
 }
 
-# --- Repositorio de pruebas (solo bajo %TEMP%, con guarda al borrar) -------------------------------------------------
+# --- Test repository (only under %TEMP%, with a deletion guard) ---------------------------------------------------------
 $temp = [System.IO.Path]::GetTempPath().TrimEnd('\')
 $repo = Join-Path $temp ('tesela-test-' + [guid]::NewGuid().ToString())
 New-Item -ItemType Directory -Path $repo | Out-Null
@@ -79,7 +78,7 @@ function Remove-Repo {
 
 function Invoke-Git {
     & git @args 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw "git $args fallo" }
+    if ($LASTEXITCODE -ne 0) { throw "git $args failed" }
 }
 
 function Put([string]$Rel, [string]$Text) {
@@ -104,7 +103,7 @@ function Reset-Repo {
 
 function Stage-All { Invoke-Git -C $repo add -A -f }
 
-# Un PNG minimo (sin CRC validos: el check solo mira la estructura, los tipos y las longitudes de los fragmentos).
+# A minimal PNG (no valid CRCs: the checker only inspects chunk structure, types, and lengths).
 function New-Chunk([string]$Type, [byte[]]$Data) {
     $len = $Data.Length
     $b = New-Object System.Collections.Generic.List[byte]
@@ -115,10 +114,10 @@ function New-Chunk([string]$Type, [byte[]]$Data) {
     return , $b.ToArray()
 }
 
-# Fragmento `$Type` con `$N` bytes de datos (por defecto, los 4 de gAMA...).
+# A `$Type` chunk with `$N` data bytes (default: four for gAMA...).
 function Fill([string]$Type, [int]$N) { return @{ T = $Type; D = (New-Object byte[] $N) } }
 
-# `-Color` es el tipo de color del IHDR (6 = RGBA, 3 = indexado); `-Chunks` son fragmentos extra antes de IDAT.
+# `-Color` is the IHDR color type (6 = RGBA, 3 = indexed); `-Chunks` are extra chunks before IDAT.
 function New-Png([object[]]$Chunks = @(), [byte[]]$Idat = [byte[]](1, 2, 3, 4, 5, 6, 7, 8), [int]$Color = 6) {
     $b = New-Object System.Collections.Generic.List[byte]
     $b.AddRange([byte[]](0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A))
@@ -134,7 +133,7 @@ function Sha256Hex([byte[]]$Bytes) {
     try { return ([System.BitConverter]::ToString($sha.ComputeHash($Bytes))).Replace('-', '').ToLowerInvariant() } finally { $sha.Dispose() }
 }
 
-# Linea del README de docs/img con el SHA-256 de los bytes de la imagen.
+# docs/img README entry with the image bytes' SHA-256.
 function ReadmeLine([string]$Leaf, [byte[]]$Bytes, [string]$Tail = 'tesela --demo --screen map') {
     return ('- ' + $Leaf + ' | sha256: ' + (Sha256Hex $Bytes) + ' | ' + $Tail + "`n")
 }
@@ -163,13 +162,13 @@ function Expect([string]$Case, [bool]$ShouldFail, [string[]]$CheckArgs = @()) {
     $r = Run-Check $CheckArgs
     $failed = ($r.Code -ne 0)
     if ($failed -ne $ShouldFail) {
-        $want = if ($ShouldFail) { 'FALLO' } else { 'OK' }
-        $script:failures.Add("$Case (esperado: $want, codigo $($r.Code)) $($r.Out)")
+        $want = if ($ShouldFail) { 'FAILED' } else { 'OK' }
+        $script:failures.Add("$Case (expected: $want, exit code $($r.Code)) $($r.Out)")
     }
 }
 
-# En GitHub Actions CI=true: el script pasaria a modo generico y los casos con valores locales fallarian. Las pruebas
-# fijan su propio entorno y lo restauran al terminar.
+# In GitHub Actions, CI=true makes the script use generic mode and local-value cases would fail. Tests set their own
+# environment and restore it on exit.
 $oldCI = $env:CI
 $env:CI = $null
 
@@ -183,7 +182,7 @@ try {
     Invoke-Git -C $repo add -A
     Invoke-Git -C $repo commit -q -m init
 
-    # --- Fixtures malos ------------------------------------------------------------------------------------------------
+    # --- Bad fixtures --------------------------------------------------------------------------------------------------
     foreach ($k in ($bad.Keys | Sort-Object)) {
         Reset-Repo
         Put 'notas.txt' ("linea limpia`n" + $bad[$k] + "`notra linea limpia`n")
@@ -192,7 +191,7 @@ try {
         Expect "malo (-All): $k" $true @('-All')
     }
 
-    # --- Fixtures buenos -----------------------------------------------------------------------------------------------
+    # --- Good fixtures -------------------------------------------------------------------------------------------------
     $i = 0
     foreach ($g in $good) {
         Reset-Repo
@@ -202,7 +201,7 @@ try {
         Expect "bueno (staging) #${i}: $g" $false
     }
 
-    # --- Codificaciones y binarios ---------------------------------------------------------------------------------------
+    # --- Encodings and binaries -----------------------------------------------------------------------------------------
     $sid = $misc['sid']
     Reset-Repo
     PutBytes 'u16bom.txt' ([System.Text.Encoding]::Unicode.GetPreamble() + [System.Text.Encoding]::Unicode.GetBytes("hola`n$sid`n"))
@@ -230,8 +229,8 @@ try {
     PutBytes 'b.bin' ([byte[]](0, 1, 2, 0, 255) + [System.Text.Encoding]::Unicode.GetBytes($profilePath) + [byte[]](0, 0, 9))
     Stage-All
     Expect 'binario con cadena UTF-16 de perfil' $true
-    # Cadena UTF-16 de un fabricante de hardware (regla generica, tambien en -GenericOnly/CI) con un vecino que, leido como UTF-16,
-    # es una letra: U+4E2D delante, o dos letras ASCII alineadas delante ('ab' = U+6261). El vecino no puede taparla.
+    # A UTF-16 hardware-vendor string (generic rule, including -GenericOnly/CI) with a neighbor that reads as a letter in
+    # UTF-16: U+4E2D before it, or two aligned ASCII letters ('ab' = U+6261). The neighbor must not hide the match.
     $gpuU16 = [System.Text.Encoding]::Unicode.GetBytes($misc['gpu-word'])
     foreach ($case in @(
             @('precedido de U+4E2D', [System.Text.Encoding]::Unicode.GetBytes([string][char]0x4E2D)),
@@ -254,7 +253,7 @@ try {
     Stage-All
     Expect 'imagen (captura)' $true
 
-    # --- Excepcion de docs/img/ (capturas de --demo) -------------------------------------------------------------------
+    # --- docs/img/ exception (--demo screenshots) ----------------------------------------------------------------------
     $img = 'docs/img/mapa-demo.png'
     $imgLeaf = 'mapa-demo.png'
     $png = New-Png
@@ -270,7 +269,7 @@ try {
     PutBytes $img $png
     Stage-All
     Expect 'docs/img: sin README.md' $true
-    # La linea del README tiene que ser ANCLADA y con el hash exacto.
+    # The README entry must be anchored and contain the exact hash.
     foreach ($case in @(
             @('sin --demo', ('- ' + $imgLeaf + ' | sha256: ' + (Sha256Hex $png) + " | captura de mi escritorio`n")),
             @('hash de otra imagen', ('- ' + $imgLeaf + ' | sha256: ' + (Sha256Hex ([byte[]](1, 2, 3))) + " | tesela --demo`n")),
@@ -286,20 +285,20 @@ try {
         Stage-All
         Expect ('docs/img: README.md invalido: ' + $case[0]) $true
     }
-    # Un nombre que es SUBCADENA del de otra imagen registrada no vale (`o.png` frente a `mapa-demo.png`).
+    # A name that is a SUBSTRING of another registered image name is not valid (`o.png` versus `mapa-demo.png`).
     Reset-Repo
     PutBytes 'docs/img/o.png' $png
     Put 'docs/img/README.md' $readmeOk
     Stage-All
     Expect 'docs/img: nombre que es subcadena de otro registrado (o.png)' $true
-    # Cambiar un solo byte de la imagen la invalida hasta registrarla de nuevo.
+    # Changing one image byte invalidates it until it is registered again.
     Reset-Repo
     PutBytes $img (New-Png -Idat ([byte[]](1, 2, 3, 4, 5, 6, 7, 9)))
     Put 'docs/img/README.md' $readmeOk
     Stage-All
     Expect 'docs/img: imagen distinta de la registrada (un byte)' $true
 
-    # --- Fragmentos PNG: lista cerrada y longitudes cerradas -----------------------------------------------------------------
+    # --- PNG chunks: closed list and fixed lengths ----------------------------------------------------------------------
     foreach ($t in 'tEXt', 'iTXt', 'zTXt', 'eXIf', 'tIME', 'iCCP', 'sBIT', 'bKGD', 'hIST', 'sPLT', 'zzZz') {
         $p = New-Png -Chunks @((Fill $t 4))
         Reset-Repo
@@ -315,7 +314,7 @@ try {
         Put 'docs/img/README.md' ("# Capturas`n`n" + (ReadmeLine $imgLeaf $p))
         Stage-All
         Expect ("docs/img: fragmento PNG permitido " + $c[0] + ' con su longitud') $false
-        # Con UN byte mas (texto en claro escondido en un fragmento permitido) falla.
+        # ONE extra byte (plain text hidden in an allowed chunk) must fail.
         $p = New-Png -Chunks @((Fill $c[0] ($c[1] + 1)))
         Reset-Repo
         PutBytes $img $p
@@ -330,7 +329,7 @@ try {
     Put 'docs/img/README.md' ("# Capturas`n`n" + (ReadmeLine $imgLeaf $p))
     Stage-All
     Expect 'docs/img: texto en claro dentro de gAMA' $true
-    # PLTE y tRNS solo en PNG indexados y con longitudes maximas.
+    # PLTE and tRNS are allowed only in indexed PNGs and have maximum lengths.
     foreach ($case in @(
             @('PLTE en RGBA', 6, (Fill 'PLTE' 12), $true),
             @('tRNS en RGBA', 6, (Fill 'tRNS' 2), $true),
@@ -356,7 +355,7 @@ try {
     Stage-All
     Expect 'docs/img: IHDR repetido' $true
 
-    # --- Rutas no permitidas --------------------------------------------------------------------------------------------------
+    # --- Disallowed paths ------------------------------------------------------------------------------------------------
     foreach ($badPath in 'docs/img/Mapa.png', 'docs/img/sub/mapa.png', 'docs/mapa.png', 'img/mapa.png', 'docs/img/mapa.jpg', 'docs/img/mapa_demo.png', 'docs/img/mapa.PNG') {
         Reset-Repo
         PutBytes $badPath $png
@@ -366,7 +365,7 @@ try {
         Expect "docs/img: ruta no permitida $badPath" $true
     }
 
-    # --- Imagenes disfrazadas: se detectan por la FIRMA, con cualquier extension -------------------------------------------------
+    # --- Disguised images: detect by SIGNATURE, regardless of extension ------------------------------------------------
     $magic = @{}
     foreach ($pr in $raw.magic.PSObject.Properties) { $magic[$pr.Name] = HexBytes $pr.Value }
     foreach ($k in ($magic.Keys | Sort-Object)) {
@@ -376,7 +375,7 @@ try {
             Stage-All
             Expect "imagen $k disfrazada de .$ext" $true
         }
-        # Tambien dentro de docs/img/ con un nombre que no es .png.
+        # Also under docs/img/ with a non-.png name.
         Reset-Repo
         PutBytes 'docs/img/captura.dat' $magic[$k]
         Stage-All
@@ -389,13 +388,13 @@ try {
         Expect "PNG disfrazado de .$ext" $true
         Expect "PNG disfrazado de .$ext (-All)" $true @('-All')
     }
-    # Un JPEG con nombre .png en docs/img/ no es un PNG.
+    # A JPEG named .png under docs/img/ is not a PNG.
     Reset-Repo
     PutBytes $img ($magic['jpeg'] + (New-Object byte[] 40))
     Put 'docs/img/README.md' ("# Capturas`n`n" + (ReadmeLine $imgLeaf ($magic['jpeg'] + (New-Object byte[] 40))))
     Stage-All
     Expect 'docs/img: un JPEG con extension .png' $true
-    # Los textos que solo EMPIEZAN como una firma no son imagenes.
+    # Text that only STARTS with an image signature is not an image.
     foreach ($txt in 'BMW y GIF89 y RIFF notas', 'GIF', 'II*', 'RIFF WEBP', 'ftyp avif', 'PNG sin firma', 'BM') {
         Reset-Repo
         Put 'docs/notas.txt' ($txt + "`n")
@@ -408,7 +407,7 @@ try {
     Stage-All
     Invoke-Git -C $repo commit -q -m imagen
     Expect 'docs/img: -All sobre lo ya commiteado' $false @('-All')
-    # Truncado, datos tras IEND, no PNG, demasiado grande y el contenido comprimido NO se escanea como texto.
+    # Truncation, data after IEND, non-PNG, oversized files, and compressed contents are NOT scanned as text.
     foreach ($case in @(
             @('datos despues de IEND', ($png + [byte[]](1, 2, 3)), $true),
             @('PNG truncado', ([byte[]](0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0, 0, 0)), $true),
@@ -422,7 +421,7 @@ try {
         Expect ('docs/img: ' + $case[0]) $case[2]
     }
 
-    # --- UNC con barras normales: URL SIN protocolo es un falso positivo DOCUMENTADO, con protocolo no ------------------------
+    # --- UNC paths with normal slashes: URL WITHOUT a protocol is a DOCUMENTED false positive; with a protocol it is not --
     foreach ($case in @(
             @('URL sin protocolo (barras, host y ruta) cuenta como ruta de red (falso positivo documentado)', ('ver /' + '/cdn.ejemplo.invalid/lib.js'), $true),
             @('la misma URL con protocolo no cuenta', 'ver https://cdn.ejemplo.invalid/lib.js', $false),
@@ -445,7 +444,7 @@ try {
         Remove-Item -LiteralPath $msgU -Force
     }
 
-    # --- Nombres de archivo ----------------------------------------------------------------------------------------------
+    # --- File names -----------------------------------------------------------------------------------------------------
     Reset-Repo
     Put $misc['name-hw'] "limpio`n"
     Stage-All
@@ -465,7 +464,7 @@ try {
     Expect 'nombre no ASCII limpio' $false
 
     # --- spike/ y docs/spike-results.md -----------------------------------------------------------------------------------
-    # Las reglas de RUTAS rigen tambien en spike/ (antes se saltaban): unidad, perfil, WSL y UNC, en staging y en -All.
+    # PATH rules also apply under spike/ (previously skipped): drive, profile, WSL, and UNC patterns in staging and -All.
     Reset-Repo
     Put 'spike/notas.txt' ($misc['spike-paths'] + "`n")
     Stage-All
@@ -477,11 +476,14 @@ try {
         Stage-All
         Expect "spike/: $k falla" $true
     }
-    Reset-Repo
-    Put 'spike/notas.txt' ("ruta C:\Users\<usuario>\x y C:\Windows\Temp y %USERPROFILE%\x y https://ejemplo.invalid/x`n")
-    Stage-All
-    Expect 'spike/: el marcador <usuario> y las rutas de sistema pasan' $false
-    # Lista CERRADA de dos archivos de la fase 0 con rutas sinteticas: pasan SOLO con el contenido exacto revisado.
+    foreach ($placeholder in '<user>', '<usuario>') {
+        Reset-Repo
+        $unixPath = '/mnt/c/' + 'Users/' + $placeholder + '/x'
+        Put 'spike/notas.txt' ("paths C:\Users\$placeholder\x and $unixPath; system paths C:\Windows\Temp and %USERPROFILE%\x; https://example.invalid/x`n")
+        Stage-All
+        Expect "spike/: placeholder $placeholder and system paths pass" $false
+    }
+    # CLOSED list of two phase-0 files with synthetic paths: pass ONLY with the exact reviewed contents.
     foreach ($rel in 'spike/scripts/redact.py', 'spike/trash-bench/src/main.rs') {
         $real = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) $rel
         if (-not (Test-Path -LiteralPath $real)) { continue }
@@ -495,7 +497,7 @@ try {
         PutBytes $rel ($realBytes + [byte[]](0x0A))
         Stage-All
         Expect "spike/: $rel con UN byte de mas vuelve a las reglas completas" $true
-        # Mismo contenido en otro nombre: la excepcion es por ruta Y por hash.
+        # Same contents under another name: the exception is tied to BOTH path and hash.
         Reset-Repo
         PutBytes 'spike/otro.txt' $realBytes
         Stage-All
@@ -515,7 +517,7 @@ try {
     Expect 'docs/spike-results.md ya no esta exento (existir es un fallo)' $true
     Expect 'docs/spike-results.md en -All' $true @('-All')
 
-    # --- Valores locales y lista negra -------------------------------------------------------------------------------------
+    # --- Local values and denylist -------------------------------------------------------------------------------------
     if ($env:USERNAME -and $env:USERNAME.Length -ge 3) {
         Reset-Repo
         Put 'u.txt' ('hola ' + $env:USERNAME + " adios`n")
@@ -537,8 +539,8 @@ try {
     Expect 'termino de la lista negra (insensible a mayusculas)' $true
     Expect 'la lista negra no se usa con -GenericOnly' $false @('-GenericOnly')
 
-    # Cambio de TIPO en staging: un archivo que pasa a enlace simbolico (su destino es su contenido) se revisa; antes quedaba
-    # en "0 archivos, OK".
+    # Staging TYPE change: a file changed to a symbolic link (its target is its contents) must be checked; previously it
+    # was reported as "0 files, OK".
     Reset-Repo
     Put 'enlace.txt' "texto limpio`n"
     Stage-All
@@ -552,7 +554,7 @@ try {
     Invoke-Git -C $repo reset -q
     Invoke-Git -C $repo checkout -q -- .
 
-    # --- El contenido que cuenta es el del indice ----------------------------------------------------------------------
+    # --- The index contents are authoritative ---------------------------------------------------------------------------
     Reset-Repo
     Put 'x.txt' "limpio`n"
     Stage-All
@@ -564,7 +566,7 @@ try {
     Put 'x.txt' "limpio`n"          # arreglado sin `git add`
     Expect 'staging sucio aunque el archivo de trabajo ya este limpio' $true
 
-    # --- Mensajes de commit ------------------------------------------------------------------------------------------------
+    # --- Commit messages -----------------------------------------------------------------------------------------------
     $msg = Join-Path $repo 'MSG.txt'
     [System.IO.File]::WriteAllText($msg, "feat: algo limpio`n`n# Please enter the commit message`n# On branch x`n", $utf8)
     Expect 'mensaje limpio con lineas de comentario limpias' $false @('-MessageFile', $msg)
@@ -587,14 +589,14 @@ try {
     Expect 'mensaje con SID' $true @('-MessageFile', $msg)
     Remove-Item $msg -Force
 
-    # --- Formatos opacos o comprimidos: se rechazan por la firma, con cualquier extension ------------------------------------
+    # --- Opaque or compressed formats: reject by signature, regardless of extension ------------------------------------
     foreach ($k in ($opaqueHex.Keys | Sort-Object)) {
         Reset-Repo
         PutBytes 'datos/archivo.dat' ((HexBytes $opaqueHex[$k]) + (New-Object byte[] 64))
         Stage-All
         Expect "formato opaco $k (.dat)" $true
     }
-    # Con otras extensiones, en -All y dentro de spike/ (basta un formato: la regla es por firma).
+    # Also with other extensions, under -All and inside spike/ (one format is enough: the rule uses signatures).
     foreach ($ext in 'txt', 'json', 'rs', 'docx') {
         Reset-Repo
         PutBytes "datos/archivo.$ext" ((HexBytes $opaqueHex['zip']) + (New-Object byte[] 64))
@@ -614,7 +616,7 @@ try {
         Stage-All
         Expect "texto que solo se parece a una firma opaca #$j" $false
     }
-    # Un ZIP y un gzip REALES con texto comprimido que contiene un SID: el texto comprimido no se ve, la firma si.
+    # Real ZIP and gzip files whose compressed contents contain a SID: compressed text is hidden, but the signature is visible.
     Add-Type -AssemblyName System.IO.Compression
     $secret = "cuenta $sid`n"
     $ms = New-Object System.IO.MemoryStream
@@ -647,7 +649,7 @@ try {
     PutBytes 'datos.txt' $gms.ToArray()
     Stage-All
     Expect 'gzip real con texto comprimido que contiene un SID' $true
-    # ZIP por el registro de FIN: con datos delante (un autoextraible) o con la cabecera local alterada no empieza por `PK 03 04`.
+    # Detect ZIP by its END record: prepended data (a self-extracting archive) or a changed local header may not start with `PK 03 04`.
     Reset-Repo
     PutBytes 'datos.bin' ($utf8.GetBytes(('x' * 3000) + "`n") + $zipBytes)
     Stage-All
@@ -658,13 +660,13 @@ try {
     PutBytes 'datos.bin' $brokenZip
     Stage-All
     Expect 'ZIP con la cabecera local alterada (registro de fin intacto)' $true
-    # Un texto normal que solo menciona "PK" no es un ZIP.
+    # Ordinary text that only mentions "PK" is not a ZIP.
     Reset-Repo
     Put 'notas.txt' ("PK 05 06 y PK\n en un texto`n" + ('limpio ' * 50) + "`n")
     Stage-All
     Expect 'texto que menciona PK sin ser un ZIP' $false
 
-    # --- Codificaciones: UTF-32 con BOM y UTF-16 sin BOM detras de un texto largo ---------------------------------------------
+    # --- Encodings: UTF-32 with BOM and UTF-16 without BOM after long text -----------------------------------------------
     $secretLine = "cuenta $sid`n"
     $utf32le = New-Object System.Text.UTF32Encoding($false, $true)
     $utf32be = New-Object System.Text.UTF32Encoding($true, $true)
@@ -680,7 +682,7 @@ try {
     PutBytes 'u32ok.txt' ($utf32le.GetPreamble() + $utf32le.GetBytes("todo limpio`n"))
     Stage-All
     Expect 'UTF-32 con BOM limpio' $false
-    # Texto ASCII de mas de 4096 bytes y DESPUES texto en UTF-16 sin BOM: antes solo se miraban los primeros 4 KiB.
+    # More than 4096 bytes of ASCII followed by UTF-16 without a BOM: previously only the first 4 KiB were checked.
     $longAscii = $utf8.GetBytes(('a' * 6000) + "`n")
     Reset-Repo
     PutBytes 'largo.txt' ($longAscii + [System.Text.Encoding]::Unicode.GetBytes($secretLine))
@@ -690,14 +692,14 @@ try {
     PutBytes 'largo.txt' ($longAscii + [System.Text.Encoding]::Unicode.GetBytes("todo limpio`n"))
     Stage-All
     Expect 'UTF-16 sin BOM tras 6000 bytes de ASCII, limpio' $false
-    # Y un NUL suelto tampoco esconde un SID en UTF-8 (con acentos) del mismo archivo.
+    # A stray NUL must not hide a UTF-8 SID (with accented characters) in the same file either.
     Reset-Repo
     PutBytes 'mixto.txt' ($utf8.GetBytes("canci" + [char]0xF3 + "n $sid`n") + [byte[]](0, 1, 2) + $utf8.GetBytes("fin`n"))
     Stage-All
     Expect 'NUL suelto con SID en UTF-8 del mismo archivo' $true
-    # --- Valores partidos por bytes NUL sueltos: se busca ADEMAS en el texto sin NUL -------------------------------------------
+    # --- Values split by stray NUL bytes: also search text with NULs removed --------------------------------------------
     function Join-Nul([string[]]$Pieces) {
-        # Los trozos (UTF-8) unidos por un NUL suelto: ningun decodificador los ve juntos.
+        # UTF-8 pieces joined by a stray NUL: no decoder sees them together.
         $b = New-Object System.Collections.Generic.List[byte]
         for ($k = 0; $k -lt $Pieces.Count; $k++) {
             if ($k -gt 0) { $b.Add(0) }
@@ -740,7 +742,7 @@ try {
     PutBytes 'nulos.bin' ([byte[]](0, 1, 2, 0, 255, 7) + (Join-Nul @('algo ', 'inocuo ', 'de ', 'relleno')) + [byte[]](0, 0, 9))
     Stage-All
     Expect 'binario limpio con NUL sueltos' $false
-    # Un binario grande con muchos NUL sigue revisandose en un tiempo razonable (el texto sin NUL es un texto mas).
+    # A large binary with many NULs is still scanned in reasonable time (the NUL-free text is an additional view).
     $big = New-Object byte[] (3MB)
     for ($k = 0; $k -lt $big.Length; $k += 3) { $big[$k] = 0x41 }
     Reset-Repo
@@ -749,19 +751,19 @@ try {
     $swBig = [System.Diagnostics.Stopwatch]::StartNew()
     Expect 'binario de 3 MiB con muchos NUL' $false
     $script:total++
-    if ($swBig.Elapsed.TotalSeconds -gt 60) { $script:failures.Add("binario de 3 MiB con muchos NUL: tardo $([int]$swBig.Elapsed.TotalSeconds) s") }
-    # El mensaje de commit tambien.
+    if ($swBig.Elapsed.TotalSeconds -gt 60) { $script:failures.Add("3 MiB binary with many NULs: took $([int]$swBig.Elapsed.TotalSeconds) s") }
+    # Commit messages too.
     [System.IO.File]::WriteAllBytes($msg, (Join-Nul (@('fix: ') + $sidPieces + @("`n"))))
     Expect 'mensaje con un SID partido por NUL sueltos' $true @('-MessageFile', $msg)
     [System.IO.File]::WriteAllBytes($msg, (Join-Nul @('fix: ', 'limpio', "`n")))
     Expect 'mensaje limpio partido por NUL sueltos' $false @('-MessageFile', $msg)
     Remove-Item -LiteralPath $msg -Force
-    # --- GM-M8: SID sin distinguir mayusculas, limite de tamano, BOM acumulados, UTF-8 sin NUL, \\.\UNC\ ----------------------------
+    # --- GM-M8: case-insensitive SID, size limit, cumulative BOM handling, UTF-8 without NULs, \\.\UNC\ ------------------
     Reset-Repo
     Put 'minusculas.txt' ("cuenta " + $sid.ToLowerInvariant() + "`n")
     Stage-All
     Expect 'SID en minusculas' $true
-    # El limite de 8 MiB cubre TODAS las rutas: tambien con una marca BOM delante o sin NUL (antes solo lo aplicaba la del binario).
+    # The 8 MiB limit applies to ALL decoding paths, including a BOM prefix or no NULs (previously only binary decoding used it).
     $bigText = New-Object byte[] (8MB + 1)
     for ($k = 0; $k -lt $bigText.Length; $k++) { $bigText[$k] = 0x61 }
     foreach ($case in @(
@@ -775,7 +777,7 @@ try {
         Stage-All
         Expect ('archivo de texto de mas de 8 MiB ' + $case[0] + ' se rechaza') $true
     }
-    # Un BOM no decide por si solo como se lee el archivo: las decodificaciones se acumulan.
+    # A BOM alone does not determine how a file is read: decodings are cumulative.
     Reset-Repo
     PutBytes 'bom-cruzado.txt' ([byte[]](0xFF, 0xFE) + $utf8.GetBytes("hola $sid`n"))
     Stage-All
@@ -800,8 +802,8 @@ try {
     PutBytes 'bom-limpio.txt' ([byte[]](0xEF, 0xBB, 0xBF) + [System.Text.Encoding]::Unicode.GetBytes("todo limpio`n"))
     Stage-All
     Expect 'BOM de UTF-8 delante de un texto UTF-16 limpio' $false
-    # El UTF-8 de los bytes SIN NUL: un caracter de varios bytes partido por un NUL suelto (C3 00 B3) solo vuelve a ser la letra si
-    # se quita el NUL ANTES de decodificar. Termino con acento de la lista negra local (se escribe con [char]0x00F3).
+    # UTF-8 from bytes WITHOUT NULs: a multibyte character split by a stray NUL (C3 00 B3) becomes the letter again only
+    # when the NUL is removed BEFORE decoding. Use an accented denylist term (constructed with [char]0x00F3).
     $oTilde = [string][char]0x00F3
     $deny = Join-Path $repo '.git\privacy-denylist'
     [System.IO.File]::WriteAllText($deny, ("canci" + $oTilde + "n`n"), $utf8)
@@ -816,7 +818,7 @@ try {
     Stage-All
     Expect 'el mismo caso con otra letra acentuada (no es el termino) pasa' $false
     Remove-Item -LiteralPath $deny -Force -ErrorAction SilentlyContinue
-    # Rutas UNC en las dos formas de espacio de nombres: `\\?\UNC\` y `\\.\UNC\` (construidas sin escribirlas literales).
+    # UNC paths in both namespace forms: `\\?\UNC\` and `\\.\UNC\` (constructed without writing them literally).
     $bsl = [string][char]92
     foreach ($ns in @('?', '.')) {
         Reset-Repo
@@ -824,23 +826,23 @@ try {
         Stage-All
         Expect ("ruta UNC verbatim con $ns") $true
     }
-    # Un PNG registrado de docs/img/ sigue permitido (tiene su excepcion propia, antes que la regla de opacos).
+    # A registered docs/img/ PNG remains allowed (its exception is checked before the opaque-format rule).
     Reset-Repo
     PutBytes $img $png
     Put 'docs/img/README.md' $readmeOk
     Stage-All
     Expect 'docs/img: el PNG registrado sigue permitido con la regla de formatos opacos' $false
 
-    # --- Commits reales con los hooks instalados: el mensaje se revisa ENTERO, con cualquier limpieza de git -------------------
+    # --- Real commits with hooks installed: inspect the ENTIRE message, regardless of Git cleanup mode -------------------
     Reset-Repo
     Copy-Item -LiteralPath (Join-Path (Split-Path -Parent $srcScript) 'install-hooks.ps1') -Destination (Join-Path $repo 'scripts\install-hooks.ps1')
     Push-Location $repo
     try {
         $hookOut = & pwsh -NoProfile -File scripts/install-hooks.ps1 2>&1
-        if ($LASTEXITCODE -ne 0) { throw "install-hooks fallo: $hookOut" }
+        if ($LASTEXITCODE -ne 0) { throw "install-hooks failed: $hookOut" }
     } finally { Pop-Location }
     function Try-Commit([string[]]$GitArgs) {
-        # Devuelve $true si el commit se hizo (el hook lo dejo pasar). Siempre con --allow-empty y sin editor.
+        # Return $true if the commit succeeded (the hook allowed it). Always use --allow-empty and no editor.
         $before = (& git -C $repo rev-parse HEAD)
         $prev = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
@@ -853,7 +855,7 @@ try {
         $ok = Try-Commit $GitArgs
         if ($ok -ne $ShouldPass) {
             $want = if ($ShouldPass) { 'COMMIT' } else { 'BLOQUEO' }
-            $script:failures.Add("$Case (esperado: $want, resultado: $(if ($ok) { 'commit hecho' } else { 'bloqueado' }))")
+            $script:failures.Add("$Case (expected: $want, result: $(if ($ok) { 'commit created' } else { 'blocked' }))")
         }
     }
     $msgFile = Join-Path $repo 'MSGF.txt'
@@ -869,7 +871,7 @@ try {
         Expect-Commit "commit real: --cleanup=$mode con SID en el cuerpo" $false @("--cleanup=$mode", '-m', "feat: x`n`n$sid")
         Expect-Commit "commit real: --cleanup=$mode limpio" $true @("--cleanup=$mode", '-m', "feat: limpio con $mode")
     }
-    # Tras la linea de tijera: con --cleanup=scissors git LO RECORTARIA, pero el hook ve el archivo antes y bloquea.
+    # After the scissors line: --cleanup=scissors would TRUNCATE this in Git, but the hook sees the file first and blocks it.
     $scissorsMsg = "feat: limpio`n`n# ------------------------ >8 ------------------------`n# Do not modify or remove the line above.`n+$sid`n"
     Expect-Commit 'commit real: --cleanup=scissors con SID tras la tijera' $false @('--cleanup=scissors', '-m', $scissorsMsg)
     Expect-Commit 'commit real: --cleanup=verbatim con SID tras la tijera' $false @('--cleanup=verbatim', '-m', $scissorsMsg)
@@ -879,9 +881,9 @@ try {
     Remove-Item $msgFile -Force
     Remove-Item -LiteralPath (Join-Path $repo '.git\hooks\commit-msg'), (Join-Path $repo '.git\hooks\pre-commit') -Force -ErrorAction SilentlyContinue
 
-    # --- Rango de commits (CI: lo que introduce un push o un PR) --------------------------------------------------------------
-    # Historia: base limpia; un commit que anade un SID con un mensaje limpio; otro que BORRA el archivo; uno con SID en el
-    # mensaje (commit --allow-empty); uno final limpio. El arbol final esta limpio: solo el rango lo detecta.
+    # --- Commit range (CI: changes introduced by a push or PR) ----------------------------------------------------------
+    # History: clean base; commit adds an SID with a clean message; another DELETES the file; one adds an SID to the
+    # message (--allow-empty); final clean commit. The final tree is clean: only range scanning finds the leak.
     function Sha([string]$Rev) { return ((& git -C $repo rev-parse $Rev) | Out-String).Trim() }
     function New-Commit([string]$Message) {
         $prev = $ErrorActionPreference
@@ -918,13 +920,13 @@ try {
     Expect 'before ausente: se revisa toda la historia' $true @('-To', $tip)
     $ghost = 'a' * 40
     Expect 'before que no existe en el clon: se revisa toda la historia' $true @('-From', $ghost, '-To', $tip)
-    # La historia de este repositorio de pruebas lleva un commit antiguo (`imagen`) que registro su PNG en SU README; con el registro
-    # vigente de `To` (el de `base`, sin la imagen) solo pasa si su hash esta en la lista historica cerrada (aqui, por parametro).
+    # Test-repository history includes an old `image` commit that registered its PNG in its README. With the current `To`
+    # README (the base commit, without the image), it passes only if its hash is in the closed historical list (provided here).
     Expect 'historia hasta la base (limpia) pasa' $false @('-To', $base, '-LegacyImageSha256', (Sha256Hex $png))
     Expect 'historia hasta la base: la captura de un commit antiguo ya no esta registrada en To' $true @('-To', $base)
     Expect 'rango: -To con un valor que no es un SHA (sin inyeccion)' $true @('-To', 'HEAD; calc')
     Expect 'rango: -From con un valor que no es un SHA' $true @('-From', '--all', '-To', $tip)
-    # Rama con un merge: el blob malo llega por la segunda rama.
+    # Merge branch: the bad blob arrives through the second branch.
     Invoke-Git -C $repo checkout -q -b lateral $base
     Put 'lateral.txt' ("cuenta $sid`n")
     Stage-All
@@ -935,7 +937,7 @@ try {
     try { & git -C $repo merge -q --no-ff --no-verify -m 'merge: lateral' lateral 2>&1 | Out-Null } finally { $ErrorActionPreference = $prev }
     $merged = Sha 'HEAD'
     Expect 'rango con un merge: el blob de la rama lateral se revisa' $true @('-From', $tip, '-To', $merged)
-    # Archivos de rango: formatos opacos y nombres.
+    # Range files: opaque formats and file names.
     Reset-Repo
     Invoke-Git -C $repo checkout -q -f -B limpia $base
     PutBytes 'datos/contenido.dat' ($zipBytes)
@@ -950,7 +952,7 @@ try {
     New-Commit 'feat: limpio'
     $okTip = Sha 'HEAD'
     Expect 'rango limpio pasa' $false @('-From', $base, '-To', $okTip)
-    # La excepcion de docs/img/ funciona en el rango (README del propio commit).
+    # The docs/img/ exception works in range mode (README from the relevant commit).
     Reset-Repo
     Invoke-Git -C $repo checkout -q -f -B imagenes $base
     PutBytes $img $png
@@ -966,7 +968,7 @@ try {
     New-Commit 'docs: captura sin registrar'
     $img2Tip = Sha 'HEAD'
     Expect 'rango: PNG de docs/img SIN registrar se rechaza' $true @('-From', $base, '-To', $img2Tip)
-    # Una captura de --demo que se registro en un commit POSTERIOR (el README del commit `To` la lista): el rango pasa.
+    # A --demo screenshot registered in a LATER commit (listed by the `To` README): range validation passes.
     Reset-Repo
     Invoke-Git -C $repo checkout -q -f -B imagenes3 $base
     PutBytes $img $png
@@ -980,7 +982,7 @@ try {
     Expect 'rango que empieza antes del registro del PNG de --demo pasa (README del commit To)' $false @('-From', $base, '-To', $pngLate)
     Expect 'toda la historia con el PNG registrado despues pasa (from a ceros)' $false @('-From', ('0' * 40), '-To', $pngLate)
     Expect 'sin el registro en To, el mismo PNG se rechaza' $true @('-From', $base, '-To', $pngEarly)
-    # Registrar OTRA imagen (otro hash) no sirve para esta.
+    # Registering a DIFFERENT image (different hash) does not cover this one.
     Reset-Repo
     Invoke-Git -C $repo checkout -q -f -B imagenes4 $base
     PutBytes $img $png
@@ -989,8 +991,8 @@ try {
     New-Commit 'docs: captura con el hash de otra'
     Expect 'el README de To con el hash de otra imagen no vale' $true @('-From', $base, '-To', (Sha 'HEAD'))
 
-    # GM-M8: en modo -To SOLO vale el README del commit `To`. Una imagen registrada en su commit pero cuyo registro se quito despues
-    # ya no pasa (antes la avalaba el README de su propio commit).
+    # GM-M8: in -To mode, ONLY the `To` commit's README counts. An image registered in its own commit but removed later
+    # must fail (previously its own README vouched for it).
     Reset-Repo
     Invoke-Git -C $repo checkout -q -f -B desregistrada $base
     PutBytes $img $png
@@ -1005,7 +1007,7 @@ try {
     Expect 'rango: la captura registrada en su commit pasa con To = ese commit' $false @('-From', $base, '-To', $regTip)
     Expect 'rango: la captura registrada en su commit pero desregistrada en To se rechaza' $true @('-From', $base, '-To', $unregTip)
 
-    # GM-M8: tambien se revisan el autor y el committer (nombre y correo) de cada commit del rango.
+    # GM-M8: also inspect each range commit's author and committer (name and email).
     $prevEap = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
@@ -1035,7 +1037,7 @@ try {
     Expect 'rango: el nombre del committer con un SID se rechaza' $true @('-From', $authorMailTip, '-To', $committerTip)
     Expect 'rango: el correo del committer con un SID se rechaza' $true @('-From', $committerTip, '-To', $committerMailTip)
     Expect 'rango: un commit limpio despues de los malos pasa' $false @('-From', $committerMailTip, '-To', $cleanTip)
-    # R-S8: el hallazgo lleva la etiqueta de su campo (no `mensaje:1..4`) y el cuerpo conserva sus numeros de linea.
+    # R-S8: findings identify their field (not `message:1..4`), and the body retains its own line numbers.
     foreach ($case in @(
             @($authorTip, $base, 'autor (nombre)'),
             @($authorMailTip, $authorTip, 'autor (correo)'),
@@ -1044,7 +1046,7 @@ try {
         )) {
         $script:total++
         $out = (Run-Check @('-From', $case[1], '-To', $case[0])).Out
-        if ($out -notlike ('*' + $case[2] + ': SID*') -or $out -like '*mensaje:*') { $script:failures.Add("etiqueta del campo $($case[2]): $out") }
+        if ($out -notlike ('*' + $case[2] + ': Windows SID*') -or $out -like '*mensaje:*') { $script:failures.Add("field label $($case[2]): $out") }
     }
     Reset-Repo
     Invoke-Git -C $repo checkout -q -f -B cuerpo $base
@@ -1053,9 +1055,9 @@ try {
     try { & git -C $repo commit -q --allow-empty --no-verify -m "chore: linea 1`n`nlinea 3`n$sid" 2>&1 | Out-Null } finally { $ErrorActionPreference = $prevEap2 }
     $script:total++
     $out = (Run-Check @('-From', $base, '-To', (Sha 'HEAD'))).Out
-    if ($out -notlike '*mensaje:4: SID*') { $script:failures.Add("numero de linea del cuerpo (se esperaba mensaje:4): $out") }
+    if ($out -notlike '*mensaje:4: Windows SID*') { $script:failures.Add("body line number (expected mensaje:4): $out") }
 
-    # Capturas HISTORICAS de --demo: su hash esta en la lista cerrada del script (solo en modo -To), no en ningun README.
+    # HISTORICAL --demo screenshots: their hashes are in the script's closed list (only in -To mode), not in any README.
     Reset-Repo
     Invoke-Git -C $repo checkout -q -f -B historica $base
     PutBytes $img $png
@@ -1065,7 +1067,7 @@ try {
     Expect 'rango: una captura sin registrar y fuera de la lista historica se rechaza' $true @('-From', $base, '-To', $legacyTip)
     Expect 'rango: una captura historica (hash de la lista cerrada) se acepta' $false @('-From', $base, '-To', $legacyTip, '-LegacyImageSha256', (Sha256Hex $png))
     Expect 'la lista historica no vale en staging ni en -All' $true @('-All', '-LegacyImageSha256', (Sha256Hex $png))
-    # Una imagen historica con metadatos sigue rechazada (la comprobacion estructural no se salta).
+    # A historical image with metadata is still rejected (structural checks are not skipped).
     $pngMeta = New-Png -Chunks @((Fill 'tEXt' 4))
     Reset-Repo
     Invoke-Git -C $repo checkout -q -f -B historica2 $base
@@ -1074,7 +1076,7 @@ try {
     New-Commit 'docs: captura historica con metadatos'
     Expect 'rango: la captura historica con un fragmento no permitido se rechaza' $true @('-From', $base, '-To', (Sha 'HEAD'), '-LegacyImageSha256', (Sha256Hex $pngMeta))
 
-    # Cambio de TIPO (un archivo que pasa a enlace simbolico): el destino del enlace es su contenido y se revisa.
+    # TYPE change (a file becomes a symbolic link): the link target is its content and is checked.
     Reset-Repo
     Invoke-Git -C $repo checkout -q -f -B tipo $base
     Put 'enlace.txt' "texto limpio`n"
@@ -1088,16 +1090,16 @@ try {
     Expect 'rango: un archivo que pasa a enlace simbolico con el SID en su destino (cambio de tipo)' $true @('-From', $beforeType, '-To', $afterType)
     Expect 'rango anterior al cambio de tipo pasa' $false @('-From', $base, '-To', $beforeType)
 
-    # --- Modo -All sobre lo versionado ---------------------------------------------------------------------------------------
+    # --- -All mode over versioned files ----------------------------------------------------------------------------------
     Reset-Repo
     Put 'v.txt' ($bad['perfil-windows'] + "`n")
     Stage-All
     Invoke-Git -C $repo commit -q -m malo
     Expect '-All encuentra lo ya commiteado' $true @('-All')
     Expect 'staging vacio no falla' $false
-    # --- Valores locales con letras NO ASCII (acentos, enes) en cualquier codificacion -----------------------------------------
-    # El usuario y el equipo son SINTETICOS y se fijan solo para los procesos hijo (se restauran al terminar); se construyen con
-    # [char]0x...: este archivo es solo ASCII (Windows PowerShell 5.1 lee los .ps1 sin BOM como ANSI).
+    # --- Local values with NON-ASCII letters (accents, tildes) in every encoding -----------------------------------------
+    # User and computer values are SYNTHETIC and set only for child processes (restored on exit); they are constructed with
+    # [char]0x... so this file remains ASCII-only (Windows PowerShell 5.1 reads .ps1 files without a BOM as ANSI).
     $uUser = ([string][char]0x00CD) + ([string][char]0x00F1) + 'igo-Prueba'
     $uPc = 'EQUIPO-' + ([string][char]0x00D1) + 'AND' + ([string][char]0x00DA)
     $eAcute = [string][char]0x00E9
@@ -1107,8 +1109,8 @@ try {
     $env:USERNAME = $uUser
     $env:COMPUTERNAME = $uPc
     try {
-        # Cada contenido se escribe en: UTF-8, UTF-8 con BOM, UTF-16 con BOM, UTF-16 SIN BOM, Latin-1 y dos binarios (con
-        # NUL y sin BOM: una cadena Latin-1 y una cadena UTF-16 dentro).
+        # Write each case in UTF-8, UTF-8 with BOM, UTF-16 with BOM, UTF-16 WITHOUT BOM, Latin-1, and two binaries (with
+        # NULs and no BOM: one contains a Latin-1 string and one a UTF-16 string).
         function Put-Encodings([string]$Text) {
             $u16 = [System.Text.Encoding]::Unicode.GetBytes($Text)
             PutBytes 'e/utf8.txt' ($utf8.GetBytes($Text))
@@ -1120,9 +1122,9 @@ try {
             PutBytes 'e/bin-utf16.bin' ([byte[]](0, 1, 2, 0, 255, 7) + $u16 + [byte[]](0, 0, 9))
         }
         $encNames = @('utf8.txt', 'utf8bom.txt', 'utf16bom.txt', 'utf16.txt', 'latin1.txt', 'bin-latin1.bin', 'bin-utf16.bin')
-        # Los siete archivos de un caso van JUNTOS en una sola ejecucion (un proceso por formato tardaba minutos): la salida del
-        # check lista cada archivo con problemas ("e/<archivo>:<linea>: <regla>"), asi que cada formato se comprueba por
-        # separado (un positivo exige que SU archivo salga; un negativo, que NINGUNO salga) y el fallo dice cual formato fue.
+        # All seven files for a case run TOGETHER (one process per format took minutes): checker output lists each problem
+        # file ("e/<file>:<line>: <rule>"), so each encoding is asserted separately (positive requires ITS file; negative
+        # requires NONE) and failures identify the encoding.
         function Expect-Each([string]$Case, [string]$Text, [bool]$ShouldFail, [string[]]$CheckArgs = @()) {
             Reset-Repo
             Put-Encodings $Text
@@ -1132,28 +1134,28 @@ try {
                 $script:total++
                 $listed = [regex]::IsMatch($r.Out, '(?m)^\s*' + [regex]::Escape("e/$n") + ':')
                 if ($listed -ne $ShouldFail) {
-                    $want = if ($ShouldFail) { 'DETECTADO' } else { 'LIMPIO' }
-                    $script:failures.Add("$Case [$n] (esperado: $want, codigo $($r.Code))")
+                    $want = if ($ShouldFail) { 'DETECTED' } else { 'CLEAN' }
+                    $script:failures.Add("$Case [$n] (expected: $want, exit code $($r.Code))")
                 }
             }
             $script:total++
-            if (($r.Code -ne 0) -ne $ShouldFail) { $script:failures.Add("$Case (codigo de salida $($r.Code), esperado " + $(if ($ShouldFail) { 'distinto de 0' } else { '0' }) + ")") }
+            if (($r.Code -ne 0) -ne $ShouldFail) { $script:failures.Add("$Case (exit code $($r.Code), expected " + $(if ($ShouldFail) { 'nonzero' } else { '0' }) + ")") }
         }
         Expect-Each 'usuario local con letras no ASCII, suelto' ("hola`nusuario $uUser fin`n") $true
         Expect-Each 'usuario local con letras no ASCII, entre parentesis' ("(" + $uUser + ")`n") $true
         Expect-Each 'usuario local con letras no ASCII, en mayusculas' ("hola " + $uUser.ToUpperInvariant() + " fin`n") $true
         Expect-Each 'equipo local con letras no ASCII' ("host=" + $uPc + ";`n") $true
-        # Pegado a otras letras o digitos NO es una fuga (ni ASCII ni acentuadas).
+        # Adjacent to other letters or digits is NOT a leak (ASCII or accented).
         Expect-Each 'usuario pegado a letras ASCII no cuenta' ("zz" + $uUser + "zz`n") $false
         Expect-Each 'usuario con una letra acentuada delante no cuenta' ($eAcute + $uUser + "`n") $false
         Expect-Each 'usuario con una letra acentuada detras no cuenta' ($uUser + $eAcute + "`n") $false
         Expect-Each 'equipo con una letra acentuada delante no cuenta' ($eAcute + $uPc + "`n") $false
         Expect-Each 'otro valor parecido (otra letra acentuada) no cuenta' (([string][char]0x00D3) + ([string][char]0x00F1) + "igo-Prueba`n") $false
         Expect-Each 'contenido limpio en cualquier codificacion' "nada que ver con la maquina`n" $false
-        # Con -GenericOnly (CI) los valores locales no rigen.
+        # Local values do not apply with -GenericOnly (CI).
         Expect-Each 'usuario con letras no ASCII con -GenericOnly' ("hola " + $uUser + " fin`n") $false @('-GenericOnly')
-        # Los numeros de linea: un hallazgo que solo esta en el texto Latin-1 se informa en SU linea (no desplazado por un texto
-        # concatenado delante). Archivo de 3 lineas con el usuario en la 2.
+        # Line numbers: a finding present only in Latin-1 text must report ITS line (not shifted by text concatenated
+        # before it). Three-line file with the user on line 2.
         Reset-Repo
         PutBytes 'ln/lat.txt' ($latin1.GetBytes("uno`nusuario $uUser fin`ntres`n"))
         Stage-All
@@ -1161,9 +1163,9 @@ try {
         $lineNos = @([regex]::Matches($r.Out, 'ln/lat\.txt:(\d+):') | ForEach-Object { $_.Groups[1].Value })
         $script:total++
         if ($r.Code -eq 0 -or $lineNos.Count -lt 1 -or @($lineNos | Where-Object { $_ -ne '2' }).Count -gt 0) {
-            $script:failures.Add("numero de linea de un hallazgo solo Latin-1: se esperaba solo la linea 2, salio: $($lineNos -join ',') ($($r.Out))")
+            $script:failures.Add("line number for finding in Latin-1 only: expected line 2 only, got: $($lineNos -join ',') ($($r.Out))")
         }
-        # Un valor ASCII sintetico entre dos caracteres CJK en UTF-16 SIN BOM (binario): el vecino no tapa el valor.
+        # A synthetic ASCII value between two CJK characters in UTF-16 WITHOUT BOM (binary): neighbors must not hide it.
         $env:USERNAME = 'Zorbaq'
         $cjkL = [string][char]0x4E2D
         $cjkR = [string][char]0x6587
@@ -1175,8 +1177,8 @@ try {
         PutBytes 'ln/cjk-ok.bin' ([byte[]](0, 1, 2, 0, 255, 7) + [System.Text.Encoding]::Unicode.GetBytes($cjkL + 'Zorbaqx' + $cjkR) + [byte[]](0, 0, 9))
         Stage-All
         Expect 'valor local pegado a una letra ASCII en UTF-16 de un binario no cuenta' $false
-        # La comparacion sin distinguir mayusculas no depende de la cultura del proceso (i turca): con tr-TR 'IQZORB' y 'iqzorb'
-        # tienen que coincidir.
+        # Case-insensitive matching must not depend on process culture (Turkish i): under tr-TR, 'IQZORB' and 'iqzorb'
+        # must still match.
         $env:USERNAME = 'IQZORB'
         Reset-Repo
         Put 'ln/tr.txt' ("hola iqzorb fin`n")
@@ -1188,9 +1190,9 @@ try {
         $prevEap = $ErrorActionPreference
         $ErrorActionPreference = 'Continue'
         try { $null = & $Shell -NoProfile -Command $cmd 2>&1; $trCode = $LASTEXITCODE } finally { $ErrorActionPreference = $prevEap; Pop-Location }
-        if ($trCode -eq 0) { $script:failures.Add('IQZORB frente a iqzorb con la cultura tr-TR: no se detecto (la i turca)') }
+        if ($trCode -eq 0) { $script:failures.Add('IQZORB versus iqzorb under tr-TR culture: not detected (Turkish i)') }
         $env:USERNAME = $uUser
-        # El mensaje de commit pasa por la misma decodificacion.
+        # Commit messages use the same decoding.
         foreach ($case in @(
                 @('UTF-8', $utf8.GetBytes("fix: caso de $uUser`n")),
                 @('Latin-1', $latin1.GetBytes("fix: caso de $uUser`n")),
@@ -1205,7 +1207,7 @@ try {
         $env:USERNAME = $oldUser
         $env:COMPUTERNAME = $oldPc
     }
-    # --- CI definido y -Local, USERDOMAIN --------------------------------------------------------------------------------
+    # --- CI set and -Local, USERDOMAIN --------------------------------------------------------------------------------
     if ($env:USERNAME -and $env:USERNAME.Length -ge 3) {
         Reset-Repo
         Put 'u.txt' ('hola ' + $env:USERNAME + " adios`n")
@@ -1235,15 +1237,15 @@ try {
 
 if ($nulFiles.Count -gt 0) {
     $total++
-    $failures.Add("archivos de texto versionados con bytes NUL (grep los tomaria por binarios): $($nulFiles -join ', ')")
+    $failures.Add("versioned text files contain NUL bytes (grep would treat them as binary): $($nulFiles -join ', ')")
 } else {
     $total++
 }
 
 if ($failures.Count -gt 0) {
-    Write-Host "privacy-check.tests ($Shell): $($failures.Count) de $total pruebas FALLAN" -ForegroundColor Red
+    Write-Host "privacy-check.tests ($Shell): $($failures.Count) of $total tests FAILED" -ForegroundColor Red
     $failures | ForEach-Object { Write-Host "  - $_" }
     exit 1
 }
-Write-Host "privacy-check.tests ($Shell): $total pruebas OK"
+Write-Host "privacy-check.tests ($Shell): $total tests passed"
 exit 0

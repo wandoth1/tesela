@@ -1,4 +1,4 @@
-//! Tests de integración del escáner sobre árboles creados en `%TEMP%\tesela-test-<uuid>` (ver `common`).
+//! Scanner integration tests over trees created in `%TEMP%\tesela-test-<uuid>` (see `common`).
 
 mod common;
 
@@ -26,8 +26,8 @@ fn scan_tree(t: &TempTree) -> ScanResult {
     r
 }
 
-/// Oráculo independiente con `std::fs`: (archivos, directorios sin contar la raíz, bytes lógicos de archivos).
-/// No entra en reparse points.
+/// Independent `std::fs` oracle: (files, directories excluding the root, logical file bytes).
+/// Does not enter reparse points.
 fn oracle(root: &Path) -> (u64, u64, u64) {
     let (mut files, mut dirs, mut logical) = (0, 0, 0);
     let mut stack = vec![root.to_path_buf()];
@@ -59,7 +59,7 @@ fn find(tree: &Tree, rel: &str) -> u32 {
     id
 }
 
-/// Suma lógica de los nodos archivo de un árbol.
+/// Logical sum of a tree's file nodes.
 fn file_logical_sum(tree: &Tree) -> u64 {
     tree.nodes()
         .iter()
@@ -68,17 +68,16 @@ fn file_logical_sum(tree: &Tree) -> u64 {
         .sum()
 }
 
-/// Escaneo previo descartado. NTFS refresca el `mtime` de un directorio en el índice de su padre (el que usa el
-/// listado) de forma diferida, al cerrarse los handles del directorio: justo tras crear un árbol, un primer
-/// escaneo puede ver un `mtime` de directorio 1 s más antiguo que los siguientes. Los tests que comparan dos
-/// escaneos del mismo árbol lo asientan primero.
+/// Discarded warm-up scan. NTFS lazily refreshes a directory's `mtime` in its parent's index (the one used by the
+/// listing) when the directory handles are closed: right after creating a tree, the first scan may see a directory
+/// `mtime` one second older than later scans. Tests comparing two scans of the same tree settle it first.
 fn settle(t: &TempTree) {
     let mut o = opts(t);
     o.priority_paths = Some(vec![]);
     scan(o).expect("escaneo de asentamiento");
 }
 
-/// Suma de lo que ocupan los propios directorios (su alloc menos el de sus hijos).
+/// Sum of the space used by the directories themselves (their allocation minus that of their children).
 fn dirs_own_sum(tree: &Tree) -> u64 {
     (0..tree.len() as u32)
         .filter(|&i| tree.node(i).is_dir())
@@ -103,7 +102,7 @@ fn arbol_basico_coincide_con_el_oraculo_y_las_rutas_son_exactas() {
     assert_eq!(r.summary.api, ApiUsed::Extended);
     assert_eq!(r.summary.errors(), 0);
     assert!(!r.summary.cancelled && !r.summary.full_volume);
-    // Los archivos grandes ocupan al menos su tamaño y no mucho más (redondeo a cluster).
+    // Large files use at least their size and not much more (cluster rounding).
     for rel in ["a.txt", "sub/b.bin", "sub/deep/c.dat", "sub/deep/d.dat"] {
         let n = r.tree.node(find(&r.tree, rel));
         assert!(
@@ -113,7 +112,7 @@ fn arbol_basico_coincide_con_el_oraculo_y_las_rutas_son_exactas() {
             n.logical
         );
     }
-    // Cada nodo existe de verdad en el disco con la ruta que reconstruye el árbol.
+    // Every node really exists on disk at the path reconstructed by the tree.
     for id in 0..r.tree.len() as u32 {
         let p = r.tree.path(id);
         assert!(
@@ -126,7 +125,7 @@ fn arbol_basico_coincide_con_el_oraculo_y_las_rutas_son_exactas() {
         r.tree.path(0).canonicalize().unwrap(),
         t.root().canonicalize().unwrap()
     );
-    // No hay SYSTEM_INFO fuera de un volumen completo ni INCOMPLETE tras un escaneo terminado.
+    // There is no SYSTEM_INFO outside a full volume and no INCOMPLETE after a completed scan.
     assert!(
         r.tree
             .nodes()
@@ -202,7 +201,7 @@ fn un_enlace_duro_se_cuenta_una_sola_vez_y_gana_la_ruta_menor() {
         orig.alloc + solo.alloc + dirs_own_sum(tree),
         "la suma cuenta el enlace una sola vez"
     );
-    // Sin deduplicar se cuenta dos veces.
+    // Without deduplication, it is counted twice.
     let mut o = opts(&t);
     o.dedup_hard_links = false;
     let no_dedup = scan(o).unwrap().tree;
@@ -239,7 +238,7 @@ fn un_junction_no_se_sigue_y_su_destino_se_cuenta_una_vez() {
     let real = tree.node(find(tree, "real"));
     assert!(real.alloc >= 40_000);
     assert_eq!(tree.node(0).files_below, 2);
-    // El oráculo (que tampoco sigue enlaces) coincide.
+    // The oracle (which also does not follow links) agrees.
     let (files, _, logical) = oracle(t.root());
     assert_eq!(
         (tree.stats().files, file_logical_sum(tree)),
@@ -260,7 +259,7 @@ fn parar_y_ver_construye_con_lo_recibido_y_marca_incomplete() {
     r.tree.check_invariants().unwrap();
     assert!(r.summary.cancelled);
     let tree = &r.tree;
-    // Lo que se llegó a listar (la raíz) está; las carpetas sin recorrer son INCOMPLETE y sin contenido.
+    // What was listed (the root) is present; untraversed folders are INCOMPLETE and have no contents.
     assert!(tree.child_by_name(0, b"raiz.bin").is_some());
     for d in ["uno", "dos"] {
         let n = tree.node(find(tree, d));
@@ -291,7 +290,7 @@ fn cancelar_a_mitad_siempre_da_un_arbol_valido() {
         r.tree.check_invariants().unwrap();
         assert_eq!(r.tree.stats().orphans, 0);
         if r.summary.cancelled {
-            // Todo directorio no recorrido está marcado; los recorridos no.
+            // Every untraversed directory is marked; traversed ones are not.
             let incomplete = r
                 .tree
                 .nodes()
@@ -317,7 +316,7 @@ fn adopcion_por_file_id_de_las_rutas_prioritarias() {
     t.write("m/g.bin", 9_000);
     t.write("fuera/f4.bin", 7_000);
     settle(&t);
-    // Referencia: sin cola prioritaria.
+    // Reference: without the priority queue.
     let mut base = opts(&t);
     base.priority_paths = Some(vec![]);
     let reference = scan(base).unwrap();
@@ -338,12 +337,12 @@ fn adopcion_por_file_id_de_las_rutas_prioritarias() {
             let r = scan(o).unwrap();
             r.tree.check_invariants().unwrap();
             assert_eq!(r.tree.stats().orphans, 0);
-            // Mismo árbol, id a id, que sin cola prioritaria (nodos precreados con los mismos valores).
+            // Same tree, ID by ID, as without the priority queue (precreated nodes have the same values).
             assert!(
                 r.tree.structural_eq(&reference.tree),
                 "con {threads} hilos el árbol difiere del de referencia"
             );
-            // `a/b/c` queda dentro de nada aceptado: son 3 rutas (m, a/b/c, a/b/c/objetivo no: va dentro de a/b/c).
+            // `a/b/c` is not beneath anything accepted: there are 3 paths (m, a/b/c; `a/b/c/objetivo` is excluded because it is under a/b/c).
             let paths: Vec<_> = r
                 .summary
                 .priority
@@ -370,7 +369,7 @@ fn adopcion_por_file_id_de_las_rutas_prioritarias() {
                 .find(|p| p.path.ends_with("m"))
                 .unwrap();
             assert_eq!(m.files, 2);
-            // Sin nodos duplicados entre hermanos.
+            // No duplicate nodes among siblings.
             for id in 0..r.tree.len() as u32 {
                 let names: Vec<_> = r
                     .tree
@@ -436,7 +435,7 @@ fn el_respaldo_find_da_los_mismos_totales_sin_dedup_ni_cola_prioritaria() {
             .iter()
             .all(|n| n.flags & flags::HARDLINK == 0)
     );
-    // alloc estimado = EOF redondeado a cluster: coincide con el real en archivos normales.
+    // Estimated allocation = EOF rounded up to a cluster: it matches the actual value for ordinary files.
     let (e, f) = (
         fres.tree
             .node(fres.tree.child_by_name(0, b"w.bin").unwrap()),
@@ -486,7 +485,7 @@ fn rutas_largas_unicode_y_nombres_con_sustitutos_desparejados() {
     t.write(&format!("{deep}/archivo.bin"), 12_345);
     assert!(t.path(&deep).as_os_str().len() > 400);
     t.write("ñandú 日本語 😀.txt", 9_999);
-    // Nombre con un sustituto UTF-16 desparejado (NTFS lo admite; no es UTF-8 válido).
+    // Name with an unpaired UTF-16 surrogate (NTFS permits it; it is not valid UTF-8).
     let weird: Vec<u16> = "raro-"
         .encode_utf16()
         .chain([0xD800u16])
@@ -561,12 +560,12 @@ fn cancelar_durante_el_arranque_omite_la_resolucion_de_las_rutas_prioritarias() 
     t.write("p/q/r/f.bin", 10_000);
     t.write("otro/g.bin", 10_000);
     settle(&t);
-    // Sin cancelar, las dos rutas se resuelven.
+    // Without cancellation, both paths are resolved.
     let mut a = opts(&t);
     a.priority_paths = Some(vec![t.path("p/q/r"), t.path("otro")]);
     assert_eq!(scan(a).unwrap().summary.priority.len(), 2);
-    // La bandera se crea ANTES del arranque (como hace la interfaz) y ya está activada al llamar a `start`: la fase de
-    // las rutas prioritarias se omite, y el resultado es un árbol válido de "Parar y ver" (solo la raíz listada).
+    // The flag is created BEFORE startup (as the interface does) and is already set when `start` is called: the priority
+    // path phase is skipped, and the result is a valid "Stop and view" tree (only the root was listed).
     let flag = Arc::new(AtomicBool::new(true));
     let mut b = opts(&t);
     b.priority_paths = Some(vec![t.path("p/q/r"), t.path("otro")]);
@@ -581,7 +580,7 @@ fn cancelar_durante_el_arranque_omite_la_resolucion_de_las_rutas_prioritarias() 
     assert!(r.summary.cancelled);
     assert!(r.summary.priority.is_empty());
     assert!(flag.load(Ordering::SeqCst));
-    // Las rutas conocidas del entorno también se omiten.
+    // Known paths from the environment are skipped too.
     let mut c = opts(&t);
     c.cancel = Some(Arc::new(AtomicBool::new(true)));
     let r = scan(c).unwrap();
@@ -589,8 +588,7 @@ fn cancelar_durante_el_arranque_omite_la_resolucion_de_las_rutas_prioritarias() 
     assert!(r.summary.priority.is_empty());
 }
 
-/// El error de una raíz que es un enlace: `RootIsLink` (no `Root(NotFound)`: la raíz se abrió, y se abrió ELLA, no su
-/// destino).
+/// Error for a root that is a link: `RootIsLink` (not `Root(NotFound)`: the root itself was opened, not its target).
 fn es_raiz_enlace<T>(r: &Result<T, tesela_scanner::ScanError>) -> bool {
     matches!(r, Err(tesela_scanner::ScanError::RootIsLink(_)))
 }
@@ -610,11 +608,11 @@ fn una_raiz_que_es_un_junction_se_rechaza_y_su_destino_no_se_recorre() {
         "un junction como raíz se rechaza en vez de escanear su destino: {:?}",
         r.map(|_| ())
     );
-    // `start` falla antes de lanzar ningún hilo: tampoco hay escaneo a medias.
+    // `start` fails before launching any threads: there is no partial scan either.
     let mut b = opts(&t);
     b.root = t.path("enlace");
     assert!(es_raiz_enlace(&tesela_scanner::start(b).map(|_| ())));
-    // El destino, escaneado directamente, sigue funcionando.
+    // Scanning the target directly still works.
     let mut c = opts(&t);
     c.root = t.path("destino");
     c.priority_paths = Some(vec![]);
@@ -623,9 +621,9 @@ fn una_raiz_que_es_un_junction_se_rechaza_y_su_destino_no_se_recorre() {
 
 #[test]
 fn un_junction_roto_como_raiz_se_juzga_a_si_mismo_no_a_su_destino() {
-    // Si la raíz se resolviera ANTES de clasificarla, un junction cuyo destino ya no existe daría `NotFound` (se abriría el
-    // destino). Se rechaza como enlace: la abierta es la raíz misma y su destino no se toca. Es la comprobación directa
-    // de que el destino no se abre (no se puede observar de otro modo qué abre el sistema).
+    // If the root were resolved BEFORE classification, a junction whose target no longer exists would return `NotFound`
+    // (the target would be opened). It is rejected as a link: the root itself is opened and its target is untouched. This
+    // directly proves that the target is not opened (there is no other way to observe what the system opens).
     let mut t = TempTree::new();
     let dest = TempTree::new();
     dest.write("destino/a.bin", 10_000);
@@ -640,7 +638,7 @@ fn un_junction_roto_como_raiz_se_juzga_a_si_mismo_no_a_su_destino() {
         "un junction roto se rechaza como enlace, no como inexistente: {:?}",
         r.map(|_| ())
     );
-    // Una ruta que no existe de verdad sigue siendo `NotFound`.
+    // A path that truly does not exist still returns `NotFound`.
     let r = scan(ScanOptions::new(t.path("no-existe")));
     assert!(
         matches!(&r, Err(tesela_scanner::ScanError::Root(e)) if e.kind() == std::io::ErrorKind::NotFound)
@@ -649,8 +647,8 @@ fn un_junction_roto_como_raiz_se_juzga_a_si_mismo_no_a_su_destino() {
 
 #[test]
 fn una_ruta_que_pasa_por_un_junction_intermedio_se_resuelve_a_la_real() {
-    // Solo el ÚLTIMO componente es "la raíz elegida": un enlace en medio de la ruta lo resuelve el sistema y se escanea la
-    // carpeta real (que no es un enlace), con la ruta real como raíz.
+    // Only the LAST component is "the selected root": the system resolves a link in the middle of the path, and the real
+    // folder (which is not a link) is scanned with its real path as the root.
     let mut t = TempTree::new();
     t.write("real/sub/a.bin", 10_000);
     t.junction("via", "real");
@@ -678,8 +676,8 @@ fn una_ruta_prioritaria_que_es_un_junction_se_descarta() {
     o.priority_paths = Some(vec![t.path("Cache"), t.path("Fuera"), t.path("real/Otra")]);
     let r = scan(o).unwrap();
     r.tree.check_invariants().unwrap();
-    // Solo la carpeta real es una ruta prioritaria: los dos enlaces se descartan SIN canonizarlos hacia su destino (antes,
-    // el primero se aceptaba como `real/Cache`).
+    // Only the real folder is a priority path: both links are discarded WITHOUT canonicalizing them to their targets
+    // (previously, the first was accepted as `real/Cache`).
     let paths: Vec<_> = r
         .summary
         .priority
@@ -697,8 +695,8 @@ fn una_ruta_prioritaria_que_es_un_junction_se_descarta() {
 
 #[test]
 fn una_ruta_prioritaria_que_es_un_junction_roto_se_descarta_sin_errores() {
-    // Seguir el enlace daría `NotFound`; no seguirlo lo descarta por ser un enlace. En los dos casos la candidata no
-    // cuenta, pero el escaneo no puede dar ningún error ni caerse por ella.
+    // Following the link would return `NotFound`; not following it discards it because it is a link. In either case the
+    // candidate does not count, but it must not cause a scan error or crash.
     let mut t = TempTree::new();
     t.write("real/f.bin", 10_000);
     let dest = TempTree::new();
@@ -727,9 +725,9 @@ fn una_ruta_prioritaria_que_es_un_junction_roto_se_descarta_sin_errores() {
 
 #[test]
 fn una_ruta_prioritaria_que_pasa_por_un_junction_en_un_ancestro_se_descarta() {
-    // GM-M1: `enlace\sub` es `real\sub` pasando por un junction. Antes se canonizaba hacia el destino y se aceptaba como
-    // prioritaria (el recorrido general NO sigue ese junction); ahora se valida desde la raíz y se descarta. La ruta
-    // equivalente sin enlace sí cuenta, y el escaneo no da errores.
+    // GM-M1: the fixture path `enlace\sub` resolves to `real\sub` through a junction. Previously it was canonicalized to
+    // the target and accepted as a priority path (general traversal does NOT follow that junction); now it is validated from the root and discarded.
+    // The equivalent path without a link still counts, and the scan returns no errors.
     let mut t = TempTree::new();
     t.write("real/sub/f.bin", 10_000);
     t.write("real/otra/g.bin", 10_000);
@@ -757,8 +755,8 @@ fn una_ruta_prioritaria_que_pasa_por_un_junction_en_un_ancestro_se_descarta() {
 
 #[test]
 fn una_raiz_junction_se_rechaza_escrita_de_cualquier_forma() {
-    // Barra final, mayúsculas, barras `/`, prefijo `\\?\`, `\.` final y el nombre corto 8.3 del propio enlace: el último
-    // componente es SIEMPRE el enlace y se rechaza, nunca se resuelve a su destino. (Solo carpetas propias de `%TEMP%`.)
+    // Trailing slash, casing, `/` separators, `\\?\` prefix, trailing `\.`, and the link's own short 8.3 name: the last
+    // component is ALWAYS the link and is rejected, never resolved to its target. (Only folders created under `%TEMP%`.)
     let mut t = TempTree::new();
     t.write("destino/a.bin", 10_000);
     t.junction("enlace_con_un_nombre_largo", "destino");
@@ -792,7 +790,7 @@ fn una_raiz_junction_se_rechaza_escrita_de_cualquier_forma() {
         let r = scan(o);
         assert!(es_raiz_enlace(&r), "{name} ({root}): {:?}", r.map(|_| ()));
     }
-    // Control: el destino, escrito con barra final, sí se escanea.
+    // Control: the target, with a trailing slash, is scanned successfully.
     let mut o = opts(&t);
     o.root = std::path::PathBuf::from(format!("{}\\", t.path("destino").display()));
     o.priority_paths = Some(vec![]);

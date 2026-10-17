@@ -1,10 +1,10 @@
-//! Pantalla de escaneo (PLAN.md §2.4): progreso real, filas de las rutas conocidas con su tamaño a medida que la cola
-//! prioritaria las completa, barras vivas por carpeta de primer nivel y "Parar y ver".
+//! Scan screen (PLAN.md §2.4): actual progress, rows of known routes with their size as the queue
+//! priority completes, live bars per top level folder and "Stop and See".
 //!
-//! La clasificación de riesgo y "Limpiar lo seguro" son del incremento 3: las filas son informativas y el botón está
-//! deshabilitado con la pista "Disponible en la próxima versión".
+//! The risk rating and "Clear safe" are increment 3: the rows are informational and the button is
+//! disabled with the hint "Available in next version".
 //!
-//! El modo demostración usa un escaneo SIMULADO sobre el árbol sintético (misma pantalla, sin tocar el disco).
+//! Demo mode uses a SIMULATED scan on the synthetic tree (same screen, no touching the disc).
 
 use crate::app::{Action, Env, ScanRequest};
 use crate::args;
@@ -25,51 +25,51 @@ use tesela_cleaner::{Backend, Basket, CategoryId, Plan};
 use tesela_model::{FileType, Tree};
 use tesela_scanner::{KnownKind, Progress, ScanHandle, ScanOptions};
 
-/// Cómo acabó (o sigue) un escaneo.
+/// How a scan ended (or continues).
 pub enum ScanOutcome {
     Done(Box<Explore>),
-    /// No pudo empezar o acabar: error TIPADO (la interfaz lo traduce).
+    /// Could not start or finish: TYPE error (the interface translates it).
     Failed(StartError),
     Cancelled,
 }
 
-/// Duración del escaneo simulado de la demostración.
+/// Demo simulated scan duration.
 const DEMO_SECS: f32 = 6.0;
 
 struct Real {
     handle: Option<ScanHandle>,
     progress: Arc<Progress>,
-    /// Clase de cada ruta prioritaria (mismo orden que `progress.priority_targets()`).
+    /// Class of each priority route (same order as `progress.priority_targets()`).
     kinds: Vec<Option<KnownKind>>,
 }
 
 struct Demo {
     tree: Arc<Tree>,
-    /// (nombre, bytes finales) de las carpetas de primer nivel, de mayor a menor.
+    /// (name, final bytes) of the first level folders, from largest to smallest.
     top: Vec<(String, u64)>,
     files: u64,
-    /// Fracción fija (capturas y pruebas); `None` = avanza con el reloj.
+    /// Fixed fraction (captures and tests); `None` = advances with the clock.
     frozen: Option<f32>,
     stop: bool,
 }
 
-/// Punto de encuentro entre la pantalla y el hilo que arranca el escaneo. Todo pasa bajo un único candado, así que no hay
-/// carrera entre "llega el resultado" y "se cancela": o el hilo ve la cancelación antes de entregar (y cancela él mismo lo
-/// que acaba de crear), o quien cancela ve el resultado ya entregado (y lo cancela). Nunca queda un escaneo huérfano.
+/// Meeting point between the screen and the thread that starts the scan. Everything happens under a single lock, so there is no
+/// race between "result arrives" and "is cancelled": either the thread sees the cancellation before delivering (and cancels it itself).
+/// that just created), or the canceler sees the result already delivered (and cancels it). There is never an orphaned scan.
 #[derive(Default)]
 struct Startup {
     slot: Mutex<Slot>,
-    /// Bandera de cancelación del escaneo, creada ANTES de lanzar el hilo de arranque y pasada a `ScanOptions::cancel`:
-    /// cancelar (o soltar la pantalla, o "Parar y ver") la activa al instante y el arranque la consulta entre sus fases
-    /// (abrir y listar la raíz, resolver las rutas conocidas), en vez de terminar todo el trabajo para descartarlo.
+    /// Cancel scan flag, created BEFORE launching the boot thread and passed to `ScanOptions::cancel`:
+    /// cancel (or release the screen, or "Stop and see") activates it instantly and starts the query between its phases
+    /// (open and list the root, resolve known paths), instead of finishing all the work to discard it.
     cancel: Arc<AtomicBool>,
 }
 
-/// Hilos de arranque vivos ahora mismo. Cada pantalla cancelada o soltada libera el suyo en cuanto el arranque mira la
-/// bandera, así que no se acumulan escaneos activos (las pruebas comprueban que vuelve a 0).
+/// Boot threads live right now. Each screen canceled or released releases its own as soon as the boot looks at the
+/// flag, so no active scans are accumulated (tests verify that it returns to 0).
 static ACTIVE_STARTUPS: AtomicUsize = AtomicUsize::new(0);
 
-/// Descuenta un hilo de arranque al terminar (también si entra en pánico).
+/// Discount a starter thread upon completion (also if you panic).
 struct ActiveGuard;
 
 impl ActiveGuard {
@@ -91,7 +91,7 @@ struct Slot {
     result: Option<Result<Real, StartError>>,
 }
 
-/// Cancela un escaneo (único sitio que lo hace, para que las pruebas puedan comprobarlo).
+/// Cancel a scan (the only site that does this, so the tests can check it).
 fn cancel_handle(h: &ScanHandle) {
     h.cancel();
     #[cfg(test)]
@@ -99,38 +99,38 @@ fn cancel_handle(h: &ScanHandle) {
 }
 
 enum Kind {
-    /// Abriendo la raíz y resolviendo las rutas conocidas (E/S que puede tardar: va en un hilo, no en el de la interfaz).
+    /// Opening the root and resolving the known paths (I/O that may take time: it goes in a thread, not in the interface thread).
     Starting(Arc<Startup>),
     Real(Real),
     Demo(Demo),
 }
 
-/// Escaneo en marcha.
+/// Scanning in progress.
 pub struct ScanScreen {
     req: ScanRequest,
     started: Instant,
-    /// Pedido el descarte (Cancelar): al terminar se vuelve al inicio sin mostrar el mapa.
+    /// Discard request (Cancel): upon completion you return to the beginning without showing the map.
     discard: bool,
     animate: bool,
-    /// "Parar y ver" pedido antes de que el escaneo haya arrancado.
+    /// "Stop and watch" requested before the scan has started.
     stop_pending: bool,
-    /// (tarjeta de sitios conocidos, tarjeta del mapa): su contenido no cabe y se desplaza (la barra está a la vista).
+    /// (known places card, map card): its content does not fit and is displaced (the bar is visible).
     overflow: (bool, bool),
     kind: Kind,
     backend: Arc<dyn Backend>,
-    /// La limpieza ("Limpiar lo seguro"): se puede lanzar sin esperar al mapa.
+    /// The Cleanup ("Clean Safe"): Can be cast without waiting for the map.
     flow: CleanFlow,
-    /// Lo medido de cada categoría segura cuando su fila terminó (con la antigüedad y las protecciones reales).
+    /// What was measured for each safe category when their row ended (with actual seniority and protections).
     measures: HashMap<CategoryId, Measure>,
-    /// Navegadores abiertos al terminar el barrido de sitios conocidos.
+    /// Open browsers when completing the scan of known sites.
     browsers_open: Vec<tesela_cleaner::Browser>,
-    /// Lo que se limpió durante el escaneo (para actualizar el árbol cuando acabe).
+    /// What was cleaned during the scan (to update the tree when finished).
     cleaned: Vec<tesela_cleaner::Removed>,
 }
 
-/// Una limpieza lanzada durante el escaneo acaba de quitar cosas del disco: se anotan para el árbol final y se DESCARTAN las
-/// medidas de las categorías seguras (eran de antes de limpiar: el titular y "Limpiar lo seguro" no pueden seguir ofreciendo
-/// lo que ya no está). `update_measures` vuelve a medir cada fila terminada en el siguiente dibujo.
+/// A cleanup launched during the scan just removed things from the disk: they are noted for the final tree and the things are DISCARDED.
+/// measures of the safe categories (were from before cleaning: the headline and "Clean the safe" can no longer offer
+/// what is no longer there). `update_measures` remeasures each finished row in the following drawing.
 fn absorb_removed(
     measures: &mut HashMap<CategoryId, Measure>,
     cleaned: &mut Vec<tesela_cleaner::Removed>,
@@ -140,23 +140,23 @@ fn absorb_removed(
     measures.clear();
 }
 
-/// La medida de una categoría segura.
+/// The measure of a safe category.
 enum Measure {
     Computing(crossbeam_channel::Receiver<Plan>),
     Done(u64),
 }
 
-/// Nombre canónico en minúsculas para comparar rutas (formas largas, sin `\\?\`).
+/// Lowercase canonical name for path comparison (long forms, without `\\?\`).
 fn canon_key(p: &Path) -> Option<String> {
     let c = std::fs::canonicalize(p).ok()?;
     Some(dunce::simplified(&c).to_string_lossy().to_lowercase())
 }
 
-/// Arranca el escaneo real y empareja las rutas prioritarias con su clase (hilo auxiliar).
+/// Starts the actual scan and matches the priority routes with their class (helper thread).
 fn start_real(req: &ScanRequest, startup: &Startup) -> Result<Real, StartError> {
     let cancel = &startup.cancel;
-    // Fase 0: si la pantalla ya se cerró o se canceló (descartar), no se empieza nada. Con "Parar y ver" (que activa la
-    // misma bandera pero no descarta) sí se arranca: el escaneo se construye con lo que se alcance a listar.
+    // Phase 0: If the screen has already been closed or canceled (discarded), nothing is started. With "Stop and See" (which activates the
+    // same flag but it does not discard) it is started: the scan is built with what can be listed.
     if startup
         .slot
         .lock()
@@ -168,8 +168,8 @@ fn start_real(req: &ScanRequest, startup: &Startup) -> Result<Real, StartError> 
     let mut opts = ScanOptions::new(&req.root);
     opts.cancel = Some(cancel.clone());
     let handle = tesela_scanner::start(opts).map_err(StartError::Scan)?;
-    // Fase 2: nombrar las rutas conocidas (E/S: lista carpetas de los navegadores). Si se canceló mientras arrancaba el
-    // escaneo, se omite: el resultado se va a descartar (o a mostrar tal cual con "Parar y ver").
+    // Phase 2: name the known paths (I/O: browser folder list). If it was canceled while booting
+    // scan, is skipped: the result is to be discarded (or displayed as is with "Stop and View").
     if cancel.load(Ordering::SeqCst) {
         let progress = handle.progress().clone();
         #[cfg(test)]
@@ -180,7 +180,7 @@ fn start_real(req: &ScanRequest, startup: &Startup) -> Result<Real, StartError> 
             kinds: Vec::new(),
         });
     }
-    // Las rutas prioritarias salen canónicas; se emparejan con las candidatas (también canónicas) para nombrarlas.
+    // Priority routes come out canonical; They are paired with the candidates (also canonical) to name them.
     let drive_root = req.drive.as_ref().map(|d| d.root());
     let labeled =
         tesela_scanner::known_paths_labeled(drive_root.as_deref().or(Some(req.root.as_path())));
@@ -206,15 +206,15 @@ fn start_real(req: &ScanRequest, startup: &Startup) -> Result<Real, StartError> 
 }
 
 impl ScanScreen {
-    /// Escaneo real de `req.root`. Arrancarlo (abrir y listar la raíz, resolver las rutas prioritarias) es E/S que puede
-    /// tardar en un disco frío o de red: se hace en un hilo y la pantalla aparece al instante.
+    /// Actual scan of `req.root`. Booting it (open and list root, resolve priority routes) is I/O that can
+    /// take a while on a cold or network disk: it is done in one thread and the screen appears instantly.
     pub fn real(
         ctx: &egui::Context,
         req: ScanRequest,
         animate: bool,
         backend: Arc<dyn Backend>,
     ) -> ScanScreen {
-        // El token de cancelación existe antes que el hilo y viaja en `ScanOptions`.
+        // The cancellation token exists before the thread and travels in `ScanOptions`.
         let startup = Arc::new(Startup::default());
         let (c, r, s) = (ctx.clone(), req.clone(), startup.clone());
         let guard = ActiveGuard::new();
@@ -224,7 +224,7 @@ impl ScanScreen {
             {
                 let mut slot = s.slot.lock().unwrap_or_else(|e| e.into_inner());
                 if slot.cancelled {
-                    // Se cerró o canceló la pantalla mientras arrancaba: nadie lo espera, que los hilos terminen.
+                    // The screen was closed or canceled while booting: no one expects it, let the threads end.
                     if let Ok(real) = &res
                         && let Some(h) = &real.handle
                     {
@@ -252,7 +252,7 @@ impl ScanScreen {
         }
     }
 
-    /// Escaneo simulado sobre el árbol sintético. `frozen` fija la fracción (capturas y pruebas).
+    /// Simulated scan on the synthetic tree. `frozen` sets the fraction (captures and tests).
     pub fn demo(
         req: ScanRequest,
         frozen: Option<f32>,
@@ -289,13 +289,13 @@ impl ScanScreen {
         }
     }
 
-    /// (tarjeta de sitios conocidos, tarjeta del mapa): ¿se desplaza su contenido porque no cabe? (para los tests)
+    /// (known places card, map card): Is its content displaced because it doesn't fit? (for tests)
     #[cfg(test)]
     pub(crate) fn overflow(&self) -> (bool, bool) {
         self.overflow
     }
 
-    /// La bandera de cancelación del arranque, si la pantalla sigue arrancando (para los tests).
+    /// The boot abort flag, if the screen continues to boot (for testing).
     #[cfg(test)]
     fn startup_cancel(&self) -> Option<Arc<AtomicBool>> {
         match &self.kind {
@@ -304,12 +304,12 @@ impl ScanScreen {
         }
     }
 
-    /// Nombre de lo que se escanea.
+    /// Name of what is scanned.
     pub fn label(&self) -> &str {
         &self.req.label
     }
 
-    /// Pide cancelar (los hilos terminan solos y el resultado se descarta).
+    /// Requests to cancel (the threads terminate themselves and the result is discarded).
     pub fn cancel(&mut self) {
         self.discard = true;
         match &self.kind {
@@ -319,11 +319,11 @@ impl ScanScreen {
                 }
             }
             Kind::Starting(s) => {
-                // Primero la bandera: el arranque la ve entre fases sin esperar al candado.
+                // First the flag: the boot sees it between phases without waiting for the lock.
                 s.cancel.store(true, Ordering::SeqCst);
                 let mut slot = s.slot.lock().unwrap_or_else(|e| e.into_inner());
                 slot.cancelled = true;
-                // Si el resultado ya llegó pero la pantalla no lo ha recogido, se cancela aquí.
+                // If the result has already arrived but the screen has not picked it up, it is canceled here.
                 if let Some(Ok(real)) = &slot.result
                     && let Some(h) = &real.handle
                 {
@@ -340,21 +340,21 @@ impl ScanScreen {
             .clamp(0.0, 1.0)
     }
 
-    /// ¿Se está ejecutando una limpieza lanzada desde esta pantalla ("Limpiar lo seguro")?
+    /// Is a cleanup launched from this screen ("Wipe Safe") running?
     pub(crate) fn clean_running(&self) -> bool {
         self.flow.is_running()
     }
 
-    /// Anota que se intentó cerrar la ventana durante la ejecución (la ventana de progreso lo explica).
+    /// Note that an attempt was made to close the window during execution (the progress window explains this).
     pub(crate) fn block_close(&mut self) {
         self.flow.block_close();
     }
 
-    /// Avanza el escaneo: si terminó, devuelve el resultado.
+    /// Advances the scan: if finished, returns the result.
     pub fn poll(&mut self, ctx: &egui::Context) -> Option<ScanOutcome> {
         let started = self.started;
-        // La limpieza que se lance durante el escaneo avanza aquí; mientras haya una ventana de la limpieza abierta o un
-        // resumen a la vista, el resultado del escaneo espera (no se le quita la pantalla al usuario a mitad de limpiar).
+        // Any cleanup launched during the scan advances here; while there is a cleaning window open or a
+        // summary in view, the scan result awaits (the screen is not removed from the user in the middle of cleaning).
         self.flow.poll(ctx, &self.backend, false);
         for ev in self.flow.take_events() {
             let FlowEvent::Removed(v) = ev;
@@ -445,7 +445,7 @@ impl ScanScreen {
     fn stop(&mut self) {
         match &mut self.kind {
             Kind::Starting(s) => {
-                // "Parar y ver" antes de que arranque: la misma bandera hace que el escaneo se construya con lo recibido.
+                // "Stop and see" before it starts: the same flag causes the scan to be built from what was received.
                 s.cancel.store(true, Ordering::SeqCst);
                 self.stop_pending = true;
             }
@@ -460,28 +460,30 @@ impl ScanScreen {
 }
 
 impl Drop for ScanScreen {
-    /// Cerrar la pantalla (volver al inicio, lanzar otro escaneo) cancela el escaneo en marcha: los hilos no se quedan
-    /// trabajando para nadie.
+    /// Closing the screen (return to start, launch another scan) cancels the scan in progress: threads do not stay
+    /// working for nobody.
     fn drop(&mut self) {
         self.cancel();
     }
 }
 
-/// Una fila de "sitios conocidos".
+/// A row of "known sites".
 struct Row {
     name: String,
     bytes: u64,
     done: bool,
-    /// Datos del usuario (Descargas, Papelera): riesgo "Revisar". Se enseñan, pero NO cuentan en la cifra grande de
-    /// "sitios conocidos" (PLAN.md §2.4: el titular suma solo lo seguro) y llevan la etiqueta "Revisar".
+    /// User data (Downloads, Recycle Bin): "Review" risk. These items are shown but do NOT count toward the large number of
+    /// "known sites" (PLAN.md §2.4: the owner adds only what is safe) and are labeled "Review".
     review: bool,
-    /// Categoría segura de la fila (la que mide el `cleaner` al terminar), si la tiene.
+    /// Bug reports or crash dumps (also "Review"): carry their own "don't count" phrase.
+    diag: bool,
+    /// Safe category of the row (the one measured by the `cleaner` at the end), if it has one.
     safe: Option<CategoryId>,
-    /// El navegador de esta caché está abierto: la fila no cuenta y dice "Cierra X para liberar hasta N".
+    /// This cache's browser is open - the row doesn't count and says "Close X to free up to N".
     blocked: Option<&'static str>,
 }
 
-/// La categoría segura de una clase de sitio conocido (Descargas y la Papelera no lo son: son datos del usuario).
+/// Whether a known category is safe (Downloads and the Recycle Bin are not; they contain user data).
 fn safe_category(k: Option<KnownKind>) -> Option<CategoryId> {
     match k? {
         KnownKind::UserTemp => Some(CategoryId::UserTemp),
@@ -489,7 +491,11 @@ fn safe_category(k: Option<KnownKind>) -> Option<CategoryId> {
         KnownKind::ChromeCache => Some(CategoryId::ChromeCache),
         KnownKind::EdgeCache => Some(CategoryId::EdgeCache),
         KnownKind::FirefoxCache => Some(CategoryId::FirefoxCache),
-        KnownKind::Downloads | KnownKind::RecycleBin => None,
+        // User or diagnostic data: "Review" risk, never the "safe" category of a row.
+        KnownKind::Downloads
+        | KnownKind::RecycleBin
+        | KnownKind::WerReports
+        | KnownKind::CrashDumps => None,
     }
 }
 
@@ -502,17 +508,27 @@ fn kind_of_key(key: &str) -> Option<KnownKind> {
         "known-firefox-cache" => KnownKind::FirefoxCache,
         "known-downloads" => KnownKind::Downloads,
         "known-recycle-bin" => KnownKind::RecycleBin,
+        "known-wer-reports" => KnownKind::WerReports,
+        "known-crash-dumps" => KnownKind::CrashDumps,
         _ => return None,
     })
 }
 
-/// ¿Es una clase de sitio conocido con datos del usuario (riesgo "Revisar", nunca "seguro")?
+/// Is it some kind of known site with user or diagnostic data ("Review" risk, never "safe")?
 fn kind_is_review(k: Option<KnownKind>) -> bool {
-    matches!(k, Some(KnownKind::Downloads | KnownKind::RecycleBin))
+    matches!(
+        k,
+        Some(
+            KnownKind::Downloads
+                | KnownKind::RecycleBin
+                | KnownKind::WerReports
+                | KnownKind::CrashDumps
+        )
+    )
 }
 
-/// Junta las rutas prioritarias de la misma clase en una sola fila (suma de bytes; terminada si todas lo están), en el
-/// orden de la primera aparición de cada clase.
+/// Gathers priority routes of the same class into a single row (sum of bytes; terminated if all are terminated), in the
+/// order of the first appearance of each class.
 fn group_by_kind(
     items: impl IntoIterator<Item = (Option<KnownKind>, u64, bool)>,
 ) -> Vec<(Option<KnownKind>, u64, bool)> {
@@ -538,24 +554,26 @@ fn kind_key(k: Option<KnownKind>) -> &'static str {
         Some(KnownKind::FirefoxCache) => "known-firefox-cache",
         Some(KnownKind::Downloads) => "known-downloads",
         Some(KnownKind::RecycleBin) => "known-recycle-bin",
+        Some(KnownKind::WerReports) => "known-wer-reports",
+        Some(KnownKind::CrashDumps) => "known-crash-dumps",
         None => "known-other",
     }
 }
 
-/// Valores que la pantalla enseña (de un escaneo real o simulado).
+/// Values ​​that the screen shows (from a real or simulated scan).
 struct View {
     files: u64,
     bytes: u64,
     total: Option<u64>,
     errors: u64,
     rows: Vec<Row>,
-    /// (nombre, bytes, terminado) de las carpetas de primer nivel, de mayor a menor.
+    /// (name, bytes, finished) of the first level folders, from highest to lowest.
     bars: Vec<(String, u64, bool)>,
     finished: bool,
     fraction: Option<f32>,
-    /// Lo que se puede liberar sin riesgo (suma de lo medido por el `cleaner` de las filas seguras terminadas).
+    /// What can be released without risk (sum of what is measured by the `cleaner` of the completed safe rows).
     safe_sum: u64,
-    /// Todas las filas terminaron y ninguna medida está pendiente: "Limpiar lo seguro" se puede pulsar.
+    /// All rows are finished and no action is pending: "Clear safe" can be clicked.
     can_clean: bool,
 }
 
@@ -583,7 +601,7 @@ fn view_of(s: &ScanScreen, env: &Env) -> View {
             let p = &r.progress;
             let load = std::sync::atomic::Ordering::Relaxed;
             let bytes = p.alloc.load(load);
-            // Un navegador tiene varias carpetas de caché (por perfil): una sola fila por clase.
+            // A browser has multiple cache folders (per profile): a single row per class.
             let rows = group_by_kind(
                 p.priority_targets()
                     .iter()
@@ -596,6 +614,7 @@ fn view_of(s: &ScanScreen, env: &Env) -> View {
                 bytes,
                 done,
                 review: kind_is_review(k),
+                diag: matches!(k, Some(KnownKind::WerReports | KnownKind::CrashDumps)),
                 safe: safe_category(k),
                 blocked: None,
             })
@@ -635,12 +654,13 @@ fn view_of(s: &ScanScreen, env: &Env) -> View {
                     name: env.tr.t(key),
                     bytes: (*bytes as f32 * (f / end).min(1.0)) as u64,
                     done: f >= *end,
-                    review: matches!(*key, "known-downloads" | "known-recycle-bin"),
+                    review: kind_is_review(kind_of_key(key)),
+                    diag: false,
                     safe: safe_category(kind_of_key(key)),
                     blocked: None,
                 })
                 .collect();
-            // Cada carpeta avanza a su ritmo: las más grandes tardan más en completarse.
+            // Each folder progresses at its own pace: larger ones take longer to complete.
             let bars = d
                 .top
                 .iter()
@@ -676,10 +696,10 @@ fn card_frame(pal: &Palette) -> egui::Frame {
         .inner_margin(Margin::symmetric(28, 24))
 }
 
-/// Pinta la pantalla de escaneo.
+/// Paint the scan screen.
 pub fn show(ui: &mut Ui, env: &mut Env, s: &mut ScanScreen) {
     let pal = env.pal;
-    // El resumen de una limpieza lanzada desde aquí ocupa la ventana; al volver se sigue con el escaneo.
+    // The summary of a cleanup launched from here occupies the window; When you return, the scan continues.
     if s.flow.in_summary() {
         match s.flow.show_summary(ui, env) {
             Some(SummaryClick::EmptyNow) => {
@@ -707,7 +727,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, s: &mut ScanScreen) {
                 .inner_margin(Margin::symmetric(40, 28)),
         )
         .show(ui, |ui| {
-            // Título y botones en una fila; las cifras, debajo (en una ventana estrecha no caben las tres cosas).
+            // Title and buttons in a row; the figures, below (all three things cannot fit in a narrow window).
             ui.horizontal(|ui| {
                 ui.label(
                     RichText::new(env.tr.t("scan-title"))
@@ -757,7 +777,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, s: &mut ScanScreen) {
                 ui.label(RichText::new(counts).color(pal.text_muted));
             }
             ui.add_space(6.0);
-            // Barra de progreso general.
+            // General progress bar.
             let frac = v.fraction;
             let (bar_rect, bar_resp) =
                 ui.allocate_exact_size(vec2(ui.available_width(), 8.0), egui::Sense::hover());
@@ -781,8 +801,8 @@ pub fn show(ui: &mut Ui, env: &mut Env, s: &mut ScanScreen) {
                         .rect_filled(r, CornerRadius::same(4), pal.accent);
                 }
                 None => {
-                    // Sin total conocido (una carpeta): un tramo que va y viene; con "reducir animaciones", un tramo
-                    // fijo y sin repintado (el progreso REAL de los contadores se repinta por su cuenta cada 50 ms).
+                    // Without a known total (a folder): a section that comes and goes; with "reduce animations", a stretch
+                    // fixed and no repaint (ACTUAL progress counters repaint on their own every 50 ms).
                     let t = ui.input(|i| i.time) as f32;
                     let r = widgets::indeterminate_segment(bar_rect, t, env.animate);
                     ui.painter()
@@ -801,7 +821,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, s: &mut ScanScreen) {
             );
             ui.add_space(14.0);
 
-            // Dos tarjetas: sitios conocidos (izquierda) y el mapa que se llena (derecha).
+            // Two cards: known places (left) and the map that is filled (right).
             let avail = ui.available_rect_before_wrap();
             let right_w = 460.0f32.min(avail.width() * 0.45);
             let left_rect = egui::Rect::from_min_max(
@@ -813,7 +833,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, s: &mut ScanScreen) {
                 avail.max,
             );
 
-            // Cada tarjeta se desplaza si su contenido no cabe (ventana mínima): nada se corta sin barra a la vista.
+            // Each card is moved if its contents do not fit (minimum window): nothing is cut without a bar in sight.
             let (mut left_over, mut right_over) = (false, false);
             ui.scope_builder(egui::UiBuilder::new().max_rect(left_rect), |ui| {
                 card_frame(&pal).show(ui, |ui| {
@@ -862,7 +882,7 @@ impl ScanScreen {
         }
     }
 
-    /// Recoge las medidas terminadas, lanza la de cada fila segura que acaba de terminar y calcula el titular.
+    /// Collect the finished measurements, throw the one of each safe row that you just finished and calculate the headline.
     fn update_measures(&mut self, ctx: &egui::Context, v: &mut View) {
         let mut finished = Vec::new();
         for (id, m) in &self.measures {
@@ -923,7 +943,7 @@ impl ScanScreen {
             && !self.flow.busy();
     }
 
-    /// "Limpiar lo seguro": la cesta son las categorías seguras que se pueden limpiar ahora, y se pasa a la confirmación.
+    /// "Clear safe": the basket is the safe categories that can be cleaned now, and it is moved to confirmation.
     fn start_safe_clean(&mut self, ctx: &egui::Context, env: &Env, v: &View) {
         self.flow.basket.clear();
         for r in &v.rows {
@@ -940,13 +960,13 @@ impl ScanScreen {
     }
 }
 
-/// Ancho del botón "Limpiar lo seguro" que se reserva a su derecha cuando la tarjeta es ancha.
+/// Width of the "Clear Secure" button that is reserved to its right when the card is wide.
 const CLEAN_BUTTON_W: f32 = 190.0;
 
 fn known_places(ui: &mut Ui, env: &mut Env, v: &View, clean_click: &mut bool) {
     let pal = env.pal;
-    // El texto (que se ajusta al ancho) y el botón NUNCA se pisan: con sitio, el botón va a la derecha en su propia
-    // columna reservada; si no (tarjeta estrecha, ventana mínima), el botón va debajo del texto.
+    // The text (which fits to width) and the button NEVER step on each other: with room, the button goes to the right on its own
+    // reserved column; otherwise (narrow card, minimal window), the button goes below the text.
     let side_by_side = ui.available_width() >= 560.0;
     let text_w = if side_by_side {
         ui.available_width() - CLEAN_BUTTON_W - 16.0
@@ -959,8 +979,8 @@ fn known_places(ui: &mut Ui, env: &mut Env, v: &View, clean_click: &mut bool) {
                 .size(13.0)
                 .color(pal.text_muted),
         );
-        // Solo lo seguro y medido por el `cleaner` (con la antigüedad y las protecciones reales): Descargas y la Papelera
-        // se muestran pero no cuentan aquí.
+        // Only what is safe and measured by `cleaner` (with age and real protections): Downloads and Recycle Bin
+        // They are shown but not counted here.
         let all_done = !v.rows.is_empty() && v.rows.iter().all(|r| r.done);
         let headline = if v.safe_sum == 0 && !all_done {
             env.tr.t("scan-measuring")
@@ -980,9 +1000,16 @@ fn known_places(ui: &mut Ui, env: &mut Env, v: &View, clean_click: &mut bool) {
                 .size(13.0)
                 .color(pal.text_muted),
         );
-        if v.rows.iter().any(|r| r.review) {
+        if v.rows.iter().any(|r| r.review && !r.diag) {
             ui.label(
                 RichText::new(env.tr.t("scan-known-excluded"))
+                    .size(13.0)
+                    .color(pal.text_muted),
+            );
+        }
+        if v.rows.iter().any(|r| r.diag) {
+            ui.label(
+                RichText::new(env.tr.t("scan-known-excluded-diag"))
                     .size(13.0)
                     .color(pal.text_muted),
             );
@@ -1168,9 +1195,9 @@ fn live_map(ui: &mut Ui, env: &mut Env, v: &View) {
     .on_hover_text(env.tr.t("next-version"));
 }
 
-/// ¿Son estimados los tamaños de este escaneo? Sí si se usó el respaldo `FindFirstFileExW` en todo el escaneo
-/// (`FindFallback`) o en algún directorio (`Mixed`): ahí `alloc` es un redondeo del EOF al clúster, no hay `FileId` para
-/// deduplicar enlaces duros y los directorios miden 0. Solo `Extended` es exacto.
+/// Are the sizes of this scan estimated? Yes if `FindFirstFileExW` backup was used in the entire scan
+/// (`FindFallback`) or in some directory (`Mixed`): there `alloc` is a rounding from the EOF to the cluster, there is no `FileId` for
+/// deduplicate hard links and directories measure 0. Only `Extended` is exact.
 pub(crate) fn is_approximate(api: tesela_scanner::ApiUsed) -> bool {
     use tesela_scanner::ApiUsed;
     match api {
@@ -1179,7 +1206,7 @@ pub(crate) fn is_approximate(api: tesela_scanner::ApiUsed) -> bool {
     }
 }
 
-/// Información del escaneo que se conserva en la pantalla de exploración.
+/// Scan information retained on the scan screen.
 pub(crate) fn info_from_summary(
     req: &ScanRequest,
     summary: &tesela_scanner::ScanSummary,
@@ -1201,7 +1228,7 @@ pub(crate) fn info_from_summary(
     }
 }
 
-/// Registro de escaneos arrancados y cancelados, para que las pruebas comprueben que ninguno queda huérfano.
+/// Record of scans started and canceled, so that tests verify that none are orphaned.
 #[cfg(test)]
 pub(crate) mod test_hooks {
     use std::path::{Path, PathBuf};
@@ -1220,11 +1247,11 @@ pub(crate) mod test_hooks {
     pub fn cancelled(p: &Arc<Progress>) {
         CANCELLED.lock().unwrap().push(p.clone());
     }
-    /// Hilos de arranque vivos ahora mismo (en todo el proceso de pruebas).
+    /// Boot threads alive right now (throughout testing).
     pub fn active_startups() -> usize {
         super::ACTIVE_STARTUPS.load(std::sync::atomic::Ordering::SeqCst)
     }
-    /// (escaneos arrancados con esa raíz, de ellos cancelados)
+    /// (scans started with that root, of them canceled)
     pub fn counts(root: &Path) -> (usize, usize) {
         let started: Vec<_> = STARTED
             .lock()
@@ -1267,7 +1294,7 @@ mod removed_tests {
             "las medidas de antes de limpiar no valen"
         );
         assert_eq!(cleaned, vec![r.clone()]);
-        // Se acumulan entre limpiezas.
+        // They accumulate between cleanings.
         absorb_removed(&mut measures, &mut cleaned, vec![r.clone()]);
         assert_eq!(cleaned.len(), 2);
     }
@@ -1281,7 +1308,7 @@ mod group_tests {
         Arc::new(crate::demo_backend::DemoBackend::new(Duration::ZERO))
     }
 
-    /// Carpeta temporal propia (solo se borra lo creado aquí, bajo la carpeta temporal).
+    /// Own temporary folder (only what was created here, under the temporary folder, is deleted).
     struct Temp(std::path::PathBuf);
     impl Temp {
         fn new() -> Temp {
@@ -1304,7 +1331,7 @@ mod group_tests {
         }
     }
 
-    /// Espera a que no quede ningún hilo de arranque vivo.
+    /// Wait until there are no live starter threads left.
     fn wait_no_active_startups() {
         let t0 = Instant::now();
         while test_hooks::active_startups() != 0 {
@@ -1317,23 +1344,23 @@ mod group_tests {
     fn el_token_de_cancelacion_nace_con_la_pantalla_y_lo_activan_cancelar_parar_y_soltar() {
         let t = Temp::new();
         let ctx = egui::Context::default();
-        // Cancelar activa la bandera al instante, sin esperar al hilo de arranque.
+        // Cancel raises the flag instantly, without waiting for the boot thread.
         let mut s = ScanScreen::real(&ctx, t.req(), false, test_backend());
         let flag = s.startup_cancel().expect("arrancando");
         s.cancel();
         assert!(flag.load(Ordering::SeqCst), "cancelar activa el token");
-        // "Parar y ver" también (el escaneo se construye con lo recibido), sin descartar.
+        // "Stop and see" too (the scan is built with what is received), without discarding.
         let mut s2 = ScanScreen::real(&ctx, t.req(), false, test_backend());
         let flag2 = s2.startup_cancel().unwrap();
         s2.stop();
         assert!(flag2.load(Ordering::SeqCst), "parar activa el token");
         assert!(!s2.discard);
-        // Soltar la pantalla (Drop) también.
+        // Drop the screen (Drop) as well.
         let s3 = ScanScreen::real(&ctx, t.req(), false, test_backend());
         let flag3 = s3.startup_cancel().unwrap();
         drop(s3);
         assert!(flag3.load(Ordering::SeqCst), "soltar activa el token");
-        // Los hilos de arranque terminan y no se acumulan.
+        // Boot threads terminate and do not accumulate.
         drop(s);
         drop(s2);
         wait_no_active_startups();
@@ -1360,6 +1387,12 @@ mod group_tests {
     fn descargas_y_papelera_son_datos_del_usuario_y_no_cuentan_como_seguros() {
         assert!(kind_is_review(Some(KnownKind::Downloads)));
         assert!(kind_is_review(Some(KnownKind::RecycleBin)));
+        // Bug Reports and Dumps: Also "Review", no secure category.
+        for k in [KnownKind::WerReports, KnownKind::CrashDumps] {
+            assert!(kind_is_review(Some(k)), "{k:?}");
+            assert_eq!(safe_category(Some(k)), None, "{k:?}");
+            assert_eq!(kind_of_key(kind_key(Some(k))), Some(k), "{k:?}");
+        }
         for k in [
             KnownKind::UserTemp,
             KnownKind::WindowsTemp,

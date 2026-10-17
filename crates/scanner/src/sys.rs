@@ -1,7 +1,7 @@
-//! Llamadas a la API de Windows para listar directorios y consultar volúmenes. SOLO LECTURA.
+//! Windows API calls for listing directories and querying volumes. READ-ONLY.
 //!
-//! Todo el `unsafe` del enumerador está en este módulo, en funciones pequeñas con su `// SAFETY:`. Los tests de abajo
-//! (y los de integración del escáner) pasan por cada una de ellas. Nada abre archivos con acceso de escritura.
+//! All enumerator `unsafe` code is in this module, in small functions with their own `// SAFETY:` notes. The tests below
+//! (and scanner integration tests) exercise every function. Nothing opens files with write access.
 #![allow(unsafe_code)]
 
 use std::ffi::c_void;
@@ -32,10 +32,10 @@ use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 
 pub use windows_sys::Win32::Storage::FileSystem::{FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES};
 
-/// Tamaño (en bytes) del búfer de enumeración por hilo.
+/// Enumeration buffer size per thread, in bytes.
 pub const BUF_BYTES: usize = 64 * 1024;
 
-/// Convierte una ruta en UTF-16 sin NUL final.
+/// Convert a path to UTF-16 without a trailing NUL.
 pub fn wide(path: &Path) -> Vec<u16> {
     path.as_os_str().encode_wide().collect()
 }
@@ -47,35 +47,34 @@ fn with_nul(path: &[u16]) -> Vec<u16> {
     v
 }
 
-/// Handle de directorio que se cierra al soltarlo.
+/// Directory handle, closed when dropped.
 pub struct DirHandle(HANDLE);
 
-// SAFETY: un HANDLE de archivo del kernel se puede usar y cerrar desde cualquier hilo; aquí además cada `DirHandle`
-// pertenece a un solo hilo a la vez.
+// SAFETY: a kernel file HANDLE can be used and closed from any thread; each `DirHandle` here is also owned by one thread at a time.
 unsafe impl Send for DirHandle {}
 
 impl Drop for DirHandle {
     fn drop(&mut self) {
-        // SAFETY: `self.0` es un handle válido que abrió `open_dir` y que solo se cierra aquí, una vez.
+        // SAFETY: `self.0` is a valid handle opened by `open_dir` and is closed only here, exactly once.
         unsafe { CloseHandle(self.0) };
     }
 }
 
-/// Abre un directorio (o un volumen raíz) en SOLO LECTURA: `access` es `FILE_LIST_DIRECTORY` o
-/// `FILE_READ_ATTRIBUTES`; se comparte con todos (lectura, escritura y borrado) para no estorbar a nadie, y se abre el
-/// propio reparse point en vez de seguirlo (salvo con `follow_reparse`, solo para carpetas de la nube). Devuelve el
-/// código de error de Windows si falla.
+/// Open a directory (or volume root) READ-ONLY: `access` is `FILE_LIST_DIRECTORY` or
+/// `FILE_READ_ATTRIBUTES`; share read, write, and delete access so no one is blocked, and open the
+/// reparse point itself instead of following it (unless `follow_reparse` is set, only for cloud folders). Return the
+/// Windows error code on failure.
 pub fn open_dir(path: &[u16], access: u32, follow_reparse: bool) -> Result<DirHandle, u32> {
     let p = with_nul(path);
-    // Un reparse point normal se abre a si mismo (no se sigue). Solo las carpetas de la nube (OneDrive...) se abren
-    // dejando actuar a su filtro, que es lo que permite listarlas.
+    // A normal reparse point is opened itself (not followed). Only cloud folders (OneDrive...) are opened
+    // through their filter, which allows them to be listed.
     let flags = if follow_reparse {
         FILE_FLAG_BACKUP_SEMANTICS
     } else {
         FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT
     };
-    // SAFETY: `p` es una cadena UTF-16 terminada en NUL que vive durante la llamada; los demás argumentos son
-    // constantes o punteros nulos permitidos por la API (sin atributos de seguridad ni plantilla).
+    // SAFETY: `p` is a NUL-terminated UTF-16 string that remains alive for the call; the other arguments are
+    // constants or null pointers allowed by the API (no security attributes or template).
     let h = unsafe {
         CreateFileW(
             p.as_ptr(),
@@ -88,38 +87,38 @@ pub fn open_dir(path: &[u16], access: u32, follow_reparse: bool) -> Result<DirHa
         )
     };
     if h == INVALID_HANDLE_VALUE {
-        // SAFETY: `GetLastError` no tiene precondiciones.
+        // SAFETY: `GetLastError` has no preconditions.
         return Err(unsafe { GetLastError() });
     }
     Ok(DirHandle(h))
 }
 
-/// Metadatos de un directorio abierto con `FILE_READ_ATTRIBUTES`.
+/// Metadata for a directory opened with `FILE_READ_ATTRIBUTES`.
 ///
-/// Se separan los metadatos IMPRESCINDIBLES (atributos, mtime, tamaños: `FileBasicInfo` y `FileStandardInfo`, que
-/// soporta cualquier sistema de archivos) de los OPCIONALES (`file_id` y `reparse_tag`): que el sistema no soporte
-/// la consulta de identidad no impide escanear, se sigue con `FindFirstFileExW`.
+/// REQUIRED metadata (attributes, mtime, sizes: `FileBasicInfo` and `FileStandardInfo`, supported by
+/// any file system) is separated from OPTIONAL metadata (`file_id` and `reparse_tag`): if the system does not support
+/// identity queries, scanning continues with `FindFirstFileExW`.
 #[derive(Clone, Copy, Debug)]
 pub struct DirMeta {
-    /// Identificador de archivo de 128 bits, OPCIONAL: `None` si el sistema de archivos no soporta `FileIdInfo`
-    /// (FAT, exFAT, algunos recursos de red...). Solo lo usan los tests (comprueba que coincide con el `FileId`
-    /// del listado del padre).
+    /// Optional 128-bit file identifier: `None` if the file system does not support `FileIdInfo`
+    /// (FAT, exFAT, some network shares, etc.). Used only by tests (to check that it matches the `FileId`
+    /// from the parent listing).
     #[allow(dead_code)]
     pub file_id: Option<u128>,
     pub attrs: u32,
-    /// Etiqueta de reparse (`FileAttributeTagInfo`); 0 si no es un reparse point o la consulta no está soportada.
+    /// Reparse tag (`FileAttributeTagInfo`); 0 if this is not a reparse point or the query is unsupported.
     pub reparse_tag: u32,
     pub mtime_filetime: i64,
     pub alloc: u64,
     pub logical: u64,
 }
 
-/// Consulta de una clase de información del handle con `GetFileInformationByHandleEx`.
+/// Query a handle information class with `GetFileInformationByHandleEx`.
 fn query_info<T>(h: &DirHandle, class: i32) -> Result<T, u32> {
-    // SAFETY: `T` es una de las estructuras POD de la API (enteros y arrays de bytes), para las que todo-ceros es
-    // un valor válido.
+    // SAFETY: `T` is one of the API's POD structures (integers and byte arrays), for which an all-zero value is
+    // valid.
     let mut v: T = unsafe { std::mem::zeroed() };
-    // SAFETY: `h.0` es un handle válido; el puntero apunta a `v` y se pasa su tamaño exacto.
+    // SAFETY: `h.0` is a valid handle; the pointer refers to `v` and its exact size is passed.
     let ok = unsafe {
         GetFileInformationByHandleEx(
             h.0,
@@ -129,15 +128,15 @@ fn query_info<T>(h: &DirHandle, class: i32) -> Result<T, u32> {
         )
     };
     if ok == 0 {
-        // SAFETY: `GetLastError` no tiene precondiciones.
+        // SAFETY: `GetLastError` has no preconditions.
         return Err(unsafe { GetLastError() });
     }
     Ok(v)
 }
 
-/// Lee los metadatos del directorio. `FILE_BASIC_INFO` y `FILE_STANDARD_INFO` son imprescindibles (un error se
-/// devuelve); `FILE_ID_INFO` y `FILE_ATTRIBUTE_TAG_INFO` son opcionales: si fallan (típicamente 50 o 87, "no
-/// soportado"), el identificador queda en `None` y la etiqueta en 0.
+/// Read directory metadata. `FILE_BASIC_INFO` and `FILE_STANDARD_INFO` are required (errors are
+/// returned); `FILE_ID_INFO` and `FILE_ATTRIBUTE_TAG_INFO` are optional: if they fail (usually 50 or 87, "not
+/// supported"), the identifier is set to `None` and the tag to 0.
 pub fn dir_meta(h: &DirHandle) -> Result<DirMeta, u32> {
     dir_meta_with(
         h,
@@ -149,7 +148,7 @@ pub fn dir_meta(h: &DirHandle) -> Result<DirMeta, u32> {
     )
 }
 
-/// Igual que [`dir_meta`] con las dos consultas opcionales inyectables (los tests simulan que no están soportadas).
+/// Same as [`dir_meta`], with the two optional queries injectable (tests simulate unsupported queries).
 fn dir_meta_with(
     h: &DirHandle,
     id_query: impl FnOnce(&DirHandle) -> Result<u128, u32>,
@@ -158,7 +157,7 @@ fn dir_meta_with(
     let basic: FILE_BASIC_INFO = query_info(h, FileBasicInfo)?;
     let standard: FILE_STANDARD_INFO = query_info(h, FileStandardInfo)?;
     let attrs = basic.FileAttributes;
-    // Una etiqueta solo vale con el atributo de reparse point.
+    // A tag is valid only when the reparse-point attribute is set.
     let reparse_tag = if attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         tag_query(h).unwrap_or(0)
     } else {
@@ -174,11 +173,11 @@ fn dir_meta_with(
     })
 }
 
-/// Abre la ruta que el usuario dio SIN seguir el reparse point del último componente (junction, symlink, punto de
-/// montaje): el handle es el del propio enlace, no el de su destino, y por eso su destino no se abre. Solo pide
-/// `access` (lo normal es `FILE_READ_ATTRIBUTES`). Lo hace la biblioteca estándar (`OpenOptions`), que además antepone
-/// `\\?\` a las rutas largas. Los componentes INTERMEDIOS que sean enlaces los resuelve el sistema como siempre (no
-/// se pueden evitar al abrir una ruta). Devuelve el código de error de Windows si falla.
+/// Open the user-provided path WITHOUT following the final component's reparse point (junction, symlink, or
+/// mount point): the handle refers to the link itself, not its target, so the target is not opened. Request only
+/// `access` (usually `FILE_READ_ATTRIBUTES`). The standard library (`OpenOptions`) does this and also adds
+/// `\\?\` to long paths. The system still resolves INTERMEDIATE link components as usual (they
+/// cannot be avoided when opening a path). Return the Windows error code on failure.
 pub fn open_no_follow(path: &Path, access: u32) -> Result<DirHandle, u32> {
     let file = std::fs::OpenOptions::new()
         .access_mode(access)
@@ -189,46 +188,46 @@ pub fn open_no_follow(path: &Path, access: u32) -> Result<DirHandle, u32> {
     Ok(DirHandle(file.into_raw_handle() as HANDLE))
 }
 
-/// Ruta final canónica del handle (`\\?\C:\...`, letras de las carpetas tal como están en el disco y nombres largos),
-/// calculada SOBRE EL HANDLE ya abierto: con un handle de [`open_no_follow`] sobre un enlace da la ruta del propio
-/// enlace, no la de su destino.
+/// Canonical final path for the handle (`\\?\C:\...`, with on-disk folder casing and long names),
+/// calculated THROUGH THE ALREADY OPEN handle: for a link opened with [`open_no_follow`], this returns the link's path,
+/// not its target's.
 ///
-/// `volume_name` es `VOLUME_NAME_DOS` (letras de unidad y carpetas de montaje) o `VOLUME_NAME_GUID` (`Volume{GUID}`).
+/// `volume_name` is `VOLUME_NAME_DOS` (drive letters and mount folders) or `VOLUME_NAME_GUID` (`Volume{GUID}`).
 fn final_path_with(h: &DirHandle, volume_name: u32) -> Result<PathBuf, u32> {
     let mut buf = vec![0u16; 512];
     loop {
-        // SAFETY: `h.0` es un handle válido; `buf` es escribible y se pasa su longitud exacta en unidades UTF-16. Los
-        // flags son `FILE_NAME_NORMALIZED` (0) más la forma de volumen pedida.
+        // SAFETY: `h.0` is a valid handle; `buf` is writable and its exact length in UTF-16 units is passed. The
+        // flags are `FILE_NAME_NORMALIZED` (0) plus the requested volume format.
         let n = unsafe {
             GetFinalPathNameByHandleW(h.0, buf.as_mut_ptr(), buf.len() as u32, volume_name)
         };
         if n == 0 {
-            // SAFETY: `GetLastError` no tiene precondiciones.
+            // SAFETY: `GetLastError` has no preconditions.
             return Err(unsafe { GetLastError() });
         }
         let n = n as usize;
         if n < buf.len() {
             return Ok(PathBuf::from(std::ffi::OsString::from_wide(&buf[..n])));
         }
-        // Búfer corto: `n` es el tamaño necesario, con el NUL final.
+        // Buffer too small: `n` is the required size, including the trailing NUL.
         buf.resize(n + 1, 0);
     }
 }
 
-/// Una ruta abierta sin seguir el reparse point final, con sus metadatos y su ruta canónica.
+/// An opened path that did not follow its final reparse point, with its metadata and canonical path.
 pub struct Opened {
     pub handle: DirHandle,
     pub meta: DirMeta,
     pub path: PathBuf,
 }
 
-/// [`open_no_follow`] con `FILE_READ_ATTRIBUTES` + [`dir_meta`] + la ruta final del handle (`final_path_with`). El llamante mira `meta` (¿es un
-/// directorio?, ¿un reparse point?) ANTES de usar `path` para recorrer nada.
+/// [`open_no_follow`] with `FILE_READ_ATTRIBUTES` + [`dir_meta`] + the handle's final path (`final_path_with`). The caller checks `meta` (is this a
+/// directory? a reparse point?) BEFORE using `path` for traversal.
 ///
-/// La ruta es la de DOS (`\\?\C:\...`), salvo en la raíz de un volumen abierto por `\\?\Volume{GUID}\` que NO tiene
-/// letra: su nombre DOS es la carpeta donde está montado, y recorrerla reabriría el directorio de reparse (vacío) del
-/// volumen padre. Ahí se conserva la ruta `\\?\Volume{GUID}\` (ver `paths::choose_root_path`). Si el volumen no tiene
-/// ningún nombre DOS, se usa también la de GUID.
+/// The path uses the DOS form (`\\?\C:\...`), except for a volume root opened through `\\?\Volume{GUID}\` that has NO
+/// drive letter: its DOS name is the mount folder, and traversing it would reopen the (empty) reparse directory on the
+/// parent volume. In that case, keep the `\\?\Volume{GUID}\` path (see `paths::choose_root_path`). If the volume has no
+/// DOS name, use the GUID path as well.
 pub fn open_resolved(path: &Path) -> Result<Opened, u32> {
     let handle = open_no_follow(path, FILE_READ_ATTRIBUTES)?;
     let meta = dir_meta(&handle)?;
@@ -245,30 +244,30 @@ pub fn open_resolved(path: &Path) -> Result<Opened, u32> {
     Ok(Opened { handle, meta, path })
 }
 
-/// Forma LARGA (sin nombres 8.3) de `path` (`GetLongPathNameW`), sin abrir ninguna ruta para recorrerla: solo expande
-/// los alias cortos (`PROGRA~1`) de lo que existe. Sirve para que una ruta tomada de una variable de entorno
-/// (`%TEMP%` suele estar en 8.3) se pueda comparar con los nombres del listado. NO sustituye a la validación
-/// componente a componente de `priority`: no resuelve enlaces. Devuelve el código de error de Windows (la ruta no existe...).
+/// Expand `path` to its LONG form (without 8.3 names) using `GetLongPathNameW`, without opening it for traversal: only expand
+/// existing short aliases (`PROGRA~1`). This lets a path from an environment variable
+/// (`%TEMP%` is often in 8.3 form) be compared with listed names. This does NOT replace
+/// `priority`'s component-by-component validation: this does not resolve links. Returns a Windows error code on failure.
 pub fn long_path(path: &Path) -> Result<PathBuf, u32> {
     let p = with_nul(&wide(path));
     let mut buf = vec![0u16; 512];
     loop {
-        // SAFETY: `p` termina en NUL y vive durante la llamada; `buf` es escribible y se pasa su longitud exacta.
+        // SAFETY: `p` is NUL-terminated and remains alive for the call; `buf` is writable and its exact length is passed.
         let n = unsafe { GetLongPathNameW(p.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) };
         if n == 0 {
-            // SAFETY: `GetLastError` no tiene precondiciones.
+            // SAFETY: `GetLastError` has no preconditions.
             return Err(unsafe { GetLastError() });
         }
         let n = n as usize;
         if n < buf.len() {
             return Ok(PathBuf::from(std::ffi::OsString::from_wide(&buf[..n])));
         }
-        // Búfer corto: `n` es el tamaño necesario, con el NUL final.
+        // Buffer too small: `n` is the required size, including the trailing NUL.
         buf.resize(n + 1, 0);
     }
 }
 
-/// Datos de una entrada de directorio tal como los da el listado de su padre.
+/// Directory entry data as reported by the parent's listing.
 #[derive(Clone, Copy, Debug)]
 pub struct EntryInfo {
     pub attrs: u32,
@@ -279,16 +278,16 @@ pub struct EntryInfo {
     pub mtime_filetime: i64,
 }
 
-/// Busca `name` (sin distinguir mayúsculas) en el listado de `parent` y devuelve los datos que el listado da de esa
-/// entrada. Se usa para precrear los ancestros de las rutas prioritarias con EXACTAMENTE los mismos valores que les
-/// daría el recorrido general: el tamaño propio de un directorio que da el listado de su padre puede diferir del que
-/// da `FileStandardInfo` sobre el directorio abierto, y sus `FileId` son los que se comparan al adoptar.
+/// Find `name` (case-insensitive) in `parent`'s listing and return the data reported for that
+/// entry. Used to precreate priority-path ancestors with EXACTLY the same values as
+/// general traversal: a directory's size from its parent's listing may differ from the size
+/// reported by `FileStandardInfo` on the open directory; its `FileId` is used for adoption comparisons.
 #[cfg(test)]
 pub fn find_entry(parent: &[u16], name: &[u16]) -> Result<Option<EntryInfo>, u32> {
     Ok(find_entry_named(parent, name)?.map(|(_, info)| info))
 }
 
-/// [`find_entry`] que además devuelve el nombre EXACTO (mayúsculas y minúsculas del disco) de la entrada encontrada.
+/// [`find_entry`] that also returns the entry's EXACT name (with the on-disk casing).
 pub fn find_entry_named(
     parent: &[u16],
     name: &[u16],
@@ -309,8 +308,8 @@ pub fn find_entry_named(
             },
         )
     };
-    // Una carpeta que distingue mayúsculas puede tener hermanos `Temp`, `temp` y `TEMP`: gana siempre la coincidencia
-    // EXACTA. La insensible solo vale como respaldo y solo si es única (con varias no se sabe cuál es).
+    // A case-sensitive directory may contain siblings `Temp`, `temp`, and `TEMP`: an EXACT match always wins.
+    // A case-insensitive match is only a fallback, and only if it is unique (otherwise the intended one is unknown).
     let mut exact: Option<(Vec<u16>, EntryInfo)> = None;
     let mut insensitive: Option<(Vec<u16>, EntryInfo)> = None;
     let mut insensitive_count = 0u32;
@@ -329,16 +328,16 @@ pub fn find_entry_named(
     }))
 }
 
-/// Una entrada de directorio, independiente de la API que la leyó.
+/// A directory entry, independent of which API read it.
 pub struct RawEntry<'a> {
     pub name: &'a [u16],
     pub attrs: u32,
     pub logical: u64,
-    /// `None` con `FindFirstFileExW` (no da `AllocationSize`).
+    /// `None` with `FindFirstFileExW` (it does not provide `AllocationSize`).
     pub alloc: Option<u64>,
-    /// 0 si la API no lo da.
+    /// 0 if the API does not provide it.
     pub file_id: u128,
-    /// Etiqueta de reparse (solo vale con el atributo `REPARSE_POINT`).
+    /// Reparse tag (valid only when the `REPARSE_POINT` attribute is set).
     pub reparse_tag: u32,
     pub mtime_filetime: i64,
 }
@@ -347,9 +346,9 @@ fn is_dot(name: &[u16]) -> bool {
     name == [b'.' as u16] || name == [b'.' as u16, b'.' as u16]
 }
 
-/// Etiqueta de reparse de una entrada del listado: solo vale con el atributo `REPARSE_POINT`. En
-/// `FILE_ID_EXTD_DIR_INFO` el campo `ReparsePointTag` comparte memoria con `EaSize`: en una entrada que NO es un
-/// reparse point trae el tamaño de sus atributos extendidos, no una etiqueta (y podría parecer una).
+/// Reparse tag for a listed entry: valid only when the `REPARSE_POINT` attribute is set. In
+/// `FILE_ID_EXTD_DIR_INFO`, `ReparsePointTag` shares memory with `EaSize`: for an entry that is NOT a
+/// reparse point, it contains the extended-attributes size, not a tag (and could look like one).
 fn entry_reparse_tag(attrs: u32, raw: u32) -> u32 {
     if attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         raw
@@ -366,12 +365,12 @@ fn read_i64(b: &[u8], at: usize) -> i64 {
     i64::from_ne_bytes(b[at..at + 8].try_into().expect("8 bytes"))
 }
 
-/// Enumera un directorio con `GetFileInformationByHandleEx(FileIdExtdDirectoryInfo)`: una sola pasada da tamaño lógico,
-/// `AllocationSize`, `FileId` de 128 bits y etiqueta de reparse por lotes (PLAN.md §3.3). `buf` es el búfer de trabajo.
-/// Devuelve el código de error de Windows si falla (por ejemplo 87 si el sistema no soporta esta clase).
+/// Enumerates a directory with `GetFileInformationByHandleEx(FileIdExtdDirectoryInfo)`: one pass returns logical size,
+/// `AllocationSize`, 128-bit `FileId`, and reparse tag in batches (PLAN.md §3.3). `buf` is the work buffer.
+/// Returns the Windows error code on failure (for example, 87 if the system does not support this information class).
 ///
-/// Los campos se leen con índices comprobados sobre una vista de bytes del búfer: si el sistema devolviera algo
-/// inconsistente, se produce un error y no una lectura fuera de rango.
+/// Fields are read using checked indices into a byte view of the buffer: inconsistent system data returns an error
+/// rather than causing an out-of-bounds read.
 pub fn enum_dir_extd(
     h: &DirHandle,
     buf: &mut [u64],
@@ -389,8 +388,8 @@ pub fn enum_dir_extd(
     let buf_len = std::mem::size_of_val(buf);
     let mut name: Vec<u16> = Vec::with_capacity(260);
     loop {
-        // SAFETY: `h.0` es un handle de directorio válido; `buf` es memoria escribible de `buf_len` bytes y está
-        // alineada a 8 (es un `[u64]`), como exige la API.
+        // SAFETY: `h.0` is a valid directory handle; `buf` is writable memory of `buf_len` bytes and is
+        // aligned to 8 bytes (it is a `[u64]` array), as required by the API.
         let ok = unsafe {
             GetFileInformationByHandleEx(
                 h.0,
@@ -400,7 +399,7 @@ pub fn enum_dir_extd(
             )
         };
         if ok == 0 {
-            // SAFETY: `GetLastError` no tiene precondiciones.
+            // SAFETY: `GetLastError` has no preconditions.
             let e = unsafe { GetLastError() };
             return if e == ERROR_NO_MORE_FILES {
                 Ok(())
@@ -408,13 +407,13 @@ pub fn enum_dir_extd(
                 Err(e)
             };
         }
-        // SAFETY: `buf` es memoria inicializada de `buf_len` bytes (un `[u64]` entero) y no se modifica mientras
-        // viva esta vista (la siguiente llamada a la API solo ocurre después de soltarla).
+        // SAFETY: `buf` is initialized memory of `buf_len` bytes (a whole `[u64]` array) and is not modified while
+        // this view is alive (the next API call occurs only after it is dropped).
         let bytes: &[u8] =
             unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const u8, buf_len) };
         let mut off = 0usize;
         loop {
-            // El sistema garantiza esto; se comprueba para no panicar nunca por datos inesperados.
+            // The system guarantees this; check it so unexpected data can never cause a panic.
             if !off.is_multiple_of(8) || off + HDR > buf_len {
                 return Err(ERROR_INVALID_DATA);
             }
@@ -452,12 +451,12 @@ pub fn enum_dir_extd(
     }
 }
 
-/// Handle de búsqueda de `FindFirstFileExW`, cerrado al soltarlo (también si `emit` entra en pánico).
+/// `FindFirstFileExW` search handle, closed on drop (including if `emit` panics).
 struct FindHandle(HANDLE);
 
 impl Drop for FindHandle {
     fn drop(&mut self) {
-        // SAFETY: `self.0` es el handle de búsqueda válido que devolvió `FindFirstFileExW`; solo se cierra aquí.
+        // SAFETY: `self.0` is the valid search handle returned by `FindFirstFileExW`; it is closed only here.
         unsafe { FindClose(self.0) };
     }
 }
@@ -471,10 +470,10 @@ pub fn enum_dir_find(path: &[u16], emit: &mut dyn FnMut(&RawEntry)) -> Result<()
     }
     pat.push(b'*' as u16);
     pat.push(0);
-    // SAFETY: WIN32_FIND_DATAW es un POD (enteros y arrays de u16): todo-ceros es válido.
+    // SAFETY: `WIN32_FIND_DATAW` is POD (integers and `u16` arrays); an all-zero value is valid.
     let mut fd: WIN32_FIND_DATAW = unsafe { std::mem::zeroed() };
-    // SAFETY: `pat` termina en NUL; `fd` es escribible y del tipo que espera `FindExInfoBasic`; los demás
-    // argumentos son los valores documentados para una búsqueda sin filtros.
+    // SAFETY: `pat` is NUL-terminated; `fd` is writable and has the type expected by `FindExInfoBasic`; the other
+    // arguments are the documented values for an unfiltered search.
     let h = unsafe {
         FindFirstFileExW(
             pat.as_ptr(),
@@ -486,7 +485,7 @@ pub fn enum_dir_find(path: &[u16], emit: &mut dyn FnMut(&RawEntry)) -> Result<()
         )
     };
     if h == INVALID_HANDLE_VALUE {
-        // SAFETY: `GetLastError` no tiene precondiciones.
+        // SAFETY: `GetLastError` has no preconditions.
         return Err(unsafe { GetLastError() });
     }
     let h = FindHandle(h);
@@ -510,9 +509,9 @@ pub fn enum_dir_find(path: &[u16], emit: &mut dyn FnMut(&RawEntry)) -> Result<()
                     | fd.ftLastWriteTime.dwLowDateTime as i64,
             });
         }
-        // SAFETY: `h.0` es el handle de búsqueda válido que devolvió `FindFirstFileExW`; `fd` es escribible.
+        // SAFETY: `h.0` is the valid search handle returned by `FindFirstFileExW`; `fd` is writable.
         if unsafe { FindNextFileW(h.0, &mut fd) } == 0 {
-            // SAFETY: `GetLastError` no tiene precondiciones.
+            // SAFETY: `GetLastError` has no preconditions.
             let e = unsafe { GetLastError() };
             return if e == ERROR_NO_MORE_FILES {
                 Ok(())
@@ -523,21 +522,21 @@ pub fn enum_dir_find(path: &[u16], emit: &mut dyn FnMut(&RawEntry)) -> Result<()
     }
 }
 
-/// Espacio de un volumen. El ÁMBITO de cada cifra importa y no se mezcla:
+/// Volume space. The SCOPE of each value matters; scopes must not be mixed:
 ///
-/// * Con `volume_scope == true`: `total` es la CAPACIDAD del volumen y `free` lo libre del VOLUMEN entero (`total - free`
-///   es lo usado en el volumen, lo único comparable con lo escaneado para el "espacio no explicado"); `available` es lo
-///   disponible para el USUARIO (menor que `free` si hay cuota de disco).
-/// * Con `volume_scope == false` (hay una cuota y Windows no da la capacidad real del volumen): `total` y `free` son
-///   AMBOS del usuario (su cuota y lo que le queda), coherentes entre sí para enseñarlos, pero NO sirven para el
-///   residuo: no hay "espacio no explicado".
+/// * With `volume_scope == true`, `total` is the volume CAPACITY and `free` is free space on the ENTIRE VOLUME (`total - free`
+///   is used space, the only value comparable with the scan for "unexplained space"); `available` is space AVAILABLE TO THE
+///   USER (less than `free` when a disk quota applies).
+/// * With `volume_scope == false` (a quota applies and Windows cannot provide actual volume capacity), `total` and `free` are
+///   BOTH user-scoped (the user's quota and remaining space), consistent for display but NOT valid for the residual:
+///   there is no "unexplained space".
 ///
-/// Consultas, por orden (`NtQueryVolumeInformationFile`):
-/// 1. `FileFsFullSizeInformationEx` (clase 14, Windows 10 1809+): `ActualTotalAllocationUnits` (volumen),
-///    `ActualAvailableAllocationUnits` (volumen) y `CallerAvailableAllocationUnits` (usuario).
-/// 2. `FileFsFullSizeInformation` (clase 7): con cuota, `TotalAllocationUnits` es lo disponible PARA EL USUARIO (no la
-///    capacidad del volumen), así que solo vale como ámbito de volumen cuando `CallerAvailable == ActualAvailable`.
-/// 3. `GetDiskFreeSpaceExW`: igual, `lpTotalNumberOfBytes` respeta la cuota; solo vale si no hay cuota.
+/// Queries in order (`NtQueryVolumeInformationFile`):
+/// 1. `FileFsFullSizeInformationEx` (class 14, Windows 10 1809+): `ActualTotalAllocationUnits` (volume),
+///    `ActualAvailableAllocationUnits` (volume), and `CallerAvailableAllocationUnits` (user).
+/// 2. `FileFsFullSizeInformation` (class 7): with a quota, `TotalAllocationUnits` is space AVAILABLE TO THE USER (not
+///    volume capacity), so it is volume-scoped only when `CallerAvailable == ActualAvailable`.
+/// 3. `GetDiskFreeSpaceExW`: likewise, `lpTotalNumberOfBytes` accounts for quotas; valid only when no quota applies.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VolumeSizes {
     pub total: u64,
@@ -546,7 +545,7 @@ pub struct VolumeSizes {
     pub volume_scope: bool,
 }
 
-/// `FILE_FS_FULL_SIZE_INFORMATION` (clase 7, `ntifs.h`).
+/// `FILE_FS_FULL_SIZE_INFORMATION` (class 7, `ntifs.h`).
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 struct FsFullSize {
@@ -557,7 +556,7 @@ struct FsFullSize {
     bytes_per_sector: u32,
 }
 
-/// `FILE_FS_FULL_SIZE_INFORMATION_EX` (clase 14, `ntifs.h`; Windows 10 1809+).
+/// `FILE_FS_FULL_SIZE_INFORMATION_EX` (class 14, `ntifs.h`; Windows 10 1809+).
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
 struct FsFullSizeEx {
@@ -576,7 +575,7 @@ struct FsFullSizeEx {
     bytes_per_sector: u32,
 }
 
-// El diseño de las estructuras FFI tiene que ser el del SDK: 3 × 8 + 2 × 4 y 11 × 8 + 2 × 4 bytes.
+// FFI structure layouts must match the SDK: 3 × 8 + 2 × 4 and 11 × 8 + 2 × 4 bytes.
 const _: () = assert!(size_of::<FsFullSize>() == 32);
 const _: () = assert!(size_of::<FsFullSizeEx>() == 96);
 const _: () = assert!(std::mem::offset_of!(FsFullSizeEx, sectors_per_unit) == 88);
@@ -599,7 +598,7 @@ impl FsFullSize {
             b(self.actual_available_units),
         );
         if caller == actual {
-            // Sin cuota que lo distinga: `total` es la capacidad del volumen.
+            // No quota distinguishes the scopes: `total` is the volume capacity.
             let free = actual.min(total);
             Some(VolumeSizes {
                 total,
@@ -608,7 +607,7 @@ impl FsFullSize {
                 volume_scope: true,
             })
         } else {
-            // Con cuota, `total` es lo del usuario: se enseña con lo que le queda a él, y no vale para el residuo.
+            // With a quota, `total` is user-scoped: display it with the user's remaining space, but do not use it for the residual.
             let free = caller.min(total);
             Some(VolumeSizes {
                 total,
@@ -638,12 +637,12 @@ impl FsFullSizeEx {
     }
 }
 
-/// `NtQueryVolumeInformationFile` de la clase `class` sobre el handle, escribiendo en `info`. Devuelve el NTSTATUS si falla.
+/// Query volume information class `class` on the handle, writing into `info`. Returns the NTSTATUS on failure.
 fn nt_query<T>(h: &DirHandle, info: &mut T, class: i32) -> Result<(), i32> {
-    // SAFETY: `IO_STATUS_BLOCK` es un POD (un puntero/entero y un usize): todo-ceros es válido.
+    // SAFETY: `IO_STATUS_BLOCK` is POD (a pointer/integer and a `usize`); an all-zero value is valid.
     let mut iosb: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
-    // SAFETY: `h.0` es un handle de archivo válido; `iosb` e `info` son escribibles y a la API se le pasa el tamaño EXACTO
-    // de `T`, una estructura `repr(C)` con el diseño del SDK (comprobado por los `const assert` de arriba).
+    // SAFETY: `h.0` is a valid file handle; `iosb` and `info` are writable, and the API receives the EXACT size
+    // of `T`, a `repr(C)` structure matching the SDK layout (verified by the `const assert`s above).
     let status = unsafe {
         NtQueryVolumeInformationFile(
             h.0,
@@ -656,36 +655,36 @@ fn nt_query<T>(h: &DirHandle, info: &mut T, class: i32) -> Result<(), i32> {
     if status < 0 { Err(status) } else { Ok(()) }
 }
 
-/// Clase 14 (`FileFsFullSizeInformationEx`). `Err` si el sistema no la soporta (Windows anterior a 1809) o falla.
+/// Class 14 (`FileFsFullSizeInformationEx`). Returns `Err` if unsupported (Windows before 1809) or on failure.
 fn nt_full_size_ex(h: &DirHandle) -> Result<VolumeSizes, i32> {
     let mut info = FsFullSizeEx::default();
     nt_query(h, &mut info, FileFsFullSizeInformationEx)?;
     info.sizes().ok_or(-1)
 }
 
-/// Clase 7 (`FileFsFullSizeInformation`): su ámbito depende de si hay cuota (ver [`FsFullSize::sizes`]).
+/// Class 7 (`FileFsFullSizeInformation`): its scope depends on whether a quota applies (see [`FsFullSize::sizes`]).
 fn nt_full_size(h: &DirHandle) -> Result<VolumeSizes, i32> {
     let mut info = FsFullSize::default();
     nt_query(h, &mut info, FileFsFullSizeInformation)?;
     info.sizes().ok_or(-1)
 }
 
-/// `GetDiskFreeSpaceExW`: (disponible para el usuario, total según la cuota, libre del volumen).
+/// `GetDiskFreeSpaceExW`: (available to the user, total adjusted for quota, free on the volume).
 fn ex_space(path: &[u16]) -> Result<(u64, u64, u64), u32> {
     let p = with_nul(path);
     let (mut avail, mut total, mut free) = (0u64, 0u64, 0u64);
-    // SAFETY: `p` termina en NUL y los tres punteros apuntan a variables locales escritables.
+    // SAFETY: `p` is NUL-terminated and the three pointers refer to writable local variables.
     let ok = unsafe { GetDiskFreeSpaceExW(p.as_ptr(), &mut avail, &mut total, &mut free) };
     if ok == 0 {
-        // SAFETY: `GetLastError` no tiene precondiciones.
+        // SAFETY: `GetLastError` has no preconditions.
         return Err(unsafe { GetLastError() });
     }
     Ok((avail, total, free))
 }
 
-/// Espacio del volumen que contiene `path` (ver [`VolumeSizes`]).
+/// Space on the volume containing `path` (see [`VolumeSizes`]).
 pub fn volume_space(path: &[u16]) -> Result<VolumeSizes, u32> {
-    // Las dos consultas NT comparten el handle (un solo `CreateFileW`).
+    // Both NT queries share the handle (one `CreateFileW` call).
     let handle = open_dir(path, FILE_READ_ATTRIBUTES, false);
     volume_space_with(
         path,
@@ -701,7 +700,7 @@ pub fn volume_space(path: &[u16]) -> Result<VolumeSizes, u32> {
     )
 }
 
-/// Igual que [`volume_space`] con las tres consultas inyectables (los tests simulan cuotas y fallos).
+/// Same as [`volume_space`], with the three queries injectable (tests simulate quotas and failures).
 fn volume_space_with(
     path: &[u16],
     class14: impl FnOnce(&[u16]) -> Result<VolumeSizes, u32>,
@@ -726,7 +725,7 @@ fn volume_space_with(
             volume_scope: true,
         })
     } else {
-        // Con cuota, `total` es el de la cuota: se enseña junto a lo que le queda al usuario y no sirve para el residuo.
+        // With a quota, `total` is the quota limit: display it with the user's remaining space, but do not use it for the residual.
         let left = avail.min(total);
         Ok(VolumeSizes {
             total,
@@ -737,20 +736,20 @@ fn volume_space_with(
     }
 }
 
-/// Bytes por cluster del volumen que contiene `path` (para estimar `alloc` cuando solo hay `FindFirstFileExW`).
+/// Bytes per cluster on the volume containing `path` (to estimate `alloc` when only `FindFirstFileExW` is available).
 pub fn cluster_bytes(path: &[u16]) -> Option<u64> {
     let p = with_nul(path);
     let (mut spc, mut bps, mut free, mut total) = (0u32, 0u32, 0u32, 0u32);
-    // SAFETY: `p` termina en NUL y los cuatro punteros apuntan a variables locales escribibles.
+    // SAFETY: `p` is NUL-terminated and the four pointers refer to writable local variables.
     let ok = unsafe { GetDiskFreeSpaceW(p.as_ptr(), &mut spc, &mut bps, &mut free, &mut total) };
     (ok != 0 && spc != 0 && bps != 0).then(|| spc as u64 * bps as u64)
 }
 
-/// Nombre del sistema de archivos del volumen del handle (p. ej. `NTFS`, `ReFS`, `FAT32`).
+/// File system name for the handle's volume (for example, `NTFS`, `ReFS`, `FAT32`).
 pub fn fs_name(h: &DirHandle) -> Result<String, u32> {
     let mut name = [0u16; 64];
-    // SAFETY: `h.0` es un handle válido; `name` es escribible y se pasa su longitud en unidades UTF-16; los punteros
-    // que no se piden son nulos, como permite la API.
+    // SAFETY: `h.0` is a valid handle; `name` is writable and its length in UTF-16 units is passed; the pointers
+    // that are not requested are null, as permitted by the API.
     let ok = unsafe {
         GetVolumeInformationByHandleW(
             h.0,
@@ -764,7 +763,7 @@ pub fn fs_name(h: &DirHandle) -> Result<String, u32> {
         )
     };
     if ok == 0 {
-        // SAFETY: `GetLastError` no tiene precondiciones.
+        // SAFETY: `GetLastError` has no preconditions.
         return Err(unsafe { GetLastError() });
     }
     let len = name.iter().position(|&c| c == 0).unwrap_or(name.len());
@@ -776,7 +775,7 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
 
-    /// Directorio del propio proyecto (existe siempre durante `cargo test`) para lecturas de prueba.
+    /// The project directory itself (always present during `cargo test`) for test reads.
     fn manifest_dir() -> Vec<u16> {
         wide(Path::new(env!("CARGO_MANIFEST_DIR")))
     }
@@ -807,14 +806,14 @@ mod tests {
         })
         .expect("find");
         let a_logical: BTreeMap<_, _> = a.iter().map(|(k, v)| (k.clone(), v.0)).collect();
-        // Las dos APIs ven los mismos nombres y los mismos tamaños lógicos de los archivos.
+        // Both APIs see the same names and the same logical file sizes.
         assert_eq!(a.keys().collect::<Vec<_>>(), b.keys().collect::<Vec<_>>());
         for (name, l) in &b {
             if a[name].3 & 0x10 == 0 {
                 assert_eq!(a_logical[name], *l, "{name}");
             }
         }
-        // El FileId de Cargo.toml no es 0 y el AllocationSize cubre el tamaño.
+        // Cargo.toml's FileId is not 0, and its AllocationSize covers its size.
         let (logical, alloc, id, _) = a["Cargo.toml"];
         assert_ne!(id, 0);
         assert!(alloc >= logical || alloc == 0);
@@ -838,7 +837,7 @@ mod tests {
         assert!(m.file_id.is_some_and(|id| id != 0));
         assert!(m.attrs & 0x10 != 0, "es un directorio");
         assert!(m.mtime_filetime > 0);
-        // El FileId de `src` visto desde el padre es el mismo que da dir_meta al abrirlo.
+        // The FileId for `src` seen from its parent matches the one returned by dir_meta when it is opened.
         let listed = collect_extd(&path);
         let mut src = path.clone();
         src.extend(r"\src".encode_utf16());
@@ -878,7 +877,7 @@ mod tests {
 
     #[test]
     fn un_nombre_largo_no_rompe_la_enumeracion_extd() {
-        // Cubre la lectura de nombres de longitud variable: el directorio de ejecutables de test tiene nombres largos.
+        // Covers reading variable-length names: the test executable directory has long names.
         let exe = std::env::current_exe().unwrap();
         let dir = exe.parent().unwrap();
         let listed = collect_extd(&wide(dir));
@@ -888,9 +887,9 @@ mod tests {
 
     #[test]
     fn sin_soporte_de_identidad_los_metadatos_imprescindibles_siguen_llegando() {
-        // Inyección de errores: la consulta de FileIdInfo (y la de la etiqueta de reparse) "no están soportadas"
-        // (50 = ERROR_NOT_SUPPORTED, 87 = ERROR_INVALID_PARAMETER). No es un error: el identificador queda en `None` y
-        // el resto de metadatos (atributos, mtime, tamaños) son los mismos que con la consulta real.
+        // Injected failures: the FileIdInfo query (and the reparse-tag query) report "not supported"
+        // (50 = ERROR_NOT_SUPPORTED, 87 = ERROR_INVALID_PARAMETER). This is not an error: the identifier is `None`, and
+        // the remaining metadata (attributes, mtime, sizes) matches the real query.
         let path = manifest_dir();
         let h = open_dir(&path, FILE_READ_ATTRIBUTES, false).unwrap();
         let real = dir_meta(&h).unwrap();
@@ -904,7 +903,7 @@ mod tests {
                 (real.attrs, real.mtime_filetime, real.alloc, real.logical)
             );
         }
-        // Con identificador inyectado, se respeta; la etiqueta de un directorio normal es 0 y su consulta ni se hace.
+        // An injected identifier is preserved; a normal directory's tag is 0, and its query is not made.
         let m = dir_meta_with(&h, |_| Ok(7), |_| panic!("no es un reparse point")).unwrap();
         assert_eq!(m.file_id, Some(7));
         assert_eq!(m.attrs & FILE_ATTRIBUTE_REPARSE_POINT, 0);
@@ -914,14 +913,14 @@ mod tests {
     fn la_etiqueta_de_reparse_de_la_consulta_real_es_cero_en_un_directorio_normal() {
         let path = manifest_dir();
         let h = open_dir(&path, FILE_READ_ATTRIBUTES, false).unwrap();
-        // Recorre la consulta real de la etiqueta (la API de verdad) aunque no sea un reparse point.
+        // Exercises the real tag query (the actual API) even though this is not a reparse point.
         let t: FILE_ATTRIBUTE_TAG_INFO = query_info(&h, FileAttributeTagInfo).unwrap();
         assert_eq!(t.ReparseTag, 0);
         assert_eq!(dir_meta(&h).unwrap().reparse_tag, 0);
     }
 
-    /// Estructura de la clase 7 con cuota: `TotalAllocationUnits` es lo disponible PARA EL USUARIO (su cuota), no la
-    /// capacidad del volumen; 8 sectores de 512 B = unidades de 4096 B.
+    /// Class 7 structure with a quota: `TotalAllocationUnits` is what is available TO THE USER (their quota), not the
+    /// volume capacity; 8 sectors of 512 B = 4096 B units.
     fn class7(total: i64, caller: i64, actual: i64) -> FsFullSize {
         FsFullSize {
             total_units: total,
@@ -951,7 +950,7 @@ mod tests {
 
     #[test]
     fn la_clase_14_con_cuota_da_capacidad_y_libre_del_volumen_y_lo_disponible_del_usuario() {
-        // Volumen de 1000 unidades (4096 B), 400 libres de verdad; cuota del usuario de 100 unidades con 60 libres.
+        // Volume with 1000 units (4096 B), 400 truly free; user quota of 100 units with 60 free.
         let info = FsFullSizeEx {
             actual_total_units: 1000,
             actual_available_units: 400,
@@ -971,7 +970,7 @@ mod tests {
                 volume_scope: true
             }
         );
-        // Usado del volumen = total - libre del volumen (ámbito único).
+        // Volume used = total - volume free (single scope).
         assert_eq!(v.total - v.free, 2_457_600);
         // Valores absurdos se recortan: available <= free <= total.
         let odd = FsFullSizeEx {
@@ -994,13 +993,13 @@ mod tests {
 
     #[test]
     fn la_clase_7_con_cuota_no_da_residuo_y_sin_cuota_si() {
-        // Con cuota: `TotalAllocationUnits` (100) es de la cuota; lo libre real del volumen (400) es mayor que lo que le
-        // queda al usuario (60). `total - free` mezclaría ámbitos: se marca fuera del ámbito de volumen (sin residuo) y se
-        // enseñan las cifras DEL USUARIO, coherentes entre sí.
+        // With a quota, `TotalAllocationUnits` (100) is quota-scoped; the volume's actual free space (400) is greater than
+        // what remains for the user (60). `total - free` would mix scopes: mark the values as outside volume scope (no
+        // residual) and expose the USER-scoped figures, which are consistent with each other.
         let v = class7(100, 60, 400).sizes().unwrap();
         assert!(!v.volume_scope);
         assert_eq!((v.total, v.free, v.available), (409_600, 245_760, 245_760));
-        // Sin cuota: lo disponible para el usuario es lo libre del volumen y `total` es la capacidad.
+        // Without a quota, the user's available space is the volume's free space, and `total` is its capacity.
         let v = class7(1000, 400, 400).sizes().unwrap();
         assert!(v.volume_scope);
         assert_eq!(
@@ -1023,8 +1022,8 @@ mod tests {
     fn las_consultas_reales_de_nt_son_coherentes() {
         let path = manifest_dir();
         let h = open_dir(&path, FILE_READ_ATTRIBUTES, false).unwrap();
-        // La clase 7 existe en todo Windows soportado; la 14 (1809+) también en los equipos de prueba, pero si el sistema
-        // no la soporta la consulta falla con un NTSTATUS y la cadena sigue con la 7.
+        // Class 7 exists on every supported Windows version; class 14 (1809+) is also available on the test machines, but
+        // if the system does not support it, the query returns an NTSTATUS and the sequence continues with class 7.
         let v7 = nt_full_size(&h).expect("FileFsFullSizeInformation");
         assert!(
             v7.total > 0 && v7.available <= v7.free && v7.free <= v7.total,
@@ -1033,7 +1032,7 @@ mod tests {
         if let Ok(v14) = nt_full_size_ex(&h) {
             assert!(v14.volume_scope);
             assert!(v14.total > 0 && v14.available <= v14.free && v14.free <= v14.total);
-            // Sin cuota en el equipo, las dos clases coinciden en la capacidad.
+            // Without a quota on this machine, both classes report the same capacity.
             if v7.volume_scope {
                 assert_eq!(v7.total, v14.total);
             }
@@ -1052,12 +1051,12 @@ mod tests {
             available: 10,
             volume_scope: true,
         };
-        // La clase 14 manda: ni se consultan las demás.
+        // Class 14 takes precedence: the others are not queried.
         assert_eq!(
             volume_space_with(&path, |_| Ok(ok14), |_| panic!("no"), |_| panic!("no")).unwrap(),
             ok14
         );
-        // Sin clase 14 (Windows < 1809): la clase 7 con cuota da cifras del usuario y NO ámbito de volumen.
+        // Without class 14 (Windows < 1809): class 7 with a quota reports user-scoped figures, NOT volume-scoped values.
         let v = volume_space_with(
             &path,
             fail,
@@ -1066,7 +1065,7 @@ mod tests {
         )
         .unwrap();
         assert!(!v.volume_scope);
-        // Sin clase 14 ni 7: GetDiskFreeSpaceExW solo vale sin cuota.
+        // Without class 14 or 7: GetDiskFreeSpaceExW is valid only without a quota.
         let v = volume_space_with(&path, fail, fail, |_| Ok((400, 1000, 400))).unwrap();
         assert_eq!(
             v,
@@ -1090,8 +1089,8 @@ mod tests {
         assert!(total > 0 && avail <= free.max(total));
     }
 
-    /// Carpeta temporal propia (`%TEMP%\tesela-test-<uuid>`) que se borra al soltarla; los junctions se quitan antes como
-    /// enlaces (`remove_dir` sobre un junction borra solo el enlace).
+    /// Test-owned temporary folder (`%TEMP%\tesela-test-<uuid>`) removed on drop; junctions are removed first as links
+    /// (`remove_dir` on a junction removes only the link).
     struct Tmp(PathBuf, Vec<PathBuf>);
 
     impl Tmp {
@@ -1131,13 +1130,13 @@ mod tests {
         let target = t.0.join("destino");
         std::fs::create_dir(&target).unwrap();
         let link = t.junction("enlace", &target);
-        // Con el destino vivo: se abre el ENLACE (atributo REPARSE) y la ruta final es la del enlace, no la del destino.
+        // With the target present: the LINK is opened (REPARSE attribute), and the final path is the link's, not the target's.
         let o = open_resolved(&link).unwrap();
         assert_ne!(o.meta.attrs & FILE_ATTRIBUTE_REPARSE_POINT, 0);
         assert_ne!(o.meta.reparse_tag, 0);
         assert_eq!(dunce::simplified(&o.path), link);
-        // Con el destino borrado seguir el enlace daría ERROR_FILE_NOT_FOUND / ERROR_PATH_NOT_FOUND; un enlace que no se
-        // sigue sigue abriéndose. Es la prueba directa de que el destino no se abre.
+        // With the target deleted, following the link would return ERROR_FILE_NOT_FOUND / ERROR_PATH_NOT_FOUND; a link
+        // that is not followed still opens. This directly proves that the target is not opened.
         drop(o);
         std::fs::remove_dir(&target).unwrap();
         assert!(std::fs::canonicalize(&link).is_err(), "seguirlo fallaría");
@@ -1148,7 +1147,7 @@ mod tests {
 
     #[test]
     fn open_resolved_de_la_raiz_de_una_unidad() {
-        // El caso real más común: la raíz de la unidad del propio proyecto.
+        // The most common real case: the drive root containing the project itself.
         let manifest = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let drive = manifest.components().next().unwrap();
         let root = PathBuf::from(format!("{}\\", drive.as_os_str().to_string_lossy()));
@@ -1163,7 +1162,7 @@ mod tests {
         let t = Tmp::new();
         let sub = t.0.join("Sub Carpeta");
         std::fs::create_dir(&sub).unwrap();
-        // Con otra capitalización y barras mixtas se obtiene la ruta tal como está en el disco.
+        // Different casing and mixed separators still return the path as it appears on disk.
         let sloppy =
             PathBuf::from(t.0.to_string_lossy().to_uppercase().replace('\\', "/") + "/sub carpeta");
         let o = open_resolved(&sloppy).unwrap();
@@ -1172,15 +1171,15 @@ mod tests {
         assert!(open_resolved(&t.0.join("no existe")).is_err());
     }
 
-    /// GM-S1: en el listado extendido el campo de la etiqueta de reparse comparte memoria con `EaSize`; solo vale con el
-    /// atributo `REPARSE_POINT`.
+    /// GM-S1: in extended listings, the reparse-tag field shares memory with `EaSize`; it is valid only with the
+    /// `REPARSE_POINT` attribute.
     #[test]
     fn la_etiqueta_de_reparse_solo_vale_con_el_atributo() {
-        // Un directorio o archivo normal con atributos extendidos (`EaSize` = 0x9000_001A): no es una etiqueta de nube.
+        // A normal directory or file with extended attributes (`EaSize` = 0x9000_001A): this is not a cloud tag.
         assert_eq!(entry_reparse_tag(0x10, 0x9000_001A), 0);
         assert_eq!(entry_reparse_tag(0x20, 0xA000_0003), 0);
         assert_eq!(entry_reparse_tag(0, 7), 0);
-        // Con el atributo, la etiqueta tal cual.
+        // With the attribute, the tag is returned as is.
         assert_eq!(
             entry_reparse_tag(0x10 | FILE_ATTRIBUTE_REPARSE_POINT, 0xA000_0003),
             0xA000_0003
@@ -1236,7 +1235,7 @@ mod tests {
         std::fs::create_dir(&sub).unwrap();
         let long = long_path(&sub).unwrap();
         assert_eq!(dunce::simplified(&long), sub);
-        // La carpeta temporal tal como la da el entorno (a veces en 8.3) también se expande.
+        // The temporary folder as provided by the environment (sometimes in 8.3 form) is expanded too.
         assert!(long_path(&std::env::temp_dir()).is_ok());
         assert_eq!(long_path(&t.0.join("no existe")), Err(2));
     }

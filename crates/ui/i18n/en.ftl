@@ -5,6 +5,16 @@ app-name = Tesela
 settings = Settings
 settings-theme = Theme
 settings-language = Language
+
+# Update check (optional, off by default). What is asked and what is sent is stated honestly.
+settings-update-check = Check for updates when Tesela opens
+settings-update-explain = If you turn this on, Tesela asks GitHub which version is the latest published: when you tick the box and then when it opens (at most once a day). The only thing sent is the name "Tesela": no version and no data about your computer. GitHub sees your IP address, as any website does. Only the latest version number is downloaded; no update is ever downloaded or installed.
+update-available = A new version of Tesela is available: { $v }
+update-view = See what's new
+update-view-hover = Opens that version's page in your browser. Tesela downloads nothing.
+update-dismiss = Dismiss
+update-failed = Could not check for a new version.
+
 about = About Tesela
 about-version = Version { $v }
 about-description = Disk space analyzer for Windows. It shows what takes up space and helps you free it: what can be regenerated is deleted, your files go to the Recycle Bin and system folders are protected.
@@ -75,6 +85,7 @@ scan-known-title = Places where temporary files usually pile up
 scan-known-sum = Up to { $size } in low-risk candidates (checked when cleaning)
 scan-known-note = This is an estimate, not a guaranteed minimum, and it only counts low-risk items: temporary files older than 7 days and browser caches. We show you what is deleted and what goes to the Recycle Bin before cleaning, and the real figure is measured when cleaning.
 scan-known-excluded = Downloads and the Recycle Bin are your own data: they are shown, but not counted in the figure above.
+scan-known-excluded-diag = Error reports and crash dumps help diagnose failures: they are shown, but not counted in the figure above.
 risk-review-tag = Review
 scan-clean-safe = Clean the safe stuff
 scan-checking = Checking { $done } of { $total } known places…
@@ -97,6 +108,8 @@ known-edge-cache = Edge cache
 known-firefox-cache = Firefox cache
 known-downloads = Downloads
 known-recycle-bin = Recycle Bin
+known-wer-reports = Windows error reports
+known-crash-dumps = Application crash dumps
 known-other = Other known place
 
 # Main window
@@ -163,6 +176,45 @@ menu-properties = Properties
 menu-add-basket = Add to basket
 menu-unavailable-system = Not available for this item
 path-copied = Path copied
+
+# Multiple selection: select several items and add them to the basket together
+sel-toggle = Select
+sel-toggle-tip = Selection mode: clicking an item selects or deselects it, with no need to hold Ctrl.
+sel-hint = Ctrl+click selects several · Shift+click selects a range in the list · Ctrl+A selects all · Esc clears the selection
+sel-hint-mode = Click items to select them · Ctrl+A selects all · Esc clears the selection
+sel-count = { $count } selected · { $size }
+sel-count-partial = { $count } selected · { $size } would be added
+sel-count-only = { $count } selected
+sel-cannot = { $count } cannot be added: { $detail }
+sel-why-protected = { $count } protected
+sel-why-in-basket = { $count } already in the basket
+sel-why-info = { $count } info only or system
+sel-why-cloud = { $count } cloud-only
+sel-contents =
+    { $n ->
+        [one] { $count } known folder: its contents are added
+       *[other] { $count } known folders: their contents are added
+    }
+sel-add = Add { $count } to the basket
+sel-add-none = Add selection to the basket
+sel-add-none-tip = None of the selected items can be added to the basket: the bar says why.
+sel-add-busy-tip = Nothing can be added while a clean-up is being prepared or is running.
+sel-clear = Clear selection
+sel-keys-tip = Space selects the active row or cell; Shift+arrows grow or shrink the range in the list.
+sel-dropped = Selection cleared ({ $count })
+sel-added =
+    { $n ->
+        [one] { $count } item added to the basket
+       *[other] { $count } items added to the basket
+    }
+sel-added-skipped = { $count } could not be added
+sel-map-count = Selected for the basket: { $count }.
+sel-map-this = This item is selected for the basket.
+list-select-all-rows = Select all rows
+menu-sel-this = Select this item
+menu-sel-unthis = Remove from the selection
+menu-sel-all = Select everything here
+menu-sel-invert = Invert selection
 list-col-name = Name
 list-col-share = Share
 list-col-size = On disk
@@ -262,6 +314,8 @@ rule-user-temp-why = Temporary files not modified in the last week (older than 7
 rule-windows-temp-why = Windows temporary files not modified in the last week (older than 7 days). Recent ones are left in case an installer is using them.
 rule-downloads-why = Your own files: look at them and choose. Nothing here is checked automatically.
 rule-recycle-bin-why = Emptying it is permanent. Only what is in it when you confirm is emptied; what arrives later is not touched.
+rule-wer-reports-why = Reports Windows saves when a program fails, already sent or queued. They help diagnose the failure and a program's support may ask for them. Only folders unchanged for more than 7 days are offered. They go to the Recycle Bin, are never deleted permanently (if they do not fit, they are left alone) and are never ticked for you: each one records a specific failure and cannot be regenerated.
+rule-crash-dumps-why = Memory dumps of programs that closed because of a crash (the CrashDumps folder, which usually exists only if that Windows feature was turned on). They can be large and are what a developer asks for to understand the failure. Only those unchanged for more than 7 days are offered. They go to the Recycle Bin, are never deleted permanently (if they do not fit, they are left alone) and are never ticked for you: each one records a specific failure and cannot be regenerated.
 
 # Confirmation
 confirm-title = Review before cleaning
@@ -273,6 +327,7 @@ confirm-subtitle =
 confirm-elevated = Tesela is running as administrator; for safety, cleaning only works without elevation. Close it and open it normally.
 confirm-no-log = The cleaning log could not be created, so nothing was done. Check that the Tesela data folder (in your local app data) is writable and try again. Simulation still works without a log.
 confirm-empty = There is nothing to clean with this basket.
+confirm-empty-young = There is nothing to clean right now: what is there was modified less than 7 days ago.
 confirm-dry-banner = Simulation mode: nothing will be deleted or moved; only what would be done is logged.
 confirm-reconfirm = Something changed since you confirmed (what fits in the Recycle Bin). Review again before cleaning.
 confirm-group-permanent = Deleted and recreated on its own
@@ -296,6 +351,20 @@ confirm-more =
     }
 confirm-group-unfit = Will be deleted permanently because it cannot be sent to the Recycle Bin
 confirm-unfit-capacity-hint = To be able to send it to the Recycle Bin: open the Recycle Bin properties and set a maximum size for the drive.
+confirm-group-recycle-diag = Error reports and crash dumps · go to the Recycle Bin
+basket-phrase-recycle-diag = You can recover them while they are in the Recycle Bin; if they do not fit, they are left alone
+confirm-only-kept = There is nothing to clean right now: what is here does not fit in the Recycle Bin and is not deleted permanently. To clean it, make room in the Recycle Bin (or set a larger maximum size) and try again.
+confirm-group-kept = They do not fit in the Recycle Bin: left where they are
+confirm-kept-note = They do not fit in the Recycle Bin; they are not deleted permanently because they help diagnose failures.
+confirm-diag-note = Each report or dump records a specific failure and is not recreated; a program's support may ask for it. The space is only really freed when you empty the Recycle Bin.
+confirm-diag-many = That is { $count } reports or dumps, sent to the Recycle Bin one at a time: it may take a few minutes. You can cancel at any time; what was already sent stays in the Recycle Bin.
+confirm-young =
+    { $n ->
+        [one] { $count } report or dump is left alone: something in it was modified less than 7 days ago.
+       *[other] { $count } reports or dumps are left alone: something in them was modified less than 7 days ago.
+    }
+reject-young = modified less than 7 days ago
+dest-recycle-diag = Goes to the Recycle Bin · if it does not fit, it is left alone
 confirm-unfit-check = I understand this cannot be recovered
 confirm-unfit-note = Without checking the box, these items are not touched.
 unfit-no-bin = the drive has no Recycle Bin
@@ -513,3 +582,13 @@ ago-days =
     }
 settings-clear-history = Delete the cleanup history and logs
 home-last-clean = Last cleanup: { $ago } · measured change in free space: { $size }
+
+# Approval and mail data confirmation
+approve-title = Checking…
+approve-progress = { $count } entries checked
+confirm-unfit-pending = Items above that do not fit in the Recycle Bin will remain untouched unless you select their confirmation box.
+confirm-mail-cache = Includes { $count } Outlook cache files (.ost/.nst, { $size }). Outlook downloads them again from the server, which may take time. Unsynced drafts or outgoing mail can be lost. Close Outlook first: files in use are skipped.
+confirm-mail-local = Includes { $count } Outlook data files (.pst, { $size }). These may be mail stored only on this computer. Permanent deletion is irreversible. Make a backup first if unsure.
+confirm-mail-check = I understand that permanently deleted .pst files (local mail) cannot be recovered.
+confirm-outlook-open = Outlook is running. Close it first; otherwise files in use may be skipped and the folder only partly cleaned.
+run-file-wait = Deleting a large file may take time. An operation already in progress cannot be interrupted; cancellation takes effect between entries.

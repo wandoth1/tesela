@@ -1,11 +1,11 @@
-//! Interfaz de Tesela (egui). Todo lo que borra o mueve va por el `Backend` del `cleaner` (el real, o el SIMULADO de
-//! `--demo`, que nunca toca el disco) y solo después de la confirmación.
+//! Tesela interface (egui). Everything you delete or move goes through the `Backend` of `cleaner` (the real one or the SIMULATED one in
+//! `--demo`, which never touches the disk) and only after confirmation.
 //!
-//! * [`TeselaUi`]: la interfaz completa; pinta contra un `egui::Ui` (sin depender de `eframe`).
-//! * Pantallas: [`home`] (inicio), [`scan`] (escaneo), [`explore`] (mapa, lista y detalles).
-//! * [`map`]: el treemap como `Mesh` teselado una vez y cacheado.
-//! * [`demo`] y [`demo_backend`]: árbol sintético y determinista y respaldo de limpieza simulado para `tesela --demo`.
-//! * `clean`, `basket` y `recs`: el flujo de limpieza (cesta, Recomendaciones, confirmación, ejecución y resumen).
+//! * [`TeselaUi`]: the complete interface; paints against a `egui::Ui` (without depending on `eframe`).
+//! * Screens: [`home`] (home), [`scan`] (scan), [`explore`] (map, list and details).
+//! * [`map`]: The treemap as `Mesh` tiled once and cached.
+//! * [`demo`] and [`demo_backend`]: Synthetic, deterministic tree and mock cleanup support for `tesela --demo`.
+//! * `clean`, `basket` and `recs`: the cleanup flow (basket, Recommendations, confirmation, execution and summary).
 
 mod about;
 pub mod app;
@@ -23,16 +23,18 @@ pub mod i18n;
 pub mod icons;
 mod list;
 pub mod map;
+mod multisel;
 pub mod platform;
 mod recs;
 mod scan;
 pub mod theme;
 mod treepath;
+mod update;
 mod widgets;
 
 pub use app::{
     BackendRef, CleanStart, DemoOptions, LangPref, MapStart, Options, Settings, StartScreen,
-    TeselaUi,
+    TeselaUi, TransportRef, UpdatePrefs,
 };
 pub use i18n::{Lang, Tr};
 pub use theme::ThemePref;
@@ -41,3 +43,5 @@ pub use theme::ThemePref;
 mod testdir;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod update_tests;

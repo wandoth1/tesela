@@ -1,6 +1,6 @@
-//! `tesela`: el ejecutable de Tesela. Ventana `eframe` con `wgpu` compilado SOLO con DX12 (WARP de respaldo en
-//! máquinas sin GPU), manifiesto `asInvoker` + rutas largas + PerMonitorV2, y configuración mínima en
-//! `%APPDATA%\Tesela\config.toml`. La limpieza (cesta, confirmación, borrado y Papelera) vive en `tesela-cleaner`.
+//! `tesela`: Tesela's executable. An `eframe` window with `wgpu` built for DX12 ONLY (Windows WARP fallback on machines
+//! without a GPU), an `asInvoker` manifest with long paths and PerMonitorV2, and minimal configuration in
+//! `%APPDATA%\Tesela\config.toml`. Cleanup (basket, confirmation, deletion, and Recycle Bin) lives in `tesela-cleaner`.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod cli;
@@ -13,11 +13,11 @@ mod shell;
 
 use cli::Screen;
 use config::MIN_SIZE;
-use tesela_ui::{CleanStart, DemoOptions, MapStart, Options, StartScreen, TeselaUi};
+use tesela_ui::{CleanStart, DemoOptions, MapStart, Options, StartScreen, TeselaUi, TransportRef};
 
 fn main() -> eframe::Result {
-    // LO PRIMERO, antes de analizar argumentos y de que eframe y wgpu carguen nada por nombre: la búsqueda de DLL se
-    // limita a System32 (ver `dll_hardening`). Si Windows lo rechaza se sigue con el orden predeterminado.
+    // FIRST, before parsing arguments and before eframe or wgpu loads anything by name: restrict DLL search to System32
+    // (see `dll_hardening`). If Windows rejects this, continue with the default search order.
     let _ = dll_hardening::restrict_dll_search();
     let cli = match cli::parse(std::env::args().skip(1)) {
         Ok(c) => c,
@@ -36,11 +36,11 @@ fn main() -> eframe::Result {
     }
     #[cfg(not(feature = "capture"))]
     if cli.screenshot.is_some() {
-        console::print("tesela: --screenshot necesita compilar con la feature `capture`");
+        console::print("tesela: --screenshot requires building with the `capture` feature");
         std::process::exit(2);
     }
 
-    // Una captura que no se puede guardar se descubre ANTES de abrir la ventana, no después de pintar.
+    // Detect an unsavable screenshot BEFORE opening the window, rather than after rendering it.
     if let Some(path) = &cli.screenshot
         && let Err(e) = output::preflight(path, cli.overwrite)
     {
@@ -48,16 +48,16 @@ fn main() -> eframe::Result {
         std::process::exit(1);
     }
 
-    // Sin fuentes de sistema no se puede dibujar texto (no se embebe ninguna): se avisa y se sale, en vez de un pánico.
+    // Without system fonts, text cannot be rendered (none are bundled): report the problem and exit instead of panicking.
     if !tesela_ui::fonts::available() {
         console::print(
-            "tesela: no se encontró ninguna fuente de Windows (Segoe UI, Tahoma o Arial) en la carpeta de fuentes del sistema",
+            "tesela: no Windows fonts (Segoe UI, Tahoma, or Arial) were found in the system fonts directory",
         );
         std::process::exit(3);
     }
 
-    // La demostración ("nada se lee de tu disco") y las herramientas de medición NO leen ni guardan la configuración: valores por
-    // defecto en memoria, nada bajo %APPDATA%.
+    // The demo ("nothing is read from your disk") and measurement tools do NOT read or save configuration: they use
+    // in-memory defaults and do not access %APPDATA%.
     let tool_mode = cli.tool_mode();
     let isolated = cli.isolated();
     let session = config::Session::new(isolated);
@@ -66,7 +66,7 @@ fn main() -> eframe::Result {
         config,
         path: config_path,
     } = session;
-    // Los argumentos de esta sesión mandan sobre lo guardado, pero no se guardan.
+    // Arguments for this session override saved settings but are not saved themselves.
     let mut settings = config.settings();
     if let Some(t) = cli.theme {
         settings.theme = t;
@@ -83,7 +83,7 @@ fn main() -> eframe::Result {
         .with_title("Tesela")
         .with_app_id("Tesela");
     if tool_mode {
-        // Mediciones y capturas: siempre encima, para que otra ventana no la oculte y eframe deje de pintar.
+        // Measurements and screenshots: keep the window on top so another window cannot hide it and stop eframe rendering.
         viewport = viewport.with_always_on_top();
     }
     let mut native = eframe::NativeOptions {
@@ -92,11 +92,11 @@ fn main() -> eframe::Result {
         ..Default::default()
     };
     if let eframe::egui_wgpu::WgpuSetup::CreateNew(c) = &mut native.wgpu_options.wgpu_setup {
-        // Solo DX12 (PLAN.md §1): si no hay GPU, wgpu ofrece el adaptador WARP de Windows.
+        // DX12 only (PLAN.md §1): if there is no GPU, wgpu offers the Windows WARP adapter.
         c.instance_descriptor.backends = eframe::wgpu::Backends::DX12;
-        // Compilador de sombreadores FIJO: FXC (`d3dcompiler_47.dll`, del sistema). Con el `Auto` predeterminado wgpu
-        // intenta antes cargar `dxcompiler.dll` por nombre, que no existe en un Windows normal; así también se ignora la
-        // variable de entorno `WGPU_DX12_COMPILER`.
+        // FIXED shader compiler: FXC (`d3dcompiler_47.dll`, from the system). With the default `Auto`, wgpu first tries to
+        // load `dxcompiler.dll` by name, which is absent on a standard Windows installation; this also ignores the
+        // `WGPU_DX12_COMPILER` environment variable.
         c.instance_descriptor.backend_options.dx12.shader_compiler =
             eframe::wgpu::Dx12Compiler::Fxc;
     }
@@ -106,7 +106,7 @@ fn main() -> eframe::Result {
         stress: cli.stress,
     });
     let start = match (cli.demo, cli.screen) {
-        // `--stress` y `--bench-hover` miden el mapa: con `--demo` y sin `--screen` se abre directamente.
+        // `--stress` and `--bench-hover` measure the map: with `--demo` and no `--screen`, open it directly.
         (true, Screen::Home) if cli.stress || cli.bench_hover.is_some() => {
             StartScreen::Map(MapStart::default())
         }
@@ -118,6 +118,7 @@ fn main() -> eframe::Result {
             list: cli.screen == Screen::List,
             open: cli.open.clone(),
             select: cli.select.clone(),
+            marks: cli.marks.clone(),
         }),
         _ => StartScreen::Home,
     };
@@ -129,31 +130,37 @@ fn main() -> eframe::Result {
         start,
         dry_run: cli.dry_run,
         backend: None,
-        // Demostración y herramientas de medición: nada se lee del disco del usuario (ni historial ni raíces de limpieza).
+        // Demo and measurement tools: nothing is read from the user's disk (no history or cleanup roots).
         isolated,
+        // Update checking is OPTIONAL (disabled by default). The demo and measurement tools do not receive the transport,
+        // so they never check for updates, regardless of the setting.
+        update_transport: (!isolated)
+            .then(|| TransportRef(std::sync::Arc::new(tesela_update::winhttp::WinHttp))),
     };
     let scan = cli.scan.clone();
     let wait_explore = scan.is_some();
     let bench = cli.bench_hover.map(shell::Bench::new);
     if let Some(secs) = cli.bench_hover {
-        // Con `--scan` hay que esperar además al escaneo.
+        // With `--scan`, also allow time for the scan to finish.
         let extra = if cli.scan.is_some() { 600.0 } else { 0.0 };
-        // Si la ventana deja de pintar (minimizada u oculta) la medición no avanzaría nunca: se aborta con un aviso.
+        // If the window stops rendering (minimized or hidden), the measurement would never advance: abort with a message.
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_secs_f32(secs + 40.0 + extra));
             console::print(
-                "tesela: --bench-hover sin resultados: la ventana dejó de pintar o no llegó al mapa",
+                "tesela: --bench-hover produced no results: the window stopped rendering or never reached the map",
             );
             std::process::exit(3);
         });
     }
     let idle_mem = cli.idle_memory.map(shell::IdleMemory::new);
     if let Some(secs) = cli.idle_memory {
-        // Si la ventana no llega a pintar, no se queda esperando para siempre.
+        // Do not wait forever if the window never renders.
         let extra = if cli.scan.is_some() { 600.0 } else { 0.0 };
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_secs_f32(secs + 40.0 + extra));
-            console::print("tesela: --idle-memory sin resultados: la ventana dejó de pintar");
+            console::print(
+                "tesela: --idle-memory produced no results: the window stopped rendering",
+            );
             std::process::exit(3);
         });
     }
@@ -190,7 +197,7 @@ fn main() -> eframe::Result {
             }))
         }),
     );
-    // Una captura pedida que no se pudo guardar es un fallo: código de salida distinto de 0.
+    // A requested screenshot that could not be saved is a failure: exit with a nonzero code.
     if output::failed() {
         std::process::exit(1);
     }

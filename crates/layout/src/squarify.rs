@@ -1,18 +1,18 @@
-//! Squarified treemap (Bruls, Huizing y van Wijk, 2000).
+//! Squarified treemap (Bruls, Huizing, and van Wijk, 2000).
 //!
-//! Como los hijos llegan ya ordenados por tamaño descendente (lo garantiza el `TreeBuilder`), el algoritmo es lineal:
-//! cada valor se examina una vez al crecer la fila y otra al colocarla.
+//! Since children already arrive sorted by descending size (guaranteed by `TreeBuilder`), the algorithm is linear: each
+//! value is examined once while growing a row and once while placing it.
 
 use crate::geom::Rect;
 
-/// Reparte `values` (en el orden dado; lo ideal es descendente) dentro de `rect`, de modo que el área de cada
-/// rectángulo sea `value * rect.area / total`. Añade un rectángulo por valor a `out`, en el mismo orden.
+/// Lay out `values` (in the given order; descending is ideal) inside `rect`, so each rectangle's area is
+/// `value * rect.area / total`. Append one rectangle per value to `out`, in the same order.
 ///
-/// `total` puede ser MAYOR que la suma de `values`: lo que sobra queda como hueco al final (así se deja sin dibujar
-/// la cola de elementos diminutos sin cambiar la escala del resto). Si la suma es `total`, los rectángulos cubren
-/// `rect` exactamente (el último de cada fila se ajusta al borde para que no queden rendijas por el redondeo).
+/// `total` may be GREATER than the sum of `values`: the remainder stays as a gap at the end (so a tail of tiny items can
+/// be omitted without changing the scale of the rest). If the sum equals `total`, rectangles cover `rect` exactly (the
+/// last rectangle in each row is adjusted to the edge to avoid rounding gaps).
 ///
-/// Los valores deben ser positivos: uno nulo o negativo recibe un rectángulo vacío.
+/// Values should be positive: a zero or negative value receives an empty rectangle.
 pub fn squarify(values: &[f64], total: f64, rect: Rect, out: &mut Vec<Rect>) {
     let start = out.len();
     let (x0, y0, w0, h0) = (rect.x as f64, rect.y as f64, rect.w as f64, rect.h as f64);
@@ -38,11 +38,11 @@ pub fn squarify(values: &[f64], total: f64, rect: Rect, out: &mut Vec<Rect>) {
         }
         let short = w.min(h);
         if !pos(short) {
-            // Sin sitio (por el redondeo): lo que queda recibe rectángulos vacíos.
+            // No room (due to rounding): the remaining items receive empty rectangles.
             out.extend((i..n).map(|_| Rect::new(x as f32, y as f32, 0.0, 0.0)));
             break;
         }
-        // Se crece la fila mientras la peor relación de aspecto no empeore.
+        // Grow the row while its worst aspect ratio does not get worse.
         let mut j = i;
         let (mut row_sum, mut worst_prev) = (0.0f64, f64::INFINITY);
         let (mut rmax, mut rmin) = (0.0f64, f64::INFINITY);
@@ -62,7 +62,7 @@ pub fn squarify(values: &[f64], total: f64, rect: Rect, out: &mut Vec<Rect>) {
         }
         let last_row = exact && (j == n || values[j] <= 0.0);
         if w >= h {
-            // Fila vertical pegada al borde izquierdo: sus elementos se apilan de arriba abajo.
+            // Vertical row against the left edge: its items stack from top to bottom.
             let thick = if last_row { w } else { (row_sum / h).min(w) };
             let mut cy = y;
             for (k, &v) in values.iter().enumerate().take(j).skip(i) {
@@ -83,7 +83,7 @@ pub fn squarify(values: &[f64], total: f64, rect: Rect, out: &mut Vec<Rect>) {
             x += thick;
             w -= thick;
         } else {
-            // Fila horizontal pegada al borde superior: sus elementos van de izquierda a derecha.
+            // Horizontal row against the top edge: its items go from left to right.
             let thick = if last_row { h } else { (row_sum / w).min(h) };
             let mut cx = x;
             for (k, &v) in values.iter().enumerate().take(j).skip(i) {
@@ -109,7 +109,7 @@ pub fn squarify(values: &[f64], total: f64, rect: Rect, out: &mut Vec<Rect>) {
     debug_assert_eq!(out.len() - start, values.len());
 }
 
-/// `v > 0` (falso también para NaN), escrito como función para no negar una comparación de `f64`.
+/// `v > 0` (also false for NaN), written as a function to avoid negating an `f64` comparison.
 fn pos(v: f64) -> bool {
     v > 0.0
 }

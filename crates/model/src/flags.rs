@@ -1,19 +1,19 @@
-//! Flags de un nodo (`Record::flags` y `Node::flags`).
+//! Node flags (`Record::flags` and `Node::flags`).
 
-/// Es un directorio (también los reparse points de directorio, que llevan además [`REPARSE`]).
+/// This is a directory (including directory reparse points, which also have [`REPARSE`]).
 pub const DIR: u16 = 1 << 0;
-/// Reparse point (junction, symlink, punto de montaje...). Los de directorio no se siguen y miden 0.
+/// Reparse point (junction, symlink, mount point...). Directory reparse points are not followed and have size 0.
 pub const REPARSE: u16 = 1 << 1;
-/// Archivo o carpeta de la nube (placeholder de OneDrive, etc.): su `alloc` puede ser 0 aunque `logical` no.
+/// Cloud file or directory (OneDrive placeholder, etc.): its `alloc` may be 0 while `logical` is nonzero.
 pub const CLOUD: u16 = 1 << 2;
-/// Enlace duro que NO conserva el tamaño: `alloc` y `logical` son 0 porque otro enlace ya lo cuenta.
+/// Hard link that does NOT retain the size: `alloc` and `logical` are 0 because another link already counts it.
 pub const HARDLINK: u16 = 1 << 3;
-/// Directorio cuyo contenido no se llegó a listar entero (escaneo detenido): su tamaño es un mínimo ("≥ X").
+/// Directory whose contents were not fully listed (scan stopped): its size is a lower bound ("≥ X").
 pub const INCOMPLETE: u16 = 1 << 4;
-/// Nodo sintético "Windows y otros datos del sistema" (espacio no explicado). No es un archivo real.
+/// Synthetic "Windows and other system data" node (unexplained space). Not a real file.
 pub const SYSTEM_INFO: u16 = 1 << 5;
-/// No se pudo listar el directorio (permisos, error de E/S...).
+/// The directory could not be listed (permissions, I/O error...).
 pub const ERROR: u16 = 1 << 6;
-/// Algún descendiente es `INCOMPLETE`: el tamaño de este directorio es un mínimo ("≥") aunque él mismo se haya
-/// listado entero. Lo calcula el builder al agregar, propagando `INCOMPLETE` e `INCOMPLETE_BELOW` hacia la raíz.
+/// A descendant is `INCOMPLETE`: this directory's size is a lower bound ("≥") even if it was fully listed itself.
+/// The builder computes this during aggregation, propagating `INCOMPLETE` and `INCOMPLETE_BELOW` to the root.
 pub const INCOMPLETE_BELOW: u16 = 1 << 7;

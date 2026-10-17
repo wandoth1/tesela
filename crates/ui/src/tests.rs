@@ -1,6 +1,6 @@
-//! Pruebas de humo de la interfaz con `egui_kittest` sobre el modo demostración (árbol sintético, sin tocar el
-//! disco): se renderiza cada pantalla, se navega con el teclado, se comprueba la etiqueta de "Otros" y que el mapa, la
-//! lista y los detalles comparten la selección. El escaneo REAL se prueba sobre un árbol creado en
+//! Smoke testing the interface with `egui_kittest` on demo mode (synthetic tree, without touching the
+//! disk): each screen is rendered, you navigate with the keyboard, you check the "Other" label and that the map, the
+//! list and details share the selection. The REAL scan is tested on a tree created in
 //! `%TEMP%\tesela-test-<uuid>`.
 
 use crate::app::MapStart;
@@ -41,6 +41,7 @@ fn opts(start: StartScreen) -> Options {
         settings: Settings {
             theme: ThemePref::Light,
             language: LangPref::Es,
+            ..Settings::default()
         },
         demo: Some(DemoOptions::default()),
         animate: false,
@@ -48,10 +49,11 @@ fn opts(start: StartScreen) -> Options {
         dry_run: false,
         backend: Some(crate::app::BackendRef(test_backend())),
         isolated: false,
+        update_transport: None,
     }
 }
 
-/// El respaldo simulado, sin pausas: las pruebas nunca tocan el disco con la limpieza.
+/// Simulated backup, without pauses: the tests never touch the disk with the cleanup.
 pub(crate) fn test_backend() -> std::sync::Arc<dyn tesela_cleaner::Backend> {
     std::sync::Arc::new(crate::demo_backend::DemoBackend::new(
         std::time::Duration::ZERO,
@@ -63,7 +65,7 @@ fn harness(o: Options) -> Harness<'static, App> {
         .with_size(vec2(1280.0, 800.0))
         .with_step_dt(0.02)
         .build_ui_state(|ui, app: &mut App| app.frame(ui), App { opts: o, ui: None });
-    // Unos pasos fijos (no `run()`): el escaneo simulado repinta sin parar.
+    // A few fixed steps (not `run()`): the simulated scan repaints non-stop.
     h.run_steps(6);
     h
 }
@@ -73,6 +75,7 @@ fn user_folder() -> StartScreen {
         list: false,
         open: vec!["Users".into(), crate::demo::USER.into()],
         select: None,
+        marks: vec![],
     })
 }
 
@@ -95,8 +98,8 @@ fn explore<'a>(h: &'a Harness<'static, App>) -> &'a crate::explore::Explore {
     h.state().ui().explore().expect("exploración")
 }
 
-/// Punto en pantalla de la banda de la etiqueta de la celda de nivel 0 de `name` (la parte de la celda que NO cubren sus
-/// celdas insinuadas, así que el clic selecciona la propia carpeta).
+/// Point on screen of the label band of the level 0 cell of `name` (the part of the cell NOT covered by its
+/// hinted cells, so the click selects the folder itself).
 fn cell_center(h: &Harness<'static, App>, name: &str) -> Pos2 {
     let ex = explore(h);
     let layout = ex.map.layout.as_ref().expect("layout");
@@ -122,7 +125,7 @@ fn el_inicio_muestra_las_unidades_ficticias_y_analizar_una_carpeta() {
     h.get_by_label("Analizar Memoria USB (F:)");
     h.get_by_label("Analizar una carpeta…");
     h.get_by_label("Ajustes");
-    // Ninguna unidad "Datos (D:)" de la maqueta (ni la letra D) aparece.
+    // No mockup "Data (D:)" drive (nor the letter D) appears.
     assert!(h.query_by_label_contains("Datos").is_none());
     assert!(h.query_by_label_contains("(D:)").is_none());
 }
@@ -134,11 +137,11 @@ fn analizar_una_unidad_lleva_al_escaneo_y_de_ahi_al_mapa() {
     h.run_steps(3);
     assert_eq!(h.state().ui().screen_name(), "scan");
     h.get_by_label("Parar y ver lo que hay");
-    // "Limpiar lo seguro" es del incremento 3: está, pero deshabilitado.
+    // "Clear safe" is from increment 3: it is there, but disabled.
     let clean = h.get_by_label("Limpiar lo seguro");
     assert!(clean.accesskit_node().is_disabled());
     h.get_by_label("Temporales del usuario");
-    // "Parar y ver" construye el árbol con lo recibido.
+    // "Stop and see" builds the tree with what is received.
     h.get_by_label("Parar y ver lo que hay").click();
     h.run_steps(5);
     assert_eq!(h.state().ui().screen_name(), "explore");
@@ -162,7 +165,7 @@ fn el_escaneo_simulado_congelado_muestra_progreso_filas_y_barras() {
         h.get_by_label(row);
     }
     h.get_by_label("Cancelar");
-    // Las barras de las carpetas de primer nivel (con "≥" mientras cuentan).
+    // The first level folder bars (with "≥" while counting).
     h.get_by_label("Users");
     assert!(h.query_all_by_label_contains("sitios conocidos").count() >= 1);
 }
@@ -183,7 +186,7 @@ fn la_ventana_principal_tiene_todas_sus_zonas() {
     ] {
         h.get_by_label(zone);
     }
-    // La cesta: visible, vacía y con sus botones inactivos.
+    // The basket: visible, empty and with its buttons inactive.
     h.get_by_label_contains("Cesta · 0 elementos");
     assert!(h.get_by_label("Ver").accesskit_node().is_disabled());
     assert!(
@@ -191,7 +194,7 @@ fn la_ventana_principal_tiene_todas_sus_zonas() {
             .accesskit_node()
             .is_disabled()
     );
-    // Antigüedad y Riesgo (v0.2) deshabilitados; Tipo y Recomendaciones activos.
+    // Age and Risk (v0.2) disabled; Active Type and Recommendations.
     assert!(h.get_by_label("Antigüedad").accesskit_node().is_disabled());
     assert!(h.get_by_label("Riesgo").accesskit_node().is_disabled());
     assert!(
@@ -200,7 +203,7 @@ fn la_ventana_principal_tiene_todas_sus_zonas() {
             .is_disabled()
     );
     assert!(!h.get_by_label("Tipo").accesskit_node().is_disabled());
-    // Las unidades y la leyenda de tipos y grises.
+    // The units and the legend of types and grays.
     h.get_by_label("Analizar Sistema (C:)");
     assert!(h.query_all_by_label("Vídeo").count() >= 1);
     for t in [
@@ -222,7 +225,7 @@ fn la_ventana_principal_tiene_todas_sus_zonas() {
 fn el_bloque_del_sistema_y_pagefile_se_ven_en_gris_con_su_icono_y_su_explicacion() {
     let mut h = harness(opts(StartScreen::Map(MapStart::default())));
     let ex = explore(&h);
-    // El layout del mapa contiene el bloque del sistema.
+    // The map layout contains the system block.
     let layout = ex.map.layout.clone().unwrap();
     let names: Vec<String> = layout
         .cells()
@@ -234,7 +237,7 @@ fn el_bloque_del_sistema_y_pagefile_se_ven_en_gris_con_su_icono_y_su_explicacion
         })
         .collect();
     assert!(names.iter().any(|n| n == "[system-data]"), "{names:?}");
-    // Seleccionarlo (clic) muestra su explicación; es de solo lectura.
+    // Selecting it (click) shows its explanation; It is read-only.
     let sys = ex.tree.children(0).last().unwrap();
     let r = layout
         .cell_of_node(sys)
@@ -256,9 +259,9 @@ fn el_bloque_del_sistema_y_pagefile_se_ven_en_gris_con_su_icono_y_su_explicacion
             .count()
             >= 1
     );
-    // El enlace "modo administrador" no hace nada todavía.
+    // The "admin mode" link does nothing yet.
     h.get_by_label("Ver el detalle (modo administrador)");
-    // pagefile: "solo informar" con su triángulo.
+    // pagefile: "report only" with its triangle.
     let pf = h
         .state()
         .ui()
@@ -300,24 +303,26 @@ fn las_carpetas_incompletas_llevan_el_minimo_y_el_aviso() {
         list: true,
         open: vec![],
         select: None,
+        marks: vec![],
     })));
-    // Variante detenida: se construye explícitamente.
+    // Stopped variant: Constructed explicitly.
     drop(h);
     let mut o = opts(StartScreen::Map(MapStart {
         list: true,
         open: vec![],
         select: Some("Windows".into()),
+        marks: vec![],
     }));
     o.demo = Some(DemoOptions {
         stopped: true,
         ..DemoOptions::default()
     });
     let h = harness(o);
-    // En la lista, la fila de Windows lleva "≥" en su etiqueta accesible, y el estado dice que se detuvo.
+    // In the list, the Windows row has "≥" in its accessible label, and the status says stopped.
     h.get_by_label_contains("Windows, ≥");
     h.get_by_label_contains("Análisis detenido");
     h.get_by_label_contains("El análisis se detuvo antes de recorrer todo");
-    // Y no hay bloque del sistema (con carpetas incompletas no se calcula).
+    // And there is no system block (with incomplete folders it is not calculated).
     assert!(
         h.query_by_label_contains("Windows y otros datos del sistema")
             .is_none()
@@ -330,6 +335,7 @@ fn onedrive_lleva_el_aviso_de_la_nube() {
         list: false,
         open: vec!["Users".into(), crate::demo::USER.into()],
         select: Some("OneDrive".into()),
+        marks: vec![],
     })));
     h.get_by_label_contains("Archivos de la nube");
 }
@@ -345,7 +351,7 @@ fn otros_agrupa_los_bloques_diminutos_y_su_etiqueta_es_correcta() {
         "las 40 carpetas pequeñas se agrupan"
     );
     let o = layout.others()[0];
-    // El contenido del grupo es exactamente el sufijo de los hijos ordenados.
+    // The content of the group is exactly the suffix of the ordered children.
     let kids = tesela_layout::Children::of(&ex.tree, ex.root.node);
     assert_eq!(o.count as usize, kids.len() - o.start as usize);
     let bytes: u64 = kids
@@ -354,14 +360,14 @@ fn otros_agrupa_los_bloques_diminutos_y_su_etiqueta_es_correcta() {
         .sum();
     assert_eq!(o.bytes, bytes);
     assert!(o.count >= 30);
-    // La etiqueta accesible del mapa la anuncia con el formato del plan.
+    // The accessible map label announces it with the plan format.
     let expect = format!(
         "Otros ({} elementos, {})",
         o.count,
         crate::Tr::new(crate::Lang::Es).size(o.bytes)
     );
     h.get_by_label_contains(&expect);
-    // Abrirla (doble clic en su celda) reparte solo ese sufijo y el breadcrumb lo dice.
+    // Opening it (double clicking on its cell) distributes only that suffix and the breadcrumb says it.
     let idx = layout
         .cells()
         .iter()
@@ -377,7 +383,7 @@ fn otros_agrupa_los_bloques_diminutos_y_su_etiqueta_es_correcta() {
     let ex = explore(&h);
     assert_eq!(ex.root.start, o.start, "la raíz es el sufijo");
     h.get_by_label_contains(&expect);
-    // Backspace vuelve a la carpeta completa.
+    // Backspace returns to the entire folder.
     h.key_press(Key::Backspace);
     h.run_steps(2);
     assert_eq!(explore(&h).root.start, 0);
@@ -387,7 +393,7 @@ fn otros_agrupa_los_bloques_diminutos_y_su_etiqueta_es_correcta() {
 fn navegacion_con_el_teclado_intro_entra_y_retroceso_sube() {
     let mut h = harness(opts(StartScreen::Map(MapStart::default())));
     assert_eq!(explore(&h).root.node, 0);
-    // Seleccionar con un clic en el mapa y entrar con Intro.
+    // Select with a click on the map and enter with Enter.
     let p = cell_center(&h, "Users");
     click_at(&mut h, p);
     assert_eq!(
@@ -399,16 +405,16 @@ fn navegacion_con_el_teclado_intro_entra_y_retroceso_sube() {
     let users = explore(&h).tree.child_by_name(0, b"Users").unwrap();
     assert_eq!(explore(&h).root.node, users);
     h.get_by_label("Subir un nivel");
-    // Retroceso sube, y la carpeta de la que se sale queda seleccionada.
+    // Backspace goes up, and the folder you exit from remains selected.
     h.key_press(Key::Backspace);
     h.run_steps(2);
     assert_eq!(explore(&h).root.node, 0);
     assert_eq!(explore(&h).selection, Some(Sel::Node(users)));
-    // En la raíz, Retroceso no hace nada.
+    // At root, Backspace does nothing.
     h.key_press(Key::Backspace);
     h.run_steps(2);
     assert_eq!(explore(&h).root.node, 0);
-    // Intro sobre un archivo no entra.
+    // Entering a file does not enter.
     let pf = explore(&h).tree.child_by_name(0, b"pagefile.sys").unwrap();
     h.state_mut()
         .ui_mut()
@@ -437,12 +443,12 @@ fn las_flechas_mueven_la_seleccion_entre_celdas() {
 #[test]
 fn la_lista_y_el_mapa_estan_sincronizados() {
     let mut h = harness(opts(user_folder()));
-    // Mapa -> lista y detalles: se selecciona en el mapa...
+    // Map -> list and details: select on the map...
     let p = cell_center(&h, "Descargas");
     click_at(&mut h, p);
     h.get_by_label_contains("Seleccionado: Descargas");
-    assert!(h.query_all_by_label("Descargas").count() >= 1); // título del panel de detalles
-    // ...y la lista (cambio de vista) muestra esa fila seleccionada.
+    assert!(h.query_all_by_label("Descargas").count() >= 1); // Details panel title.
+    // ...and the list (change view) shows that selected row.
     h.get_by_label("Lista").click();
     h.run_steps(3);
     assert_eq!(explore(&h).view, View::List);
@@ -452,7 +458,7 @@ fn la_lista_y_el_mapa_estan_sincronizados() {
         Some(egui::accesskit::Toggled::True),
         "la fila de Descargas está seleccionada"
     );
-    // Lista -> mapa: seleccionar otra fila cambia la selección compartida.
+    // List -> map: Selecting another row changes the shared selection.
     h.get_by_label_contains("Vídeos, ").click();
     h.run_steps(3);
     let vid = explore(&h)
@@ -463,12 +469,12 @@ fn la_lista_y_el_mapa_estan_sincronizados() {
     h.get_by_label("Mapa").click();
     h.run_steps(3);
     h.get_by_label_contains("Seleccionado: Vídeos");
-    // Doble clic en una fila de la lista entra en la carpeta (también sincronizado con el mapa).
+    // Double clicking on a row in the list goes into the folder (also synchronized with the map).
     h.get_by_label("Lista").click();
     h.run_steps(3);
     let row = h.get_by_label_contains("Vídeos, ");
     let c = row.rect().center();
-    // Deja pasar el tiempo de doble clic de los clics anteriores (egui cuenta clics seguidos, y tres serían un triple).
+    // Allow the double-click time of the previous clicks to pass (egui counts consecutive clicks, and three would be a triple).
     h.run_steps(30);
     click_at(&mut h, c);
     click_at(&mut h, c);
@@ -482,6 +488,7 @@ fn la_lista_es_accesible_con_nombre_tamano_porcentaje_y_archivos() {
         list: true,
         open: vec!["Users".into(), crate::demo::USER.into()],
         select: None,
+        marks: vec![],
     })));
     let row = h.get_by_label_contains("Vídeos, ");
     let label = row.accesskit_node().label().unwrap();
@@ -496,6 +503,7 @@ fn la_busqueda_filtra_la_lista() {
         list: true,
         open: vec!["Users".into(), crate::demo::USER.into()],
         select: None,
+        marks: vec![],
     })));
     assert!(h.query_by_label_contains("Descargas, ").is_some());
     h.get_by_label("Buscar").focus();
@@ -525,18 +533,19 @@ fn el_menu_contextual_ofrece_las_acciones_y_anadir_a_la_cesta_esta_activo() {
         list: true,
         open: vec!["Users".into(), crate::demo::USER.into()],
         select: None,
+        marks: vec![],
     })));
     let row = h.get_by_label_contains("Proyectos, ");
     row.click_secondary();
     h.run_steps(3);
     h.get_by_label("Entrar");
-    // Algunas acciones también están en el panel de detalles: todas las copias deben cumplir lo mismo.
+    // Some actions are also in the details panel: all copies must comply with the same.
     let all = |h: &Harness<'static, App>, l: &str| -> Vec<bool> {
         h.query_all_by_label(l)
             .map(|n| n.accesskit_node().is_disabled())
             .collect()
     };
-    // En la demostración lo que toca el disco está deshabilitado; la cesta funciona (contra el respaldo simulado).
+    // In the demo what touches the puck is disabled; the basket works (against the simulated backrest).
     for l in ["Abrir en el Explorador", "Propiedades"] {
         let v = all(&h, l);
         assert!(v.len() >= 2, "{l}: menú y detalles");
@@ -632,7 +641,7 @@ fn cambiar_el_tamano_o_el_tema_rehace_el_mesh_una_vez() {
 
 #[test]
 fn el_zoom_animado_dura_unos_frames_y_se_desactiva_sin_animaciones() {
-    // Con animaciones: entrar crea un zoom que termina solo.
+    // With animations: entering creates a zoom that ends alone.
     let mut o = opts(StartScreen::Map(MapStart::default()));
     o.animate = true;
     let mut h = harness(o);
@@ -646,7 +655,7 @@ fn el_zoom_animado_dura_unos_frames_y_se_desactiva_sin_animaciones() {
         h.run_steps(1);
     }
     assert!(!explore(&h).map.animating(), "el zoom terminó");
-    // Subir también anima.
+    // Going up also encourages.
     h.key_press(Key::Backspace);
     h.run_steps(1);
     assert!(explore(&h).map.animating());
@@ -654,7 +663,7 @@ fn el_zoom_animado_dura_unos_frames_y_se_desactiva_sin_animaciones() {
         h.run_steps(1);
     }
     assert!(!explore(&h).map.animating());
-    // Sin animaciones (SPI_GETCLIENTAREAANIMATION desactivado): ninguna.
+    // No animations (SPI_GETCLIENTAREAANIMATION disabled): none.
     let mut h = harness(opts(StartScreen::Map(MapStart::default())));
     let p = cell_center(&h, "Users");
     click_at(&mut h, p);
@@ -667,7 +676,7 @@ fn el_zoom_animado_dura_unos_frames_y_se_desactiva_sin_animaciones() {
 #[test]
 fn un_escaneo_real_de_una_carpeta_temporal_llega_al_mapa_y_a_la_lista() {
     use std::io::Write;
-    // Árbol sintético SOLO bajo %TEMP%\tesela-test-<uuid>.
+    // Synthetic tree ONLY under %TEMP%\tesela-test-<uuid>.
     let base = crate::testdir::TestDir::new();
     let root = base.join("raiz");
     std::fs::create_dir_all(root.join("fotos")).unwrap();
@@ -681,7 +690,7 @@ fn un_escaneo_real_de_una_carpeta_temporal_llega_al_mapa_y_a_la_lista() {
         let mut f = std::fs::File::create(root.join(name)).unwrap();
         f.write_all(&vec![7u8; size]).unwrap();
     }
-    // Forma canónica larga: en CI %TEMP% usa la forma corta 8.3 y las comparaciones de rutas deben ser sobre la larga.
+    // Canonical long form: in CI %TEMP% uses the short form 8.3 and path comparisons must be over the long form.
     let root = dunce::canonicalize(&root).unwrap();
     let mut o = opts(StartScreen::Home);
     o.demo = None;
@@ -698,14 +707,14 @@ fn un_escaneo_real_de_una_carpeta_temporal_llega_al_mapa_y_a_la_lista() {
     let ex = explore(&h);
     assert_eq!(ex.tree.stats().files, 4);
     assert!(!ex.info.cancelled && !ex.info.full_volume);
-    // La lista y el mapa ven los mismos elementos.
+    // The list and the map see the same items.
     h.get_by_label_contains("Mapa de");
     h.get_by_label("Lista").click();
     h.run_steps(3);
     h.get_by_label_contains("fotos, ");
     h.get_by_label_contains("docs, ");
     h.get_by_label_contains("suelto.bin, ");
-    // Entrar en una carpeta con Intro.
+    // Enter a folder with Enter.
     h.get_by_label_contains("fotos, ").click();
     h.run_steps(2);
     h.key_press(Key::Enter);
@@ -726,7 +735,7 @@ fn el_escaneo_en_modo_de_respaldo_muestra_la_insignia_aproximado() {
             .unwrap();
     }
     let root = dunce::canonicalize(&root).unwrap();
-    // `FindFirstFileExW` forzado: sin FileId, sin deduplicación y con el tamaño en disco estimado.
+    // `FindFirstFileExW` forced: no FileId, no deduplication, and estimated disk size.
     let mut so = tesela_scanner::ScanOptions::new(&root);
     so.force_find = true;
     let res = tesela_scanner::scan(so).unwrap();
@@ -753,7 +762,7 @@ fn el_escaneo_en_modo_de_respaldo_muestra_la_insignia_aproximado() {
         h.query_all_by_label("Aproximado").count() >= 1,
         "insignia en la barra de estado y en los detalles"
     );
-    // Un escaneo normal no la lleva.
+    // A normal scan does not have it.
     let h2 = harness(opts(StartScreen::Map(MapStart::default())));
     assert!(h2.query_all_by_label("Aproximado").count() == 0);
 }
@@ -796,7 +805,7 @@ fn el_tooltip_del_hover_describe_la_celda() {
     let p = cell_center(&h, "Vídeos");
     h.event(Event::PointerMoved(p));
     h.run_steps(3);
-    // Nombre, tamaño, porcentaje del padre, composición y pista de uso.
+    // Name, size, parent percentage, composition and usage track.
     assert!(h.query_all_by_label("Vídeos").count() >= 1);
     assert!(
         h.query_all_by_label_contains("de usuario").count() >= 1,
@@ -811,7 +820,7 @@ fn el_tooltip_del_hover_describe_la_celda() {
         h.query_all_by_label_contains("vídeo").count() >= 1,
         "frase de composición por tipo"
     );
-    // Y sobre la agrupación "Otros", su explicación.
+    // And about the "Others" group, its explanation.
     let layout = explore(&h).map.layout.clone().unwrap();
     let idx = layout
         .cells()
@@ -836,7 +845,7 @@ fn el_tooltip_del_hover_describe_la_celda() {
 fn cada_boton_deshabilitado_da_su_propia_pista() {
     let mut h = harness(opts(StartScreen::Map(MapStart::default())));
     let hint = "Disponible en la próxima versión";
-    // En la raíz "Subir un nivel" está deshabilitado, pero no por ser "de la próxima versión".
+    // In the root "Go up one level" is disabled, but not because it is "next version".
     h.get_by_label("Subir un nivel").hover();
     h.run_steps(14);
     assert_eq!(
@@ -844,14 +853,14 @@ fn cada_boton_deshabilitado_da_su_propia_pista() {
         0,
         "sin pista de próxima versión en Subir"
     );
-    // Con la cesta vacía, "Limpiar" explica por qué está deshabilitado (y la pista sale una sola vez).
+    // With the basket empty, "Clear" explains why it is disabled (and the track comes out only once).
     h.get_by_label_contains("Limpiar 0").hover();
     h.run_steps(14);
     assert_eq!(
         h.query_all_by_label_contains("La cesta está vacía").count(),
         1
     );
-    // En la demostración, "Abrir en el Explorador" explica por qué no se puede, sin la pista de próxima versión.
+    // In the demo, "Open in Explorer" explains why you can't without the next version hint.
     h.get_by_label("Abrir en el Explorador").hover();
     h.run_steps(14);
     assert_eq!(
@@ -862,7 +871,7 @@ fn cada_boton_deshabilitado_da_su_propia_pista() {
     assert_eq!(h.query_all_by_label(hint).count(), 0);
 }
 
-/// Color con que se pinta de verdad el texto `text` en la salida del último frame.
+/// Color with which the text `text` is actually painted in the output of the last frame.
 fn painted_text_color(h: &Harness<'static, App>, text: &str) -> egui::Color32 {
     for cs in &h.output().shapes {
         if let egui::epaint::Shape::Text(ts) = &cs.shape
@@ -883,7 +892,7 @@ fn painted_text_color(h: &Harness<'static, App>, text: &str) -> egui::Color32 {
 fn los_controles_deshabilitados_de_la_ventana_se_pintan_atenuados() {
     let h = harness(opts(StartScreen::Map(MapStart::default())));
     let pal = crate::theme::Palette::of(false);
-    // Colorear: Tipo (habilitado) frente a Antigüedad y Riesgo (v0.2, deshabilitados).
+    // Colorize: Type (enabled) vs. Age and Risk (v0.2, disabled).
     let on = painted_text_color(&h, "Tipo");
     for t in ["Antigüedad", "Riesgo"] {
         let off = painted_text_color(&h, t);
@@ -893,7 +902,7 @@ fn los_controles_deshabilitados_de_la_ventana_se_pintan_atenuados() {
             "{t} sigue legible"
         );
     }
-    // Los botones de la cesta (Primary, Ghost, Secondary) también.
+    // The basket buttons (Primary, Ghost, Secondary) too.
     assert_ne!(painted_text_color(&h, "Limpiar 0 B"), egui::Color32::WHITE);
     assert_eq!(
         painted_text_color(&h, "Vaciar cesta"),
@@ -905,7 +914,7 @@ fn los_controles_deshabilitados_de_la_ventana_se_pintan_atenuados() {
 fn los_nombres_en_otros_alfabetos_acaban_en_una_fuente_que_tiene_el_glifo() {
     use crate::fonts::{self, Scripts};
     use std::io::Write;
-    // Árbol sintético SOLO bajo %TEMP%\tesela-test-<uuid>, con nombres de cada escritura.
+    // Synthetic tree ONLY under %TEMP%\tesela-test-<uuid>, with names of each write.
     let base = crate::testdir::TestDir::new();
     let root = base.join("raiz");
     std::fs::create_dir_all(&root).unwrap();
@@ -916,7 +925,7 @@ fn los_nombres_en_otros_alfabetos_acaban_en_una_fuente_que_tiene_el_glifo() {
         ("עברית.txt", Scripts::RTL),
         ("日本語の名前.txt", Scripts::HAN | Scripts::KANA),
         ("中文名称.txt", Scripts::HAN),
-        // 夹 es solo del chino simplificado: con japonés y chino a la vez, MS Gothic no la tiene y debe cubrirla YaHei.
+        // 夹 is only from Simplified Chinese: with Japanese and Chinese at the same time, MS Gothic does not have it and YaHei must cover it.
         ("夹 日本語.txt", Scripts::HAN | Scripts::KANA),
         ("한국어.txt", Scripts::HANGUL),
         ("สวัสดี.txt", Scripts::THAI),
@@ -947,7 +956,7 @@ fn los_nombres_en_otros_alfabetos_acaban_en_una_fuente_que_tiene_el_glifo() {
         std::time::Duration::ZERO,
         &test_backend(),
     );
-    // El árbol anuncia las escrituras que trae.
+    // The tree announces the writings it brings.
     for s in [
         Scripts::RTL,
         Scripts::HAN,
@@ -964,10 +973,10 @@ fn los_nombres_en_otros_alfabetos_acaban_en_una_fuente_que_tiene_el_glifo() {
     o.demo = None;
     let mut h = harness(o);
     h.state_mut().ui_mut().screen = crate::app::Screen::Explore(Box::new(ex));
-    h.run_steps(8); // ensure_fonts pide las reservas y valen desde el frame siguiente
+    h.run_steps(8); // ensure_fonts requests fallback fonts; they are available from the next frame.
     let dir = crate::platform::fonts_dir().unwrap();
-    // Una escritura se comprueba solo si CADA grupo de reserva tiene en este equipo alguna fuente que egui pueda usar; si no
-    // (por ejemplo un Windows Server sin YaHei ni MS Gothic), se salta diciendo qué falta.
+    // A write is checked only if EACH standby group has some source on this computer that egui can use; but
+    // (for example a Windows Server without YaHei or MS Gothic), it skips saying what is missing.
     let missing = |s: Scripts| fonts::missing_groups(&dir, s);
     let mut checked = 0;
     let all: Vec<(String, Scripts)> = names.iter().map(|(n, s)| (n.to_string(), *s)).collect();
@@ -997,9 +1006,9 @@ fn los_nombres_en_otros_alfabetos_acaban_en_una_fuente_que_tiene_el_glifo() {
         }
         checked += 1;
     }
-    // Latino y griego solo dependen de la fuente principal, así que siempre se comprueban; el resto, según el equipo.
+    // Latin and Greek only depend on the main source, so they are always checked; the rest, depending on the team.
     assert!(checked >= 2, "al menos latino y griego se comprobaron");
-    // Y la ventana pinta la lista con esos nombres sin pánico.
+    // And the window paints the list with those names without panic.
     h.get_by_label("Lista").click();
     h.run_steps(4);
     assert!(h.query_by_label_contains("日本語の名前.txt, ").is_some());
@@ -1052,7 +1061,7 @@ fn la_leyenda_cabe_entera_a_1280x800_sin_desplazarse() {
         !explore(&h).sidebar_overflow,
         "la barra lateral no debería desbordar a 1280 x 800"
     );
-    // El borde inferior visible de la barra lateral es el de la cesta (800 - 56 - 32).
+    // The bottom visible border of the sidebar is that of the basket (800 - 56 - 32).
     let limit = 800.0 - 56.0 - 32.0;
     for t in LEGEND {
         let n = h
@@ -1069,7 +1078,7 @@ fn la_leyenda_cabe_entera_a_1280x800_sin_desplazarse() {
 
 #[test]
 fn con_la_ventana_minima_la_leyenda_no_se_corta_sin_aviso() {
-    // 960 x 600 es el tamaño mínimo: o cabe, o la barra lateral se desplaza con su barra visible (`sidebar_overflow`).
+    // 960 x 600 is the minimum size: either it fits, or the sidebar scrolls with its bar visible (`sidebar_overflow`).
     let h = harness_sized(
         opts(StartScreen::Map(MapStart::default())),
         vec2(960.0, 600.0),
@@ -1084,7 +1093,7 @@ fn con_la_ventana_minima_la_leyenda_no_se_corta_sin_aviso() {
         all_visible || explore(&h).sidebar_overflow,
         "contenido cortado y sin barra de desplazamiento"
     );
-    // Todos los elementos existen para el lector de pantalla aunque haya que desplazarse.
+    // All elements exist for the screen reader even if you have to scroll.
     for t in LEGEND {
         assert!(h.query_all_by_label(t).count() >= 1, "{t}");
     }
@@ -1092,7 +1101,7 @@ fn con_la_ventana_minima_la_leyenda_no_se_corta_sin_aviso() {
 
 #[test]
 fn con_la_ventana_minima_la_barra_de_estado_no_se_pisa_y_los_detalles_se_desplazan() {
-    // 960 x 600 con el aviso de la demostración (el más largo) y el hueco sin explicar de la unidad entera.
+    // 960 x 600 with the demo notice (the longest) and the unexplained gap in the entire unit.
     let mut h = harness_sized(
         opts(StartScreen::Map(MapStart::default())),
         vec2(960.0, 600.0),
@@ -1114,12 +1123,12 @@ fn con_la_ventana_minima_la_barra_de_estado_no_se_pisa_y_los_detalles_se_desplaz
     })
     .collect();
     for (i, (a, ra)) in rects.iter().enumerate() {
-        // Dentro de la ventana...
+        // Inside the window...
         assert!(
             ra.right() <= 960.0 + 0.5 && ra.left() >= -0.5,
             "{a} fuera de la ventana: {ra:?}"
         );
-        // ...y sin tocar a ninguno de los demás.
+        // ...and without touching any of the others.
         for (b, rb) in &rects[i + 1..] {
             assert!(
                 !ra.intersects(*rb),
@@ -1127,7 +1136,7 @@ fn con_la_ventana_minima_la_barra_de_estado_no_se_pisa_y_los_detalles_se_desplaz
             );
         }
     }
-    // Los botones de los detalles: o se ven enteros dentro de la ventana, o el panel se desplaza con su barra a la vista.
+    // The details buttons: either they are seen in their entirety within the window, or the panel moves with its bar in view.
     let all_in = ["Copiar ruta", "Propiedades"].iter().all(|t| {
         h.query_all_by_label_contains(t)
             .any(|n| n.rect().bottom() <= 600.0 - 88.0 + 0.5)
@@ -1163,7 +1172,7 @@ fn un_escaneo_que_no_puede_empezar_vuelve_al_inicio_con_el_error_traducido_en_lo
         let nada =
             std::env::temp_dir().join(format!("tesela-test-{}-no-existe", uuid::Uuid::new_v4()));
         h.state_mut().ui_mut().request_scan(&ctx, nada);
-        // El arranque va en un hilo: la pantalla de escaneo aparece al instante y luego se vuelve al inicio.
+        // The boot goes in a thread: the scan screen appears instantly and then returns to the start.
         assert_eq!(h.state().ui().screen_name(), "scan");
         let t0 = std::time::Instant::now();
         while h.state().ui().screen_name() != "home" {
@@ -1172,7 +1181,7 @@ fn un_escaneo_que_no_puede_empezar_vuelve_al_inicio_con_el_error_traducido_en_lo
             h.run_steps(1);
         }
         h.run_steps(2);
-        // El error llega TIPADO y se traduce con Fluent: ni una palabra del otro idioma ni del texto técnico del escáner.
+        // The error arrives TYPE and is translated with Fluent: not a word of the other language or of the technical text of the scanner.
         let full = format!("{start}: {reason}");
         assert!(
             h.query_by_label_contains(&full).is_some(),
@@ -1200,9 +1209,9 @@ fn cancelar_o_cerrar_la_pantalla_detiene_el_escaneo_sin_dejarlo_huerfano() {
         drive: None,
     };
     let ctx = egui::Context::default();
-    // Espera a que TODOS los escaneos arrancados con esa raíz (`n` como mínimo) estén cancelados.
-    // Un arranque cancelado a tiempo ni siquiera llega a crear el escaneo (el token se consulta entre fases): `n` es el
-    // mínimo de escaneos arrancados que se exige (0 si pueden no haber llegado a arrancar).
+    // Wait until ALL scans started with that root (`n` at least) are canceled.
+    // A boot aborted in time does not even create the scan (the token is consulted between phases): `n` is the
+    // minimum number of scans started that is required (0 if they may not have started).
     let all_cancelled = |root: &std::path::Path, n: usize| {
         let t0 = Instant::now();
         loop {
@@ -1218,7 +1227,7 @@ fn cancelar_o_cerrar_la_pantalla_detiene_el_escaneo_sin_dejarlo_huerfano() {
         }
     };
 
-    // A. Cancelar antes de que el arranque termine: se descarta y el escaneo creado se cancela.
+    // A. Cancel before boot finishes: It is discarded and the created scan is cancelled.
     let root = mk("a");
     let mut s = ScanScreen::real(&ctx, req(&root), false, test_backend());
     s.cancel();
@@ -1236,12 +1245,12 @@ fn cancelar_o_cerrar_la_pantalla_detiene_el_escaneo_sin_dejarlo_huerfano() {
     );
     all_cancelled(&root, 0);
 
-    // B. Soltar la pantalla sin más (Drop) mientras arranca.
+    // B. Simply release the screen (Drop) while it boots.
     let root = mk("b");
     drop(ScanScreen::real(&ctx, req(&root), false, test_backend()));
     all_cancelled(&root, 0);
 
-    // C. LA CARRERA: el resultado del arranque ya está entregado, la pantalla no lo ha recogido y se suelta.
+    // C. THE RACE: the result of the start is already delivered, the screen has not picked it up and it is released.
     let root = mk("c");
     let s = ScanScreen::real(&ctx, req(&root), false, test_backend());
     let t0 = Instant::now();
@@ -1249,7 +1258,7 @@ fn cancelar_o_cerrar_la_pantalla_detiene_el_escaneo_sin_dejarlo_huerfano() {
         assert!(t0.elapsed().as_secs() < 20, "el escaneo no arrancó");
         std::thread::sleep(Duration::from_millis(2));
     }
-    std::thread::sleep(Duration::from_millis(50)); // el hilo ya dejó el resultado
+    std::thread::sleep(Duration::from_millis(50)); // The thread has delivered the result.
     assert_eq!(
         test_hooks::counts(&root),
         (1, 0),
@@ -1262,7 +1271,7 @@ fn cancelar_o_cerrar_la_pantalla_detiene_el_escaneo_sin_dejarlo_huerfano() {
         "al soltar la pantalla se cancela lo ya entregado"
     );
 
-    // D. Muchas veces, con esperas distintas: ninguno se queda sin cancelar.
+    // D. Many times, with different waits: no one is left without canceling.
     let root = mk("d");
     for i in 0..40u64 {
         let s = ScanScreen::real(&ctx, req(&root), false, test_backend());
@@ -1277,7 +1286,7 @@ fn cancelar_o_cerrar_la_pantalla_detiene_el_escaneo_sin_dejarlo_huerfano() {
     assert!(all_cancelled(&root, 0) <= 40);
 }
 
-/// ¿Hay en la salida del último frame un anillo de foco (trazo de 2 px de acento) alrededor del centro de `r`?
+/// Is there a focus ring (2 px accent stroke) around the center of `r` in the output of the last frame?
 fn focus_ring_around(h: &Harness<'static, App>, r: egui::Rect) -> bool {
     focus_ring_around_with(h, r, 16.0)
 }
@@ -1299,6 +1308,7 @@ fn list_start() -> StartScreen {
         list: true,
         open: vec!["Users".into(), crate::demo::USER.into()],
         select: None,
+        marks: vec![],
     })
 }
 
@@ -1309,7 +1319,7 @@ fn la_lista_se_maneja_con_flechas_y_muestra_el_foco() {
     let kids: Vec<_> = explore(&h).shown_children().iter().collect();
     assert!(kids.len() >= 4);
     let name = |h: &Harness<'static, App>, id| explore(h).tree.name_lossy(id).into_owned();
-    // Foco en la primera fila: se pinta el anillo y la selección la sigue.
+    // Focus on the first row: the ring is painted and the selection follows it.
     let first = name(&h, kids[0]);
     h.get_by_label_contains(&format!("{first}, ")).focus();
     h.run_steps(3);
@@ -1321,7 +1331,7 @@ fn la_lista_se_maneja_con_flechas_y_muestra_el_foco() {
         "anillo de foco en la fila"
     );
     assert_eq!(explore(&h).selection, Some(Sel::Node(kids[0])));
-    // ↓ y ↑ mueven la selección Y el foco.
+    // ↓ and ↑ move the selection AND the focus.
     h.key_press(Key::ArrowDown);
     h.run_steps(3);
     assert_eq!(explore(&h).selection, Some(Sel::Node(kids[1])));
@@ -1334,7 +1344,7 @@ fn la_lista_se_maneja_con_flechas_y_muestra_el_foco() {
     h.key_press(Key::ArrowUp);
     h.run_steps(3);
     assert_eq!(explore(&h).selection, Some(Sel::Node(kids[1])));
-    // Fin y Inicio.
+    // End and Beginning.
     h.key_press(Key::End);
     h.run_steps(4);
     assert_eq!(
@@ -1344,7 +1354,7 @@ fn la_lista_se_maneja_con_flechas_y_muestra_el_foco() {
     h.key_press(Key::Home);
     h.run_steps(4);
     assert_eq!(explore(&h).selection, Some(Sel::Node(kids[0])));
-    // Intro sobre la fila enfocada entra en la carpeta (o no hace nada si es un archivo).
+    // Enter on the focused row goes into the folder (or does nothing if it's a file).
     let dir = kids
         .iter()
         .copied()
@@ -1358,12 +1368,12 @@ fn la_lista_se_maneja_con_flechas_y_muestra_el_foco() {
     assert_eq!(explore(&h).root.node, dir);
 }
 
-/// UX-1: las unidades de la barra lateral que no son la actual se ven pulsables (fondo, cursor y pista) y se activan con el
-/// teclado; la actual no tiene estado de "pasar el puntero".
+/// UX-1: Sidebar units other than the current one are clickable (background, cursor, and track) and are activated with the
+/// keyboard; the current one has no "hover over" state.
 #[test]
 fn las_unidades_de_la_barra_lateral_se_ven_pulsables() {
     let mut h = harness(opts(user_folder()));
-    // La unidad actual (C:) no es pulsable: sin pista al pasar el puntero.
+    // Current drive (C:) is not clickable: no hint when hovering.
     assert!(!super::explore::drive_row_is_interactive(true));
     assert!(super::explore::drive_row_is_interactive(false));
     h.get_by_label("Analizar Sistema (C:)").hover();
@@ -1373,7 +1383,7 @@ fn las_unidades_de_la_barra_lateral_se_ven_pulsables() {
         1,
         "la unidad actual no muestra la pista"
     );
-    // Otra unidad: al pasar el puntero aparece la pista con el texto de `analyze-drive` y el cursor pasa a la mano.
+    // Another unit: Hovering the pointer displays the hint with the text `analyze-drive` and the cursor moves to the hand.
     let other = h.get_by_label("Analizar Almacén (E:)");
     let rect = other.rect();
     other.hover();
@@ -1387,7 +1397,7 @@ fn las_unidades_de_la_barra_lateral_se_ven_pulsables() {
         h.output().platform_output.cursor_icon,
         egui::CursorIcon::PointingHand
     );
-    // Se pinta el fondo de "pasar el puntero" (el color suave de acento) detrás de la fila.
+    // The "hover" background (the soft accent color) is painted behind the row.
     let soft = crate::theme::Palette::of(false).accent_soft;
     assert!(
         h.output().shapes.iter().any(|cs| matches!(
@@ -1398,7 +1408,7 @@ fn las_unidades_de_la_barra_lateral_se_ven_pulsables() {
     );
 }
 
-/// UX-1: Intro y Espacio sobre una unidad enfocada empiezan el análisis (como el clic).
+/// UX-1: Enter and Space on a focused unit begin the analysis (like the click).
 #[test]
 fn intro_y_espacio_sobre_una_unidad_de_la_barra_lateral_empiezan_el_analisis() {
     for key in [Key::Enter, Key::Space] {
@@ -1416,7 +1426,7 @@ fn intro_y_espacio_sobre_una_unidad_de_la_barra_lateral_empiezan_el_analisis() {
 #[test]
 fn los_controles_alcanzables_con_tab_muestran_el_foco() {
     let mut h = harness(opts(user_folder()));
-    // Cada control se enfoca por accesibilidad (equivale a llegar con Tab) y debe pintar su anillo.
+    // Each control is focused on accessibility (equivalent to reaching with Tab) and must paint its ring.
     let targets: Vec<(&str, String)> = vec![
         ("unidad de la barra lateral", "Analizar ".into()),
         ("elemento de la barra lateral", "Mapa".into()),
@@ -1440,12 +1450,12 @@ fn los_controles_alcanzables_con_tab_muestran_el_foco() {
             "{what}: sin anillo de foco"
         );
     }
-    // El buscador.
+    // The search engine.
     h.key_press_modifiers(Modifiers::COMMAND, Key::F);
     h.run_steps(4);
     let search = h.get_by_label("Buscar");
     assert!(search.is_focused());
-    // El anillo rodea el campo entero (icono y márgenes incluidos), no solo el texto editable.
+    // The ring surrounds the entire field (icon and margins included), not just the editable text.
     assert!(
         focus_ring_around_with(&h, search.rect(), 80.0),
         "buscador: sin anillo de foco"
@@ -1474,7 +1484,7 @@ fn acerca_de_muestra_la_version_y_los_avisos_de_terceros_y_no_cambia_los_ajustes
         h.run_steps(3);
         h.get_by_label(acerca).click();
         h.run_steps(4);
-        // La ventana lleva la versión del producto, la licencia y el botón de los avisos.
+        // The window has the product version, the license and the notifications button.
         h.get_by_label(&format!("Versión {}", crate::about::VERSION));
         h.get_by_label_contains("Licencia: MIT o Apache-2.0");
         assert!(
@@ -1483,14 +1493,15 @@ fn acerca_de_muestra_la_version_y_los_avisos_de_terceros_y_no_cambia_los_ajustes
         );
         h.get_by_label(avisos).click();
         h.run_steps(4);
-        // El botón y la primera línea del texto.
-        assert!(h.query_all_by_label_contains("Avisos de terceros").count() >= 2);
-        h.get_by_label_contains("Licencias usadas");
-        // Escape la cierra.
+        // The Spanish button opens the generated English third-party notices.
+        h.get_by_label("Avisos de terceros");
+        h.get_by_label_contains("Third-party notices");
+        h.get_by_label_contains("Licenses used");
+        // Escape closes it.
         h.key_press(Key::Escape);
         h.run_steps(3);
         assert!(h.query_by_label_contains("Versión ").is_none());
-        // Abrirla no es un cambio de ajustes (no se guarda nada).
+        // Opening it is not a change of settings (nothing is saved).
         assert!(h.state_mut().ui_mut().take_settings_change().is_none());
     }
 }
@@ -1509,9 +1520,9 @@ fn acerca_de_sale_en_ingles_con_el_idioma_en_ingles() {
     h.get_by_label("Third-party notices");
 }
 
-// --- Teclado real: Tab recorre el orden REAL y Intro/Espacio activan el control enfocado (M3, N1) ---
+// --- Real keyboard: Tab cycles through REAL order and Enter/Space activate focused control (M3, N1) ---
 
-/// El nodo con el foco de accesibilidad: (rol, etiqueta, rectángulo).
+/// The node with the accessibility focus: (role, label, rectangle).
 fn focused(h: &Harness<'static, App>) -> Option<(egui::accesskit::Role, String, egui::Rect)> {
     h.queryable_node()
         .children_recursive()
@@ -1529,7 +1540,7 @@ fn focused_label(h: &Harness<'static, App>) -> String {
     focused(h).map(|f| f.1).unwrap_or_default()
 }
 
-/// Pulsa Tab hasta que el foco esté en un control cuya etiqueta empiece por `prefix`.
+/// Press Tab until focus is on a control whose label begins with `prefix`.
 fn tab_to(h: &mut Harness<'static, App>, prefix: &str) {
     for _ in 0..60 {
         h.key_press(Key::Tab);
@@ -1541,7 +1552,7 @@ fn tab_to(h: &mut Harness<'static, App>, prefix: &str) {
     panic!("Tab no llegó a `{prefix}` (foco: `{}`)", focused_label(h));
 }
 
-/// Selecciona la primera carpeta de la carpeta actual y la devuelve.
+/// Selects the first folder from the current folder and returns it.
 fn select_first_dir(h: &mut Harness<'static, App>) -> tesela_model::NodeId {
     let dir = explore(h)
         .shown_children()
@@ -1566,9 +1577,9 @@ fn tab_recorre_el_orden_real_y_da_la_vuelta() {
         h.run_steps(2);
         let (role, label, rect) = focused(&h).expect("Tab siempre deja el foco en algún control");
         if order.first() == Some(&label) {
-            break; // dio la vuelta
+            break; // The cycle wrapped around.
         }
-        // Todo lo que recibe el foco es un control con nombre y a la vista; los botones pintan su anillo.
+        // All that receives focus is a named and visible control; buttons paint your ring.
         assert!(!label.is_empty(), "un control sin nombre recibió el foco");
         assert!(rect.width() > 1.0 && rect.height() > 1.0, "{label}");
         if role == egui::accesskit::Role::Button {
@@ -1576,7 +1587,7 @@ fn tab_recorre_el_orden_real_y_da_la_vuelta() {
         }
         order.push(label);
     }
-    // El ciclo se cierra y pasa por todos los controles de la ventana principal.
+    // The loop closes and goes through all the controls in the main window.
     assert!(order.len() >= 10, "{order:?}");
     for needed in [
         "Subir un nivel",
@@ -1607,16 +1618,16 @@ fn tab_recorre_el_orden_real_y_da_la_vuelta() {
 fn con_tab_intro_y_espacio_activan_el_boton_enfocado_y_no_entran_en_la_carpeta_seleccionada() {
     let mut h = harness(opts(user_folder()));
     let here = explore(&h).root.node;
-    // Hay una carpeta seleccionada: si Intro se gastara como "entrar", el botón no se activaría y la raíz cambiaría.
+    // A folder is selected - if Enter were used as "enter", the button would not be activated and the root would change.
     select_first_dir(&mut h);
     assert_eq!(explore(&h).view, View::Map);
-    // Tab hasta "Lista" y Intro: cambia la vista y NO entra.
+    // Tab to "List" and Enter: changes the view and does NOT enter.
     tab_to(&mut h, "Lista");
     h.key_press(Key::Enter);
     h.run_steps(3);
     assert_eq!(explore(&h).view, View::List);
     assert_eq!(explore(&h).root.node, here, "Intro entró en la carpeta");
-    // Mayús+Tab desde "Lista" lleva a "Mapa" (en la vista de lista cada fila es una parada de Tab): Espacio lo activa.
+    // Shift+Tab from "List" leads to "Map" (in list view each row is a Tab stop): Space turns this on.
     h.key_press_modifiers(Modifiers::SHIFT, Key::Tab);
     h.run_steps(2);
     assert_eq!(focused_label(&h), "Mapa");
@@ -1624,7 +1635,7 @@ fn con_tab_intro_y_espacio_activan_el_boton_enfocado_y_no_entran_en_la_carpeta_s
     h.run_steps(3);
     assert_eq!(explore(&h).view, View::Map);
     assert_eq!(explore(&h).root.node, here);
-    // Retroceso con un botón enfocado tampoco sube de nivel.
+    // Backspace with a focused button also doesn't level up.
     assert!(!focused_label(&h).is_empty());
     h.key_press(Key::Backspace);
     h.run_steps(3);
@@ -1633,7 +1644,7 @@ fn con_tab_intro_y_espacio_activan_el_boton_enfocado_y_no_entran_en_la_carpeta_s
         here,
         "Retroceso subió con un botón enfocado"
     );
-    // Y Espacio sobre "Lista" con el foco en él también cambia la vista.
+    // And Space over "List" with focus on it also changes the view.
     h.key_press(Key::Tab);
     h.run_steps(2);
     assert_eq!(focused_label(&h), "Lista");
@@ -1663,7 +1674,7 @@ fn con_tab_intro_sobre_reescanear_reescanea_y_no_navega() {
 
 #[test]
 fn con_tab_intro_en_el_mapa_sigue_entrando_y_en_una_fila_de_la_lista_tambien() {
-    // Mapa: Tab hasta el mapa (foco del teclado en él) e Intro entra en la carpeta seleccionada.
+    // Map: Tab to the map (keyboard focus on it) and Enter enters the selected folder.
     let mut h = harness(opts(StartScreen::Map(MapStart::default())));
     let users = explore(&h).tree.child_by_name(0, b"Users").unwrap();
     h.state_mut()
@@ -1676,7 +1687,7 @@ fn con_tab_intro_en_el_mapa_sigue_entrando_y_en_una_fila_de_la_lista_tambien() {
     h.key_press(Key::Enter);
     h.run_steps(3);
     assert_eq!(explore(&h).root.node, users, "Intro en el mapa debe entrar");
-    // Tras un clic en el mapa, Intro y Retroceso siguen funcionando.
+    // After clicking on the map, Enter and Backspace continue to work.
     let mut h = harness(opts(StartScreen::Map(MapStart::default())));
     let p = cell_center(&h, "Users");
     click_at(&mut h, p);
@@ -1686,7 +1697,7 @@ fn con_tab_intro_en_el_mapa_sigue_entrando_y_en_una_fila_de_la_lista_tambien() {
     h.key_press(Key::Backspace);
     h.run_steps(3);
     assert_eq!(explore(&h).root.node, 0);
-    // Lista: Tab hasta una fila de carpeta e Intro la abre.
+    // List: Tab to a folder row and Enter opens it.
     let mut h = harness(opts(list_start()));
     let kids: Vec<_> = explore(&h).shown_children().iter().collect();
     let dir = kids
@@ -1721,7 +1732,7 @@ fn con_una_ventana_modal_abierta_el_teclado_no_navega_por_debajo() {
         );
     }
     assert_eq!(explore(&h).selection, Some(Sel::Node(dir)));
-    // Escape la cierra.
+    // Escape closes it.
     h.key_press(Key::Escape);
     h.run_steps(3);
     assert!(h.query_by_label_contains("Versión ").is_none());
@@ -1740,17 +1751,17 @@ fn con_cuota_de_disco_la_tarjeta_distingue_lo_libre_del_volumen_de_lo_disponible
         let mut o = opts(StartScreen::Home);
         o.settings.language = lang;
         let mut h = harness(o);
-        // Sin cuota (la demostración): lo disponible es lo libre y no hay nota.
+        // Without quota (the demonstration): what is available is what is free and there is no note.
         assert!(h.query_by_label_contains(quota_label).is_none());
         let mut drives = crate::demo::drives();
         drives[0].available = drives[0].free / 4;
         h.state_mut().ui_mut().set_drives(drives);
         h.run_steps(3);
-        // La nota sale (solo en la unidad con cuota) y lo libre del volumen se sigue mostrando entero.
+        // The note appears (only on the unit with quota) and the free volume continues to be shown in full.
         assert_eq!(h.query_all_by_label_contains(quota_label).count(), 1);
         assert!(h.query_all_by_label_contains(free_label).count() >= 3);
-        // Con cuota y SIN la capacidad real del volumen (`volume_scope == false`), la tarjeta avisa de que las cifras son
-        // las de la cuenta del usuario.
+        // With quota and WITHOUT the actual capacity of the volume (`volume_scope == false`), the card warns that the figures are
+        // those of the user's account.
         let scope_label = if lang == LangPref::Es {
             "Cifras de tu cuenta (cuota de disco)"
         } else {
@@ -1765,9 +1776,9 @@ fn con_cuota_de_disco_la_tarjeta_distingue_lo_libre_del_volumen_de_lo_disponible
     }
 }
 
-// --- Tamaño mínimo (960 × 600): lista y pantalla de escaneo (m8) y "reducir animaciones" (m9) -------------------------
+// --- Minimum size (960 × 600): list and scan screen (m8) and "reduce animations" (m9) -------------------------
 
-/// ¿Se pintó el texto exacto `text` en el último frame?
+/// Was the exact text `text` painted in the last frame?
 fn painted(h: &Harness<'static, App>, text: &str) -> bool {
     h.output()
         .shapes
@@ -1778,12 +1789,12 @@ fn painted(h: &Harness<'static, App>, text: &str) -> bool {
 #[test]
 fn las_columnas_de_la_lista_dan_prioridad_al_nombre_y_ocultan_las_demas_por_orden() {
     use crate::list::{Cols, NAME_MIN_W, columns};
-    // Ancho de sobra: todas las columnas.
+    // Plenty of width: all columns.
     let c = columns(1000.0);
     assert!(c.bar_left.is_some() && c.files_right.is_some());
     assert!(c.name_w >= NAME_MIN_W);
-    // Al estrecharse se quita primero "archivos", luego la barra; el nombre nunca se queda sin su mínimo mientras se
-    // pueda quitar algo, y nunca crece al estrechar.
+    // When narrowing, first "files" are removed, then the bar; the name never runs out of its minimum as long as
+    // can remove something, and it never grows by tightening.
     let mut prev: Option<Cols> = None;
     for w in (300..=1000).rev().step_by(4) {
         let c = columns(w as f32);
@@ -1800,13 +1811,13 @@ fn las_columnas_de_la_lista_dan_prioridad_al_nombre_y_ocultan_las_demas_por_orde
                     .min(w as f32 - 36.0 - 120.0)
         );
         if let Some(p) = prev {
-            // Las columnas visibles solo se pierden al estrechar, nunca se recuperan.
+            // Visible columns are only lost when narrowing, they are never recovered.
             assert!(p.files_right.is_some() || c.files_right.is_none(), "w {w}");
             assert!(p.bar_left.is_some() || c.bar_left.is_none(), "w {w}");
         }
         prev = Some(c);
     }
-    // Con solo el tamaño, el nombre se lleva todo lo demás.
+    // With the size alone, the name takes away everything else.
     let c = columns(330.0);
     assert!(c.bar_left.is_none() && c.files_right.is_none());
     assert!(c.name_w >= 150.0, "{c:?}");
@@ -1827,10 +1838,10 @@ fn con_la_ventana_minima_la_lista_deja_sitio_al_nombre() {
         row.rect().width(),
         cols.name_w
     );
-    // El nombre completo se pinta (no queda en una elipsis); las columnas que no caben se ocultan, también en la cabecera.
+    // The full name is painted (it is not an ellipsis); Columns that do not fit are hidden, also in the header.
     assert!(painted(&h, &name), "el nombre `{name}` no se pinta entero");
     assert!(painted(&h, "Nombre") && painted(&h, "En disco"));
-    // (La palabra "Archivos" también sale en el panel de detalles: solo cuenta la de la cabecera de la lista.)
+    // (The word "Files" also appears in the details panel: only the one at the head of the list counts.)
     let header = |h: &Harness<'static, App>, text: &str| {
         let r = row.rect();
         h.output().shapes.iter().any(|cs| {
@@ -1850,7 +1861,7 @@ fn con_la_ventana_minima_la_lista_deja_sitio_al_nombre() {
         !header(&h, "Porcentaje"),
         "la columna Porcentaje debería ocultarse a 960 px"
     );
-    // A 1280 × 800 siguen todas.
+    // At 1280 × 800 they all continue.
     let h = harness(opts(list_start()));
     assert!(painted(&h, "Archivos") && painted(&h, "Porcentaje"));
     let wide = harness(opts(list_start()));
@@ -1862,7 +1873,7 @@ fn con_la_ventana_minima_la_lista_deja_sitio_al_nombre() {
     );
 }
 
-/// Rectángulos de todos los nodos con etiqueta que contienen `texts` (el primero visible de cada uno).
+/// Rectangles of all labeled nodes containing `texts` (the first visible of each).
 fn rects_of(h: &Harness<'static, App>, texts: &[&str]) -> Vec<(String, egui::Rect)> {
     texts
         .iter()
@@ -1914,7 +1925,7 @@ fn con_la_ventana_minima_la_pantalla_de_escaneo_no_pisa_textos_ni_corta_el_mapa(
         h.run_steps(3);
         let rects = rects_of(&h, &items);
         for (i, (a, ra)) in rects.iter().enumerate() {
-            // Dentro de la ventana.
+            // Inside the window.
             assert!(
                 ra.left() >= -0.5
                     && ra.right() <= 960.0 + 0.5
@@ -1922,7 +1933,7 @@ fn con_la_ventana_minima_la_pantalla_de_escaneo_no_pisa_textos_ni_corta_el_mapa(
                     && ra.bottom() <= 600.0 + 0.5,
                 "{lang:?}: `{a}` fuera de la ventana: {ra:?}"
             );
-            // Y sin tocar a ninguno de los demás (en particular, "Limpiar lo seguro" no tapa el texto de la tarjeta).
+            // And without touching any of the others (in particular, "Clear safe" does not cover the text on the card).
             for (b, rb) in &rects[i + 1..] {
                 assert!(
                     !ra.intersects(*rb),
@@ -1930,8 +1941,8 @@ fn con_la_ventana_minima_la_pantalla_de_escaneo_no_pisa_textos_ni_corta_el_mapa(
                 );
             }
         }
-        // Las dos tarjetas: o su contenido se ve entero dentro de la ventana, o la tarjeta se desplaza (su barra está a
-        // la vista y `overflow` lo dice); nunca se recorta en silencio.
+        // The two cards: either their entire content is seen within the window, or the card moves (its bar is
+        // the view and `overflow` says so); It is never silently trimmed.
         let (left_over, right_over) = h.state().ui().scan_overflow().expect("pantalla de escaneo");
         let last_row = h
             .query_all_by_label_contains(if lang == LangPref::Es {
@@ -1963,7 +1974,7 @@ fn con_la_ventana_minima_la_pantalla_de_escaneo_no_pisa_textos_ni_corta_el_mapa(
 fn sin_animaciones_el_progreso_indeterminado_y_los_spinners_son_estaticos() {
     use crate::widgets::indeterminate_segment;
     let bar = egui::Rect::from_min_size(egui::pos2(10.0, 20.0), vec2(400.0, 8.0));
-    // Con animaciones el tramo se mueve con el tiempo; sin ellas es el mismo siempre.
+    // With animations the section moves over time; without them it is always the same.
     let a = indeterminate_segment(bar, 0.0, true);
     let b = indeterminate_segment(bar, 0.4, true);
     assert_ne!(a.left(), b.left(), "con animaciones se mueve");
@@ -1977,8 +1988,8 @@ fn sin_animaciones_el_progreso_indeterminado_y_los_spinners_son_estaticos() {
     );
     assert!(bar.contains_rect(still[0]));
 
-    // La pantalla de escaneo simulada y congelada: con `animate = false` no pide repintar (los spinners de las filas
-    // pendientes son arcos fijos); con `animate = true` sí, y rápido (el Spinner de egui).
+    // The simulated and frozen scan screen: with `animate = false` it does not ask to repaint (the spinners of the rows
+    // slopes are fixed arcs); with `animate = true` yes, and fast (egui's Spinner).
     let repaint_delay = |h: &Harness<'static, App>| {
         h.output()
             .viewport_output
@@ -2020,7 +2031,7 @@ fn con_una_ventana_modal_abierta_f5_y_ctrl_f_no_actuan() {
     h.get_by_label("Acerca de Tesela").click();
     h.run_steps(4);
     h.get_by_label(&format!("Versión {}", crate::about::VERSION));
-    // F5 no reescanea y Ctrl+F no enfoca el buscador bajo la ventana modal.
+    // F5 does not rescan and Ctrl+F does not focus the finder under the modal window.
     h.key_press(Key::F5);
     h.run_steps(3);
     assert_eq!(
@@ -2034,7 +2045,7 @@ fn con_una_ventana_modal_abierta_f5_y_ctrl_f_no_actuan() {
         !h.get_by_label("Buscar").is_focused(),
         "Ctrl+F actuó bajo el modal"
     );
-    // Escape cierra la ventana y entonces los atajos vuelven.
+    // Escape closes the window and then the shortcuts return.
     h.key_press(Key::Escape);
     h.run_steps(3);
     assert!(h.query_by_label_contains("Versión ").is_none());
@@ -2052,7 +2063,7 @@ fn con_una_ventana_modal_abierta_f5_y_ctrl_f_no_actuan() {
     );
 }
 
-/// Pasos hasta que aparece una etiqueta (los hilos de medida del `cleaner` terminan solos).
+/// Steps until a label appears (the `cleaner` measurement threads end alone).
 fn wait_label(h: &mut Harness<'static, App>, label: &str) -> bool {
     for _ in 0..200 {
         h.run_steps(2);
@@ -2076,8 +2087,8 @@ fn el_titular_suma_solo_lo_seguro_medido_y_descargas_y_papelera_llevan_revisar()
         o.settings.language = lang;
         let mut h = harness(o);
         let tr = crate::Tr::new(lang.resolve());
-        // Lo seguro y utilizable: temporales y las cachés de Edge y Firefox (Chrome está "abierto" en la demostración: no
-        // cuenta). Cada cifra es la que mide el `cleaner` (antigüedad mínima de los temporales incluida).
+        // What is safe and usable: temporary and caches of Edge and Firefox (Chrome is "open" in the demo: no
+        // account). Each figure is what the `cleaner` measures (minimum age of the temporary ones included).
         let b = test_backend();
         let measured = |id: CategoryId| {
             let mut bk = Basket::new();
@@ -2110,10 +2121,10 @@ fn el_titular_suma_solo_lo_seguro_medido_y_descargas_y_papelera_llevan_revisar()
             h.query_by_label(&not_want).is_none(),
             "Descargas y la Papelera no deben contar en la cifra grande"
         );
-        // La etiqueta de riesgo y la nota que lo explica.
+        // The risk label and the note that explains it.
         assert_eq!(h.query_all_by_label(tag).count(), 1, "{lang:?}");
         h.get_by_label_contains(excluded);
-        // Chrome está abierto: su fila no cuenta y lo dice.
+        // Chrome is open - your row doesn't count and it says so.
         let blocked = if lang == LangPref::Es {
             "Cierra Chrome para liberar hasta"
         } else {
@@ -2132,10 +2143,10 @@ fn la_barra_de_estado_avisa_de_que_las_cifras_son_de_la_cuota_de_la_cuenta() {
         let mut o = opts(StartScreen::Map(MapStart::default()));
         o.settings.language = lang;
         let mut h = harness(o);
-        // Con ámbito de volumen (lo normal) no hay aviso.
+        // With volume scope (normal) there is no warning.
         assert!(explore(&h).info.volume.is_some() && explore(&h).info.volume_scope);
         assert!(h.query_by_label_contains(label).is_none());
-        // Con cuota y sin la capacidad real del volumen, la barra de estado lo dice (como la tarjeta de inicio).
+        // With quota and without the actual volume capacity, the status bar says so (like the startup card).
         h.state_mut()
             .ui_mut()
             .explore_mut()
@@ -2148,3 +2159,4 @@ fn la_barra_de_estado_avisa_de_que_las_cifras_son_de_la_cuota_de_la_cuenta() {
 }
 
 mod flow;
+mod select;

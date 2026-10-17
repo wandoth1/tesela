@@ -1,16 +1,16 @@
-//! Limpieza de Tesela (PLAN.md §2.5 a §2.7 y §3.7): la defensa real está aquí, no en la interfaz.
+//! Tesela cleanup (PLAN.md §2.5–§2.7 and §3.7): the actual safeguards are here, not in the UI.
 //!
 //! # Flujo
-//! 1. La interfaz arma una [`basket::Basket`] (categorías con regla, "Tu archivo", "Contenido de X", vaciar la Papelera).
-//! 2. [`plan::Cleaner::approve`] la APRUEBA: reabre cada elemento por handle y guarda su IDENTIDAD (volumen + FileId de
-//!    128 bits + enlaces), re-valida la protección sobre la ruta resuelta por el handle, expande lo que contiene algo
-//!    protegido, mide con el mismo recorrido que borrará y decide si cabe en la Papelera.
-//! 3. [`exec`] la EJECUTA: primero vaciar la Papelera (lista enumerada al confirmar), después borrar lo definitivo
-//!    ([`engine`]: apertura relativa a handles, exclusiva, `FileDispositionInfoEx` por el mismo handle) y mover a la Papelera
-//!    (comprobación previa por handle, `IFileOperation` por la ruta original con un receptor de eventos propio y
-//!    verificación por IDENTIDAD de lo que llegó a la Papelera; sin lápidas).
+//! 1. The UI builds a [`basket::Basket`] (rule-based categories, "Your file", "Contents of X", and emptying the Recycle Bin).
+//! 2. [`plan::Cleaner::approve`] APPROVES it: reopens each item by handle and stores its IDENTITY (volume + 128-bit
+//!    FileId + link count), revalidates protection against the path resolved from the handle, expands anything containing
+//!    a protected item, measures with the same traversal used for deletion, and decides whether it fits in the Recycle Bin.
+//! 3. [`exec`] EXECUTES it: first empty the Recycle Bin (the list enumerated at confirmation), then permanently delete
+//!    ([`engine`]: relative handle opens, exclusive access, `FileDispositionInfoEx` through the same handle) and move items
+//!    to the Recycle Bin (pre-check by handle, `IFileOperation` on the original path with a custom event sink, and identity
+//!    verification of what reached the Recycle Bin; without tombstone renaming).
 //!
-//! Todo `unsafe` está en [`sys`], [`recycle`], [`volume`] y [`process`], cada llamada con su `// SAFETY:` y un test.
+//! All `unsafe` code is in [`sys`], [`recycle`], [`volume`], and [`process`]; each call has a `// SAFETY:` explanation and a test.
 #![cfg(windows)]
 
 pub mod backend;
@@ -31,7 +31,7 @@ mod testutil;
 pub mod volume;
 
 pub use backend::Backend;
-pub use basket::{AddOutcome, Basket, Source};
+pub use basket::{AddOutcome, Basket, BatchKind, Source};
 pub use engine::{Mode, StatsSnapshot};
 pub use exec::{
     BinReport, ExecError, ExecOptions, ItemReport, ItemStatus, Phase, Progress, RecycleFail,

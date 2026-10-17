@@ -1,19 +1,23 @@
-//! De una ruta del disco al nodo del árbol escaneado (y de vuelta), sin tocar el disco.
+//! Give a disk path to the scanned tree node (and back), without touching the disk.
 //!
-//! El nombre de la raíz del árbol es la ruta que se escaneó; el resto son nombres de hijos. Las comparaciones usan la
-//! misma clave plegada que el `cleaner` (`PathKey`), así que mayúsculas y prefijos `\\?\` no importan.
+//! The tree root name is the path that was scanned; the rest are names of children. The comparisons use the
+//! same folded key as `cleaner` (`PathKey`), so capitalization and `\\?\` prefixes don't matter.
 
 use rustc_hash::FxHashMap;
 use std::path::Path;
 use tesela_cleaner::paths::PathKey;
 use tesela_model::{NodeId, Tree};
 
-/// Localizador de nodos por ruta, con un índice por directorio que se construye al usarlo (varias búsquedas en carpetas
-/// enormes no son cuadráticas).
+/// Index of a [`Locator`]: by directory, its children by folded name. Can be retained between frames as long as
+/// change the tree (see [`Locator::with_index`] and [`Locator::into_index`]).
+pub type Index = FxHashMap<NodeId, FxHashMap<String, NodeId>>;
+
+/// Node locator by path, with a per-directory index that is built using it (several folder searches
+/// enormous are not quadratic).
 pub struct Locator<'a> {
     tree: &'a Tree,
     root: PathKey,
-    index: FxHashMap<NodeId, FxHashMap<String, NodeId>>,
+    index: Index,
 }
 
 impl<'a> Locator<'a> {
@@ -24,6 +28,18 @@ impl<'a> Locator<'a> {
             root,
             index: FxHashMap::default(),
         }
+    }
+
+    /// A locator that starts from an already constructed index (from a previous frame on the SAME tree).
+    pub fn with_index(tree: &'a Tree, index: Index) -> Locator<'a> {
+        let mut l = Locator::new(tree);
+        l.index = index;
+        l
+    }
+
+    /// The index built so far, to reuse it.
+    pub fn into_index(self) -> Index {
+        self.index
     }
 
     fn child(&mut self, dir: NodeId, folded: &str) -> Option<NodeId> {
@@ -39,19 +55,19 @@ impl<'a> Locator<'a> {
         idx.get(folded).copied()
     }
 
-    /// ¿Está `path` dentro de la ruta que se escaneó (o es ella)? Sin mirar si existe en el árbol.
+    /// Is `path` within the path that was scanned (or is it)? Without looking to see if it exists in the tree.
     pub fn covers(&self, path: &Path) -> bool {
         PathKey::new(path).is_same_or_under(&self.root)
     }
 
-    /// El nodo de `path` si cuelga de la raíz escaneada y existe en el árbol.
+    /// The `path` node does hang from the scanned root and exists in the tree.
     pub fn locate(&mut self, path: &Path) -> Option<NodeId> {
         let key = PathKey::new(path);
         if !key.is_same_or_under(&self.root) {
             return None;
         }
         let mut cur = self.tree.root();
-        // Los componentes que hay entre la raíz y la ruta.
+        // The components between the root and the path.
         let rest = &key.as_str()[self.root.as_str().len()..];
         for part in rest.split('\\').filter(|p| !p.is_empty()) {
             cur = self.child(cur, part)?;
@@ -87,7 +103,7 @@ mod tests {
         assert_eq!(loc.locate(Path::new(&root)), Some(0));
         assert_eq!(loc.locate(Path::new(&format!("{root}Users\\nadie"))), None);
         assert_eq!(loc.locate(Path::new(&["Z", ":", "\\fuera"].concat())), None);
-        // `covers` no mira el árbol: solo si la ruta cuelga de lo escaneado.
+        // `covers` does not look at the tree: only if the path hangs from what was scanned.
         assert!(loc.covers(Path::new(&root)));
         assert!(loc.covers(Path::new(&format!("{root}Users\\nadie"))));
         assert!(loc.covers(Path::new(&upper)));

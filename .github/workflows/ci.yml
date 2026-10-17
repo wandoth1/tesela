@@ -1,14 +1,14 @@
 name: CI
 
 on:
-  # Push a CUALQUIER rama y a cualquier etiqueta: nada se publica sin pasar `privacy-history` (aunque no sea un PR ni
-  # `main`). Los jobs pesados solo corren en `main`, en etiquetas y en pull requests (ver el `if` de build, msrv y aarch64).
+  # Pushes to any branch or tag: nothing is published unless `privacy-history` passes (even outside PRs and `main`).
+  # Heavy jobs run only on `main`, tags, and pull requests (see the `if` conditions for build, msrv, and aarch64).
   push:
     branches: ["**"]
     tags: ["**"]
   pull_request:
   schedule:
-    # Cada lunes: cargo deny también con los avisos de seguridad nuevos, aunque no haya commits.
+    # Every Monday: run cargo deny against newly reported security advisories, even when there are no commits.
     - cron: "17 5 * * 1"
   workflow_dispatch:
 
@@ -17,13 +17,13 @@ permissions:
 
 env:
   CARGO_TERM_COLOR: always
-  # Version FIJADA de WiX (la misma que scripts/build-msi.ps1 y release.yml; scripts/tests/wix-version.tests.ps1 lo comprueba).
+  # PINNED WiX version (same as scripts/build-msi.ps1 and release.yml; checked by scripts/tests/wix-version.tests.ps1).
   WIX_VERSION: "5.0.2"
 
-# Las acciones van fijadas por SHA (el tag, en el comentario); Dependabot propone las actualizaciones.
+# Actions are pinned by SHA (the tag is in the comment); Dependabot proposes updates.
 jobs:
-  # Comprueba que el repositorio no contiene datos de ninguna máquina (solo patrones genéricos) y prueba el propio check
-  # con PowerShell 7 y con Windows PowerShell 5.1.
+  # Check that the repository contains no machine-specific data (generic patterns only), and test the checker under
+  # both PowerShell 7 and Windows PowerShell 5.1.
   privacy:
     if: github.event_name != 'schedule'
     runs-on: windows-latest
@@ -32,36 +32,36 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: privacy-check (todo el árbol)
+      - name: privacy-check (entire tree)
         shell: pwsh
         run: ./scripts/privacy-check.ps1 -All -GenericOnly
-      # La validación de los imports de los .exe (build-release.ps1) usa scripts/check-pe.py; se prueba con PE sintéticos.
-      - name: pruebas de check-pe.py
+      # The .exe import validation in build-release.ps1 uses scripts/check-pe.py; test it with synthetic PEs.
+      - name: check-pe.py tests
         shell: pwsh
         run: python -I -m unittest discover -s scripts/tests -p "test_*.py"
-      - name: pruebas de leak-scan (valores locales en los binarios)
+      - name: leak-scan tests (local values in binaries)
         shell: pwsh
         run: ./scripts/tests/leak-scan.tests.ps1
-      # La version de WiX tiene que ser la misma en build-msi.ps1, ci.yml y release.yml; el UpgradeCode, el mismo en el .wxs y en el script.
-      - name: pruebas de la version de WiX y del UpgradeCode
+      # The WiX version must match in build-msi.ps1, ci.yml, and release.yml; the UpgradeCode must match in the .wxs and script.
+      - name: WiX version and UpgradeCode tests
         shell: pwsh
         run: ./scripts/tests/wix-version.tests.ps1
-      - name: pruebas de privacy-check (pwsh)
+      - name: privacy-check tests (pwsh)
         shell: pwsh
         run: ./scripts/tests/privacy-check.tests.ps1
-      - name: pruebas de privacy-check (Windows PowerShell 5.1)
+      - name: privacy-check tests (Windows PowerShell 5.1)
         shell: powershell
         run: ./scripts/tests/privacy-check.tests.ps1 -Shell powershell
 
-  # El job anterior solo mira el checkout (el árbol final). Este revisa lo que INTRODUCE el push o el pull request: el
-  # mensaje de cada commit y TODOS sus blobs, también los que un commit posterior borra (un dato privado que se quita en
-  # el commit siguiente sigue estando en la historia pública).
-  #  * push: github.event.before..github.sha. Con `before` a ceros (primer push), o ausente del clon (force-push), se
-  #    revisa toda la historia hasta github.sha.
-  #  * pull_request: base..head (fetch-depth 0 trae los dos extremos).
-  #  * push a una rama nueva o a una etiqueta: `before` son ceros, se revisa toda la historia hasta `github.sha`.
-  # Los SHA llegan por variables de entorno (nunca interpolados en el script) y el script exige 40 hex; el destino se
-  # pela a su commit (`^{commit}`) por si una etiqueta anotada trae el SHA del objeto etiqueta.
+  # The previous job checks only the checkout (the final tree). This checks what the push or pull request INTRODUCES:
+  # every commit message and ALL its blobs, including blobs deleted by a later commit (private data removed in a later
+  # commit remains in public history).
+  #  * push: github.event.before..github.sha. If `before` is all zeros (first push) or absent from the clone (force push),
+  #    check all history through github.sha.
+  #  * pull_request: base..head (fetch-depth 0 fetches both endpoints).
+  #  * push to a new branch or tag: `before` is all zeros, so check all history through `github.sha`.
+  # SHAs are passed through environment variables (never interpolated into the script); the script requires 40 hex
+  # characters and peels the destination to its commit (`^{commit}`) in case an annotated tag points to a tag object.
   privacy-history:
     if: github.event_name == 'push' || github.event_name == 'pull_request'
     runs-on: windows-latest
@@ -71,7 +71,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-      - name: privacy-check (mensajes y blobs del rango)
+      - name: privacy-check (messages and blobs in range)
         shell: pwsh
         env:
           EVENT_NAME: ${{ github.event_name }}
@@ -88,8 +88,8 @@ jobs:
             $to = $env:PUSH_AFTER
           }
           $to = (git rev-parse "$($to)^{commit}").Trim()
-          if ($LASTEXITCODE -ne 0) { throw "no se pudo resolver $env:PUSH_AFTER a un commit" }
-          Write-Host "rango: $from .. $to"
+          if ($LASTEXITCODE -ne 0) { throw "could not resolve $env:PUSH_AFTER to a commit" }
+          Write-Host "range: $from .. $to"
           ./scripts/privacy-check.ps1 -GenericOnly -From $from -To $to
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
@@ -101,74 +101,73 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # Sin argumentos instala el toolchain de rust-toolchain.toml (no se fía de la autoinstalación de la primera cargo).
-      - name: Instalar el toolchain de rust-toolchain.toml
+      # With no arguments, installs the toolchain from rust-toolchain.toml (does not rely on cargo's first-run auto-install).
+      - name: Install toolchain from rust-toolchain.toml
         run: rustup toolchain install
-      # La versión de Rust sale de rust-toolchain.toml (se instala sola en la primera llamada a cargo).
+      # The Rust version comes from rust-toolchain.toml (installed automatically on the first cargo invocation).
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - name: Formato
+      - name: Formatting
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
         env:
           RUSTFLAGS: -D warnings -C target-feature=+crt-static
-      # La feature `capture` (capturas del README) no entra en el build normal: se vigila aparte para que no se pudra.
+      # The `capture` feature (README screenshots) is not part of the normal build; it is checked separately to prevent bit rot.
       - name: Clippy (feature capture)
         run: cargo clippy -p tesela-app --all-targets --features capture --locked -- -D warnings
         env:
           RUSTFLAGS: -D warnings -C target-feature=+crt-static
-      # `--screenshot` sale con error (código 1) si no puede guardar la captura; la prueba corre ANTES de abrir ventana alguna.
-      - name: Tests (feature capture, código de salida de --screenshot)
+      # `--screenshot` exits with code 1 if it cannot save the screenshot; this test runs BEFORE opening any window.
+      - name: Tests (capture feature, --screenshot exit code)
         run: cargo test -p tesela-app --features capture --locked --test screenshot
         env:
           RUSTFLAGS: -D warnings -C target-feature=+crt-static
-          # Esta prueba lanza tesela.exe como proceso hijo: solo corre con TESELA_PROCESS_TESTS=1 (ver el README).
+          # This test launches tesela.exe as a child process; it runs only with TESELA_PROCESS_TESTS=1 (see the README).
           TESELA_PROCESS_TESTS: "1"
       - name: Tests
         run: cargo test --workspace --locked
         env:
           RUSTFLAGS: -D warnings -C target-feature=+crt-static
-          # Las pruebas que lanzan procesos hijo (copias de tesela.exe y tesela-scan.exe, archivos con nombre de DLL junto a
-          # ellos, ventanas) solo corren con esta variable: un antivirus de escritorio puede bloquear ese patrón. Aquí, en un
-          # runner efímero, SIEMPRE se ejecutan (README, Desarrollo).
+          # Tests that launch child processes (copies of tesela.exe and tesela-scan.exe, DLL-named files beside them,
+          # windows) run only with this variable because desktop antivirus may block that pattern. On this ephemeral
+          # runner they ALWAYS run (README, Development).
           TESELA_PROCESS_TESTS: "1"
-      # Release sin rutas de la máquina en los binarios (y comprobación de que no las llevan), con el runtime de C
-      # enlazado de forma estática (.cargo/config.toml): el script exige tesela.exe y tesela-scan.exe y falla si algún
-      # .exe importa VCRUNTIME*, MSVCP* o api-ms-win-crt-*.
-      # (`RUSTFLAGS` de este job se repite arriba porque el entorno tiene prioridad sobre .cargo/config.toml.)
+      # Build a release without machine paths in the binaries (and check that none remain), with the C runtime statically
+      # linked (.cargo/config.toml). The script requires tesela.exe and tesela-scan.exe and fails if any .exe imports
+      # VCRUNTIME*, MSVCP*, or api-ms-win-crt-*.
+      # (This job repeats `RUSTFLAGS` above because the environment takes precedence over .cargo/config.toml.)
       - name: Release
         shell: pwsh
         run: ./scripts/build-release.ps1
-      # El ejecutable arranca y responde sin crear la ventana (--version no abre la interfaz) y no se pasa del presupuesto
-      # de tamaño. PLAN.md §4 fija el objetivo en ≲ 16 MB (unos 15,3 MiB); el CI solo falla por encima de 18 MiB (unos
-      # 18,9 MB), un margen deliberado para que una variación del compilador o de las dependencias avise (el tamaño se
-      # imprime siempre) sin romper el CI, pero un salto grande sí. No se lanza la
-      # interfaz: el runner no tiene GPU (wgpu usaría WARP) y no aporta nada.
-      - name: Humo de los ejecutables
+      # The executable starts and responds without opening a window (--version does not open the UI) and stays within
+      # the size budget. PLAN.md §4 sets a target of ≲ 16 MB (about 15.3 MiB); CI fails only above 18 MiB (about 18.9 MB),
+      # leaving room for compiler or dependency variation while still reporting the size. A large increase still fails.
+      # The UI is not launched: the runner has no GPU (wgpu would use WARP), so this adds no value.
+      - name: Executable smoke tests
         shell: pwsh
         run: |
           $dir = Join-Path (cargo metadata --format-version 1 --no-deps | ConvertFrom-Json).target_directory 'release'
-          # tesela.exe es de interfaz gráfica (subsistema windows): escribe --version por la salida de ERRORES.
+          # tesela.exe uses the Windows GUI subsystem, so it writes --version to STDERR.
           $exe = Join-Path $dir 'tesela.exe'
           $err = Join-Path $env:RUNNER_TEMP 'tesela-version.txt'
           $p = Start-Process -FilePath $exe -ArgumentList '--version' -Wait -PassThru -RedirectStandardError $err
-          if ($p.ExitCode -ne 0) { throw "tesela --version terminó con $($p.ExitCode)" }
+          if ($p.ExitCode -ne 0) { throw "tesela --version exited with $($p.ExitCode)" }
           $out = Get-Content -LiteralPath $err -Raw
           Write-Host $out
-          if ($out -notmatch '^tesela \d+\.\d+\.\d+') { throw 'tesela --version no imprime la versión' }
+          if ($out -notmatch '^tesela \d+\.\d+\.\d+') { throw 'tesela --version did not print the version' }
           $mib = (Get-Item $exe).Length / 1MB
           Write-Host ('tesela.exe: {0:N1} MiB' -f $mib)
-          if ($mib -gt 18) { throw 'tesela.exe supera el presupuesto de tamaño (18 MiB)' }
-          # tesela-scan.exe es de consola: escribe --version por la salida ESTÁNDAR.
+          if ($mib -gt 18) { throw 'tesela.exe exceeds the size budget (18 MiB)' }
+          # tesela-scan.exe uses the console subsystem, so it writes --version to STDOUT.
           $scanOut = Join-Path $env:RUNNER_TEMP 'tesela-scan-version.txt'
           $p = Start-Process -FilePath (Join-Path $dir 'tesela-scan.exe') -ArgumentList '--version' -Wait -PassThru -RedirectStandardOutput $scanOut
-          if ($p.ExitCode -ne 0) { throw "tesela-scan --version terminó con $($p.ExitCode)" }
+          if ($p.ExitCode -ne 0) { throw "tesela-scan --version exited with $($p.ExitCode)" }
           $out = Get-Content -LiteralPath $scanOut -Raw
           Write-Host $out
-          if ($out -notmatch '^tesela-scan \d+\.\d+\.\d+') { throw 'tesela-scan --version no imprime la versión' }
-      # No se ejecuta ningún escaneo de C: en el CI: los tests solo usan árboles sintéticos en %TEMP%.
+          if ($out -notmatch '^tesela-scan \d+\.\d+\.\d+') { throw 'tesela-scan --version did not print the version' }
+      # CI does not scan C:; tests use synthetic trees under %TEMP% only.
 
-  # Licencias y avisos de seguridad. También se ejecuta cada semana (schedule).
+  # License and security advisory checks. Also runs weekly (schedule).
   deny:
     runs-on: windows-latest
     timeout-minutes: 15
@@ -176,17 +175,17 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # Sin argumentos instala el toolchain de rust-toolchain.toml (no se fía de la autoinstalación de la primera cargo).
-      - name: Instalar el toolchain de rust-toolchain.toml
+      # With no arguments, installs the toolchain from rust-toolchain.toml (does not rely on cargo's first-run auto-install).
+      - name: Install toolchain from rust-toolchain.toml
         run: rustup toolchain install
       - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
         with:
           tool: cargo-deny@0.20.2
-      # `--locked`: se comprueba EXACTAMENTE lo que fija Cargo.lock (sin resolver de nuevo las dependencias).
+      # `--locked`: check EXACTLY what Cargo.lock pins (do not resolve dependencies again).
       - name: cargo deny
         run: cargo deny --locked check
 
-  # La versión mínima de Rust (la que fija egui) tiene que seguir compilando.
+  # The minimum supported Rust version (pinned by egui) must continue to compile.
   msrv:
     if: github.event_name != 'schedule' && (github.event_name != 'push' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
     runs-on: windows-latest
@@ -195,16 +194,16 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # Sin argumentos instala el toolchain de rust-toolchain.toml (no se fía de la autoinstalación de la primera cargo).
-      - name: Instalar el toolchain de rust-toolchain.toml
+      # With no arguments, installs the toolchain from rust-toolchain.toml (does not rely on cargo's first-run auto-install).
+      - name: Install toolchain from rust-toolchain.toml
         run: rustup toolchain install
-      - name: Instalar Rust 1.95.0
+      - name: Install Rust 1.95.0
         run: rustup toolchain install 1.95.0 --profile minimal
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: cargo +1.95.0 check
         run: cargo +1.95.0 check --workspace --all-targets --locked
 
-  # Comprobación cruzada para ARM64 (se publicará en la v1.0): solo compila, no enlaza ni ejecuta.
+  # ARM64 cross-check (planned for v1.0): compile only; do not link or run.
   aarch64:
     if: github.event_name != 'schedule' && (github.event_name != 'push' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
     runs-on: windows-latest
@@ -213,42 +212,99 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # Sin argumentos instala el toolchain de rust-toolchain.toml (no se fía de la autoinstalación de la primera cargo).
-      - name: Instalar el toolchain de rust-toolchain.toml
+      # With no arguments, installs the toolchain from rust-toolchain.toml (does not rely on cargo's first-run auto-install).
+      - name: Install toolchain from rust-toolchain.toml
         run: rustup toolchain install
-      - name: Instalar el target ARM64
+      - name: Install ARM64 target
         run: rustup target add aarch64-pc-windows-msvc
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: cargo check (aarch64-pc-windows-msvc)
         run: cargo check --workspace --all-targets --locked --target aarch64-pc-windows-msvc
 
-  # Construye el MSI y el zip portable (sin publicar nada) para detectar roturas del empaquetado en cada PR y en main.
-  # scripts/build-msi.ps1 vuelve a compilar el release con build-release.ps1 (LTO completo) y valida el paquete.
+  # Build the MSI and portable zip (without publishing) to catch packaging regressions on every PR and on main,
+  # and perform REAL INSTALLATION TESTS on the runner (a disposable administrator): per-user, per-machine, upgrade
+  # from the published v0.1.4, blocked scope change, and desktop shortcut. See scripts/tests/msi-install.tests.ps1.
+  # scripts/build-msi.ps1 rebuilds the release with build-release.ps1 (full LTO) and validates the package.
   msi:
     if: github.event_name != 'schedule' && (github.event_name != 'push' || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/'))
     runs-on: windows-latest
     timeout-minutes: 60
+    permissions:
+      contents: read
+      attestations: read # Verify the downloaded v0.1.4 attestation before testing upgrades.
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # Sin argumentos instala el toolchain de rust-toolchain.toml (no se fía de la autoinstalación de la primera cargo).
-      - name: Instalar el toolchain de rust-toolchain.toml
+      # With no arguments, installs the toolchain from rust-toolchain.toml (does not rely on cargo's first-run auto-install).
+      - name: Install toolchain from rust-toolchain.toml
         run: rustup toolchain install
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      # Con la version fijada, solo nuget.org (installer/nuget.config) y comprobando el SHA-512 del paquete.
-      - name: Instalar WiX
+      # With the pinned version, use nuget.org only (installer/nuget.config) and verify the package SHA-512.
+      - name: Install WiX
         shell: pwsh
         run: ./scripts/install-wix.ps1 -Version $env:WIX_VERSION
-      - name: MSI y zip portable
+      - name: MSI and portable zip
         shell: pwsh
         run: ./scripts/build-msi.ps1 -OutDir "$env:RUNNER_TEMP/dist"
-      # El validador del MSI se prueba con copias manipuladas (en %TEMP%, sin instalar nada).
-      - name: Pruebas del validador del MSI
+      # Test the MSI validator with modified copies (%TEMP%; nothing is installed).
+      - name: MSI validator tests
         shell: pwsh
         run: |
           $msi = @(Get-ChildItem -LiteralPath "$env:RUNNER_TEMP/dist" -Filter '*.msi')
-          if ($msi.Count -ne 1) { throw 'se esperaba exactamente un MSI' }
+          if ($msi.Count -ne 1) { throw 'expected exactly one MSI' }
           ./scripts/tests/msi-validate.tests.ps1 -Msi $msi[0].FullName
-      # El MSI no se instala en el runner: el ciclo de instalar, actualizar, reparar y desinstalar se prueba en un equipo de
-      # escritorio (docs de la v0.1). No se sube ningun artefacto.
+      # Test MSI LOGIC (launch conditions, directory, scope, language, desktop shortcut, and scope/directory dialog
+      # buttons) using a Windows Installer SESSION without installing anything (OpenPackage, synthetic properties).
+      - name: MSI logic tests (session without installation)
+        shell: pwsh
+        run: |
+          $msi = @(Get-ChildItem -LiteralPath "$env:RUNNER_TEMP/dist" -Filter '*.msi')
+          if ($msi.Count -ne 1) { throw 'expected exactly one MSI' }
+          ./scripts/tests/msi-logic.tests.ps1 -Msi $msi[0].FullName
+      # INSTALLATION TESTS. Only here: the runner is a disposable administrator with an elevated session, and the test refuses to
+      # run outside a GitHub Actions hosted runner. Nothing is installed locally by an agent.
+      # 1) Download the published v0.1.4 from the release and VERIFY it (provenance with `gh attestation verify`, as in the
+      #    `verify` job in release.yml, plus SHA-256) before installing it: this is what users have and upgrade from.
+      - name: Download and verify the published v0.1.4
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dir = Join-Path $env:RUNNER_TEMP 'tesela-v014'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Set-Location -LiteralPath $dir
+          gh release download v0.1.4 --repo $env:REPO --pattern 'tesela-0.1.4-x64.msi' --pattern 'SHA256SUMS.txt'
+          if ($LASTEXITCODE -ne 0) { throw "gh release download failed ($LASTEXITCODE)" }
+          foreach ($f in 'tesela-0.1.4-x64.msi', 'SHA256SUMS.txt') {
+            Write-Host "verifying $f"
+            gh attestation verify $f --repo $env:REPO --signer-workflow "$env:REPO/.github/workflows/release.yml" --source-ref refs/tags/v0.1.4
+            if ($LASTEXITCODE -ne 0) { throw "gh attestation verify failed for $f ($LASTEXITCODE)" }
+          }
+          $line = @(Get-Content -LiteralPath SHA256SUMS.txt | Where-Object { $_ -match '^[0-9a-f]{64}\s+tesela-0\.1\.4-x64\.msi$' })
+          if ($line.Count -ne 1) { throw 'SHA256SUMS.txt does not contain exactly one MSI line' }
+          $expected = ($line[0] -split '\s+')[0]
+          $actual = (Get-FileHash -LiteralPath tesela-0.1.4-x64.msi -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "MSI SHA-256 mismatch ($actual versus $expected)" }
+          Write-Host "SHA-256 verified: $actual"
+      # 2) Install, repair, upgrade, downgrade (blocked), per-machine install, scope change (blocked), desktop shortcut,
+      #    and clean uninstall, always without UI (/qn). Write the checks performed to the job summary. This does NOT
+      #    test the UI (dialogs), administrator prompt, or secure properties with an unprivileged user
+      #    (the runner is an administrator); a person tests those (installer README).
+      - name: MSI installation tests (per-user, per-machine, upgrade, scope change, desktop)
+        shell: pwsh
+        run: |
+          $msi = @(Get-ChildItem -LiteralPath "$env:RUNNER_TEMP/dist" -Filter '*.msi')
+          if ($msi.Count -ne 1) { throw 'expected exactly one MSI' }
+          ./scripts/tests/msi-install.tests.ps1 -NewMsi $msi[0].FullName -OldMsi "$env:RUNNER_TEMP/tesela-v014/tesela-0.1.4-x64.msi"
+      # If anything fails, msiexec logs (no personal data: this is a disposable runner) help explain why.
+      - name: MSI installation logs (only on failure)
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: msi-install-logs
+          path: ${{ runner.temp }}/tesela-install-tests-*/*.log
+          retention-days: 7
+          if-no-files-found: ignore

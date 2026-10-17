@@ -1,11 +1,11 @@
-//! Modelo de datos de Tesela (PLAN.md §3.2 y §3.5). Sin dependencias de Windows.
+//! Tesela data model (PLAN.md §3.2 and §3.5). No Windows dependencies.
 //!
-//! * [`record`]: registros planos (`Record`, 32 B) y lotes (`Batch`) que entregan los escáneres.
-//! * [`TreeBuilder`]: agrega bottom-up, deduplica enlaces duros, ordena los hijos una vez y asigna ids en BFS.
-//! * [`Tree`]: el resultado inmutable en CSR (`Node`, 40 B) con las columnas laterales `mtime` e `hist`.
-//! * [`wtf8`]: nombres en WTF-8 (los de Windows pueden tener sustitutos UTF-16 desparejados).
+//! * [`record`]: flat records (`Record`, 32 B) and batches (`Batch`) delivered by scanners.
+//! * [`TreeBuilder`]: aggregates bottom-up, deduplicates hard links, sorts children once, and assigns BFS ids.
+//! * [`Tree`]: immutable CSR result (`Node`, 40 B) with the `mtime` and `hist` side columns.
+//! * [`wtf8`]: names in WTF-8 (Windows names may contain unpaired UTF-16 surrogates).
 //!
-//! Este crate no hace entrada/salida ni usa `unsafe`.
+//! This crate performs no I/O and uses no `unsafe`.
 
 pub mod builder;
 pub mod flags;

@@ -1,11 +1,11 @@
-//! Resolución de la cola prioritaria (PLAN.md §3.3): para cada ruta conocida que cuelga de la ruta escaneada se
-//! reservan, ANTES de arrancar los hilos, los ids de su cadena de ancestros (nodos precreados con sus metadatos
-//! reales) y se anota el `FileId` de cada directorio de la cadena. Así el recorrido general los reconoce por `FileId`
-//! (no por la ruta en minúsculas: NTFS admite carpetas que distinguen mayúsculas) y adopta el id existente en vez de
-//! crear otro nodo. Al terminar, el mapa de adopción es de solo lectura, sin locks.
+//! Priority queue resolution (PLAN.md §3.3): for each known path under the scanned path,
+//! reserve the IDs of its ancestor chain BEFORE starting threads (precreated nodes with actual metadata)
+//! and record each directory's `FileId`. General traversal then recognizes them by `FileId`
+//! (not by a lowercased path: NTFS supports case-sensitive folders) and adopts the existing ID instead of
+//! creating another node. Once resolved, the adoption map is read-only and needs no locks.
 //!
-//! Los ancestros se quedan sin lote propio hasta que el recorrido general los lista, de modo que el builder los marca
-//! `INCOMPLETE` mientras tanto y "Parar y ver" nunca enseña huérfanos.
+//! Ancestors have no batch until general traversal lists them, so the builder marks them
+//! `INCOMPLETE` in the meantime and "Stop and view" never displays orphan nodes.
 
 use crate::classify;
 use crate::sys::{self, EntryInfo};
@@ -16,26 +16,26 @@ use std::os::windows::ffi::OsStringExt;
 use std::path::{Component, Path, PathBuf, Prefix, PrefixComponent};
 use tesela_model::{Batch, EntryData};
 
-/// Carpeta de primer nivel ya listada (la raíz se lista antes de resolver nada).
+/// A listed top-level folder (the root is listed before anything is resolved).
 pub(crate) struct RootChild {
-    /// Nombre EXACTO tal como lo lista el disco (una carpeta que distingue mayúsculas puede tener `Temp` y `temp`).
+    /// EXACT name as listed on disk (a case-sensitive folder may contain both `Temp` and `temp`).
     pub name: OsString,
     pub id: u32,
     pub tag: u16,
-    /// Carpeta de la nube (se abre dejando actuar a su filtro): si una ruta prioritaria ES esta carpeta y su tarea
-    /// general se sustituye, la tarea nueva tiene que conservar la marca.
+    /// Cloud folder (opened through its filter): if a priority path IS this folder and replaces its general task,
+    /// the replacement task must preserve this marker.
     pub cloud: bool,
 }
 
 #[derive(Default)]
 pub(crate) struct Resolved {
     pub adopt: HashMap<u128, Adopt>,
-    /// Rutas prioritarias aceptadas (índice = `Task::prio`).
+    /// Accepted priority paths (index = `Task::prio`).
     pub targets: Vec<PathBuf>,
     pub initial: Vec<Task>,
-    /// Ids de carpetas de primer nivel que son ellas mismas rutas prioritarias: su tarea general se sustituye.
+    /// IDs of top-level folders that are themselves priority paths: their general task is replaced.
     pub takeover: Vec<u32>,
-    /// Nodos precreados (ancestros y rutas prioritarias que no son de primer nivel).
+    /// Precreated nodes (ancestors and priority paths that are not top-level).
     pub batch: Option<Batch>,
 }
 
@@ -43,8 +43,8 @@ fn lower(s: &std::ffi::OsStr) -> String {
     s.to_string_lossy().to_lowercase()
 }
 
-/// Carpeta de primer nivel `name`: la coincidencia EXACTA gana; la insensible a mayúsculas solo es un respaldo y
-/// solo vale si es única.
+/// Top-level folder `name`: an exact match wins; a case-insensitive match is only a fallback and
+/// is accepted only if unique.
 fn find_root_child<'a>(children: &'a [RootChild], name: &OsString) -> Option<&'a RootChild> {
     if let Some(c) = children.iter().find(|c| c.name == *name) {
         return Some(c);
@@ -57,8 +57,8 @@ fn find_root_child<'a>(children: &'a [RootChild], name: &OsString) -> Option<&'a
     }
 }
 
-/// Prefijo de ruta en una forma comparable: la unidad `C:` es la misma con o sin `\\?\`, y los recursos de red
-/// (`\\<servidor>\<recurso>`) también; el resto (`Volume{GUID}`...) se compara por su texto. Todo en minúsculas.
+/// Path prefix in a comparable form: drive `C:` is the same with or without `\\?\`, as are network shares
+/// (`\\<server>\<share>`); other forms (`Volume{GUID}`, etc.) are compared as text. All characters are lowercased.
 fn norm_prefix(p: PrefixComponent<'_>) -> String {
     match p.kind() {
         Prefix::Disk(d) | Prefix::VerbatimDisk(d) => format!("{}:", d.to_ascii_lowercase() as char),
@@ -69,7 +69,7 @@ fn norm_prefix(p: PrefixComponent<'_>) -> String {
     }
 }
 
-/// (prefijo normalizado, componentes normales con su mayúscula original).
+/// (normalized prefix, normal components with their original casing).
 fn split(p: &Path) -> (String, Vec<OsString>) {
     let mut prefix = String::new();
     let mut comps = Vec::new();
@@ -97,29 +97,29 @@ struct Planned {
     target: Option<u16>,
 }
 
-/// ¿Se recorre este directorio, tal como lo da el listado de su padre? SOLO si es un directorio normal
-/// (`DirAction::Walk`): ni un junction, un symlink o un punto de montaje, ni una carpeta de la nube (poblada o no: las
-/// no pobladas no se listan nunca, y las pobladas se abren con su filtro y no son un destino prioritario), ni una con los
-/// atributos de recuperación aunque no lleve la marca de reparse.
+/// Should this directory, as listed by its parent, be traversed? ONLY if it is a normal directory
+/// (`DirAction::Walk`): not a junction, symlink, mount point, or cloud folder (populated or not: unpopulated folders
+/// are never listed, and populated ones are opened with their filter and are not priority targets), nor one with
+/// recall attributes even if it lacks the reparse flag.
 fn walkable(attrs: u32, reparse_tag: u32) -> bool {
     classify::is_dir(attrs) && classify::dir_action(attrs, reparse_tag) == classify::DirAction::Walk
 }
 
-/// Una candidata ya validada: su ruta canónica, sus componentes con los nombres EXACTOS del disco (relativos a la raíz) y
-/// los datos que da de cada uno el listado de su padre.
+/// A validated candidate: its canonical path, components with their exact on-disk names (relative to the root), and
+/// metadata for each component from its parent's listing.
 struct Candidate {
     canon: PathBuf,
     rel: Vec<OsString>,
     metas: Vec<EntryInfo>,
 }
 
-/// Valida la candidata `p` (una ruta sin canonizar) componente a componente DESDE LA RAÍZ, sin abrirla antes: en cada paso
-/// se lista el padre (ya validado: la raíz es canónica y no es un enlace, y cada componente anterior es un directorio
-/// normal) y se busca el nombre; si la entrada es un enlace (de cualquier tipo, también en un ancestro), una carpeta de la
-/// nube o no es un directorio normal, se descarta SIN abrir su destino. Así la ruta final se construye solo con nombres
-/// reales del disco que cuelgan de la raíz, nunca resolviendo enlaces del camino. Lo único que se hace antes sobre la
-/// ruta cruda es expandir sus nombres 8.3 (`%TEMP%` suele estar abreviado) con `GetLongPathNameW`, que no abre nada para
-/// recorrerlo.
+/// Validate candidate `p` (a non-canonicalized path) component by component FROM THE ROOT, without opening it first: at each step
+/// list the parent (already validated: the root is canonical and not a link, and each previous component is a normal
+/// directory) and look up the name. If the entry is a link (of any kind, including an ancestor), a cloud folder, or not a
+/// normal directory, discard it WITHOUT opening its target. This builds the final path only from real on-disk names
+/// under the root, without resolving links along the way. The only operation performed on the raw candidate beforehand
+/// is expanding its 8.3 names (`%TEMP%` is often abbreviated) with `GetLongPathNameW`, which does not open paths for
+/// traversal.
 fn resolve_candidate(
     root: &Path,
     root_prefix: &str,
@@ -127,9 +127,9 @@ fn resolve_candidate(
     p: &Path,
 ) -> Option<Candidate> {
     let long = sys::long_path(p).ok()?;
-    // `GetLongPathNameW` no normaliza `..`, y `split` los descartaba: `<raiz>\a\..\b` se validaba como `<raiz>\a\b` mientras el
-    // sistema la resolvería a `<raiz>\b`. Una candidata con `..` (o `.` inicial) es ambigua: se descarta. (`Path::components` ya
-    // normaliza los `.` intermedios.)
+    // `GetLongPathNameW` does not normalize `..`, and `split` discarded it: `<root>\a\..\b` was validated as
+    // `<root>\a\b` while the system resolves it to `<root>\b`. A candidate containing `..` (or an initial `.`) is
+    // ambiguous and is rejected. (`Path::components` already normalizes intermediate `.` components.)
     if long
         .components()
         .any(|c| matches!(c, Component::ParentDir | Component::CurDir))
@@ -137,7 +137,7 @@ fn resolve_candidate(
         return None;
     }
     let (prefix, comps) = split(&long);
-    // La candidata es una ruta sin canonizar: las mayúsculas pueden no ser las del disco.
+    // The candidate is not canonicalized: its casing may differ from the on-disk names.
     if prefix != root_prefix
         || comps.len() <= root_comps.len()
         || !comps
@@ -165,7 +165,7 @@ fn resolve_candidate(
     Some(Candidate { canon, rel, metas })
 }
 
-/// Resuelve `candidates` (rutas sin canonizar, sin comprobar). `root` es la ruta escaneada, canónica.
+/// Resolve `candidates` (uncanonicalized, unchecked paths). `root` is the canonical scanned path.
 pub(crate) fn resolve(
     sh: &Shared,
     root: &Path,
@@ -173,10 +173,10 @@ pub(crate) fn resolve(
     candidates: Vec<PathBuf>,
 ) -> Resolved {
     let (root_prefix, root_comps) = split(root);
-    // 1. Candidatas que cuelgan de la raíz, validadas componente a componente desde ella (ver `resolve_candidate`).
+    // 1. Candidates beneath the root, validated component by component from it (see `resolve_candidate`).
     let mut accepted: Vec<Candidate> = Vec::new();
     for p in candidates {
-        // Cancelado durante el arranque: no se sigue validando rutas (E/S que puede tardar).
+        // Cancelled during startup: stop validating paths (I/O here may take time).
         if sh.cancel.load(std::sync::atomic::Ordering::Relaxed) {
             break;
         }
@@ -184,7 +184,7 @@ pub(crate) fn resolve(
             accepted.push(c);
         }
     }
-    // 2. Las más cercanas a la raíz primero; una ruta dentro de otra ya aceptada (o repetida) sobra.
+    // 2. Process paths closest to the root first; paths under an accepted path (or duplicates) are redundant.
     accepted.sort_by_key(|c| (c.rel.len(), c.rel.clone()));
     let key = |rel: &[OsString]| -> Vec<OsString> { rel.to_vec() };
     let mut kept_keys: Vec<Vec<OsString>> = Vec::new();
@@ -198,11 +198,11 @@ pub(crate) fn resolve(
             break;
         }
         let k = key(&rel);
-        // Igual o dentro de otra ya aceptada (comparación exacta: `Temp` y `temp` pueden ser carpetas distintas).
+        // Equal to or beneath another accepted path (exact comparison: `Temp` and `temp` may be different folders).
         if kept_keys.iter().any(|a| k.starts_with(a)) {
             continue;
         }
-        // Carpeta de primer nivel: ya existe.
+        // Top-level folder: it already exists.
         let Some(c1) = find_root_child(root_children, &rel[0]) else {
             continue;
         };
@@ -216,11 +216,11 @@ pub(crate) fn resolve(
                 parent = existing;
                 continue;
             }
-            // Datos tal como los dio el listado del padre al validar la candidata. Tiene que ser un directorio normal
-            // (`Walk`: tampoco uno con atributos de recuperación de la nube aunque no sea reparse point) con `FileId`.
+            // Data from the parent's listing when validating the candidate. It must be a normal directory
+            // (`Walk`: no cloud recall attributes, even if it is not a reparse point) with a `FileId`.
             let m = metas[i];
             if !(walkable(m.attrs, m.reparse_tag) && m.file_id != 0) {
-                // No es un directorio normal legible con FileId: se abandona esta ruta y se deshace lo añadido.
+                // Not a readable normal directory with a FileId: abandon this path and roll back the additions.
                 planned.truncate(mark);
                 for a in added {
                     by_key.remove(&a);
@@ -239,8 +239,8 @@ pub(crate) fn resolve(
             added.push(ck);
         }
         let idx = ids_of_target.len() as u16;
-        // La tarea de una ruta que es ELLA MISMA una carpeta de primer nivel sustituye a la general de esa carpeta:
-        // conserva su marca de nube. Una carpeta precreada (nivel 2 o más) es un directorio normal: nunca es de la nube.
+        // A priority path that IS a top-level folder replaces that folder's general task and preserves its cloud marker.
+        // A precreated folder (level 2 or deeper) is a normal directory, never a cloud folder.
         let cloud = match parent {
             NodeRef::Planned(j) => {
                 planned[j].target = Some(idx);
@@ -255,14 +255,14 @@ pub(crate) fn resolve(
         kept_keys.push(k);
     }
 
-    // 3. Reservar ids de golpe y publicar los nodos precreados.
+    // 3. Reserve IDs in one batch and publish the precreated nodes.
     let base = if planned.is_empty() {
         0
     } else {
         sh.reserve_ids(planned.len() as u32)
     };
     if sh.id_overflow.load(std::sync::atomic::Ordering::SeqCst) {
-        // Los ids se agotaron (el escaneo ya está cancelado y se marcará como tal): nada de lotes con ids envueltos.
+        // IDs are exhausted (the scan is already cancelled and will be marked accordingly): never return a batch with wrapped IDs.
         return Resolved::default();
     }
     let id_of = |r: NodeRef| match r {
@@ -329,14 +329,14 @@ mod tests {
     #[test]
     fn solo_se_recorre_un_directorio_normal() {
         assert!(walkable(DIR, 0));
-        // No es un directorio.
+        // Not a directory.
         assert!(!walkable(0, 0));
-        // Junction, symlink de carpeta o punto de montaje.
+        // Directory junction, symlink, or mount point.
         assert!(!walkable(DIR | REPARSE, TAG_MOUNT_POINT));
         assert!(!walkable(DIR | REPARSE, TAG_SYMLINK));
-        // Carpeta de la nube ya poblada (`WalkCloud`): se recorre con su filtro, pero NO es un destino prioritario.
+        // Populated cloud folder (`WalkCloud`): it is traversed through its filter, but is NOT a priority target.
         assert!(!walkable(DIR | REPARSE, TAG_CLOUD));
-        // GM-M1: carpeta de la nube sin poblar, con o sin marca de reparse (`SkipUnpopulatedCloud`).
+        // GM-M1: unpopulated cloud folder, with or without a reparse tag (`SkipUnpopulatedCloud`).
         assert!(!walkable(DIR | REPARSE | RECALL_ON_DATA_ACCESS, TAG_CLOUD));
         assert!(!walkable(DIR | RECALL_ON_OPEN, 0));
         assert!(!walkable(DIR | RECALL_ON_DATA_ACCESS, 0));
@@ -359,8 +359,8 @@ mod tests {
         assert_eq!(split(Path::new(r"C:\Datos\Ana")).1, ["Datos", "Ana"]);
     }
 
-    /// Carpeta temporal propia (`%TEMP%\tesela-test-<uuid>`) que se borra al soltarla; los junctions se quitan antes como
-    /// enlaces (`remove_dir` sobre un junction borra solo el enlace).
+    /// Test-owned temporary folder (`%TEMP%\tesela-test-<uuid>`) removed on drop; junctions are first removed as links
+    /// (`remove_dir` on a junction removes only the link).
     struct Tmp(PathBuf, Vec<PathBuf>);
 
     impl Tmp {
@@ -371,7 +371,7 @@ mod tests {
             Tmp(p, Vec::new())
         }
 
-        /// `mklink /J` hacia una carpeta de ESTE mismo árbol (nunca una unidad ni un volumen).
+        /// `mklink /J` to a folder in THIS same tree (never a drive or volume).
         fn junction(&mut self, link: &str, target: &str) -> PathBuf {
             let (l, t) = (self.0.join(link), self.0.join(target));
             let out = std::process::Command::new("cmd")
@@ -413,12 +413,12 @@ mod tests {
         }
     }
 
-    /// Raíz canónica (como la da `open_resolved`) de la carpeta temporal.
+    /// Canonical root of the temporary folder (as returned by `open_resolved`).
     fn canonical_root(t: &Tmp) -> PathBuf {
         sys::open_resolved(&t.0).unwrap().path
     }
 
-    /// Árbol: `real\sub\hondo`, `otra` y un junction `enlace` -> `real` (todo dentro de la carpeta temporal propia).
+    /// Tree: `real\sub\hondo`, `otra`, and a junction `enlace` -> `real` (all inside the test-owned temporary folder).
     fn tree() -> Tmp {
         let mut t = Tmp::new();
         std::fs::create_dir_all(t.0.join("real").join("sub").join("hondo")).unwrap();
@@ -440,7 +440,7 @@ mod tests {
         let t = tree();
         let root = canonical_root(&t);
         let sh = shared();
-        // `enlace\sub` es `real\sub` pasando por un junction: antes se canonizaba hacia el destino y se aceptaba.
+        // `enlace\sub` is `real\sub` through a junction: it was previously canonicalized to the target and accepted.
         let r = resolve(
             &sh,
             &root,
@@ -452,10 +452,10 @@ mod tests {
             "una ruta que pasa por un enlace no es prioritaria"
         );
         assert!(r.batch.is_none() && r.adopt.is_empty());
-        // Lo mismo si el enlace es la propia candidata.
+        // The same applies when the link itself is the candidate.
         let r = resolve(&sh, &root, &children(), vec![t.0.join("enlace")]);
         assert!(r.targets.is_empty() && r.takeover.is_empty());
-        // Y un enlace más arriba aunque el resto de la ruta sea normal.
+        // Also reject a higher link even when the rest of the path is ordinary.
         let r = resolve(
             &sh,
             &root,
@@ -463,7 +463,7 @@ mod tests {
             vec![t.0.join("enlace").join("sub").join("hondo")],
         );
         assert!(r.targets.is_empty());
-        // La ruta real sí se acepta, con la cadena de ancestros precreada.
+        // The real path is accepted, with its ancestor chain precreated.
         let r = resolve(
             &sh,
             &root,
@@ -478,7 +478,7 @@ mod tests {
 
     #[test]
     fn una_candidata_con_punto_punto_se_descarta() {
-        // R-m2: `real\..\otra` NO es `real\otra` (que aquí existe): el sistema la resolvería a `otra`. Se descarta.
+        // R-m2: `real\..\otra` is NOT `real\otra` (which exists here): the system would resolve it to `otra`. Discard it.
         let t = tree();
         std::fs::create_dir(t.0.join("real").join("otra")).unwrap();
         let root = canonical_root(&t);
@@ -495,7 +495,7 @@ mod tests {
                 r.targets
             );
         }
-        // Sin `..` la misma carpeta sí vale (la prueba no es vacía).
+        // Without `..`, the same folder is valid (the test is not vacuous).
         let r = resolve(&sh, &root, &children(), vec![t.0.join("real").join("otra")]);
         assert_eq!(r.targets, [root.join("real").join("otra")]);
     }
@@ -505,10 +505,10 @@ mod tests {
         let t = tree();
         let root = canonical_root(&t);
         let sh = shared();
-        // Mayúsculas distintas de las del disco: se acepta y la ruta sale con los nombres reales.
+        // Different casing from disk: accepted, and the path is returned with the actual names.
         let r = resolve(&sh, &root, &children(), vec![t.0.join("REAL").join("Sub")]);
         assert_eq!(r.targets, [root.join("real").join("sub")]);
-        // Fuera de la raíz, la propia raíz, una ruta que no existe y una que es un archivo: nada.
+        // Outside the root, the root itself, a nonexistent path, and a file path: none are accepted.
         let other = Tmp::new();
         std::fs::write(t.0.join("otra").join("a.txt"), b"x").unwrap();
         let r = resolve(
@@ -530,8 +530,8 @@ mod tests {
         let t = tree();
         let root = canonical_root(&t);
         let sh = shared();
-        // GM-M1: la candidata ES una carpeta de primer nivel: su tarea sustituye a la general y antes salía siempre con
-        // `cloud: false`. Con la marca del `RootChild` se conserva (y sin ella, no se inventa).
+        // GM-M1: the candidate IS a top-level folder, so its task replaces the general task and previously always had
+        // `cloud: false`. Preserve the marker from `RootChild` (and do not invent one when it is absent).
         for cloud in [true, false] {
             let kids = vec![child("real", 1, cloud), child("otra", 3, false)];
             let r = resolve(&sh, &root, &kids, vec![t.0.join("real")]);
@@ -543,7 +543,7 @@ mod tests {
                 (1, 1, true)
             );
         }
-        // Una ruta más profunda se precrea como directorio normal: nunca es de la nube.
+        // A deeper path is precreated as an ordinary directory: it is never a cloud folder.
         let kids = vec![child("real", 1, true)];
         let r = resolve(&sh, &root, &kids, vec![t.0.join("real").join("sub")]);
         assert_eq!(r.initial.len(), 1);

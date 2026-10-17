@@ -1,6 +1,6 @@
-//! Carpeta temporal de prueba con guarda RAII: `%TEMP%\tesela-test-<uuid>`, creada aquí y borrada al soltarla (también si
-//! la prueba entra en pánico). SEGURIDAD: antes de borrar nada se comprueba que la ruta es hija directa de `%TEMP%` y que
-//! su nombre empieza por `tesela-test-`; las pruebas solo escriben dentro.
+//! Temporary test folder with RAII guard: `%TEMP%\tesela-test-<uuid>`, created here and deleted when dropped (also if
+//! test panics). SECURITY: before deleting anything, it is checked that the route is a direct child of `%TEMP%` and that
+//! its name begins with `tesela-test-`; tests only write inside.
 
 use std::ops::Deref;
 use std::path::{Path, PathBuf};
@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 pub(crate) struct TestDir(PathBuf);
 
 impl TestDir {
-    /// Crea la carpeta (vacía).
+    /// Create the (empty) folder.
     pub fn new() -> TestDir {
         let p = std::env::temp_dir().join(format!("tesela-test-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&p).expect("crea la carpeta temporal de prueba");

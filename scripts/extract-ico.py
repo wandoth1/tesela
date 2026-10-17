@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Extrae el icono de un ejecutable de Windows (PE) a un archivo .ico.
+"""Extract the icon from a Windows executable (PE) to an .ico file.
 
-Uso (lo llama scripts/build-msi.ps1; ejecutar con `python -I`):
+Usage (called by scripts/build-msi.ps1; run with `python -I`):
 
-    python -I scripts/extract-ico.py tesela.exe salida.ico
+    python -I scripts/extract-ico.py tesela.exe output.ico
 
-Por que existe: el MSI necesita un archivo de icono para "Aplicaciones instaladas" y el acceso directo. Apuntar la tabla
-Icon del MSI al propio .exe incrustaria una copia ENTERA del ejecutable (el MSI pesaria el doble). El icono se dibuja en
-cada compilacion (crates/app/build.rs) y el repositorio no versiona imagenes, asi que se saca del .exe ya compilado: es
-el mismo icono que lleva el ejecutable, no una copia aparte.
+Why this exists: the MSI needs an icon file for "Installed Applications" and the shortcut. Pointing its Icon table
+directly at the .exe would embed a COMPLETE copy of the executable (doubling the MSI's size). The icon is drawn at each
+build (crates/app/build.rs), and the repository does not version images, so it is extracted from the compiled .exe:
+this is the executable's actual icon, not another copy.
 
-Lee el primer recurso RT_GROUP_ICON y los RT_ICON que referencia, y escribe el contenedor ICO. Solo lee el ejecutable.
-Solo usa la biblioteca estandar.
+Reads the first RT_GROUP_ICON resource and its referenced RT_ICON resources, then writes the ICO container. Reads the
+executable only and uses the standard library only.
 """
 
 import struct
@@ -19,23 +19,23 @@ import sys
 
 RT_ICON = 3
 RT_GROUP_ICON = 14
-# Un arbol de recursos real tiene 3 niveles (tipo, nombre, idioma): mas de 4 es un PE manipulado (o con un ciclo).
+# A normal resource tree has three levels (type, name, language): more than four indicates a malformed PE or a cycle.
 MAX_DEPTH = 4
 
 
 class PeError(Exception):
-    """El archivo no es un PE con un icono que se pueda leer."""
+    """The file is not a readable PE with an icon."""
 
 
 def _check(data, off, n):
     if off < 0 or off + n > len(data):
-        raise PeError("lectura fuera de rango")
+        raise PeError("read out of range")
 
 
 def extract(data):
-    """Devuelve los bytes de un .ico con el primer grupo de iconos de los recursos del PE `data`.
+    """Return .ico bytes for the first icon group in PE resources from `data`.
 
-    Un PE truncado o manipulado (lecturas fuera de rango, ciclos en el arbol de recursos) da `PeError`, nunca un bucle
+    A truncated or malformed PE (out-of-range reads, cycles in the resource tree) raises `PeError`, never loops
     infinito ni otra excepcion.
     """
     try:
@@ -46,11 +46,11 @@ def extract(data):
 
 def _extract(data):
     if len(data) < 0x40 or data[:2] != b"MZ":
-        raise PeError("no es un PE (falta la firma MZ)")
+        raise PeError("not a PE (missing MZ signature)")
     pe = struct.unpack_from("<I", data, 0x3C)[0]
     _check(data, pe, 24)
     if data[pe:pe + 4] != b"PE\0\0":
-        raise PeError("no es un PE (falta la firma PE)")
+        raise PeError("not a PE (missing PE signature)")
     nsec = struct.unpack_from("<H", data, pe + 6)[0]
     opt_size = struct.unpack_from("<H", data, pe + 20)[0]
     opt = pe + 24
@@ -60,13 +60,13 @@ def _extract(data):
     elif magic == 0x10B:
         dd = opt + 96
     else:
-        raise PeError("cabecera opcional desconocida")
+        raise PeError("unknown optional header")
     ndd = struct.unpack_from("<I", data, dd - 4)[0]
     if ndd < 3:
-        raise PeError("el ejecutable no tiene recursos")
+        raise PeError("the executable has no resources")
     res_rva, res_size = struct.unpack_from("<II", data, dd + 8 * 2)  # IMAGE_DIRECTORY_ENTRY_RESOURCE
     if not res_rva or not res_size:
-        raise PeError("el ejecutable no tiene recursos")
+        raise PeError("the executable has no resources")
     sections = []
     for i in range(nsec):
         s = opt + opt_size + 40 * i
@@ -78,16 +78,16 @@ def _extract(data):
         for va, size, raw, rsize in sections:
             if va <= rva < va + size:
                 delta = rva - va
-                # Entre `rsize` y `vsize` no hay bytes en el archivo (relleno de ceros en memoria).
+                # Between `rsize` and `vsize`, no file bytes exist (the remainder is zero-filled in memory).
                 if delta >= rsize:
-                    raise PeError("RVA fuera de los datos de la seccion en el archivo")
+                    raise PeError("RVA is outside the section's file data")
                 return raw + delta
-        raise PeError("RVA fuera de las secciones")
+        raise PeError("RVA is outside all sections")
 
     base = rva_to_off(res_rva)
 
     def entries(off):
-        """Entradas de un directorio de recursos: [(id, destino)] (los nombres de texto se ignoran)."""
+        """Resource directory entries as [(id, target)]; text names are ignored."""
         _check(data, off, 16)
         nnamed, nid = struct.unpack_from("<HH", data, off + 12)
         out = []
@@ -98,18 +98,18 @@ def _extract(data):
         return out
 
     def leaf(target):
-        """Baja por los directorios (nombre, idioma) hasta los bytes del primer recurso."""
+        """Descend through the name and language directories to the first resource's bytes."""
         seen = set()
-        depth = 1  # el directorio raiz (tipos) ya es el nivel 1
+        depth = 1  # The root directory (types) is already level 1.
         while target & 0x80000000:
             off = target & 0x7FFFFFFF
             depth += 1
             if off in seen or depth > MAX_DEPTH or off >= res_size:
-                raise PeError("arbol de recursos con un ciclo o demasiado profundo")
+                raise PeError("resource tree contains a cycle or is too deep")
             seen.add(off)
             sub = entries(base + off)
             if not sub:
-                raise PeError("directorio de recursos vacio")
+                raise PeError("empty resource directory")
             target = sub[0][1]
         _check(data, base + target, 16)
         rva, size = struct.unpack_from("<II", data, base + target)
@@ -119,23 +119,23 @@ def _extract(data):
 
     types = dict(entries(base))
     if RT_GROUP_ICON not in types or RT_ICON not in types:
-        raise PeError("el ejecutable no lleva icono (RT_GROUP_ICON / RT_ICON)")
+        raise PeError("the executable has no icon (RT_GROUP_ICON / RT_ICON)")
     group = leaf(types[RT_GROUP_ICON])
     icons = {}
     if not types[RT_ICON] & 0x80000000 or not types[RT_GROUP_ICON] & 0x80000000:
-        raise PeError("los recursos de icono no son directorios")
+        raise PeError("icon resources are not directories")
     for ident, target in entries(base + (types[RT_ICON] & 0x7FFFFFFF)):
         icons[ident] = leaf(target)
     reserved, kind, count = struct.unpack_from("<HHH", group, 0)
     if kind != 1 or count == 0 or len(group) < 6 + 14 * count:
-        raise PeError("grupo de iconos no valido")
+        raise PeError("invalid icon group")
     out = bytearray(struct.pack("<HHH", 0, 1, count))
     blobs = []
     offset = 6 + 16 * count
     for i in range(count):
         w, h, colors, res, planes, bits, nbytes, ident = struct.unpack_from("<BBBBHHIH", group, 6 + 14 * i)
         if ident not in icons or len(icons[ident]) != nbytes:
-            raise PeError(f"falta la imagen {ident} del grupo de iconos")
+            raise PeError(f"missing image {ident} from the icon group")
         out += struct.pack("<BBBBHHII", w, h, colors, res, planes, bits, nbytes, offset)
         blobs.append(icons[ident])
         offset += nbytes
@@ -146,7 +146,7 @@ def _extract(data):
 
 def main(argv):
     if len(argv) != 2:
-        print("uso: extract-ico.py <ejecutable.exe> <salida.ico>", file=sys.stderr)
+        print("usage: extract-ico.py <executable.exe> <output.ico>", file=sys.stderr)
         return 2
     try:
         with open(argv[0], "rb") as f:
@@ -157,7 +157,7 @@ def main(argv):
     with open(argv[1], "wb") as f:
         f.write(ico)
     count = struct.unpack_from("<H", ico, 4)[0]
-    print(f"extract-ico: OK ({count} imagenes, {len(ico)} bytes)")
+    print(f"extract-ico: OK ({count} images, {len(ico)} bytes)")
     return 0
 
 

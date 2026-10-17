@@ -1,21 +1,21 @@
-//! Claves de comparación de rutas.
+//! Path comparison keys.
 //!
-//! Toda comparación de rutas del `cleaner` (protección, normalización de la cesta, raíces de categoría) se hace sobre
-//! [`PathKey`]: la forma CANÓNICA LARGA de la ruta, sin `\\?\`, con `\` como único separador, sin barra final (salvo la
-//! raíz de unidad) y con las mayúsculas plegadas. Una clave de una ruta con nombres cortos 8.3 solo es fiable si la ruta
-//! se canonicalizó antes con [`canonical_path`] (el CI de GitHub tiene `%TEMP%` en forma 8.3).
+//! All `cleaner` path comparisons (protection, basket normalization, category roots) use [`PathKey`]: the LONG CANONICAL
+//! form of a path, without `\\?\`, using `\` as the only separator, without a trailing slash (except for a drive root),
+//! and with case folded. A key for a path with short 8.3 names is reliable only if the path was canonicalized first with
+//! [`canonical_path`] (GitHub CI has `%TEMP%` in 8.3 form).
 //!
-//! El plegado es "a mayúsculas y luego a minúsculas" por carácter: iguala más nombres de los que iguala NTFS, que para
-//! una lista de protección es el lado seguro (se protege de más, nunca de menos).
+//! Case folding is "uppercase then lowercase" per character: it equates more names than NTFS does, which is the safer
+//! choice for a protection list (overprotect rather than underprotect).
 
 use crate::sys;
 use std::os::windows::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
-/// UTF-16 a `String` SIN perder información. NTFS admite nombres con unidades sueltas (un sustituto sin pareja) y
-/// `to_string_lossy` los vuelve todos `U+FFFD`: dos nombres distintos darían la misma clave (y una comparación de
-/// identidad o de protección acertaría sin deber). Aquí una unidad suelta pasa a un carácter del plano 15 de uso privado
-/// (`U+F0000` + su desplazamiento), distinto para cada una.
+/// Converts UTF-16 to `String` WITHOUT losing information. NTFS permits names with unpaired surrogate code units, and
+/// `to_string_lossy` converts them all to `U+FFFD`: distinct names would get the same key (and an identity or protection
+/// comparison could incorrectly match). Here each unpaired code unit maps to a distinct character in the private-use
+/// Plane 15 (`U+F0000` + its offset).
 pub fn wide_to_string(units: &[u16]) -> String {
     char::decode_utf16(units.iter().copied())
         .map(|r| {
@@ -27,10 +27,10 @@ pub fn wide_to_string(units: &[u16]) -> String {
         .collect()
 }
 
-/// Prefijo de la clave de una ruta mal formada (lleva NUL: ninguna ruta de Windows lo contiene).
+/// Prefix for a malformed path key (contains NUL, which no Windows path can contain).
 const INVALID_MARK: &str = "\u{0}invalid\u{0}";
 
-/// Clave de comparación de una ruta (ver el módulo).
+/// Comparison key for a path (see the module documentation).
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct PathKey(String);
 
@@ -42,13 +42,13 @@ fn fold(s: &str) -> String {
 }
 
 impl PathKey {
-    /// Clave léxica de `path`: quita `\\?\`, unifica separadores, resuelve `.` y `..` y pliega mayúsculas. NO resuelve
-    /// nombres 8.3 ni enlaces: para eso, [`canonical_key`].
+    /// Lexical key for `path`: removes `\\?\`, unifies separators, resolves `.` and `..`, and folds case. Does NOT resolve
+    /// 8.3 names or links; use [`canonical_key`] for that.
     pub fn new(path: &Path) -> PathKey {
         let sys_path = sys::strip_verbatim(path.to_path_buf());
         let wide: Vec<u16> = sys_path.as_os_str().encode_wide().collect();
         let s = wide_to_string(&wide).replace('/', "\\");
-        // Prefijo: letra de unidad (`c:`) o el inicio de una ruta de red (dos barras).
+        // Prefix: a drive letter (`c:`) or the beginning of a network path (two slashes).
         let (prefix, rest, is_drive) = if s.len() >= 2 && s.as_bytes()[1] == b':' {
             (s[..2].to_string(), &s[2..], true)
         } else if let Some(r) = s.strip_prefix("\\\\") {
@@ -66,11 +66,11 @@ impl PathKey {
                 other => comps.push(fold(other)),
             }
         }
-        // GM-S1: dos formas que NO son una ruta absoluta normal y que antes se "arreglaban" en silencio:
-        // * `C:` sin separador detrás (`C:x` es relativo al directorio actual de `C:`, no `C:\x`);
-        // * un `:` en un componente posterior (en NTFS abre un flujo de datos alternativo, `archivo:flujo`).
-        // Su clave es una marca que no puede salir de ninguna ruta válida: no es una ruta de unidad (`is_drive_path`), no
-        // coincide con ninguna otra y [`PathKey::is_valid`] lo dice (la protección la deniega).
+        // GM-S1: two forms that are NOT normal absolute paths and were previously "fixed" silently:
+        // * `C:` without a following separator (`C:x` is relative to `C:`'s current directory, not `C:\x`);
+        // * a `:` in a later component (on NTFS, this opens an alternate data stream, `file:stream`).
+        // Their key is a marker that cannot arise from any valid path: it is not a drive path (`is_drive_path`), does not
+        // match any other key, and [`PathKey::is_valid`] marks it invalid (protection denies it).
         let drive_without_separator = is_drive && !rest.starts_with('\\');
         let colon_in_component = comps.iter().any(|c| c.contains(':'));
         if drive_without_separator || colon_in_component {
@@ -88,25 +88,25 @@ impl PathKey {
         &self.0
     }
 
-    /// ¿Es la clave de una ruta bien formada? `false` para `C:x` (sin separador tras la unidad) y para rutas con `:` en un
-    /// componente (flujos alternativos): ver [`PathKey::new`] (GM-S1).
+    /// Is this key for a well-formed path? `false` for `C:x` (no separator after the drive) and for paths with `:` in a
+    /// component (alternate data streams); see [`PathKey::new`] (GM-S1).
     pub fn is_valid(&self) -> bool {
         !self.0.starts_with(INVALID_MARK)
     }
 
-    /// ¿Tiene la forma de una unidad con letra (letra, dos puntos y barra)? UNC (también hacia un disco propio) y volúmenes sin letra, no.
-    /// Es una comprobación de forma, sin consultar al sistema: el tipo de unidad se mira al aprobar.
+    /// Does this have the form of a drive-letter path (letter, colon, and backslash)? UNC (including to a local disk) and
+    /// volumes without a drive letter do not. This is a shape check that does not query the system; drive type is checked at approval.
     pub fn is_drive_path(&self) -> bool {
         let b = self.0.as_bytes();
         b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && b[2] == b'\\'
     }
 
-    /// ¿Es la raíz de una unidad (`c:\`)?
+    /// Is this a drive root (`c:\`)?
     pub fn is_drive_root(&self) -> bool {
         self.0.len() == 3 && self.0.as_bytes()[1] == b':' && self.0.ends_with('\\')
     }
 
-    /// Último componente (vacío en una raíz).
+    /// Last component (empty for a root).
     pub fn file_name(&self) -> &str {
         if self.is_drive_root() {
             return "";
@@ -114,7 +114,7 @@ impl PathKey {
         self.0.rsplit('\\').next().unwrap_or("")
     }
 
-    /// Clave del directorio que lo contiene (`None` en una raíz).
+    /// Key of the containing directory (`None` for a root).
     pub fn parent(&self) -> Option<PathKey> {
         if self.is_drive_root() || self.0.is_empty() {
             return None;
@@ -124,20 +124,20 @@ impl PathKey {
         if head.is_empty() || head == "\\" || head == "\\\\" {
             return None;
         }
-        // En una ruta de red la raíz es la del recurso (dos barras, servidor y recurso): "servidor" no es un contenedor.
+        // For a network path, the root is the share (two slashes, server, and share): "server" is not a container.
         if let Some(rest) = head.strip_prefix("\\\\")
             && !rest.contains('\\')
         {
             return None;
         }
-        // `c:` + `\` = la raíz de la unidad.
+        // `c:` + `\` = the drive root.
         if head.len() == 2 && head.as_bytes()[1] == b':' {
             return Some(PathKey(format!("{head}\\")));
         }
         Some(PathKey(head.to_string()))
     }
 
-    /// `self` es `root` o cuelga de él (con límite de componente: `c:\ab` no cuelga de `c:\a`).
+    /// `self` is `root` or is beneath it (with a component boundary: `c:\ab` is not beneath `c:\a`).
     pub fn is_same_or_under(&self, root: &PathKey) -> bool {
         if self.0 == root.0 {
             return true;
@@ -154,12 +154,12 @@ impl PathKey {
         }
     }
 
-    /// `self` es un ancestro PROPIO de `other`.
+    /// `self` is a PROPER ancestor of `other`.
     pub fn is_proper_ancestor_of(&self, other: &PathKey) -> bool {
         self != other && other.is_same_or_under(self)
     }
 
-    /// Clave del hijo de nombre `name` (un solo componente).
+    /// Key for the child named `name` (a single component).
     pub fn join(&self, name: &str) -> PathKey {
         let folded = fold(name);
         if self.0.ends_with('\\') {
@@ -169,7 +169,7 @@ impl PathKey {
         }
     }
 
-    /// Ancestros propios, del más cercano al más lejano.
+    /// Proper ancestors, from nearest to farthest.
     pub fn ancestors(&self) -> Vec<PathKey> {
         let mut v = Vec::new();
         let mut cur = self.clone();
@@ -181,11 +181,11 @@ impl PathKey {
     }
 }
 
-/// A qué elemento de `candidates` corresponde `name` (GM-M5). Una [`PathKey`] pliega mayúsculas, así que en un directorio
-/// sensible a mayúsculas (`fsutil file setCaseSensitiveInfo`) `Informe.txt` e `informe.txt` son DOS objetos con la misma clave y
-/// una búsqueda por clave coge siempre el primero. Primero el nombre EXACTO; solo si ninguno coincide, por clave (la shell
-/// puede dar la misma ruta con otras mayúsculas o forma), y entonces únicamente si hay UN solo candidato con esa clave: con
-/// varios no se adivina (`None`: quien llama falla cerrado).
+/// Which `candidates` entry matches `name` (GM-M5). A [`PathKey`] folds case, so in a case-sensitive directory
+/// (`fsutil file setCaseSensitiveInfo`), `Report.txt` and `report.txt` are TWO objects with the same key, and a key-based
+/// lookup would always select the first. Try the EXACT name first; only if none matches, use the key (the shell may return
+/// the same path with different casing or form), and only if exactly ONE candidate has that key. If there are several,
+/// do not guess (`None`: the caller fails closed).
 pub fn owner_index<S: AsRef<std::ffi::OsStr>>(
     candidates: &[S],
     name: &std::ffi::OsStr,
@@ -205,14 +205,14 @@ pub fn owner_index<S: AsRef<std::ffi::OsStr>>(
     }
 }
 
-/// Ruta canónica larga de un objeto EXISTENTE (sin seguirlo si es un enlace): se abre por handle y se pregunta a
-/// Windows (`GetFinalPathNameByHandleW`). Resuelve nombres 8.3, mayúsculas y los enlaces de los ANCESTROS.
+/// Long canonical path of an EXISTING object (without following it if it is a link): open by handle and query Windows
+/// (`GetFinalPathNameByHandleW`). Resolves 8.3 names, case, and links in ANCESTORS.
 pub fn canonical_path(path: &Path) -> Result<PathBuf, sys::Win32> {
     let h = sys::open_for_query(path)?;
     sys::final_path(&h)
 }
 
-/// Clave de la ruta canónica larga de `path` (ver [`canonical_path`]).
+/// Key for the long canonical path of `path` (see [`canonical_path`]).
 pub fn canonical_key(path: &Path) -> Result<PathKey, sys::Win32> {
     canonical_path(path).map(|p| PathKey::new(&p))
 }
@@ -234,11 +234,11 @@ mod tests {
         assert_eq!(a.as_str(), r"c:\users\<usuario>\appdata");
         assert_eq!(k(r"C:\a\.\b\..\c"), k(r"c:\a\c"));
         assert!(k(r"C:\").is_drive_root());
-        // GM-S1: `C:` sin separador es relativo al directorio actual de `C:`, no la raíz.
+        // GM-S1: `C:` without a separator is relative to the current directory on `C:`, not its root.
         assert!(!k("C:").is_drive_root() && !k("C:").is_valid());
         assert!(!k(r"C:\a").is_drive_root());
         assert_eq!(k(r"C:\").as_str(), r"c:\");
-        // Plegado fuera de ASCII.
+        // Case folding outside ASCII.
         assert_eq!(k(r"C:\Carpeta\ÁRBOL"), k(r"c:\carpeta\árbol"));
     }
 
@@ -273,7 +273,7 @@ mod tests {
         let a = OsString::from_wide(&[b'C' as u16, b':' as u16, b'\\' as u16, 0x61, 0xD800]);
         let b = OsString::from_wide(&[b'C' as u16, b':' as u16, b'\\' as u16, 0x61, 0xD801]);
         let c = OsString::from_wide(&[b'C' as u16, b':' as u16, b'\\' as u16, 0x61, 0xFFFD]);
-        // Con `to_string_lossy` las tres darían la misma clave.
+        // `to_string_lossy` would produce the same key for all three.
         assert_eq!(a.to_string_lossy(), b.to_string_lossy());
         let (ka, kb, kc) = (
             PathKey::new(Path::new(&a)),
@@ -283,7 +283,7 @@ mod tests {
         assert_ne!(ka, kb);
         assert_ne!(ka, kc);
         assert_ne!(kb, kc);
-        // Y el mismo nombre da siempre la misma clave (con y sin verbatim).
+        // The same name always produces the same key (with or without the verbatim prefix).
         let v = OsString::from_wide(
             &[
                 r"\\?\".encode_utf16().collect::<Vec<_>>(),
@@ -292,11 +292,11 @@ mod tests {
             .concat(),
         );
         assert_eq!(PathKey::new(Path::new(&v)), ka);
-        // Los nombres de hijo del listado van por el mismo camino.
+        // Child names from the directory listing follow the same path.
         let child = wide_to_string(&[0x61, 0xD800]);
         assert_eq!(k(r"C:\").join(&child), ka);
         assert_ne!(k(r"C:\").join(&wide_to_string(&[0x61, 0xD801])), ka);
-        // Un par válido (fuera del plano básico) se conserva tal cual.
+        // A valid surrogate pair (outside the Basic Multilingual Plane) is preserved as-is.
         assert_eq!(wide_to_string(&[0xD83D, 0xDE00]), "\u{1F600}");
     }
 
@@ -308,9 +308,9 @@ mod tests {
         assert!(k(&net).is_same_or_under(&k(&["\\\\", "srv", "\\", "share"].concat())));
     }
 
-    /// GM-S1: `C:x` (sin separador tras la unidad) y los `:` en componentes posteriores (flujos alternativos de NTFS) no son
-    /// rutas bien formadas. Antes `C:Windows` se "arreglaba" en `c:\windows`; ahora su clave es una marca que no coincide con
-    /// ninguna ruta válida, no es una ruta de unidad y `is_valid` lo dice. Lo válido no cambia.
+    /// GM-S1: `C:x` (no separator after the drive) and `:` in later components (NTFS alternate data streams) are not
+    /// well-formed paths. Previously, `C:Windows` was "fixed" to `c:\windows`; now its key is a marker that matches no
+    /// valid path, is not a drive path, and is rejected by `is_valid`. Valid paths are unchanged.
     #[test]
     fn las_rutas_mal_formadas_no_se_arreglan_en_silencio() {
         for malas in [
@@ -324,15 +324,15 @@ mod tests {
             let key = k(malas);
             assert!(!key.is_valid(), "{malas}");
             assert!(!key.is_drive_path() && !key.is_drive_root(), "{malas}");
-            // No se confunde con la ruta "arreglada".
+            // It is not confused with the "fixed" path.
             assert_ne!(key, k(r"C:\x"), "{malas}");
         }
         assert_ne!(k(r"C:Windows"), k(r"C:\Windows"));
         assert_ne!(k(r"C:\a:b"), k(r"C:\a\b"));
-        // Dos distintas mal formadas tampoco coinciden, y la misma sí.
+        // Two different malformed paths do not match, but the same one does.
         assert_ne!(k(r"C:x"), k(r"C:y"));
         assert_eq!(k(r"C:x"), k("c:X"));
-        // Lo bien formado sigue igual (con barra normal, con `.`/`..`, verbatim y UNC).
+        // Well-formed paths still behave the same (with normal separators, `.`/`..`, verbatim prefixes, and UNC).
         for buenas in [
             r"C:\",
             r"C:\a\b",
@@ -343,7 +343,7 @@ mod tests {
             assert!(k(buenas).is_valid(), "{buenas}");
         }
         assert!(k(r"C:\a\b").is_drive_path());
-        // Con `:` en un componente de una ruta de red y con la forma de dispositivo (sin literales de red en el repositorio).
+        // With `:` in a network-path component and with the device form (without literal network paths in the repository).
         let net = ["\\", "\\", "servidor", "\\", "recurso", "\\", "a:b"].concat();
         let dev = ["\\", "\\", ".", "\\", "C:", "\\", "x"].concat();
         for malas in [&net, &dev] {
@@ -352,7 +352,7 @@ mod tests {
         let verbatim = ["\\", "\\", "?", "\\", "C:", "\\", "a"].concat();
         assert!(k(&verbatim).is_valid(), "{verbatim}");
         assert_eq!(k(&verbatim), k(r"C:\a"));
-        // La protección deniega lo mal formado (no lo deja pasar como "permitido").
+        // Protection rejects malformed paths (they are not allowed through).
         let p = crate::protect::Protection::new(&crate::protect::ProtectionRoots::default());
         assert_eq!(
             p.target_verdict(&k(r"C:Windows\x")),
@@ -364,7 +364,7 @@ mod tests {
         );
     }
 
-    /// GM-M5: `owner_index` busca el nombre exacto, después la clave si es inequívoca, y no adivina entre varios.
+    /// GM-M5: `owner_index` looks for an exact name, then uses the key only when unambiguous; it never guesses among several.
     #[test]
     fn el_dueno_de_un_nombre_es_el_exacto_o_el_unico_por_clave() {
         use std::ffi::OsStr;
@@ -373,7 +373,7 @@ mod tests {
         assert_eq!(own(r"C:\d\Informe.txt"), Some(0));
         assert_eq!(own(r"C:\d\informe.txt"), Some(1));
         assert_eq!(own(r"C:\d\otro.txt"), Some(2));
-        // Sin exacto: por clave, solo si es único (aquí hay dos con la clave `informe.txt`).
+        // Without an exact match, use the key only if it is unique (there are two `informe.txt` keys here).
         assert_eq!(own(r"C:\d\INFORME.TXT"), None);
         assert_eq!(own(r"c:\D\OTRO.txt"), Some(2));
         assert_eq!(own(r"C:\d\nada.txt"), None);
@@ -385,23 +385,23 @@ mod tests {
         let mut sb = Sandbox::new();
         sb.mkdir("Carpeta Con Nombre Largo/Sub Carpeta Larga");
         let long = sb.long("Carpeta Con Nombre Largo/Sub Carpeta Larga");
-        // Mayúsculas distintas: misma clave canónica.
+        // Different casing: same canonical key.
         let upper = std::path::PathBuf::from(long.to_string_lossy().to_uppercase());
         assert_eq!(canonical_key(&upper).unwrap(), PathKey::new(&long));
-        // La forma 8.3 (si el volumen la tiene activada) llega a la misma clave.
+        // The 8.3 form (when enabled on the volume) resolves to the same key.
         let short = crate::testutil::short_path(&long);
         assert_eq!(canonical_key(&short).unwrap(), PathKey::new(&long));
         assert_eq!(
             canonical_key(&sb.path("Carpeta Con Nombre Largo")).unwrap(),
             PathKey::new(&sb.long("Carpeta Con Nombre Largo"))
         );
-        // Un junction no se sigue: su clave es la del propio enlace.
+        // A junction is not followed: its key is that of the link itself.
         sb.junction("enlace", "Carpeta Con Nombre Largo");
         assert_eq!(
             canonical_key(&sb.path("enlace")).unwrap(),
             PathKey::new(&sb.long("enlace"))
         );
-        // Un archivo inexistente falla.
+        // A nonexistent file fails.
         assert!(canonical_key(&sb.path("no-existe")).is_err());
     }
 }

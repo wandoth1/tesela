@@ -1,6 +1,6 @@
-//! Comprueba el manifiesto REAL incrustado en `tesela.exe` (PLAN.md §3.9): `asInvoker` (nunca pide UAC), rutas largas,
-//! PerMonitorV2, solo Windows 10/11 y SIN `activeCodePage` (la app usa las APIs W; el valor por defecto de
-//! `embed-manifest` lo activaría como UTF-8).
+//! Checks the REAL manifest embedded in `tesela.exe` (PLAN.md §3.9): `asInvoker` (never requests UAC), long paths,
+//! PerMonitorV2, Windows 10/11 only, and NO `activeCodePage` (the app uses the W APIs; `embed-manifest` enables it as
+//! UTF-8 by default).
 
 fn manifest() -> String {
     let exe = std::fs::read(env!("CARGO_BIN_EXE_tesela")).expect("tesela.exe compilado");
@@ -31,7 +31,7 @@ fn el_manifiesto_pide_lo_que_dice_el_plan() {
         !m.contains("activeCodePage"),
         "sin UTF-8 como página de códigos: {m}"
     );
-    // Solo Windows 10 y 11 (un único GUID de supportedOS: el de Windows 10/11).
+    // Windows 10 and 11 only (one supportedOS GUID: the one for Windows 10/11).
     assert_eq!(m.matches(":supportedOS ").count(), 1, "{m}");
     assert!(m.contains("8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a"), "{m}");
 }

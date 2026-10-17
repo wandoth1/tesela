@@ -1,8 +1,8 @@
-# Runtime de C enlazado de forma ESTATICA en Windows: sin esto el .exe importa VCRUNTIME140.dll y las api-ms-win-crt-*.
-# En Windows 10/11 el UCRT es del sistema; se enlaza estatico para no depender del runtime de VC++ redistribuible (el
-# instalador es por usuario y sin administrador, no puede instalarlo).
-# `scripts/build-release.ps1` repite este flag en CARGO_ENCODED_RUSTFLAGS (que tiene prioridad sobre este archivo y no se
-# combina con él) y comprueba la tabla de imports de cada .exe. `/Brepro` hace el enlace reproducible (sin marca de
-# tiempo): el mismo commit da el mismo .exe, byte a byte, en cualquier carpeta.
+# Statically link the C runtime on Windows: without this, the .exe imports VCRUNTIME140.dll and api-ms-win-crt-*.
+# On Windows 10/11, the UCRT is part of the system; static linking avoids depending on the redistributable VC++ runtime
+# (the per-user installer does not require elevation and cannot install it).
+# `scripts/build-release.ps1` repeats this flag in CARGO_ENCODED_RUSTFLAGS (which takes precedence over this file and is
+# not combined with it) and checks each .exe's import table. `/Brepro` makes linking reproducible (no timestamp): the
+# same commit produces the same .exe, byte for byte, in any folder.
 [target.'cfg(windows)']
 rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=/Brepro"]

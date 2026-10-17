@@ -1,9 +1,9 @@
-//! Ventana principal (PLAN.md §2.3): barra superior con breadcrumb, buscador y "Colorear", barra lateral con
-//! unidades, vistas y leyenda, el mapa o la lista, el panel de detalles, la zona de la cesta (visible pero vacía e
-//! inactiva: es del incremento 3) y la barra de estado.
+//! Main window (PLAN.md §2.3): top bar with breadcrumb, search engine and "Colorize", side bar with
+//! units, views and legend, the map or list, the details panel, the basket area (visible but empty and
+//! inactive: is from increment 3) and the status bar.
 //!
-//! El mapa, la lista y los detalles leen el MISMO estado (`root`, `selection`): cambiar la selección en uno la cambia
-//! en los demás.
+//! Map, list and details read the SAME state (`root`, `selection`) - changing the selection by one changes it
+//! in the others.
 
 use crate::app::{Action, Env, ScanRequest};
 use crate::args;
@@ -27,39 +27,39 @@ use tesela_layout::{Others, Root};
 use tesela_model::{FileType, NodeId, Overlay, Tree, View as TreeView};
 use tesela_scanner::ScanResult;
 
-/// Cifras del escaneo que se conservan junto al árbol.
+/// Figures from the scan that are kept next to the tree.
 #[derive(Clone, Debug)]
 pub struct ScanInfo {
     pub req: ScanRequest,
-    /// Ruta escaneada tal como se muestra.
+    /// Scanned path as shown.
     pub display_root: String,
-    /// Se escaneó la unidad entera (hay bloque del sistema y "espacio explicado").
+    /// The entire drive was scanned (there is system block and "space explained").
     pub full_volume: bool,
-    /// (total, libre) del volumen al terminar.
+    /// (total, free) of the volume at the end.
     pub volume: Option<(u64, u64)>,
-    /// `total` y `libre` son del VOLUMEN. `false` con una cuota cuando Windows no da la capacidad real: son las cifras de
-    /// la cuenta del usuario y la barra de estado lo avisa (igual que la tarjeta de inicio).
+    /// `total` and `libre` are from VOLUME. `false` with a quota when Windows does not give the real capacity: they are the figures of
+    /// the user's account and the status bar alerts them (same as the home card).
     pub volume_scope: bool,
-    /// Se paró con "Parar y ver": las cifras con "≥" son un mínimo.
+    /// Stopped with "Stop and See": figures with "≥" are a minimum.
     pub cancelled: bool,
-    /// Escaneo en modo de respaldo (`FindFirstFileExW`): sin deduplicación de enlaces duros.
+    /// Backup Mode Scanning (`FindFirstFileExW`) – No hard link deduplication.
     pub approximate: bool,
-    /// Carpetas que no se pudieron leer (permisos, errores).
+    /// Folders that could not be read (permissions, errors).
     pub dir_errors: u64,
     pub files: u64,
     pub elapsed: Duration,
     pub finished_at: Instant,
 }
 
-/// Qué está seleccionado.
+/// What is selected.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sel {
     Node(NodeId),
-    /// La agrupación "Otros".
+    /// The "Others" group.
     Group(Others),
 }
 
-/// Vista del área central.
+/// View of the central area.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum View {
     Map,
@@ -67,55 +67,68 @@ pub enum View {
     Recommendations,
 }
 
-/// Qué se puede hacer con un elemento respecto a la cesta.
+/// What can be done with an element regarding the basket.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AddState {
-    /// Se puede añadir.
+    /// It can be added.
     Addable,
-    /// Ya está en la cesta (él o un ancestro).
+    /// It is already in the basket (he or an ancestor).
     InBasket,
-    /// Carpeta conocida: solo "Contenido de …".
+    /// Known folder: "Contents of..." only.
     ContentsOf,
-    /// Intocable como destino (raíz del perfil, AppData...): su contenido sí se puede limpiar.
+    /// Cannot be selected as a cleanup destination (profile root, AppData...); its contents can still be cleaned.
     Untouchable,
-    /// Denegada por completo.
+    /// Completely denied.
     Denied,
-    /// `pagefile.sys` y compañía: solo informar.
+    /// `pagefile.sys` and company: just inform.
     InfoOnly,
-    /// El bloque "Windows y otros datos del sistema".
+    /// The "Windows and other system data" block.
     SystemBlock,
-    /// Archivo que solo está en la nube: no se puede seleccionar para liberar espacio.
+    /// Cloud-only file: Cannot be selected to free up space.
     CloudOnly,
-    /// Una agrupación "Otros": se abre y se elige dentro.
+    /// An "Other" grouping: open and choose within.
     Group,
 }
 
-/// Exploración de un árbol.
+/// Exploring a tree.
 pub struct Explore {
     pub(crate) tree: Arc<Tree>,
-    /// Lo que ya se limpió, sin reescanear (PLAN.md §3.6). `None` hasta la primera limpieza.
+    /// What has already been cleaned, without rescanning (PLAN.md §3.6). `None` until the first cleaning.
     pub(crate) overlay: Option<Arc<Overlay>>,
-    /// Ya se limpió algo desde el análisis: los histogramas (tipos, antigüedad) son aproximados hasta reescanear.
+    /// Something has already been cleaned up from the analysis: the histograms (types, age) are approximate until rescanning.
     pub(crate) cleaned: bool,
     pub(crate) info: ScanInfo,
-    /// Versión de los datos para la caché del layout (cambia con el árbol; en el inc. 3, con el overlay).
+    /// Version of the data for the layout cache (changes with the tree; in section 3, with the overlay).
     pub(crate) version: u64,
-    /// Escrituras que traen los nombres del árbol (para cargar las fuentes de reserva que hagan falta).
+    /// Scripts used by names in the tree (to load the necessary fallback fonts).
     pub(crate) scripts: crate::fonts::Scripts,
     pub(crate) root: Root,
-    /// Raíces anteriores al abrir agrupaciones "Otros" anidadas (Retroceso vuelve por ellas).
+    /// Previous roots when opening nested "Other" groupings (Backspace returns for them).
     pub(crate) group_stack: Vec<Root>,
-    /// El contenido de la barra lateral no cabe y se desplaza (se muestra su barra).
+    /// The content of the sidebar does not fit and is scrolled (its bar is shown).
     pub(crate) sidebar_overflow: bool,
-    /// El panel de detalles no cabe y se desplaza (con su barra visible).
+    /// The details panel does not fit and is scrolling (with its bar visible).
     pub(crate) details_overflow: bool,
     pub(crate) selection: Option<Sel>,
+    /// Multiple selection: what is marked to be added next to the basket (children of the current folder; see `multisel`).
+    pub(crate) multi: crate::multisel::Marks,
+    /// The (folded) search with which the marks were last adjusted.
+    pub(crate) marks_search: String,
+    /// Marks that were dropped by a navigation and have not yet been warned (the warning appears in the next frame).
+    pub(crate) marks_dropped: usize,
+    /// Estimation of the basket (entries, bytes) with the version of the basket and the tree with which it was calculated.
+    pub(crate) estimate: Option<((u64, u64), (usize, u64))>,
+    /// Sibling index of the `Locator` of the "View" window while it is open (with tree and basket versions
+    /// with which it was built): each frame only locates the rows that are seen, without rebuilding the indexes.
+    pub(crate) locator_cache: Option<((u64, u64), crate::treepath::Index)>,
+    /// How many times the estimate was recalculated (tests verify that it is not once per frame).
+    pub(crate) estimate_computes: u32,
     pub(crate) view: View,
-    /// El flujo de limpieza: cesta, confirmación, ejecución y resumen.
+    /// The cleanup flow: basket, confirmation, execution and summary.
     pub(crate) flow: CleanFlow,
-    /// Recomendaciones calculadas (se recalculan al cambiar el árbol o los navegadores abiertos).
+    /// Calculated recommendations (recalculated when changing the tree or open browsers).
     pub(crate) recs: Option<(u64, Recs)>,
-    /// Ya se preseleccionó lo seguro al abrir Recomendaciones por primera vez.
+    /// Safe is already preselected when opening Recommendations for the first time.
     pub(crate) recs_preselected: bool,
     pub(crate) basket_open: bool,
     pub(crate) browsers_open: Vec<Browser>,
@@ -124,27 +137,27 @@ pub struct Explore {
     pub(crate) search: String,
     pub(crate) map: MapState,
     pub(crate) scroll_to_selection: bool,
-    /// Fila de la lista a la que debe pasar el foco de teclado en el siguiente pase.
+    /// Row in the list to which keyboard focus should be passed on the next pass.
     pub(crate) list_focus: Option<NodeId>,
     pub(crate) animate: bool,
-    /// Elemento sobre el que se abrió el menú contextual.
+    /// Element on which the context menu was opened.
     pub(crate) ctx_target: Option<Sel>,
     pub(crate) toast: Option<(String, f64)>,
-    /// Petición de abrir el Explorador en curso (nunca bloquea: se consulta en cada frame).
+    /// Request to open the Explorer in progress (never blocks: it is consulted in each frame).
     reveal: Option<crate::platform::RevealHandle>,
     focus_search: bool,
-    /// El buscador tiene el foco del teclado (las teclas de navegación no actúan mientras se escribe).
+    /// The search engine has keyboard focus (the navigation keys do not act while typing).
     search_focused: bool,
-    /// Último widget de navegación (el mapa o una fila de la lista) que tuvo el foco. Intro, Retroceso y las flechas
-    /// solo actúan si el foco está en él o en ningún widget: con otro control enfocado (un botón, un enlace...) las
-    /// teclas son suyas.
+    /// Last navigation widget (the map or a list row) that had focus. Enter, Backspace and arrows
+    /// They only act if the focus is on it or on no widget: with another focused control (a button, a link...) the
+    /// keys are yours.
     pub(crate) nav_focus: Option<egui::Id>,
     search_hits: Option<(String, Root, Arc<Vec<NodeId>>)>,
-    /// Los mismos aciertos como conjunto (para la veladura del mapa: pertenencia en O(1)).
+    /// The same successes as a set (for the map glazing: membership in O(1)).
     search_set: Option<(String, Root, Arc<std::collections::HashSet<NodeId>>)>,
 }
 
-/// Los hijos que se están mostrando (la carpeta entera o una agrupación "Otros" abierta).
+/// The children being displayed (the entire folder or an open "Other" grouping).
 pub(crate) struct Shown {
     kids: tesela_layout::Children,
     start: usize,
@@ -163,7 +176,7 @@ impl Shown {
     }
 }
 
-/// Número que identifica el árbol en la caché (un contador por proceso).
+/// Number that identifies the tree in the cache (one counter per process).
 fn next_version() -> u64 {
     use std::sync::atomic::{AtomicU64, Ordering};
     static V: AtomicU64 = AtomicU64::new(1);
@@ -185,6 +198,12 @@ impl Explore {
             sidebar_overflow: false,
             details_overflow: false,
             selection: None,
+            multi: crate::multisel::Marks::default(),
+            marks_search: String::new(),
+            marks_dropped: 0,
+            estimate: None,
+            locator_cache: None,
+            estimate_computes: 0,
             view: View::Map,
             flow: CleanFlow::default(),
             recs: None,
@@ -215,7 +234,7 @@ impl Explore {
         }
     }
 
-    /// Desde el resultado de un escaneo real.
+    /// From the result of a real scan.
     pub fn from_scan(
         req: ScanRequest,
         res: ScanResult,
@@ -228,7 +247,7 @@ impl Explore {
         Explore::new(res.tree, info, animate, backend)
     }
 
-    /// Desde el árbol sintético de la demostración.
+    /// From the synthetic demo tree.
     pub fn demo(
         req: ScanRequest,
         variant: demo::Variant,
@@ -236,6 +255,23 @@ impl Explore {
         backend: Arc<dyn Backend>,
     ) -> Explore {
         let tree = demo::tree(variant);
+        Explore::demo_from_tree(
+            req,
+            tree,
+            variant == demo::Variant::Stopped,
+            animate,
+            backend,
+        )
+    }
+
+    /// Like [`Explore::demo`] with a given tree (scaling tests use one with thousands of children).
+    pub(crate) fn demo_from_tree(
+        req: ScanRequest,
+        tree: Tree,
+        cancelled: bool,
+        animate: bool,
+        backend: Arc<dyn Backend>,
+    ) -> Explore {
         let files = tree.stats().files;
         let volume = req.drive.as_ref().map(|d| (d.total, d.free));
         let volume_scope = req.drive.as_ref().is_none_or(|d| d.volume_scope);
@@ -244,7 +280,7 @@ impl Explore {
             full_volume: true,
             volume,
             volume_scope,
-            cancelled: variant == demo::Variant::Stopped,
+            cancelled,
             approximate: false,
             dir_errors: 0,
             files,
@@ -255,7 +291,7 @@ impl Explore {
         Explore::new(tree, info, animate, &backend)
     }
 
-    /// Coloca la exploración de la demostración según `start` (carpetas por nombre; sin animaciones).
+    /// Set the demo scan based on `start` (folders by name; no animations).
     pub fn demo_navigate(&mut self, start: &crate::app::MapStart) {
         for name in &start.open {
             if let Some(c) = self.tree.child_by_name(self.root.node, name.as_bytes()) {
@@ -270,13 +306,26 @@ impl Explore {
         {
             self.selection = Some(Sel::Node(id));
         }
+        if !start.marks.is_empty() {
+            let marked = self
+                .shown_children()
+                .iter()
+                .filter(|&id| {
+                    start
+                        .marks
+                        .iter()
+                        .any(|name| self.tree.name_lossy(id) == name.as_str())
+                })
+                .collect::<Vec<_>>();
+            self.multi.add(marked);
+        }
         if start.list {
             self.view = View::List;
         }
     }
 
-    /// Coloca la exploración de la demostración en una pantalla del flujo de limpieza (capturas y pruebas; el respaldo es
-    /// el simulado: no toca el disco).
+    /// Places the demo scan on a cleanup flow screen (captures and tests; backup is
+    /// the simulated one: it does not touch the disc).
     pub fn demo_clean(
         &mut self,
         backend: &Arc<dyn Backend>,
@@ -292,7 +341,7 @@ impl Explore {
                 self.sync_blocked_hint();
             }
             CleanStart::Confirm | CleanStart::Summary => {
-                // La cesta de ejemplo: lo seguro que se puede limpiar ahora, una carpeta de proyectos y un archivo tuyo.
+                // The example basket: how safe it can be cleaned now, a project folder and a file of yours.
                 let recs = {
                     let view = self.view();
                     crate::recs::compute(
@@ -332,7 +381,7 @@ impl Explore {
         }
     }
 
-    /// Pasa a la limpieza las cachés de navegadores abiertos que no se limpian y cuánto se liberaría al cerrarlos.
+    /// It moves to cleaning the caches of open browsers that are not cleaned and how much would be freed by closing them.
     pub(crate) fn sync_blocked_hint(&mut self) {
         self.flow.blocked_hint = self
             .recs
@@ -346,24 +395,24 @@ impl Explore {
             .unwrap_or_default();
     }
 
-    /// Nombre de lo explorado (para el título de la ventana).
+    /// Name of what was explored (for the window title).
     pub fn title(&self) -> String {
         self.info.req.label.clone()
     }
 
-    // --- Navegación ---------------------------------------------------------------------------------------------
+    // --- Navigation ---------------------------------------------------------------------------------------------
 
-    /// ¿Se puede volver a la pantalla de inicio? No mientras se ejecuta una limpieza (como el cierre de la ventana).
+    /// Can I go back to the home screen? Not while a cleanup (such as closing the window) is running.
     pub(crate) fn can_go_home(&self) -> bool {
         !self.flow.is_running()
     }
 
-    /// ¿Se puede subir un nivel?
+    /// Can you go up a level?
     pub fn can_up(&self) -> bool {
         self.root.is_group() || self.root.node != 0
     }
 
-    /// Sube un nivel (de una agrupación "Otros" vuelve a su carpeta). La carpeta de la que se sale queda seleccionada.
+    /// Go up one level (from an "Other" grouping you return to your folder). The folder being exited is selected.
     pub fn up(&mut self) {
         if !self.can_up() {
             return;
@@ -381,11 +430,13 @@ impl Explore {
         self.map.begin_zoom_out(self.animate, from);
         self.root = target;
         self.selection = select;
+        // The marked speaks of the folder that is left: it is not dragged to the new one.
+        self.drop_marks_for_navigation();
         self.scroll_to_selection = true;
     }
 
-    /// Entra en un elemento: una carpeta (que pasa a ser la raíz del mapa) o una agrupación "Otros" (que se abre).
-    /// Con un archivo no hace nada. Devuelve si cambió la raíz.
+    /// Enter an item: a folder (which becomes the root of the map) or an "Other" grouping (which opens).
+    /// It doesn't do anything with a file. Returns whether the root changed.
     pub fn enter(&mut self, sel: Sel) -> bool {
         let target = match sel {
             Sel::Node(id) if describe::can_enter_view(&self.view(), id) => Root::node(id),
@@ -403,11 +454,12 @@ impl Explore {
         }
         self.root = target;
         self.selection = None;
+        self.drop_marks_for_navigation();
         self.scroll_to_selection = true;
         true
     }
 
-    /// Salta a una carpeta cualquiera (breadcrumb).
+    /// Jump to any folder (breadcrumb).
     pub fn go_to(&mut self, id: NodeId) {
         if Root::node(id) == self.root {
             return;
@@ -430,20 +482,27 @@ impl Explore {
         self.root = Root::node(id);
         self.group_stack.clear();
         self.selection = None;
+        self.drop_marks_for_navigation();
         self.scroll_to_selection = true;
     }
 
-    /// Selecciona (o limpia la selección).
+    /// Navigate releases what is marked (it speaks of the folder that is left) and notes it to warn you.
+    fn drop_marks_for_navigation(&mut self) {
+        self.marks_dropped += self.multi.len();
+        self.multi.clear();
+    }
+
+    /// Select (or clear selection).
     pub fn select(&mut self, sel: Option<Sel>) {
         self.selection = sel;
     }
 
-    /// El árbol visto a través del overlay de limpieza.
+    /// The tree seen through the cleaning overlay.
     pub(crate) fn view(&self) -> TreeView<'_> {
         TreeView::new(&self.tree, self.overlay.as_deref())
     }
 
-    /// Hijos (visibles) que está mostrando ahora el mapa o la lista.
+    /// Children (visible) that the map or list is now displaying.
     pub(crate) fn shown_children(&self) -> Shown {
         let kids = tesela_layout::Children::of_view(&self.view(), self.root.node);
         let end = (self.root.end as usize).min(kids.len());
@@ -451,8 +510,8 @@ impl Explore {
         Shown { kids, start, end }
     }
 
-    /// Aplica al árbol lo que desapareció de verdad (overlay, PLAN.md §3.6), sin reescanear: lo que se eliminó entero
-    /// deja de verse y lo que se limpió solo en parte encoge. Los ancestros restan lo mismo.
+    /// Applies to the tree what really disappeared (overlay, PLAN.md §3.6), without rescanning: what was deleted in its entirety
+    /// It is no longer visible and what was only partially cleaned shrinks. The ancestors subtract the same.
     pub(crate) fn apply_removed(&mut self, removed: &[tesela_cleaner::Removed]) {
         if removed.is_empty() {
             return;
@@ -474,12 +533,14 @@ impl Explore {
             }
         }
         self.cleaned = true;
-        // La caché del layout y el mesh se invalidan por la versión; la selección y la carpeta actual se mantienen
-        // válidas.
+        // The layout cache and mesh are invalidated by version; selection and current folder are kept
+        // valid.
         self.version = next_version();
         self.search_hits = None;
         self.search_set = None;
         let view = TreeView::new(&self.tree, self.overlay.as_deref());
+        // What no longer exists is no longer marked (the rest is preserved).
+        self.multi.retain(|id| view.is_visible(id));
         if let Some(Sel::Node(id)) = self.selection
             && !view.is_visible(id)
         {
@@ -497,13 +558,14 @@ impl Explore {
             moved = true;
         }
         if moved || self.root.is_group() {
-            // Una agrupación "Otros" abierta ya no describe lo mismo: se vuelve a la carpeta.
+            // An open "Other" grouping no longer describes the same thing: you go back to the folder.
             self.root = Root::node(node);
             self.group_stack.clear();
+            self.multi.clear();
         }
     }
 
-    /// Texto de la ruta de un elemento (solo para mostrar o copiar).
+    /// Text of the path of an element (only for display or copy).
     pub(crate) fn path_of(&self, sel: Sel) -> String {
         match sel {
             Sel::Node(id) => self.tree.path_lossy(id),
@@ -511,8 +573,8 @@ impl Explore {
         }
     }
 
-    /// Nodos de la carpeta actual cuyo nombre contiene la búsqueda (sin distinguir mayúsculas), o `None` sin búsqueda.
-    /// Los aciertos de la búsqueda como conjunto, o `None` sin búsqueda. Se recalcula solo si cambia la búsqueda o la raíz.
+    /// Nodes in the current folder whose name contains the search (case-insensitive), or `None` without search.
+    /// The search hits as a set, or `None` without search. It is recalculated only if the search or root changes.
     pub(crate) fn search_set(&mut self) -> Option<Arc<std::collections::HashSet<NodeId>>> {
         let hits = self.search_matches()?;
         let q = describe::fold(self.search.trim());
@@ -549,12 +611,12 @@ impl Explore {
         Some(hits)
     }
 
-    // --- Pintado --------------------------------------------------------------------------------------------------
+    // --- Painted --------------------------------------------------------------------------------------------------
 
-    /// Pinta la ventana principal.
+    /// Paint the main window.
     pub fn show(&mut self, ui: &mut Ui, env: &mut Env) {
         let ctx = ui.ctx().clone();
-        // El flujo de limpieza avanza (hilos de aprobación y ejecución) y lo que desapareció se aplica al árbol.
+        // The cleanup flow moves forward (approval and execution threads) and what disappeared is applied to the tree.
         self.flow.poll(&ctx, env.backend, env.dry_run);
         for ev in self.flow.take_events() {
             let FlowEvent::Removed(v) = ev;
@@ -567,7 +629,7 @@ impl Explore {
             self.recheck_browsers(env);
             self.view = View::Recommendations;
         }
-        // El resumen ocupa toda la ventana.
+        // The summary takes up the entire window.
         if self.flow.in_summary() {
             match self.flow.show_summary(ui, env) {
                 Some(SummaryClick::EmptyNow) => {
@@ -584,7 +646,7 @@ impl Explore {
         self.handle_keys(&ctx, env);
         let pal = env.pal;
 
-        // Orden: lo que se añade primero queda más afuera.
+        // Order: what is added first is left out the most.
         egui::Panel::bottom("tesela-status")
             .exact_size(32.0)
             .frame(bar_frame(pal.surface_alt))
@@ -597,6 +659,8 @@ impl Explore {
             .exact_size(56.0)
             .frame(bar_frame(pal.surface))
             .show(ui, |ui| self.toolbar(ui, env));
+        // The search could change in the top bar: the marked that is no longer a success is no longer so.
+        self.sync_marks_with_search();
         egui::Panel::left("tesela-sidebar")
             .exact_size(232.0)
             .resizable(false)
@@ -607,15 +671,15 @@ impl Explore {
                     .inner_margin(Margin::symmetric(12, 16)),
             )
             .show(ui, |ui| {
-                // Si el contenido no cabe (ventana pequeña) la barra de desplazamiento es SÓLIDA y siempre visible: nada queda
-                // cortado sin aviso.
+                // If the content does not fit (small window) the scroll bar is SOLID and always visible: nothing remains
+                // cut off without warning.
                 ui.style_mut().spacing.scroll = egui::style::ScrollStyle::solid();
                 let out = egui::ScrollArea::vertical()
                     .auto_shrink([false, false])
                     .show(ui, |ui| self.sidebar(ui, env));
                 self.sidebar_overflow = out.content_size.y > out.inner_rect.height() + 0.5;
             });
-        // Las Recomendaciones ocupan todo el ancho (como en la maqueta): sin panel de detalles.
+        // Recommendations fill the entire width (as in the mockup): no details panel.
         if self.view != View::Recommendations {
             egui::Panel::right("tesela-details")
                 .exact_size(300.0)
@@ -626,6 +690,19 @@ impl Explore {
                         .inner_margin(Margin::same(20)),
                 )
                 .show(ui, |ui| details::show(ui, env, self));
+        }
+        // The selection bar always goes (same height) and only in the central column, behind the side panels: yes
+        // If it appeared only when marking, the map would be repositioned under the pointer, and removing the height of the sidebar would make it overflow.
+        if self.view != View::Recommendations {
+            let fill = if self.multi.is_empty() {
+                pal.bg
+            } else {
+                pal.accent_soft
+            };
+            egui::Panel::bottom("tesela-selection")
+                .exact_size(crate::multisel::BAR_H)
+                .frame(bar_frame(fill))
+                .show(ui, |ui| self.selection_bar(ui, env));
         }
         egui::CentralPanel::default()
             .frame(
@@ -642,8 +719,8 @@ impl Explore {
         let vol = self.volume_ctx();
         let used = vol.volume.map(|(t, f)| t.saturating_sub(f));
         self.flow.show_modals(&ctx, env, vol, used);
-        // Desenlace de "Abrir en el Explorador": el hilo suelto responde por el manejador; un shell que no responde o un
-        // error salen como aviso.
+        // "Open in Explorer" result: the background thread replies to the caller; an unresponsive shell or a
+        // error come out as a warning.
         if let Some(h) = &mut self.reveal {
             if let Some(outcome) = h.poll() {
                 self.reveal = None;
@@ -654,12 +731,24 @@ impl Explore {
                 ctx.request_repaint_after(Duration::from_millis(100));
             }
         }
-        // Aviso temporal ("Ruta copiada").
+        // Browse dropped marks: a short notice (no other more recent notice from the navigation itself is stepped on).
+        if self.marks_dropped > 0 {
+            let n = std::mem::take(&mut self.marks_dropped) as u64;
+            let msg = env.tr.ta("sel-dropped", args!["count" => env.tr.int(n)]);
+            self.toast = Some((msg, ctx.input(|i| i.time) + 3.0));
+        }
+        // Temporary notice ("Copied Route"): above the basket bar and, if present, the selection bar.
+        let toast_lift = -110.0
+            - if self.view == View::Recommendations {
+                0.0
+            } else {
+                46.0
+            };
         if let Some((msg, until)) = &self.toast {
             let now = ctx.input(|i| i.time);
             if now < *until {
                 egui::Area::new(egui::Id::new("tesela-toast"))
-                    .anchor(egui::Align2::CENTER_BOTTOM, vec2(0.0, -110.0))
+                    .anchor(egui::Align2::CENTER_BOTTOM, vec2(0.0, toast_lift))
                     .order(egui::Order::Tooltip)
                     .show(&ctx, |ui| {
                         egui::Frame::popup(ui.style()).show(ui, |ui| {
@@ -673,8 +762,8 @@ impl Explore {
         }
     }
 
-    /// Abre el Explorador con `path` seleccionado SIN bloquear la interfaz. Si ya hay una petición sin terminar o se
-    /// alcanzó el tope de hilos, avisa con un toast en vez de lanzar otra.
+    /// Open Explorer with `path` selected WITHOUT locking the interface. If there is already an unfinished request or
+    /// reached the limit of threads, warn with a toast instead of launching another one.
     pub(crate) fn reveal(&mut self, path: &std::path::Path, tr: &crate::i18n::Tr, now: f64) {
         use crate::platform::{RevealOutcome, RevealStart, reveal_in_explorer_async};
         let busy = || {
@@ -691,7 +780,7 @@ impl Explore {
     }
 
     fn handle_keys(&mut self, ctx: &egui::Context, env: &mut Env) {
-        // Con una ventana modal abierta ("Acerca de") NINGÚN atajo de la exploración actúa, tampoco Ctrl+F ni F5.
+        // With a modal window open ("About") NO exploration shortcut works, neither does Ctrl+F or F5.
         if env.modal_open || self.flow.modal_open() {
             return;
         }
@@ -701,26 +790,32 @@ impl Explore {
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F5)) {
             env.actions.push(Action::Rescan);
         }
-        // Alt+Inicio: a la pantalla de inicio (no choca con Inicio a secas, que va a la primera fila de la lista: aquí el
-        // atajo exige Alt). Con una limpieza en curso no hace nada, igual que el botón.
+        // Alt+Home: to the home screen (does not clash with Home itself, which goes to the first row of the list: here the
+        // shortcut requires Alt). With a cleaning in progress it does nothing, just like the button.
         if ctx.input_mut(|i| i.consume_key(Modifiers::ALT, Key::Home)) && self.can_go_home() {
             env.actions.push(Action::GoHome);
         }
         if self.search_focused {
             return;
         }
-        // Un menú abierto se queda con el teclado (Escape lo cierra, Intro activa su opción).
+        // An open menu stays with the keyboard (Escape closes it, Enter activates its option).
         if egui::Popup::is_any_open(ctx) {
             return;
         }
-        // Intro, Retroceso y las flechas son de la navegación SOLO si el foco está en el mapa, en una fila de la lista
-        // o en ningún widget. Con un botón enfocado, Intro y Espacio lo activan (no se consumen aquí).
+        // Enter, Backspace and arrows are navigation ONLY if the focus is on the map, in a list row
+        // or in any widget. With a button in focus, Enter and Space activate it (they are not consumed here).
         let nav = match ctx.memory(|m| m.focused()) {
             None => true,
             Some(id) => self.nav_focus == Some(id),
         };
         if nav && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Backspace)) {
             self.up();
+        }
+        // Ctrl+A: mark everything that is seen (the hits if there is a search). The search engine has its own (it already came up).
+        if self.view != View::Recommendations
+            && ctx.input_mut(|i| i.consume_key(Modifiers::COMMAND, Key::A))
+        {
+            self.marks_all_here();
         }
         if nav
             && ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Enter))
@@ -729,7 +824,10 @@ impl Explore {
             self.enter(sel);
         }
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Escape)) {
-            if !self.search.is_empty() {
+            // First the marked is emptied, then the search and finally the active element.
+            if self.view != View::Recommendations && !self.multi.is_empty() {
+                self.multi.clear();
+            } else if !self.search.is_empty() {
                 self.search.clear();
             } else {
                 self.selection = None;
@@ -740,7 +838,7 @@ impl Explore {
     fn toolbar(&mut self, ui: &mut Ui, env: &mut Env) {
         let pal = env.pal;
         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
-            // Inicio: la pantalla "¿Qué disco quieres revisar?" (con "Analizar una carpeta…"). A la izquierda de "Subir".
+            // Home: the "Which drive do you want to review?" screen (with "Analyze a folder..."). To the left of "Up".
             let home_label = env.tr.t("go-home");
             if widgets::icon_button(ui, env, Icon::Home, &home_label, self.can_go_home()).clicked()
             {
@@ -754,7 +852,7 @@ impl Explore {
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 settings_button(ui, env);
                 color_group(ui, env);
-                // Buscador.
+                // Seeker.
                 ui.add_space(8.0);
                 let hint = env.tr.t("search-hint");
                 let framed = egui::Frame::new()
@@ -801,7 +899,7 @@ impl Explore {
 
     fn breadcrumb(&mut self, ui: &mut Ui, env: &mut Env) {
         let pal = env.pal;
-        // Cadena de nodos desde la raíz hasta la carpeta actual.
+        // Chain of nodes from root to current folder.
         let mut chain = vec![self.root.node];
         while let Some(p) = self.tree.parent(*chain.last().unwrap()) {
             chain.push(p);
@@ -891,8 +989,8 @@ impl Explore {
             let selected = Some(d.letter) == cur;
             let title = drive_title(env, d);
             let used = d.used_percent();
-            // Hueco para el fondo de "al pasar el puntero": se rellena cuando se sabe si la fila está bajo el puntero (la
-            // respuesta se calcula DESPUÉS de dibujar el contenido) y queda por debajo de él.
+            // Hover Background Hole: Filled when it is known whether the row is under the pointer (the
+            // response is calculated AFTER drawing the content) and falls below it.
             let hover_bg = ui.painter().add(egui::Shape::Noop);
             let resp = egui::Frame::new()
                 .fill(if selected {
@@ -931,14 +1029,14 @@ impl Explore {
             resp.widget_info(|| {
                 egui::WidgetInfo::selected(
                     egui::WidgetType::Button,
-                    // La unidad actual no es pulsable: el lector de pantalla no la anuncia como botón habilitado.
+                    // The current unit is not clickable: the screen reader does not announce it as an enabled button.
                     drive_row_is_interactive(selected),
                     selected,
                     env.tr.ta("analyze-drive", args!["name" => title.clone()]),
                 )
             });
-            // Solo las unidades que NO son la actual se pueden pulsar: se iluminan al pasar el puntero (como los elementos de
-            // la barra lateral), cambian el cursor y explican qué hacen. La actual no tiene estado de "pasar el puntero".
+            // Only units that are NOT the current one can be tapped: they light up when you hover the pointer (such as
+            // the sidebar), they change the cursor and explain what they do. The current one has no "hover over" state.
             let resp = if drive_row_is_interactive(selected) {
                 if resp.hovered() {
                     ui.painter().set(
@@ -958,7 +1056,7 @@ impl Explore {
             if resp.has_focus() {
                 widgets::focus_ring(ui.painter(), &pal, resp.rect, 8);
             }
-            // `clicked` también se activa con Intro y Espacio cuando la fila tiene el foco.
+            // `clicked` is also triggered by Enter and Space when the row has focus.
             if resp.clicked() && drive_row_is_interactive(selected) {
                 env.actions.push(Action::StartScan(ScanRequest {
                     root: d.root(),
@@ -979,7 +1077,7 @@ impl Explore {
                 self.view = view;
             }
         }
-        // Recomendaciones, con lo seguro que se puede liberar como chip.
+        // Recommendations, with how safe it can be released as a chip.
         self.ensure_recs(env);
         let safe = self.recs.as_ref().map_or(0, |r| r.1.safe_total());
         let chip = (safe > 0).then(|| env.tr.size(safe));
@@ -999,7 +1097,7 @@ impl Explore {
 
         ui.add_space(10.0);
         widgets::section_label(ui, &pal, &env.tr.t("sidebar-types"));
-        // Los 7 tipos y los 3 grises con significado, en DOS columnas: cabe en 1280 x 800 sin desplazarse.
+        // The 7 types and the 3 grays with meaning, in TWO columns: fits in 1280 x 800 without scrolling.
         let mut entries: Vec<(egui::Color32, Option<egui::Color32>, String, Option<String>)> =
             FileType::ALL
                 .iter()
@@ -1074,9 +1172,9 @@ impl Explore {
                 args!["size" => env.tr.size(self.view().alloc(0)), "files" => files, "ago" => ago],
             ),
         };
-        // Dos zonas que NUNCA se pisan: a la derecha "Reescanear" y el aviso de la demostración (se reservan primero), y a la
-        // izquierda el resto, recortado al hueco que queda. Lo menos importante (el hueco sin explicar) va el último y se
-        // trunca con puntos suspensivos; el texto completo está en su pista.
+        // Two areas that are NEVER stepped on: on the right "Rescan" and the demo notice (they are reserved first), and on the
+        // left the rest, cut to the gap that remains. The least important thing (the unexplained gap) comes last and is
+        // truncated with ellipses; the full text is on your track.
         let full = ui.available_rect_before_wrap();
         let right = ui.scope_builder(
             egui::UiBuilder::new()
@@ -1127,7 +1225,7 @@ impl Explore {
                 ui.set_clip_rect(ui.clip_rect().intersect(left_rect));
                 ui.label(RichText::new(main).size(12.0).color(pal.text_muted));
                 if info.full_volume && info.volume.is_some() && !info.volume_scope {
-                    // Con cuota y sin la capacidad real del volumen: las cifras son las de la cuenta, y no hay hueco sin explicar.
+                    // With a quota and without the real capacity of the volume: the figures are those of the account, and there is no unexplained gap.
                     ui.label(
                         RichText::new(env.tr.t("drive-quota-scope"))
                             .size(12.0)
@@ -1157,7 +1255,7 @@ impl Explore {
                             .color(pal.text_muted),
                     );
                 }
-                // Si el hueco supera el 5 %, "El mapa explica X de Y. ¿Y el resto?" (la última: si falta sitio, se trunca).
+                // If the gap exceeds 5%, "The map explains X of Y. What about the rest?" (the last one: if there is no space, it is truncated).
                 if let (true, Some((total, free))) = (info.full_volume, info.volume) {
                     let used = total.saturating_sub(free);
                     let explained = t.stats().scanned_alloc;
@@ -1207,12 +1305,12 @@ fn legend_cell(
     }
 }
 
-/// ¿Se puede pulsar la fila de esta unidad en la barra lateral? Solo si NO es la unidad que ya se está explorando.
+/// Can I click this unit's row in the sidebar? Only if it is NOT the drive already being scanned.
 pub(crate) fn drive_row_is_interactive(selected: bool) -> bool {
     !selected
 }
 
-/// Elemento de la barra lateral. Devuelve `true` si se pulsó (y está habilitado).
+/// Sidebar element. Returns `true` if pressed (and enabled).
 fn sidebar_item(
     ui: &mut Ui,
     env: &mut Env,
@@ -1306,7 +1404,7 @@ fn sidebar_item(
     resp.clicked()
 }
 
-/// "Colorear: [Tipo] [Antigüedad] [Riesgo]". Antigüedad y Riesgo son de la v0.2: deshabilitados.
+/// "Coloring: [Type] [Age] [Risk]." Age and Risk are from v0.2: disabled.
 fn color_group(ui: &mut Ui, env: &mut Env) {
     let pal = env.pal;
     egui::Frame::new()
@@ -1315,7 +1413,7 @@ fn color_group(ui: &mut Ui, env: &mut Env) {
         .inner_margin(Margin::same(3))
         .show(ui, |ui| {
             ui.spacing_mut().item_spacing.x = 2.0;
-            // En una disposición de derecha a izquierda los elementos salen al revés: se añaden en orden inverso.
+            // In a right-to-left arrangement the elements come out the other way around: they are added in reverse order.
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 for (key, enabled, selected) in [
                     ("color-risk", false, false),
@@ -1377,7 +1475,7 @@ fn color_group(ui: &mut Ui, env: &mut Env) {
         });
 }
 
-/// Estilo especial de un nodo en las listas: icono y color de su clase.
+/// Special style of a node in lists: icon and color of its class.
 pub(crate) fn node_icon(tree: &Tree, id: NodeId) -> Icon {
     match describe::special(tree, id) {
         Some(Special::SystemBlock) => Icon::Info,

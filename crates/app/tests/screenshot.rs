@@ -1,5 +1,5 @@
-//! `--screenshot` falla con un código distinto de 0 si no puede guardar la captura, ANTES de abrir ninguna ventana.
-//! Solo se compila con la feature `capture` (sin ella el binario rechaza `--screenshot`).
+//! `--screenshot` exits with a nonzero code if it cannot save the capture, BEFORE opening any window.
+//! Compiled only with the `capture` feature (without it, the binary rejects `--screenshot`).
 #![cfg(feature = "capture")]
 
 mod common;
@@ -23,7 +23,7 @@ impl Drop for Temp {
 }
 
 fn run(args: &[&Path]) -> (i32, Vec<u8>) {
-    // Defensa en profundidad: el perfil del proceso apunta a una carpeta temporal propia, nunca al del usuario.
+    // Defense in depth: the process profile points to a test-owned temporary folder, never the user's profile.
     let profile = Temp::new();
     let out = Command::new(env!("CARGO_BIN_EXE_tesela"))
         .args(["--demo", "--screenshot"])
@@ -41,14 +41,14 @@ fn si_no_puede_crear_la_captura_sale_con_error_y_no_abre_ventana() {
         return;
     }
     let t = Temp::new();
-    // Directorio de destino inexistente.
+    // Destination directory does not exist.
     let (code, _) = run(&[&t.0.join("no-existe").join("x.png")]);
     assert_eq!(code, 1);
     assert!(!t.0.join("no-existe").exists());
-    // El destino es una carpeta.
+    // The destination is a folder.
     let (code, _) = run(&[&t.0]);
     assert_eq!(code, 1);
-    // El archivo ya existe y no se pidió --overwrite: no se toca.
+    // The file already exists and --overwrite was not requested: leave it untouched.
     let existing = t.0.join("c.png");
     fs::write(&existing, b"previo").unwrap();
     let (code, _) = run(&[&existing]);

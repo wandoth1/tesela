@@ -1,9 +1,9 @@
-//! El treemap: se dibuja como un `Mesh` teselado UNA vez y cacheado (PLAN.md §3.8, medido en la fase 0: ~10× menos
-//! coste que una `RectShape` por celda). Esquinas de 4 px y separación de 2 px vía `Tessellator`. Las etiquetas, el
-//! hover, la selección y la veladura de la búsqueda son overlays que se pintan cada frame sobre el mesh.
+//! The treemap: is drawn as a `Mesh` tiled ONE time and cached (PLAN.md §3.8, measured at phase 0: ~10× less
+//! cost than one `RectShape` per cell). 4 px corners and 2 px spacing via `Tessellator`. The labels, the
+//! hover, selection and search overlay are overlays that are painted every frame on the mesh.
 //!
-//! El mesh se rehace solo si cambia la clave `(layout, origen, pixels_per_point, tema)`. El zoom animado de ~180 ms
-//! (respetando `SPI_GETCLIENTAREAANIMATION`) transforma dos meshes ya hechos: no hay que volver a teselar.
+//! The mesh is remade only if the `(layout, origen, pixels_per_point, tema)` key changes. ~180 ms animated zoom
+//! (respecting `SPI_GETCLIENTAREAANIMATION`) transforms two meshes already made: there is no need to tile again.
 
 use crate::app::Env;
 use crate::args;
@@ -26,10 +26,10 @@ use tesela_layout::{
 };
 use tesela_model::{FileType, NodeId, Tree, View as TreeView, flags};
 
-/// Duración del zoom animado.
+/// Animated zoom duration.
 const ZOOM_SECS: f64 = 0.18;
 
-/// Cómo se pinta una celda.
+/// How to paint a cell.
 #[derive(Clone, Copy, Debug)]
 pub struct CellStyle {
     pub fill: Color32,
@@ -37,7 +37,7 @@ pub struct CellStyle {
     pub special: Option<Special>,
     pub cloud: bool,
     pub lower_bound: bool,
-    /// Ruta protegida (denegada, intocable o carpeta conocida): borde punteado y candado (PLAN.md §2.7).
+    /// Protected path (denied, untouchable, or known folder): dotted border and lock (PLAN.md §2.7).
     pub protected: Option<Verdict>,
 }
 
@@ -58,9 +58,9 @@ struct MeshEntry {
 }
 
 enum Pending {
-    /// Entrar en una celda: el mapa anterior es el exterior.
+    /// Enter a cell: the map above is the exterior.
     In { outer: Arc<Mesh>, cell: Rect },
-    /// Salir a la carpeta superior: el mapa anterior es el interior y su celda se busca en el layout nuevo.
+    /// Exit to the top folder: the previous map is the interior one and its cell is searched in the new layout.
     Out { inner: Arc<Mesh>, from: Root },
 }
 
@@ -73,7 +73,7 @@ struct Anim {
     zoom_in: bool,
 }
 
-/// Cifras del dibujo (para los tests y las mediciones).
+/// Drawing figures (for tests and measurements).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct MapStats {
     pub cells: usize,
@@ -82,7 +82,7 @@ pub struct MapStats {
     pub zooms: u64,
 }
 
-/// Estado del mapa dentro de la exploración.
+/// State of the map within the exploration.
 pub struct MapState {
     cache: LayoutCache,
     mesh: Option<MeshEntry>,
@@ -90,10 +90,10 @@ pub struct MapState {
     pending: Option<Pending>,
     anim: Option<Anim>,
     last_rect: Option<Rect>,
-    /// Layout del último frame (para localizar celdas desde fuera, p. ej. en los tests).
+    /// Layout of the last frame (to locate cells from outside, e.g. in tests).
     pub(crate) layout: Option<Arc<Layout>>,
     pub(crate) stats: MapStats,
-    /// Nodos de la carpeta actual que están en la cesta (con la huella con la que se calcularon).
+    /// Nodes from the current folder that are in the basket (with the footprint with which they were calculated).
     pub(crate) marks: (u64, Arc<std::collections::HashSet<NodeId>>),
 }
 
@@ -114,7 +114,7 @@ impl Default for MapState {
 }
 
 impl MapState {
-    /// Prepara el zoom hacia dentro: el mapa que se ve ahora será el exterior que se agranda.
+    /// Prepare to zoom in: the map you see now will be the outer one that is enlarged.
     pub(crate) fn begin_zoom_in(&mut self, animate: bool, sel: Sel) {
         self.pending = None;
         self.anim = None;
@@ -132,7 +132,7 @@ impl MapState {
         }
     }
 
-    /// Prepara el zoom hacia fuera desde la carpeta `from`.
+    /// Prepare to zoom out from the `from` folder.
     pub(crate) fn begin_zoom_out(&mut self, animate: bool, from: Root) {
         self.pending = None;
         self.anim = None;
@@ -147,18 +147,18 @@ impl MapState {
         }
     }
 
-    /// ¿Hay un zoom animándose?
+    /// Is there a zoom coming to life?
     pub fn animating(&self) -> bool {
         self.anim.is_some() || self.pending.is_some()
     }
 
-    /// Cifras del último dibujo.
+    /// Figures from the last drawing.
     pub fn stats(&self) -> MapStats {
         self.stats
     }
 }
 
-/// Selección correspondiente a una celda.
+/// Selection corresponding to a cell.
 pub(crate) fn sel_of_cell(layout: &Layout, idx: usize) -> Sel {
     match layout.cells()[idx].kind {
         CellKind::Node(id) => Sel::Node(id),
@@ -166,7 +166,7 @@ pub(crate) fn sel_of_cell(layout: &Layout, idx: usize) -> Sel {
     }
 }
 
-/// Celda (la más profunda) de una selección.
+/// Cell (the deepest) of a selection.
 pub(crate) fn cell_of_sel(layout: &Layout, sel: Sel) -> Option<usize> {
     match sel {
         Sel::Node(id) => layout
@@ -179,20 +179,20 @@ pub(crate) fn cell_of_sel(layout: &Layout, sel: Sel) -> Option<usize> {
     }
 }
 
-/// Rectángulo del layout (origen en la esquina del mapa) en coordenadas de pantalla.
+/// Layout rectangle (origin at the corner of the map) in screen coordinates.
 fn screen_rect(r: &tesela_layout::Rect, origin: Pos2) -> Rect {
     Rect::from_min_size(origin + vec2(r.x, r.y), vec2(r.w, r.h))
 }
 
-// --- Estilo y mesh ---------------------------------------------------------------------------------------------------
+// --- Style and mesh --------------------------------------------------------------------------------------------------
 
-/// Estilo de todas las celdas (los padres de nivel 0 van antes que sus hijas insinuadas), sin protección.
+/// All-cell style (level 0 fathers go before their insinuated daughters), no protection.
 #[allow(dead_code)]
 fn styles_for(layout: &Layout, tree: &Tree, pal: &Palette) -> Vec<CellStyle> {
     styles_with(layout, tree, pal, None)
 }
 
-/// Como [`styles_for`] marcando las celdas de nivel 0 cuya ruta está protegida.
+/// Like [`styles_for`] marking level 0 cells whose path is protected.
 fn styles_with(
     layout: &Layout,
     tree: &Tree,
@@ -231,13 +231,13 @@ fn styles_with(
                     None => pal.type_color(FileType::classify(tree.name_bytes(id))),
                 };
                 let fill = if c.level == 1 && c.parent != NO_CELL {
-                    // Insinuada: el color del padre aclarado.
+                    // Hinted: the lightened father's color.
                     let p = out[c.parent as usize].fill;
                     theme::mix(p, Color32::WHITE, if pal.dark { 0.16 } else { 0.24 })
                 } else {
                     base
                 };
-                // Solo las celdas con etiqueta (nivel 0): construir la ruta de cada hija insinuada no compensa.
+                // Labeled cells only (level 0): building the path of each hinted daughter does not pay off.
                 let protected = match (prot, c.level, special) {
                     (Some(p), 0, None) => match p.target_verdict(&PathKey::new(&tree.path(id))) {
                         Verdict::Allowed => None,
@@ -260,8 +260,8 @@ fn styles_with(
     out
 }
 
-/// Tesela todas las celdas en un único `Mesh`: esquinas de 4 px, separación de 2 px (1 px por lado), rayas
-/// diagonales tenues en las carpetas incompletas y la franja de los 3 tipos principales en las "Mixto".
+/// Tile all cells into a single `Mesh`: 4 px corners, 2 px spacing (1 px per side), stripes
+/// faint diagonals in the incomplete folders and the stripe of the 3 main types in the "Mixed" ones.
 fn build_mesh(
     layout: &Layout,
     tree: &Tree,
@@ -280,8 +280,8 @@ fn build_mesh(
         if r.width() < 1.0 || r.height() < 1.0 {
             continue;
         }
-        // Esquinas de 4 px; en las celdas de menos de 16 px (la inmensa mayoría en un mapa denso) rectángulos planos, que
-        // tienen la tercera parte de vértices y no se nota a ese tamaño.
+        // 4 px corners; in cells less than 16 px (the vast majority in a dense map) flat rectangles, which
+        // They have a third of vertices and it is not noticeable at that size.
         let corner = if r.width().min(r.height()) >= 16.0 {
             CornerRadius::same(4)
         } else {
@@ -304,7 +304,7 @@ fn build_mesh(
         if c.level != 0 {
             continue;
         }
-        // Rayas diagonales tenues en lo incompleto ("≥"): la única trama activa por defecto.
+        // Faint diagonal stripes in the incomplete ("≥"): the only pattern active by default.
         if st.lower_bound && r.width() >= 14.0 && r.height() >= 14.0 {
             let col = if theme::luminance(st.fill) > 0.35 {
                 Color32::from_rgba_unmultiplied(0, 0, 0, 34)
@@ -318,7 +318,7 @@ fn build_mesh(
                 );
             }
         }
-        // Ruta protegida: borde punteado (el candado se pinta con la etiqueta).
+        // Protected path: dotted border (the lock is painted with the label).
         if st.protected.is_some() && r.width() >= 14.0 && r.height() >= 14.0 {
             let col = if theme::luminance(st.fill) > 0.35 {
                 Color32::from_rgba_unmultiplied(0, 0, 0, 150)
@@ -332,7 +332,7 @@ fn build_mesh(
                 );
             }
         }
-        // Franja inferior de 4 px con los 3 tipos principales de una carpeta "Mixto" de al menos 48 px.
+        // 4 px bottom strip with the 3 main types of a "Mixed" folder of at least 48 px.
         if let CellKind::Node(id) = c.kind {
             let n = tree.node(id);
             if n.is_dir()
@@ -365,13 +365,11 @@ fn build_mesh(
     mesh
 }
 
-/// Recalcula qué nodos de las celdas de nivel 0 están en la cesta, si cambió la cesta, la carpeta o el árbol.
+/// Recalculates which nodes of level 0 cells are in the basket, whether you changed the basket, folder, or tree.
 fn refresh_marks(ex: &mut Explore, layout: &Layout) {
     use std::hash::{Hash, Hasher};
     let mut h = std::collections::hash_map::DefaultHasher::new();
-    for s in ex.flow.basket.sources() {
-        format!("{s:?}").hash(&mut h);
-    }
+    ex.flow.basket.rev().hash(&mut h);
     (ex.version, ex.root.node, ex.root.start, ex.root.end).hash(&mut h);
     let stamp = h.finish() | 1;
     if ex.map.marks.0 == stamp {
@@ -403,7 +401,7 @@ fn refresh_marks(ex: &mut Explore, layout: &Layout) {
     ex.map.marks = (stamp, Arc::new(set));
 }
 
-/// Segmentos que dibujan el contorno de `r` punteado: rayitas de `dash` px separadas `gap` px.
+/// Segments that draw the outline of `r` dotted: dashes of `dash` px separated by `gap` px.
 pub(crate) fn dotted_rect_segments(r: Rect, dash: f32, gap: f32) -> Vec<(Pos2, Pos2)> {
     let mut out = Vec::new();
     let mut edge = |a: Pos2, b: Pos2| {
@@ -426,7 +424,7 @@ pub(crate) fn dotted_rect_segments(r: Rect, dash: f32, gap: f32) -> Vec<(Pos2, P
     out
 }
 
-/// Copia del mesh con los vértices transformados (de `from` a `to`) y la opacidad multiplicada por `alpha`.
+/// Copy of the mesh with the transformed vertices (from `from` to `to`) and the opacity multiplied by `alpha`.
 fn transformed(mesh: &Mesh, from: Rect, to: Rect, alpha: f32) -> Mesh {
     let sx = to.width() / from.width().max(1e-3);
     let sy = to.height() / from.height().max(1e-3);
@@ -452,9 +450,9 @@ fn lerp_rect(a: Rect, b: Rect, t: f32) -> Rect {
     Rect::from_min_max(a.min.lerp(b.min, t), a.max.lerp(b.max, t))
 }
 
-// --- Dibujo cada frame -----------------------------------------------------------------------------------------------
+// --- I draw each frame -----------------------------------------------------------------------------------------------
 
-/// Etiqueta de una celda de nivel 0 (nombre y tamaño) y de las insinuadas que quepan.
+/// Label of a level 0 cell (name and size) and the suggested ones that fit.
 fn draw_labels(
     painter: &egui::Painter,
     env: &mut Env,
@@ -475,7 +473,7 @@ fn draw_labels(
             0 => {
                 let narrow_others = matches!(c.kind, CellKind::Others(_)) && c.rect.w < 130.0;
                 if narrow_others || !params.label_fits(&c.rect) {
-                    // "Otros" es una tira estrecha con frecuencia: su etiqueta se parte en líneas en vez de recortarse u omitirse.
+                    // "Other" is often a narrow strip: its label is broken into lines rather than trimmed or omitted.
                     if let CellKind::Others(i) = c.kind
                         && c.rect.w >= 36.0
                         && c.rect.h >= 56.0
@@ -564,7 +562,7 @@ fn draw_labels(
                 }
             }
             _ => {
-                // Insinuadas: una línea "Nombre · tamaño" si cabe, y no más de unas decenas.
+                // Insinuated: one line "Name · size" if possible, and no more than a few dozen.
                 if hint_labels >= 60 || c.rect.w < 72.0 || c.rect.h < 22.0 {
                     continue;
                 }
@@ -591,7 +589,7 @@ fn draw_labels(
     }
 }
 
-/// Texto accesible del mapa: dónde está y qué hay seleccionado.
+/// Accessible map text: where it is and what is selected.
 fn map_label(ex: &Explore, env: &Env) -> String {
     let tr = env.tr;
     let tree = &ex.tree;
@@ -600,7 +598,7 @@ fn map_label(ex: &Explore, env: &Env) -> String {
         "map-label",
         args!["name" => describe::display_name(tree, ex.root.node, tr), "n" => tr.int(shown.len() as u64)],
     );
-    // La agrupación "Otros" no tiene widget propio: se anuncia aquí para quien no ve el mapa.
+    // The "Other" grouping does not have its own widget: it is announced here for those who do not see the map.
     if let Some(l) = &ex.map.layout {
         for o in l.others() {
             s.push(' ');
@@ -632,10 +630,75 @@ fn map_label(ex: &Explore, env: &Env) -> String {
         }
         None => {}
     }
+    // Multiple selection: how many are marked and if the active element is one of them.
+    if !ex.multi.is_empty() {
+        s.push(' ');
+        s.push_str(&tr.ta(
+            "sel-map-count",
+            args!["count" => tr.int(ex.multi.len() as u64)],
+        ));
+        if let Some(Sel::Node(id)) = ex.selection
+            && ex.child_of_root(id).is_some_and(|c| ex.multi.contains(c))
+        {
+            s.push(' ');
+            s.push_str(&tr.t("sel-map-this"));
+        }
+    }
     s
 }
 
-/// El mapa. Dibuja en todo el espacio disponible.
+/// The level 0 cells that are marked for the basket, with their rectangle on screen (without the 1 px margin).
+fn marked_cells(ex: &Explore, layout: &Layout, rect: Rect) -> Vec<(Rect, Rect)> {
+    if ex.multi.is_empty() {
+        return Vec::new();
+    }
+    layout
+        .cells()
+        .iter()
+        .filter(|c| match c.kind {
+            CellKind::Node(id) => c.level == 0 && ex.multi.contains(id),
+            CellKind::Others(i) => ex.others_all_marked(layout.others()[i as usize]),
+        })
+        .map(|c| {
+            let full = Rect::from_min_size(
+                rect.min + vec2(c.rect.x, c.rect.y),
+                vec2(c.rect.w, c.rect.h),
+            );
+            (full, full.shrink(1.0))
+        })
+        .collect()
+}
+
+/// Accent veil of what is marked for the basket: it goes BEFORE the labels so as not to detract from their contrast.
+fn draw_mark_tint(painter: &egui::Painter, env: &Env, ex: &Explore, layout: &Layout, rect: Rect) {
+    let tint = crate::multisel::mark_tint(&env.pal);
+    for (_, r) in marked_cells(ex, layout, rect) {
+        painter.rect_filled(r, CornerRadius::same(4), tint);
+    }
+}
+
+/// Border and insignia for verification of what has been marked (after the labels; each frame is painted, never inside the mesh).
+fn draw_marks(painter: &egui::Painter, env: &mut Env, ex: &Explore, layout: &Layout, rect: Rect) {
+    let pal = env.pal;
+    for (full, r) in marked_cells(ex, layout, rect) {
+        painter.rect_stroke(
+            r,
+            CornerRadius::same(4),
+            Stroke::new(2.0, pal.accent),
+            StrokeKind::Inside,
+        );
+        // The badge goes at the bottom right: at the top left is the name and at the top right is the cart.
+        if full.width() >= 34.0 && full.height() >= 52.0 {
+            let center = r.right_bottom() - vec2(CHECK_BADGE_INSET, CHECK_BADGE_INSET);
+            crate::multisel::paint_check_badge(painter, env, center);
+        }
+    }
+}
+
+/// Distance the "selected" badge from the bottom right corner of your cell.
+pub(crate) const CHECK_BADGE_INSET: f32 = 18.0;
+
+/// The map. Draw in all the available space.
 pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
     let pal = env.pal;
     let avail = ui.available_rect_before_wrap();
@@ -686,7 +749,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
     ex.map.last_rect = Some(rect);
     refresh_marks(ex, &layout);
 
-    // Zoom pendiente: se convierte en animación en cuanto hay mesh nuevo.
+    // Zoom pending: it becomes an animation as soon as there is new mesh.
     let now = ctx.input(|i| i.time);
     if let Some(p) = ex.map.pending.take() {
         let cur = ex.map.mesh.as_ref().map(|e| e.mesh.clone());
@@ -725,7 +788,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
     let entry = ex.map.mesh.as_ref().expect("mesh recién creado");
     painter.rect_filled(rect, CornerRadius::same(4), pal.bg);
 
-    // --- Animación o mapa estático ---
+    // --- Animation or static map ---
     let mut animating = false;
     if let Some(a) = &ex.map.anim {
         let t = ((now - a.start) / ZOOM_SECS).clamp(0.0, 1.0) as f32;
@@ -752,12 +815,11 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
         painter.add(Shape::mesh(entry.mesh.clone()));
     }
 
-    // --- Interacción ---
+    // --- Interaction ---
     resp.widget_info(|| {
         egui::WidgetInfo::labeled(egui::WidgetType::Other, true, map_label(ex, env))
     });
     let pointer = ctx.input(|i| i.pointer.hover_pos());
-    let entry = ex.map.mesh.as_ref().expect("mesh");
     let hovered = if resp.hovered() && !animating {
         pointer.and_then(|p| layout.hit(p.x - rect.min.x, p.y - rect.min.y))
     } else {
@@ -765,11 +827,26 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
     };
     ex.map.hover = hovered;
 
-    // Un clic de verdad (con puntero): Intro sobre el mapa enfocado también cuenta como `clicked()` y no debe borrar la
-    // selección.
+    // A real click (with pointer): Enter on the focused map also counts as `clicked()` and should not delete the
+    // selection.
     let pointer_click =
         (resp.clicked() || resp.secondary_clicked()) && resp.interact_pointer_pos().is_some();
-    if pointer_click {
+    let mods = ctx.input(|i| i.modifiers);
+    // Ctrl+click, Shift+click (on the map there is no reasonable 2D order for a range: toggles the same) or "Select" mode:
+    // Check or uncheck the cell. A hinted cell (level 1) marks its folder, which is the one with the label.
+    let multi_click = resp.clicked()
+        && pointer_click
+        && hovered.is_some()
+        && (mods.command || mods.shift || ex.multi.mode);
+    if multi_click {
+        resp.request_focus();
+        let i = hovered.expect("hay celda bajo el puntero");
+        let c = &layout.cells()[i];
+        let sel = sel_of_cell(&layout, base_cell(c.level, c.parent, i));
+        ex.marks_toggle(sel);
+        ex.selection = Some(sel);
+        ex.scroll_to_selection = true;
+    } else if pointer_click {
         resp.request_focus();
         ex.selection = hovered.map(|i| sel_of_cell(&layout, i));
         ex.scroll_to_selection = true;
@@ -777,7 +854,9 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
     if resp.secondary_clicked() {
         ex.ctx_target = ex.selection.or(Some(Sel::Node(ex.root.node)));
     }
+    // With Ctrl or Shift a double click is two marks in a row, not "enter".
     if resp.double_clicked()
+        && !(mods.command || mods.shift)
         && let Some(i) = hovered
     {
         let sel = sel_of_cell(&layout, i);
@@ -808,12 +887,20 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
                 ex.scroll_to_selection = true;
             }
         }
+        // Space marks or unmarks the active element (the keyboard path of Ctrl+click).
+        if ctx.input(crate::multisel::space_pressed_once)
+            && let Some(sel) = ex.selection
+        {
+            ex.marks_toggle(sel);
+        }
     }
 
     // --- Overlays ---
     if !animating {
+        draw_mark_tint(&painter, env, ex, &layout, rect);
+        let entry = ex.map.mesh.as_ref().expect("mesh");
         draw_labels(&painter, env, ex, entry, &params);
-        // Lo que está en la cesta lleva una insignia con el carrito.
+        // What is in the basket has a badge with the cart.
         for c in layout.cells().iter().filter(|c| c.level == 0) {
             if let CellKind::Node(id) = c.kind
                 && ex.map.marks.1.contains(&id)
@@ -830,7 +917,8 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
                 );
             }
         }
-        // Veladura de la búsqueda.
+        draw_marks(&painter, env, ex, &layout, rect);
+        // Search veil.
         if let Some(hits) = ex.search_set() {
             let veil = pal.bg.gamma_multiply(0.72);
             for c in layout.cells().iter().filter(|c| c.level == 0) {
@@ -882,7 +970,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
             StrokeKind::Inside,
         );
     }
-    // Menú contextual.
+    // Context menu.
     let target = ex.ctx_target;
     egui::Popup::context_menu(&resp).show(|ui| {
         if let Some(t) = target {
@@ -894,8 +982,8 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
     }
 }
 
-/// Celda de nivel 0 desde la que se busca el vecino: la propia, o el padre si es una celda insinuada (nivel 1). Una celda de
-/// nivel 1 sin padre (`NO_CELL`) no tiene a quién subir: se queda en sí misma (no se indexa con `u32::MAX`).
+/// Level 0 cell from which the neighbor is searched: one's own, or the parent if it is a hinted cell (level 1). A cell of
+/// A level-1 cell without a parent (`NO_CELL`) has no parent to move up to: it stays selected (it is not indexed with `u32::MAX`).
 fn base_cell(level: u8, parent: u32, cur: usize) -> usize {
     if level == 1 && parent != NO_CELL {
         parent as usize
@@ -904,14 +992,14 @@ fn base_cell(level: u8, parent: u32, cur: usize) -> usize {
     }
 }
 
-/// Celda vecina en una dirección (flechas del teclado): la más cercana cuyo centro queda al otro lado.
+/// Neighboring cell in one direction (keyboard arrows): the closest cell whose center is on the other side.
 fn neighbor(layout: &Layout, cur: Option<usize>, dx: f32, dy: f32) -> Option<usize> {
     let n0 = layout.stats().level0;
     if n0 == 0 {
         return None;
     }
     let Some(cur) = cur else { return Some(0) };
-    // Si la selección es una celda insinuada, se parte de su padre.
+    // If the selection is a hinted cell, it starts from its parent.
     let cur = {
         let c = &layout.cells()[cur];
         base_cell(c.level, c.parent, cur)
@@ -940,7 +1028,7 @@ fn neighbor(layout: &Layout, cur: Option<usize>, dx: f32, dy: f32) -> Option<usi
     best.map(|b| b.1).or(Some(cur))
 }
 
-/// Tooltip de una celda: nombre, tamaño, porcentaje del padre, composición y pista de uso.
+/// Tooltip of a cell: name, size, parent percentage, composition and usage track.
 fn tooltip(ui: &mut Ui, env: &mut Env, ex: &Explore, cell: &Cell, layout: &Layout, pal: &Palette) {
     let tr = env.tr;
     let tree = &ex.tree;
@@ -1086,7 +1174,7 @@ fn tooltip(ui: &mut Ui, env: &mut Env, ex: &Explore, cell: &Cell, layout: &Layou
     }
 }
 
-/// Clave del texto de "solo informar" de cada archivo.
+/// Key to the "report only" text for each file.
 pub(crate) fn info_key(k: InfoKind) -> &'static str {
     match k {
         InfoKind::Pagefile => "info-pagefile",
@@ -1095,7 +1183,7 @@ pub(crate) fn info_key(k: InfoKind) -> &'static str {
     }
 }
 
-/// Barra apilada con el reparto de bytes por tipo.
+/// Stacked bar with the distribution of bytes by type.
 pub(crate) fn stacked_bar(ui: &mut Ui, pal: &Palette, h: &tesela_model::Hist) {
     let (rect, _) =
         ui.allocate_exact_size(vec2(ui.available_width().min(260.0), 8.0), Sense::hover());
@@ -1119,8 +1207,8 @@ pub(crate) fn stacked_bar(ui: &mut Ui, pal: &Palette, h: &tesela_model::Hist) {
     }
 }
 
-/// Elementos del menú contextual de un nodo (Abrir en el Explorador, Copiar ruta, Propiedades y, deshabilitado,
-/// Añadir a la cesta). En el modo demostración lo que toca el disco queda deshabilitado.
+/// Context menu items for a node (Open in Explorer, Copy Path, Properties and, disabled,
+/// Add to cart). In demo mode, what touches the disc is disabled.
 pub(crate) fn menu_items(ui: &mut Ui, env: &mut Env, ex: &mut Explore, sel: Sel) {
     let tr = env.tr;
     let tree = ex.tree.clone();
@@ -1135,7 +1223,7 @@ pub(crate) fn menu_items(ui: &mut Ui, env: &mut Env, ex: &mut Explore, sel: Sel)
     let state = ex.add_state(sel);
     match sel {
         Sel::Node(id) if describe::can_enter_view(&ex.view(), id) => {
-            // Lo protegido no se puede añadir a la cesta: "Ver contenido" ocupa su lugar.
+            // Protected items cannot be added to the basket: "View content" takes its place.
             let key = if matches!(state, AddState::Untouchable | AddState::Denied) {
                 "menu-view-contents"
             } else {
@@ -1191,19 +1279,26 @@ pub(crate) fn menu_items(ui: &mut Ui, env: &mut Env, ex: &mut Explore, sel: Sel)
         ui.add_enabled(false, egui::Button::new(label))
             .on_disabled_hover_text(tr.t(why));
     };
+    // While preparing or running a cleaning the basket is not touched: "Add" is disabled with the same track as
+    // the selection bar.
+    let busy = ex.flow.busy();
+    let add_button = |ui: &mut Ui, label: String| {
+        let b = ui.add_enabled(!busy, egui::Button::new(label));
+        if busy {
+            b.clone().on_disabled_hover_text(tr.t("sel-add-busy-tip"));
+        }
+        b.clicked()
+    };
     match state {
         AddState::Addable => {
-            if ui.button(tr.t("menu-add-basket")).clicked() {
+            if add_button(ui, tr.t("menu-add-basket")) {
                 ex.basket_add(sel, env, now);
                 ui.close();
             }
         }
         AddState::ContentsOf => {
             let name = describe::display_name(&tree, node, tr);
-            if ui
-                .button(tr.ta("menu-add-contents", args!["name" => name]))
-                .clicked()
-            {
+            if add_button(ui, tr.ta("menu-add-contents", args!["name" => name])) {
                 ex.basket_add(sel, env, now);
                 ui.close();
             }
@@ -1222,9 +1317,42 @@ pub(crate) fn menu_items(ui: &mut Ui, env: &mut Env, ex: &mut Explore, sel: Sel)
         AddState::CloudOnly => disabled(ui, tr.t("menu-add-basket"), "menu-unavailable-cloud"),
         AddState::Group => disabled(ui, tr.t("menu-add-basket"), "tip-open-group"),
     }
+    // Multiple selection: Check this item, check everything in the folder, or reverse check ("everything but one").
+    ui.separator();
+    let (target, marked) = match sel {
+        Sel::Node(id) => {
+            let c = ex.child_of_root(id);
+            // With an active search, what is not a hit cannot be marked (unmark yes).
+            (
+                ex.can_toggle_mark(id),
+                c.is_some_and(|c| ex.multi.contains(c)),
+            )
+        }
+        Sel::Group(o) => (true, ex.others_all_marked(o)),
+    };
+    let key = if marked {
+        "menu-sel-unthis"
+    } else {
+        "menu-sel-this"
+    };
+    if ui
+        .add_enabled(target, egui::Button::new(tr.t(key)))
+        .clicked()
+    {
+        ex.marks_toggle(sel);
+        ui.close();
+    }
+    if ui.button(tr.t("menu-sel-all")).clicked() {
+        ex.marks_all_here();
+        ui.close();
+    }
+    if ui.button(tr.t("menu-sel-invert")).clicked() {
+        ex.marks_invert_here();
+        ui.close();
+    }
 }
 
-/// Para los tests: ¿qué ids de nodo hay entre las celdas de nivel 0?
+/// For testing: what node ids are there among the level 0 cells?
 #[allow(dead_code)]
 pub(crate) fn level0_nodes(layout: &Layout) -> Vec<NodeId> {
     layout
@@ -1257,7 +1385,7 @@ mod tests {
         )
     }
 
-    /// GM-m7: una celda insinuada (nivel 1) sin padre (`NO_CELL`) no se indexa con `u32::MAX`.
+    /// GM-m7: A hinted cell (level 1) without a parent (`NO_CELL`) is not indexed with `u32::MAX`.
     #[test]
     fn la_celda_base_del_vecino_respeta_el_padre_ausente() {
         assert_eq!(base_cell(0, NO_CELL, 4), 4);
@@ -1277,7 +1405,7 @@ mod tests {
     fn los_colores_siguen_el_plan_tipo_dominante_mixto_y_grises_con_significado() {
         let t = demo::tree(Variant::Complete);
         let pal = Palette::of(false);
-        // Raíz: Users (mixto), el bloque del sistema, pagefile.
+        // Root: Users (mixed), system block, pagefile.
         let l = layout_of(&t, Root::node(0), (1000, 700));
         let st = styles_for(&l, &t, &pal);
         let users = t.child_by_name(0, b"Users").unwrap();
@@ -1294,7 +1422,7 @@ mod tests {
         let s = style_of(&l, &st, sys);
         assert_eq!(s.fill, pal.system_block());
         assert_eq!(s.special, Some(Special::SystemBlock));
-        // Dentro de la carpeta de usuario: vídeo (azul), imágenes (naranja), OneDrive (nube) y "Otros" (gris).
+        // Inside the user folder: video (blue), images (orange), OneDrive (cloud) and "Other" (gray).
         let me = t.child_by_name(users, demo::USER.as_bytes()).unwrap();
         let l = layout_of(&t, Root::node(me), (1000, 700));
         let st = styles_for(&l, &t, &pal);
@@ -1313,7 +1441,7 @@ mod tests {
             .position(|c| matches!(c.kind, CellKind::Others(_)))
             .unwrap();
         assert_eq!(st[others].fill, pal.others());
-        // Las celdas insinuadas son un aclarado del color de su padre.
+        // The hinted cells are a lightening of their father's color.
         let child = l
             .cells()
             .iter()
@@ -1337,8 +1465,8 @@ mod tests {
         );
         let users = stopped.child_by_name(0, b"Users").unwrap();
         assert!(!style_of(&l, &st, users).lower_bound);
-        // Las rayas diagonales hacen que el mesh tenga más vértices que el mismo árbol sin ellas: se compara con
-        // el mesh de un árbol completo de las mismas celdas de nivel 0 (el de la demostración completa no las lleva).
+        // The diagonal stripes make the mesh have more vertices than the same tree without them: compared to
+        // the mesh of a complete tree of the same level 0 cells (the one in the complete demonstration does not have them).
         let with = build_mesh(&l, &stopped, &st, &pal, 1.0, pos2(0.0, 0.0));
         let mut no_hatch = st.clone();
         for s in &mut no_hatch {
@@ -1360,12 +1488,12 @@ mod tests {
         let l = layout_of(&t, Root::node(0), (1000, 700));
         let st = styles_for(&l, &t, &pal);
         let a = build_mesh(&l, &t, &st, &pal, 1.0, pos2(0.0, 0.0));
-        // Mismo layout en un viewport pequeño: las celdas de menos de 48 px no llevan franja.
+        // Same layout in a small viewport: cells less than 48 px do not have a stripe.
         let small = layout_of(&t, Root::node(0), (180, 120));
         let sst = styles_for(&small, &t, &pal);
         let b = build_mesh(&small, &t, &sst, &pal, 1.0, pos2(0.0, 0.0));
         assert!(a.vertices.len() > b.vertices.len());
-        // Con una franja, el mesh tiene vértices del color de alguno de los tres tipos principales de Users.
+        // With a stripe, the mesh has vertices of the color of one of the three main types of Users.
         let users = t.child_by_name(0, b"Users").unwrap();
         let top = describe::top_types(t.hist(users), 3);
         assert_eq!(top.len(), 3);
@@ -1379,7 +1507,7 @@ mod tests {
 
     #[test]
     fn el_mesh_cabe_en_el_presupuesto_incluso_con_15k_celdas() {
-        // El peor caso: ~15 000 celdas. Cada celda grande lleva esquinas redondeadas; las diminutas, rectángulos planos.
+        // Worst case: ~15,000 cells. Each large cell has rounded corners; the tiny, flat rectangles.
         let pal = Palette::of(false);
         let t = demo::tree(Variant::Stress);
         let l = layout_of(&t, Root::node(0), (2400, 1500));

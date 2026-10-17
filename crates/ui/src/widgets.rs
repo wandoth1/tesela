@@ -1,5 +1,5 @@
-//! Widgets propios con el estilo de la maqueta: botones con icono, chips, tarjetas y barras. Todos registran su
-//! etiqueta accesible (AccessKit) y dan una pista cuando están deshabilitados.
+//! Own widgets in the style of the mockup: buttons with icons, chips, cards and bars. Everyone registers their
+//! accessible tag (AccessKit) and give a hint when they are disabled.
 
 use crate::app::Env;
 use crate::icons::Icon;
@@ -9,8 +9,8 @@ use egui::{
     Vec2, WidgetInfo, WidgetType, pos2, vec2,
 };
 
-/// Anillo de foco de teclado (2 px, color de acento, por dentro de `rect`): lo llevan todos los elementos que se
-/// alcanzan con Tab.
+/// Keyboard focus ring (2 px, accent color, inside `rect`): carried by all elements that are
+/// are enough with Tab.
 pub fn focus_ring(painter: &egui::Painter, pal: &Palette, rect: Rect, radius: u8) {
     painter.rect_stroke(
         rect,
@@ -20,19 +20,19 @@ pub fn focus_ring(painter: &egui::Painter, pal: &Palette, rect: Rect, radius: u8
     );
 }
 
-/// Aspecto de un botón.
+/// Appearance of a button.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ButtonStyle {
-    /// Relleno de acento: la acción principal de la pantalla.
+    /// Accent fill - the main action of the screen.
     Primary,
-    /// Borde y fondo de superficie.
+    /// Surface edge and background.
     Secondary,
-    /// Sin borde ni fondo hasta pasar el ratón.
+    /// No border or background until mouseover.
     Ghost,
 }
 
-/// Color del texto y del icono de un botón: el normal si está habilitado y uno atenuado (menos contraste, pero legible)
-/// si no.
+/// Color of the text and icon of a button: normal if enabled and grayed out (less contrast, but legible)
+/// but.
 pub fn button_fg(pal: &Palette, style: ButtonStyle, enabled: bool) -> Color32 {
     let normal = match style {
         ButtonStyle::Primary if pal.dark => pal.ink,
@@ -43,19 +43,19 @@ pub fn button_fg(pal: &Palette, style: ButtonStyle, enabled: bool) -> Color32 {
     if enabled {
         normal
     } else if style == ButtonStyle::Primary {
-        // Sobre el fondo gris de un principal deshabilitado ([`button_disabled_fill`]).
+        // On the gray background of a disabled main ([`button_disabled_fill`]).
         theme::mix(pal.text_muted, pal.surface, 0.25)
     } else {
         theme::mix(pal.text_muted, pal.surface, 0.35)
     }
 }
 
-/// Fondo de un botón principal deshabilitado.
+/// Background of a disabled main button.
 pub fn button_disabled_fill(pal: &Palette) -> Color32 {
     pal.track
 }
 
-/// Botón con icono opcional y texto. Devuelve la respuesta; si está deshabilitado no reacciona al clic.
+/// Button with optional icon and text. Returns the response; If it is disabled it does not react to the click.
 pub fn button(
     ui: &mut Ui,
     env: &mut Env,
@@ -70,7 +70,7 @@ pub fn button(
         ButtonStyle::Secondary => (pal.surface, Stroke::new(1.0, pal.border)),
         ButtonStyle::Ghost => (Color32::TRANSPARENT, Stroke::NONE),
     };
-    // El color del texto se decide al pintar (habilitado o no): el galley va con `PLACEHOLDER` y `galley(.., fg)` lo rellena.
+    // The text color is decided when painting (enabled or not): the galley goes with `PLACEHOLDER` and `galley(.., fg)` fills it.
     let galley = ui.painter().layout_no_wrap(
         text.to_string(),
         theme::font_semibold(14.0),
@@ -138,7 +138,7 @@ pub fn button(
     resp
 }
 
-/// Botón cuadrado de 36 px con solo un icono. `label` es el texto accesible y el de la pista.
+/// 36 px square button with only one icon. `label` is the accessible text and the hint text.
 pub fn icon_button(ui: &mut Ui, env: &mut Env, icon: Icon, label: &str, enabled: bool) -> Response {
     let pal = env.pal;
     let (rect, resp) = ui.allocate_exact_size(
@@ -190,7 +190,7 @@ pub fn icon_button(ui: &mut Ui, env: &mut Env, icon: Icon, label: &str, enabled:
     }
 }
 
-/// Chip redondeado con icono opcional (riesgo, "Aproximado", tamaños de la cesta...).
+/// Rounded chip with optional icon (risk, "Approximate", basket sizes...).
 pub fn chip(
     ui: &mut Ui,
     env: &mut Env,
@@ -224,7 +224,7 @@ pub fn chip(
     resp
 }
 
-/// Rótulo de sección en mayúsculas pequeñas (UNIDADES, VISTAS...).
+/// Section label in small capitals (UNITS, VIEWS...).
 pub fn section_label(ui: &mut Ui, pal: &Palette, text: &str) {
     ui.add_space(2.0);
     let t = egui::RichText::new(text.to_uppercase())
@@ -233,8 +233,8 @@ pub fn section_label(ui: &mut Ui, pal: &Palette, text: &str) {
     ui.label(t);
 }
 
-/// Indicador de "ocupado". Con animaciones gira (`egui::Spinner`, que además pide repintar sin parar); con "reducir
-/// animaciones" (`animate == false`) es un arco ESTÁTICO y no pide ningún repintado.
+/// "Busy" indicator. With rotating animations (`egui::Spinner`, which also asks to repaint without stopping); with "reduce"
+/// animations" (`animate == false`) is a STATIC arc and does not ask for any repainting.
 pub fn busy(ui: &mut Ui, animate: bool, size: f32, color: Color32) -> Response {
     if animate {
         return ui.add(egui::Spinner::new().size(size).color(color));
@@ -243,7 +243,7 @@ pub fn busy(ui: &mut Ui, animate: bool, size: f32, color: Color32) -> Response {
     if ui.is_rect_visible(rect) {
         let c = rect.center();
         let r = size * 0.5 - 2.0;
-        // Tres cuartos de circunferencia (un "cargando" congelado).
+        // Three-quarters of a circumference (a frozen "loading").
         let points: Vec<Pos2> = (0..=24)
             .map(|i| {
                 let a =
@@ -257,8 +257,8 @@ pub fn busy(ui: &mut Ui, animate: bool, size: f32, color: Color32) -> Response {
     resp
 }
 
-/// Tramo del progreso indeterminado ("sin total conocido") dentro de la barra `bar`. Con animaciones va y viene según
-/// `t` (segundos); sin ellas es un tramo FIJO en el centro (y quien llama no tiene que pedir repintado).
+/// Indeterminate progress section ("no known total") within the `bar` bar. With animations it comes and goes according to
+/// `t` (seconds); Without them it is a FIXED section in the center (and whoever calls does not have to ask for repainting).
 pub fn indeterminate_segment(bar: Rect, t: f32, animate: bool) -> Rect {
     let w = bar.width() * 0.25;
     let k = if animate {
@@ -270,7 +270,7 @@ pub fn indeterminate_segment(bar: Rect, t: f32, animate: bool) -> Rect {
     Rect::from_min_size(Pos2::new(x, bar.top()), vec2(w, bar.height()))
 }
 
-/// Barra de progreso redondeada. Con `hatch`, el relleno lleva rayas diagonales tenues ("aún contando").
+/// Rounded progress bar. With `hatch`, the padding carries faint ("still counting") diagonal stripes.
 pub fn progress_bar(
     ui: &mut Ui,
     pal: &Palette,
@@ -297,25 +297,25 @@ pub fn progress_bar(
     resp
 }
 
-/// Rayas diagonales (135°) dentro de `rect`: cada línea se recorta al rectángulo. Las usan "incompleto" y las barras
-/// de progreso.
+/// Diagonal stripes (135°) inside `rect`: each line is clipped to the rectangle. They use "incomplete" and bars
+/// of progress.
 pub fn hatch_rect(painter: &egui::Painter, rect: Rect, color: Color32, spacing: f32, width: f32) {
     for s in hatch_segments(rect, spacing) {
         painter.line_segment([s.0, s.1], Stroke::new(width, color));
     }
 }
 
-/// Segmentos de las rayas diagonales `x - y = c` dentro de `rect`, separadas `spacing` px en horizontal.
+/// Segments of `x - y = c` diagonal stripes within `rect`, separated `spacing` px horizontally.
 pub fn hatch_segments(rect: Rect, spacing: f32) -> Vec<(Pos2, Pos2)> {
     let mut out = Vec::new();
     if rect.width() < 1.0 || rect.height() < 1.0 || spacing < 1.0 {
         return out;
     }
-    // Línea x = y + c, con c desde -h hasta w.
+    // Line x = y + c, with c from -h to w.
     let (w, h) = (rect.width(), rect.height());
     let mut c = -h;
     while c < w {
-        // Intersección con el rectángulo local [0,w] × [0,h].
+        // Intersection with the local rectangle [0,w] × [0,h].
         let (y0, y1) = ((-c).max(0.0), (w - c).min(h));
         if y1 > y0 {
             out.push((
@@ -328,7 +328,7 @@ pub fn hatch_segments(rect: Rect, spacing: f32) -> Vec<(Pos2, Pos2)> {
     out
 }
 
-/// Texto de una sola línea recortado con "…" al ancho `max_w`, pintado con su ancla. Devuelve el rectángulo usado.
+/// Single line text trimmed with "…" to width `max_w`, painted with its anchor. Returns the rectangle used.
 pub fn clipped_text(
     painter: &egui::Painter,
     pos: Pos2,
@@ -355,8 +355,8 @@ mod tests {
     use crate::icons::IconCache;
     use egui::epaint::Shape;
 
-    /// Color con que se PINTA de verdad el texto `text` en la salida de un pase: el de la sección del galley o, si es
-    /// `PLACEHOLDER`, el de reserva del `TextShape`.
+    /// Color with which the text `text` is actually PAINTED at the output of a pass: that of the gallery section or, if
+    /// `PLACEHOLDER`, the reserve for `TextShape`.
     fn painted_color(shapes: &[egui::epaint::ClippedShape], text: &str) -> Color32 {
         for cs in shapes {
             if let Shape::Text(ts) = &cs.shape
@@ -394,7 +394,7 @@ mod tests {
                     );
                     let mut actions: Vec<Action> = Vec::new();
                     let mut painted = Color32::PLACEHOLDER;
-                    // Dos pases: el primero aplica las fuentes del sistema.
+                    // Two passes: the first applies system fonts.
                     for _ in 0..2 {
                         let mut out = ctx.run_ui(Default::default(), |ui| {
                             let mut env = Env {
@@ -410,6 +410,7 @@ mod tests {
                                 dry_run: false,
                                 history: &[],
                                 modal_open: false,
+                                update: Default::default(),
                                 actions: &mut actions,
                             };
                             button(ui, &mut env, style, None, &label, enabled);
@@ -473,7 +474,7 @@ mod tests {
                 assert!(p.x >= r.left() - 1e-3 && p.x <= r.right() + 1e-3, "{p:?}");
                 assert!(p.y >= r.top() - 1e-3 && p.y <= r.bottom() + 1e-3, "{p:?}");
             }
-            // 45 grados: dx == dy.
+            // 45 degrees: dx == dy.
             assert!(((b.x - a.x) - (b.y - a.y)).abs() < 1e-3);
         }
         assert!(hatch_segments(Rect::from_min_size(Pos2::ZERO, vec2(0.0, 5.0)), 8.0).is_empty());

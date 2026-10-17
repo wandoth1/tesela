@@ -1,11 +1,12 @@
-//! Persistencia mínima (PLAN.md §2.11): `%APPDATA%\Tesela\config.toml` con el tema, el idioma y el tamaño de la
-//! ventana. Nunca se guarda nada del árbol ni de los escaneos. Una configuración ilegible se ignora (se usan los
-//! valores por defecto) en vez de impedir el arranque.
+//! Minimal persistence (PLAN.md §2.11): `%APPDATA%\Tesela\config.toml` stores the theme, language, and window size.
+//! The tree and scan data are never saved. An unreadable configuration is ignored (defaults are used) rather than
+//! preventing startup.
 
 use std::path::{Path, PathBuf};
-use tesela_ui::{LangPref, Settings, ThemePref};
+use tesela_ui::{LangPref, Settings, ThemePref, UpdatePrefs};
+use tesela_update::Version;
 
-/// Tamaño de ventana por defecto (en puntos lógicos) y mínimo.
+/// Default and minimum window sizes, in logical points.
 pub const DEFAULT_SIZE: (f32, f32) = (1280.0, 800.0);
 pub const MIN_SIZE: (f32, f32) = (960.0, 600.0);
 
@@ -19,19 +20,57 @@ pub struct Config {
     pub window_width: Option<f32>,
     #[serde(default)]
     pub window_height: Option<f32>,
+    /// "Check for updates when Tesela starts." If this key is absent or `false`, Tesela connects to nothing.
+    #[serde(default, deserialize_with = "lenient")]
+    pub check_updates: Option<bool>,
+    /// Unix timestamp of the last check attempt (at most one request every 24 hours).
+    #[serde(default, deserialize_with = "lenient")]
+    pub update_last_check: Option<u64>,
+    /// Most recently seen published version (tag only, `vX.Y.Z`). An unreadable tag is ignored.
+    #[serde(default, deserialize_with = "tesela_update::deserialize_lenient")]
+    pub update_latest_seen: Option<Version>,
+    /// Version whose notification was dismissed.
+    #[serde(default, deserialize_with = "tesela_update::deserialize_lenient")]
+    pub update_dismissed: Option<Version>,
+}
+
+/// For a NEW key (update checking), a value of the wrong type (for example `check_updates = "yes"` or a negative timestamp
+/// from manual editing) is treated as absent instead of invalidating the ENTIRE configuration, including theme, language,
+/// and window size.
+fn lenient<'de, D, T>(d: D) -> Result<Option<T>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: serde::Deserialize<'de>,
+{
+    #[derive(serde::Deserialize)]
+    #[serde(untagged)]
+    enum Any<T> {
+        Value(T),
+        Other(serde::de::IgnoredAny),
+    }
+    Ok(match <Any<T> as serde::Deserialize>::deserialize(d)? {
+        Any::Value(v) => Some(v),
+        Any::Other(_) => None,
+    })
 }
 
 impl Config {
-    /// Ajustes de la interfaz que contiene.
+    /// UI settings stored in this configuration.
     pub fn settings(&self) -> Settings {
         Settings {
             theme: self.theme.unwrap_or(ThemePref::System),
             language: self.language.unwrap_or(LangPref::System),
+            update: UpdatePrefs {
+                check: self.check_updates.unwrap_or(false),
+                last_check: self.update_last_check,
+                latest_seen: self.update_latest_seen,
+                dismissed: self.update_dismissed,
+            },
         }
     }
 
-    /// Registra SOLO los ajustes que cambiaron entre `before` y `after`: lo que el usuario no tocó (por ejemplo un
-    /// idioma impuesto con `--lang` para una sesión) no se escribe en el archivo.
+    /// Records ONLY settings that changed between `before` and `after`: settings the user did not touch (for example a
+    /// language set with `--lang` for one session) are not written to the file.
     pub fn apply_changes(&mut self, before: Settings, after: Settings) {
         if after.theme != before.theme {
             self.theme = Some(after.theme);
@@ -39,9 +78,22 @@ impl Config {
         if after.language != before.language {
             self.language = Some(after.language);
         }
+        let (b, a) = (before.update, after.update);
+        if a.check != b.check {
+            self.check_updates = Some(a.check);
+        }
+        if a.last_check != b.last_check {
+            self.update_last_check = a.last_check;
+        }
+        if a.latest_seen != b.latest_seen {
+            self.update_latest_seen = a.latest_seen;
+        }
+        if a.dismissed != b.dismissed {
+            self.update_dismissed = a.dismissed;
+        }
     }
 
-    /// Tamaño de ventana guardado, acotado a valores razonables.
+    /// Saved window size, clamped to reasonable values.
     pub fn window_size(&self) -> (f32, f32) {
         match (self.window_width, self.window_height) {
             (Some(w), Some(h)) if w.is_finite() && h.is_finite() => {
@@ -51,18 +103,18 @@ impl Config {
         }
     }
 
-    /// Lee la configuración de `path`; si no existe o no se entiende, la de por defecto.
+    /// Loads configuration from `path`; uses defaults if the file is missing or invalid.
     pub fn load(path: &Path) -> Config {
         match std::fs::read_to_string(path) {
             Ok(text) => toml::from_str(&text).unwrap_or_else(|e| {
-                eprintln!("tesela: config.toml ilegible, se usan los valores por defecto: {e}");
+                eprintln!("tesela: config.toml is unreadable; using default values: {e}");
                 Config::default()
             }),
             Err(_) => Config::default(),
         }
     }
 
-    /// Guarda la configuración (crea la carpeta; escribe en un temporal y lo renombra para no dejar un archivo a medias).
+    /// Saves configuration (creates the directory, writes to a temporary file, then renames it to avoid a partial file).
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir)?;
@@ -74,27 +126,27 @@ impl Config {
     }
 }
 
-/// Ruta de `config.toml`: `%APPDATA%\Tesela\config.toml`.
+/// Path to `config.toml`: `%APPDATA%\Tesela\config.toml`.
 pub fn config_path() -> Option<PathBuf> {
     let appdata = std::env::var_os("APPDATA").filter(|v| !v.is_empty())?;
     Some(PathBuf::from(appdata).join("Tesela").join("config.toml"))
 }
 
-/// Configuración de ESTA sesión y dónde se guarda.
+/// Configuration for THIS session and where it is saved.
 pub struct Session {
     pub config: Config,
-    /// `None` = no se guarda en ningún sitio.
+    /// `None` means it is not saved anywhere.
     pub path: Option<PathBuf>,
 }
 
 impl Session {
-    /// Sesión AISLADA (la demostración y las herramientas de medición): valores por defecto en memoria; no lee ni escribe nada
-    /// bajo `%APPDATA%`. La sesión normal lee `config.toml` y lo guarda al cambiar un ajuste y al salir.
+    /// An ISOLATED session (the demo and measurement tools): in-memory defaults; reads and writes nothing under `%APPDATA%`.
+    /// A normal session reads `config.toml` and saves it when a setting changes and on exit.
     pub fn new(isolated: bool) -> Session {
         Session::with_path(isolated, config_path())
     }
 
-    /// Igual que [`Session::new`] con la ruta de `config.toml` inyectada (las pruebas no tocan el entorno del proceso).
+    /// Like [`Session::new`] with an injected `config.toml` path (tests do not touch the process environment).
     pub fn with_path(isolated: bool, path: Option<PathBuf>) -> Session {
         if isolated {
             return Session {
@@ -106,7 +158,7 @@ impl Session {
         Session { config, path }
     }
 
-    /// ¿Se guarda algo? Solo la sesión normal.
+    /// Is anything saved? Only in a normal session.
     pub fn persists(&self) -> bool {
         self.path.is_some()
     }
@@ -116,8 +168,8 @@ impl Session {
 mod tests {
     use super::*;
 
-    /// Carpeta temporal de la prueba con guarda: se borra al soltarla, también si la prueba entra en pánico (solo si es
-    /// hija directa de `%TEMP%` y se llama `tesela-test-*`).
+    /// Guarded temporary test directory: deleted when dropped, including during a test panic (only if it is a direct
+    /// child of `%TEMP%` named `tesela-test-*`).
     struct TempDir(PathBuf);
 
     impl std::ops::Deref for TempDir {
@@ -150,7 +202,7 @@ mod tests {
     fn la_sesion_aislada_ni_lee_ni_guarda() {
         let dir = temp_dir();
         let path = dir.join("Tesela").join("config.toml");
-        // Hay una configuración guardada: la sesión aislada la ignora (valores por defecto) y no tiene dónde guardar.
+        // A saved configuration exists: the isolated session ignores it (defaults) and has nowhere to save.
         Config {
             window_width: Some(1234.0),
             ..Config::default()
@@ -160,7 +212,7 @@ mod tests {
         let aislada = Session::with_path(true, Some(path.clone()));
         assert_eq!(aislada.config, Config::default());
         assert!(aislada.path.is_none() && !aislada.persists());
-        // La normal sí la lee y guarda en esa ruta.
+        // The normal session reads it and saves to that path.
         let normal = Session::with_path(false, Some(path.clone()));
         assert_eq!(normal.config.window_width, Some(1234.0));
         assert_eq!(normal.path.as_deref(), Some(path.as_path()));
@@ -172,7 +224,7 @@ mod tests {
     fn ida_y_vuelta_y_valores_por_defecto() {
         let dir = temp_dir();
         let path = dir.join("Tesela").join("config.toml");
-        // Sin archivo: valores por defecto.
+        // No file: defaults.
         assert_eq!(Config::load(&path), Config::default());
         assert_eq!(Config::default().window_size(), DEFAULT_SIZE);
         let c = Config {
@@ -180,6 +232,7 @@ mod tests {
             language: Some(LangPref::En),
             window_width: Some(1400.0),
             window_height: Some(900.0),
+            ..Config::default()
         };
         c.save(&path).unwrap();
         assert_eq!(Config::load(&path), c);
@@ -193,7 +246,7 @@ mod tests {
 
     #[test]
     fn solo_se_guarda_lo_que_el_usuario_cambia() {
-        // Sesión con `--lang en --theme dark` impuestos: el archivo no recibe nada hasta que se cambia algo en la interfaz.
+        // Session with `--lang en --theme dark` imposed: nothing is written until something changes in the UI.
         let saved = Config {
             theme: Some(ThemePref::Light),
             language: Some(LangPref::Es),
@@ -202,11 +255,12 @@ mod tests {
         let session = Settings {
             theme: ThemePref::Dark,
             language: LangPref::En,
+            ..Settings::default()
         };
         let mut c = saved.clone();
         c.apply_changes(session, session);
         assert_eq!(c, saved, "sin cambios no se toca nada");
-        // El usuario cambia solo el tema en la interfaz: se guarda el tema, y el idioma impuesto NO.
+        // The user changes only the theme in the UI: the theme is saved, but the imposed language is NOT.
         let now = Settings {
             theme: ThemePref::System,
             ..session
@@ -218,7 +272,7 @@ mod tests {
             Some(LangPref::Es),
             "el --lang de la sesión no se guarda"
         );
-        // Sin configuración previa y sin cambios: sigue vacía.
+        // No prior configuration and no changes: it remains empty.
         let mut empty = Config::default();
         empty.apply_changes(session, session);
         assert_eq!(empty, Config::default());
@@ -230,7 +284,7 @@ mod tests {
         let path = dir.join("config.toml");
         std::fs::write(&path, "esto no es toml = = =").unwrap();
         assert_eq!(Config::load(&path), Config::default());
-        // Valores desconocidos y tamaños absurdos se acotan.
+        // Unknown values and unreasonable sizes are clamped.
         std::fs::write(
             &path,
             "theme = \"dark\"\nwindow_width = 10.0\nwindow_height = 99999.0\nextra = 1\n",
@@ -241,5 +295,120 @@ mod tests {
         assert_eq!(c.window_size(), (MIN_SIZE.0, 8192.0));
         std::fs::write(&path, "theme = \"naranja\"\n").unwrap();
         assert_eq!(Config::load(&path), Config::default());
+    }
+
+    fn v(major: u32, minor: u32, patch: u32) -> Version {
+        Version {
+            major,
+            minor,
+            patch,
+        }
+    }
+
+    #[test]
+    fn la_comprobacion_de_actualizaciones_esta_desactivada_por_defecto_y_no_deja_rastro() {
+        // No file, or a file without those keys: disabled, with no dates or versions.
+        let off = Config::default().settings().update;
+        assert_eq!(off, UpdatePrefs::default());
+        assert!(!off.check && off.last_check.is_none());
+        let dir = temp_dir();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "theme = \"dark\"\n").unwrap();
+        assert!(!Config::load(&path).settings().update.check);
+        // Saving a configuration without changing the setting writes none of the update-check keys.
+        let mut c = Config::load(&path);
+        c.apply_changes(Settings::default(), Settings::default());
+        c.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(!text.contains("update"), "{text}");
+    }
+
+    #[test]
+    fn los_ajustes_de_la_comprobacion_van_y_vuelven_y_solo_se_guarda_lo_que_cambia() {
+        let dir = temp_dir();
+        let path = dir.join("Tesela").join("config.toml");
+        let before = Settings::default();
+        let mut after = before;
+        after.update = UpdatePrefs {
+            check: true,
+            last_check: Some(1_800_000_000),
+            latest_seen: Some(v(0, 1, 5)),
+            dismissed: Some(v(0, 1, 5)),
+        };
+        let mut c = Config::default();
+        c.apply_changes(before, after);
+        assert_eq!(c.check_updates, Some(true));
+        assert_eq!(c.update_last_check, Some(1_800_000_000));
+        c.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("update_latest_seen = \"v0.1.5\""), "{text}");
+        let back = Config::load(&path);
+        assert_eq!(back, c);
+        assert_eq!(back.settings().update, after.update);
+        // Only the attempt date changes: everything else stays as it was.
+        let mut next = after;
+        next.update.last_check = Some(1_800_086_400);
+        let mut c2 = back.clone();
+        c2.apply_changes(after, next);
+        assert_eq!(c2.update_last_check, Some(1_800_086_400));
+        assert_eq!(c2.check_updates, Some(true));
+        // Disabling it is saved as `false`.
+        let mut off = next;
+        off.update.check = false;
+        c2.apply_changes(next, off);
+        assert_eq!(c2.check_updates, Some(false));
+        assert!(!c2.settings().update.check);
+    }
+
+    #[test]
+    fn una_version_guardada_ilegible_se_ignora_sin_perder_el_resto() {
+        let dir = temp_dir();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            "theme = \"dark\"\ncheck_updates = true\nupdate_latest_seen = \"nada\"\nupdate_dismissed = 7\n",
+        )
+        .unwrap();
+        let c = Config::load(&path);
+        assert_eq!(c.theme, Some(ThemePref::Dark), "el resto sigue en pie");
+        assert_eq!(c.check_updates, Some(true));
+        assert_eq!((c.update_latest_seen, c.update_dismissed), (None, None));
+    }
+
+    #[test]
+    fn una_clave_nueva_con_el_tipo_equivocado_solo_invalida_esa_clave() {
+        let dir = temp_dir();
+        let path = dir.join("config.toml");
+        for bad in [
+            "check_updates = \"si\"\n",
+            "check_updates = 1\n",
+            "update_last_check = -5\n",
+            "update_last_check = \"ayer\"\n",
+            "update_last_check = 1.5\n",
+            "check_updates = [true]\nupdate_last_check = { a = 1 }\n",
+        ] {
+            std::fs::write(
+                &path,
+                format!("theme = \"dark\"\nwindow_width = 1400.0\n{bad}"),
+            )
+            .unwrap();
+            let c = Config::load(&path);
+            assert_eq!(c.theme, Some(ThemePref::Dark), "{bad}");
+            assert_eq!(c.window_width, Some(1400.0), "{bad}");
+            assert_eq!(c.check_updates, None, "{bad}");
+            assert_eq!(c.update_last_check, None, "{bad}");
+            assert!(!c.settings().update.check, "{bad}");
+        }
+        // With the correct type, it is read as-is.
+        std::fs::write(
+            &path,
+            "check_updates = true\nupdate_last_check = 1800000000\n",
+        )
+        .unwrap();
+        let c = Config::load(&path);
+        assert_eq!(
+            (c.check_updates, c.update_last_check),
+            (Some(true), Some(1_800_000_000))
+        );
     }
 }

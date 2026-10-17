@@ -1,4 +1,4 @@
-"""Pruebas de scripts/extract-ico.py con PE sintéticos construidos aquí (sin binarios reales ni datos del equipo).
+"""Tests for scripts/extract-ico.py using synthetic PEs built here (no real binaries or machine data).
 
     python -I -m unittest discover -s scripts/tests -p "test_*.py"
 """
@@ -17,9 +17,9 @@ SECTION_RVA = 0x1000
 
 
 def make_rsrc(resources, cycle_type=None):
-    """Sección .rsrc con `resources` = {tipo: {id: bytes}} (un solo idioma). Devuelve los bytes de la sección."""
+    """A .rsrc section with `resources` = {type: {id: bytes}} (one language). Return the section bytes."""
     buf = bytearray()
-    patches = []  # (posición del campo RVA de la entrada de datos, posición del blob)
+    patches = []  # (RVA field position in the data entry, blob position)
 
     def new_dir(entries):
         off = len(buf)
@@ -76,7 +76,7 @@ def make_pe(resources, pe32=False, cycle_type=None):
 
 
 def group_icon(images):
-    """RT_GROUP_ICON para `images` = [(ancho, alto, id, bytes)]."""
+    """RT_GROUP_ICON for `images` = [(width, height, id, bytes)]."""
     out = struct.pack("<HHH", 0, 1, len(images))
     for w, h, ident, data in images:
         out += struct.pack("<BBBBHHIH", w, h, 0, 0, 1, 32, len(data), ident)
@@ -127,24 +127,24 @@ class ExtractIcoTests(unittest.TestCase):
         a = b"y" * 40
         pe = make_pe({3: {1: a}, 14: {1: group_icon([(16, 16, 1, a)])}})
         self.assertTrue(extract_ico.extract(pe))
-        # Hasta el ultimo byte de datos (lo que sigue es relleno de alineacion de la seccion).
+        # Through the last data byte (the remainder is section alignment padding).
         end = 0x400 + len(make_rsrc({3: {1: a}, 14: {1: group_icon([(16, 16, 1, a)])}})) - 4
         for cut in list(range(0, end, 17)) + [end - 1]:
             with self.assertRaises(extract_ico.PeError, msg=f"corte en {cut}"):
                 extract_ico.extract(pe[:cut])
 
     def test_un_rva_en_el_relleno_virtual_de_la_seccion_no_se_lee_del_archivo(self):
-        # GM-m10: la seccion ocupa mas en memoria (vsize) que en el archivo (rsize): un RVA en esa cola no tiene bytes en el
-        # archivo y no puede traducirse a un desplazamiento (leeria lo que venga detras).
+        # GM-m10: the section is larger in memory (vsize) than in the file (rsize); an RVA in that tail has no file bytes
+        # and cannot be translated to an offset (which would read whatever follows).
         a = b"x" * 8
         pe = bytearray(make_pe({3: {1: a}, 14: {1: group_icon([(16, 16, 1, a)])}}))
         sec_hdr = 0x40 + 4 + 20 + (112 + 16 * 8)  # cabecera de la unica seccion (PE32+)
         rsize = struct.unpack_from("<I", pe, sec_hdr + 16)[0]
         struct.pack_into("<I", pe, sec_hdr + 8, rsize + 0x1000)  # vsize mayor que rsize
-        pe += b"\0" * 0x1000  # y bytes tras la seccion, para que un desplazamiento sin comprobar caiga DENTRO del archivo
+        pe += b"\0" * 0x1000  # trailing bytes make an unchecked offset land INSIDE the file
         dd = 0x40 + 4 + 20 + 112
         struct.pack_into("<I", pe, dd + 8 * 2, SECTION_RVA + rsize + 0x10)  # el directorio de recursos, en la cola virtual
-        with self.assertRaisesRegex(extract_ico.PeError, "datos de la seccion"):
+        with self.assertRaisesRegex(extract_ico.PeError, "section's file data"):
             extract_ico.extract(bytes(pe))
 
     def test_no_es_un_pe(self):

@@ -1,16 +1,16 @@
-//! La aprobación (PLAN.md §3.7.1): de la cesta a un [`Plan`] con IDENTIDADES.
+//! Approval (PLAN.md §3.7.1): turn the basket into a [`Plan`] with IDENTITIES.
 //!
-//! Al confirmar, el `cleaner` reabre cada elemento por handle (`FILE_FLAG_OPEN_REPARSE_POINT | BACKUP_SEMANTICS`) y guarda
-//! `(número de serie del volumen, FileId de 128 bits)` y `NumberOfLinks`. Las rutas solo sirven para volver a encontrar
-//! los objetos: al ejecutar, lo que se abra tiene que tener ESA identidad.
+//! When the user confirms, `cleaner` reopens each item by handle (`FILE_FLAG_OPEN_REPARSE_POINT | BACKUP_SEMANTICS`) and records
+//! `(volume serial number, 128-bit FileId)` and `NumberOfLinks`. Paths only help find the objects again;
+//! the object opened during execution must have THAT identity.
 //!
-//! La aprobación además:
-//! * re-valida la protección sobre la ruta resuelta por el handle (no sobre la cadena que llegó);
-//! * expande una carpeta que contiene algo protegido en sus partes permitidas ("se omitirán N elementos protegidos");
-//! * mide cada elemento con el mismo recorrido que borrará (modo `Measure`): tamaño en disco SIN contar los enlaces
-//!   duros compartidos, tamaño lógico, archivos, entradas protegidas / recientes / enlaces que se respetarán;
-//! * decide si cada elemento con destino Papelera CABE en ella ([`Fit`]), con el límite real del volumen;
-//! * captura la lista de la Papelera si se pidió vaciarla (alcance enumerado).
+//! Approval also:
+//! * revalidates protection against the path resolved by the handle (not the input string);
+//! * expands a folder containing protected items into its allowed parts ("N protected items will be skipped");
+//! * measures each item with the same traversal used for deletion (`Measure` mode): disk size WITHOUT shared hard
+//!   links, logical size, files, and protected/recent entries and links that will be skipped;
+//! * decides whether each item targeting the Recycle Bin FITS ([`Fit`]), using the volume's actual limit;
+//! * captures the Recycle Bin listing if emptying it was requested (enumerated scope).
 
 use crate::basket::{Basket, Source};
 use crate::engine::{self, Env, Mode, StatsSnapshot, Unit, UnitSpec};
@@ -28,97 +28,113 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::time::Duration;
 
-/// Por qué un elemento NO cabe en la Papelera (se mostraría en el grupo ámbar de la confirmación).
+/// Why an item does NOT fit in the Recycle Bin (shown in the amber confirmation group).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnfitReason {
-    /// La unidad no tiene Papelera (red, extraíble).
+    /// The drive has no Recycle Bin (network or removable).
     NoBin,
-    /// El usuario desactivó la Papelera de ese volumen ("no mover los archivos a la Papelera").
+    /// The user disabled the Recycle Bin for this volume ("don't move files to the Recycle Bin").
     NukeOnDelete,
-    /// Supera (con margen) el tamaño máximo de la Papelera del volumen.
+    /// Exceeds the volume's maximum Recycle Bin size (including the safety margin).
     TooBig,
-    /// La ruta no cabe en los 260 caracteres que admite la Papelera.
+    /// The path exceeds the Recycle Bin's 260-character limit.
     PathTooLong,
-    /// Una directiva del sistema ("No mover los archivos eliminados a la Papelera") hace que la shell elimine de verdad.
+    /// A system policy ("Don't move deleted files to the Recycle Bin") makes the shell permanently delete items.
     Policy,
-    /// No se pudo averiguar si cabe (volumen o límite indeterminados): se trata como "no cabe".
+    /// Could not determine whether it fits (unknown volume or limit); treat it as not fitting.
     Unknown,
-    /// La Papelera de ese volumen NO tiene un tamaño máximo configurado (`MaxCapacity` ausente en el registro): la shell
-    /// usa un porcentaje por defecto que no está documentado, así que no hay garantía de que quepa (B2: falla cerrado).
+    /// The volume's Recycle Bin has NO configured maximum size (`MaxCapacity` is absent from the registry): the shell
+    /// uses an undocumented default percentage, so there is no guarantee it fits (B2: fail closed).
     CapacityUnknown,
 }
 
-/// Si un elemento con destino Papelera cabe en ella.
+/// Whether an item targeting the Recycle Bin fits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fit {
     Fits,
     Unfit(UnfitReason),
 }
 
-/// Por qué una entrada de la cesta no llegó al plan.
+/// Why a basket entry was not included in the plan.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RejectReason {
-    /// Ya no existe.
+    /// No longer exists.
     Missing,
-    /// Windows no deja abrirla (permisos).
+    /// Windows denied access (permissions).
     AccessDenied,
-    /// El sistema de archivos no da identidad (FAT, exFAT...): no se aprueba lo que no se puede verificar.
+    /// The file system does not provide identity (FAT, exFAT, etc.); unverifiable items are not approved.
     NoIdentity,
-    /// Es un enlace (junction, symlink, punto de montaje): no se sigue ni se borra.
+    /// It is a link (junction, symlink, or mount point); links are neither followed nor deleted.
     Reparse,
-    /// La raíz de una categoría tiene un enlace (junction, symlink, punto de montaje) en su cadena de ancestros, o la
-    /// ruta que se comprobó dejó de ser la misma: no se ofrece como categoría (un enlace por encima de `User Data` o de
-    /// `%TEMP%` podría llevarla a una carpeta protegida).
+    /// A category root has a link (junction, symlink, or mount point) in its ancestor chain, or the
+    /// checked path changed: do not offer it as a category (a link above `User Data` or
+    /// `%TEMP%` could redirect it to a protected folder).
     ReparseAncestor,
-    /// La carpeta temporal del usuario está redirigida fuera de `%LOCALAPPDATA%` (no es `Local\Temp` ni cuelga de ella): no
-    /// se ofrece como categoría. No es un enlace en su ruta (R5).
+    /// The user's temporary folder is redirected outside `%LOCALAPPDATA%` (it is not `Local\Temp` or a descendant): do not
+    /// offer it as a category. This is not a link in its path (R5).
     OutsideLocalAppData,
-    /// La ruta resuelta no es de una unidad local con letra (UNC, también hacia un disco local por su compartición
-    /// administrativa, o una unidad de red): el `cleaner` solo limpia unidades locales, porque la protección se define
-    /// sobre rutas de unidad.
+    /// The resolved path is not on a local drive letter (UNC, including a local disk reached through an administrative
+    /// share, or a network drive): `cleaner` only cleans local drives because protection is defined
+    /// over drive paths.
     NotLocal,
-    /// Protegida: denegada, intocable o carpeta conocida.
+    /// Protected: denied, untouchable, or a known folder.
     Protected(Verdict),
-    /// Se iba a la Papelera pero la medida de la carpeta no se pudo hacer ENTERA (subcarpetas sin permiso o en uso, entradas
-    /// que cambiaron durante el recorrido...): con el tamaño real desconocido no se puede repartir ni comprobar que cabe, y
-    /// al ejecutar fallaría siempre. Lleva cuántas entradas no se pudieron leer. No se ofrece.
+    /// The item was going to the Recycle Bin, but the folder could not be measured COMPLETELY (subfolders without access or in use, entries
+    /// that changed during traversal, etc.): without the actual size, allocation and fit cannot be checked, and
+    /// execution would always fail. Includes the number of unreadable entries. Not offered.
     Incomplete(u64),
-    /// Cualquier otro error del sistema.
+    /// A category with a minimum age (error reports, dumps): the item or something inside it was modified
+    /// more recently than the required age (7 days). Do not offer it; record it in the plan and log instead of silently hiding it.
+    Young,
+    /// Any other system error.
     Other(u32),
 }
 
-/// Una entrada de la cesta que no pasó la aprobación.
+impl RejectReason {
+    /// Text recorded in the log.
+    pub fn log_text(&self) -> String {
+        match self {
+            RejectReason::Young => "Young (modified less than the minimum age ago)".to_string(),
+            other => format!("{other:?}"),
+        }
+    }
+}
+
+/// A basket entry that did not pass approval.
 #[derive(Clone, Debug)]
 pub struct Rejected {
     pub path: PathBuf,
     pub reason: RejectReason,
 }
 
-/// Un elemento aprobado.
+/// An approved item.
 #[derive(Clone, Debug)]
 pub struct PlanItem {
     pub id: usize,
-    /// La categoría con regla de la que sale (`None` = "Tu archivo").
+    /// Rule-based category this came from (`None` = "Your file").
     pub category: Option<CategoryId>,
-    /// La ruta aprobada (la raíz de la categoría, o el elemento).
+    /// Approved path (the category root or the item).
     pub path: PathBuf,
     pub risk: Risk,
-    /// Destino aprobado.
+    /// Approved destination.
     pub destination: Destination,
-    /// Si cabe en la Papelera (solo con destino `Recycle`; con `Permanent` es siempre `Fits`).
+    /// Whether it fits in the Recycle Bin (only for `Recycle`; `Permanent` always means `Fits`).
     pub fit: Fit,
-    /// Qué y con qué identidad se aprobó.
+    /// What was approved and with which identity.
     pub spec: UnitSpec,
-    /// Antigüedad mínima de la regla.
+    /// Rule's minimum age.
     pub min_age: Duration,
-    /// Medida al aprobar.
+    /// Measurement taken during approval.
     pub estimate: StatsSnapshot,
-    /// Es un archivo sincronizado con la nube (o lo contiene): borrarlo también lo quita de la nube.
+    /// This is a cloud-synced file (or contains one): deleting it also removes it from the cloud.
     pub cloud_synced: bool,
-    /// Es un archivo con más de un enlace: no liberará espacio.
+    /// This file has multiple hard links and will not free disk space.
     pub hard_linked: bool,
-    /// Volumen (raíz) en el que está.
+    /// Volume root containing this item.
     pub volume: Option<PathBuf>,
+    /// Under a diagnostic root (`ReportArchive`, `ReportQueue`, or `CrashDumps`), even if manually added as "Your
+    /// file": never permanently delete based on its PATH, regardless of category (see [`PlanItem::never_permanent`]).
+    pub diagnostic_path: bool,
 }
 
 impl PlanItem {
@@ -128,36 +144,55 @@ impl PlanItem {
             UnitSpec::Entry { is_dir, .. } => *is_dir,
         }
     }
-    /// ¿Va a la Papelera pero no cabe? (El grupo ámbar de la confirmación.)
+    /// Is it going to the Recycle Bin but does not fit? (The amber confirmation group.)
     pub fn is_unfit(&self) -> bool {
         self.destination == Destination::Recycle && matches!(self.fit, Fit::Unfit(_))
     }
-    /// Bytes que liberará (sin los enlaces duros compartidos).
+    /// Is PERMANENT deletion prohibited in all cases (including when "does not fit in the Recycle Bin" is checked)?
+    ///
+    /// * Error reports and crash dumps (diagnostic categories) are never permanently deleted, either
+    ///   by category or by path (`diagnostic_path`: an item under one of these roots that was manually added).
+    /// * An `Entry` unit with a minimum age: permanent traversal does not recheck each child's age
+    ///   or require the folder fingerprint (that could split a report, deleting old items while leaving recent ones), so
+    ///   it fails closed. Only diagnostic categories create these today; this prevents another rule from using them without
+    ///   reviewing this comparison.
+    pub fn never_permanent(&self) -> bool {
+        self.category.is_some_and(CategoryId::is_diagnostic)
+            || self.diagnostic_path
+            || (matches!(self.spec, UnitSpec::Entry { .. }) && !self.min_age.is_zero())
+    }
+    /// Bytes that will be freed (excluding shared hard links).
     pub fn bytes(&self) -> u64 {
         self.estimate.bytes
     }
 }
 
-/// La Papelera capturada al confirmar (alcance enumerado).
+/// Number of reports or dumps above which confirmation warns that cleanup may take several minutes: the Recycle Bin receives one
+/// operation per folder (about 0.15 seconds each according to PLAN §3.7.4).
+pub const MANY_DIAGNOSTIC_ITEMS: usize = 200;
+
+/// Recycle Bin listing captured at confirmation (enumerated scope).
 #[derive(Clone, Debug)]
 pub struct BinPlan {
-    /// La lista de elementos, tal como estaba al confirmar. Solo se purga ESTA lista.
+    /// Item list as it was at confirmation. Only THIS list is purged.
     pub items: Vec<BinItem>,
-    /// Tamaño aproximado de la Papelera (de lo que sabía quien llamó; 0 si no se sabe).
+    /// Approximate Recycle Bin size (as known by the caller; 0 if unknown).
     pub bytes_hint: u64,
 }
 
-/// Lo aprobado.
+/// The approved plan.
 #[derive(Clone, Debug, Default)]
 pub struct Plan {
     pub items: Vec<PlanItem>,
     pub bin: Option<BinPlan>,
     pub rejected: Vec<Rejected>,
-    /// Hijos de carpetas expandidas que se omiten por estar protegidos: (entradas, bytes del listado).
+    /// Protected children skipped when expanding folders: (entries, bytes from the listing).
     pub omitted_protected: (u64, u64),
-    /// Elementos de la Papelera que NO se listaron porque sus metadatos (`$I`) están ilegibles (m1): no se vacían y su tamaño no
-    /// entra en lo que se promete vaciar.
+    /// Recycle Bin items NOT listed because their metadata (`$I`) is unreadable (m1): they are not emptied, and their size does not
+    /// count toward the promised emptying total.
     pub bin_unlisted: u64,
+    /// Outlook was running during approval (informational, never a deletion guard).
+    pub outlook_open: bool,
 }
 
 impl Plan {
@@ -165,23 +200,57 @@ impl Plan {
         self.items.is_empty() && self.bin.as_ref().is_none_or(|b| b.items.is_empty())
     }
 
-    /// Elementos que se borran definitivamente (regla), sin los que van a la Papelera.
+    /// Items permanently deleted by rule, excluding those sent to the Recycle Bin.
     pub fn permanent_items(&self) -> impl Iterator<Item = &PlanItem> {
         self.items
             .iter()
             .filter(|i| i.destination == Destination::Permanent)
     }
 
-    /// Elementos que van a la Papelera y caben.
+    /// Items sent to the Recycle Bin that fit.
     pub fn recycle_items(&self) -> impl Iterator<Item = &PlanItem> {
         self.items
             .iter()
             .filter(|i| i.destination == Destination::Recycle && !i.is_unfit())
     }
 
-    /// Elementos que irían a la Papelera pero no caben (grupo ámbar: "se eliminará definitivamente").
+    /// Items that would go to the Recycle Bin but do not fit AND may be permanently deleted if the user confirms (amber
+    /// group: "will be permanently deleted"). Excludes items prohibited by [`PlanItem::never_permanent`].
     pub fn unfit_items(&self) -> impl Iterator<Item = &PlanItem> {
-        self.items.iter().filter(|i| i.is_unfit())
+        self.items
+            .iter()
+            .filter(|i| i.is_unfit() && !i.never_permanent())
+    }
+
+    /// Items that do not fit and are NEVER permanently deleted (error reports, dumps): leave them where
+    /// they are, and state this in confirmation without offering a checkbox.
+    pub fn kept_unfit_items(&self) -> impl Iterator<Item = &PlanItem> {
+        self.items
+            .iter()
+            .filter(|i| i.is_unfit() && i.never_permanent())
+    }
+
+    /// Number of diagnostic items (error reports, dumps) sent to the Recycle Bin when there are many (more than
+    /// [`MANY_DIAGNOSTIC_ITEMS`]); confirmation warns cleanup may take several minutes.
+    pub fn many_diagnostic_items(&self) -> Option<usize> {
+        let n = self
+            .items
+            .iter()
+            .filter(|i| {
+                i.destination == Destination::Recycle
+                    && !i.is_unfit()
+                    && i.category.is_some_and(CategoryId::is_diagnostic)
+            })
+            .count();
+        (n > MANY_DIAGNOSTIC_ITEMS).then_some(n)
+    }
+
+    /// Number of items left in place because they were too recent (see [`RejectReason::Young`]).
+    pub fn young_count(&self) -> usize {
+        self.rejected
+            .iter()
+            .filter(|r| r.reason == RejectReason::Young)
+            .count()
     }
 
     pub fn permanent_bytes(&self) -> u64 {
@@ -194,7 +263,28 @@ impl Plan {
         self.unfit_items().map(PlanItem::bytes).sum()
     }
 
-    /// Los `n` elementos más grandes de "Tu archivo" (sin categoría), de mayor a menor.
+    /// ((local PST files, bytes), (OST/NST cache files, bytes)).
+    pub fn mail_totals(&self) -> ((u64, u64), (u64, u64)) {
+        self.items
+            .iter()
+            .fold(((0, 0), (0, 0)), |((ln, lb), (cn, cb)), i| {
+                let e = &i.estimate;
+                (
+                    (ln + e.mail_local_files, lb + e.mail_local_bytes),
+                    (cn + e.mail_cache_files, cb + e.mail_cache_bytes),
+                )
+            })
+    }
+
+    pub fn permanent_mail_files(&self, allow_unfit: bool) -> u64 {
+        self.items
+            .iter()
+            .filter(|i| i.destination == Destination::Permanent || (allow_unfit && i.is_unfit()))
+            .map(|i| i.estimate.mail_local_files)
+            .sum()
+    }
+
+    /// The `n` largest "Your file" items (without a category), in descending order.
     pub fn biggest_user_items(&self, n: usize) -> Vec<&PlanItem> {
         let mut v: Vec<&PlanItem> = self.items.iter().filter(|i| i.category.is_none()).collect();
         v.sort_by(|a, b| b.bytes().cmp(&a.bytes()).then_with(|| a.path.cmp(&b.path)));
@@ -202,7 +292,7 @@ impl Plan {
         v
     }
 
-    /// Entradas protegidas que se respetarán, dentro de los elementos medidos y al expandir carpetas: (entradas, bytes).
+    /// Protected entries that will be preserved within measured items and when expanding folders: (entries, bytes).
     pub fn protected_total(&self) -> (u64, u64) {
         let mut n = self.omitted_protected.0;
         let mut b = self.omitted_protected.1;
@@ -213,7 +303,7 @@ impl Plan {
         (n, b)
     }
 
-    /// Bytes en archivos con más de un enlace (no liberarán espacio) y cuántos son.
+    /// Bytes in multiply linked files (which will not free space), and their count.
     pub fn shared_total(&self) -> (u64, u64) {
         self.items.iter().fold((0, 0), |(n, b), i| {
             (n + i.estimate.shared_files, b + i.estimate.shared_bytes)
@@ -221,34 +311,39 @@ impl Plan {
     }
 }
 
-/// Opciones de la aprobación.
+/// Approval options.
 #[derive(Clone, Debug, Default)]
 pub struct ApproveOptions {
-    /// Tamaño aproximado de la Papelera, si se pidió vaciarla (por ejemplo, el de su carpeta en el árbol escaneado).
+    /// Approximate Recycle Bin size, if emptying it was requested (for example, the size of its folder in the scanned tree).
     pub bin_bytes_hint: u64,
+    /// Optional live approval counter, shared with the UI.
+    pub progress: Option<Arc<AtomicU64>>,
 }
 
-/// El `cleaner`: reglas, raíces y protección, listos para aprobar y ejecutar.
+/// The `cleaner`: rules, roots, and protections, ready to approve and execute.
 pub struct Cleaner {
     pub(crate) rules: &'static Rules,
     pub(crate) roots: Roots,
     pub(crate) protection: Arc<Protection>,
     pub(crate) threads: usize,
-    /// Alcance de "vaciar la Papelera": por defecto TODA la del usuario; se puede restringir (las pruebas lo limitan a
-    /// elementos propios para no tocar nunca los ajenos).
+    /// Scope of "empty Recycle Bin": the user's ENTIRE bin by default; it can be restricted (tests limit it to
+    /// owned items so unrelated items are never touched).
     pub(crate) bin_filter: Option<BinFilter>,
     /// `%LOCALAPPDATA%\Tesela`: registro local e historial.
     pub(crate) data_dir: Option<PathBuf>,
-    /// La shell para enviar a la Papelera (la real; las pruebas ponen una simulada).
+    /// Shell implementation for sending items to the Recycle Bin (real in production, simulated in tests).
     pub(crate) shell: Arc<dyn crate::exec::RecycleShell>,
-    /// ¿Está elevado el proceso? (la real consulta el token; las pruebas inyectan el estado).
+    /// Whether the process is elevated (production checks the token; tests inject the state).
     pub(crate) elevation: Arc<dyn crate::exec::Elevation>,
+    /// A deterministic test seam for changes between measurement and plan classification.
+    #[cfg(test)]
+    pub(crate) after_measure_for_test: Option<Arc<dyn Fn() + Send + Sync>>,
 }
 
-/// Filtro del alcance de "vaciar la Papelera".
+/// Filter for the "empty Recycle Bin" scope.
 pub type BinFilter = Arc<dyn Fn(&BinItem) -> bool + Send + Sync>;
 
-/// La elevación por defecto: la consulta real al token del proceso (y, en las pruebas, "no elevado": ver
+/// Default elevation check: query the real process token (and report "not elevated" in tests; see
 /// `exec::NotElevated`).
 fn default_elevation() -> Arc<dyn crate::exec::Elevation> {
     #[cfg(test)]
@@ -261,36 +356,37 @@ fn default_elevation() -> Arc<dyn crate::exec::Elevation> {
     }
 }
 
-/// Hilos del pool de borrado por defecto: `min(8, 2 × núcleos)` (el borrado es sobre todo E/S del sistema de archivos).
+/// Default number of deletion-pool threads: `min(8, 2 × cores)` (deletion is mostly file-system I/O).
 pub fn default_threads() -> usize {
     let cores = std::thread::available_parallelism().map_or(2, std::num::NonZero::get);
     (2 * cores).clamp(2, 8)
 }
 
-/// Margen de seguridad frente al tamaño máximo de la Papelera: por encima del 90 % no se considera que quepa. Es una
-/// HEURÍSTICA de reparto, no una garantía: la shell decide por su cuenta si algo cabe (con su propio criterio y a su hora) y,
-/// si no cabe, elimina SIN avisar; Tesela lo detecta después (`DeletedUnexpectedly`) y detiene el envío.
+/// Safety margin against the Recycle Bin's maximum size: above 90%, an item is considered not to fit. This is a
+/// batching HEURISTIC, not a guarantee: the shell independently decides whether an item fits, on its own schedule and
+/// by its own criteria. If it does not fit, the shell deletes it WITHOUT warning; Tesela detects this afterward
+/// (`DeletedUnexpectedly`) and stops sending items.
 const BIN_MARGIN_PERCENT: u128 = 90;
 
-/// Un elemento que por sí solo pasa del 10 % de la capacidad va solo en su operación.
+/// An item that alone exceeds 10% of capacity is sent in its own operation.
 const BIN_BIG_PERCENT: u128 = 10;
 
-/// El tope de una operación: el 90 % de `max`, calculado de una vez y sin desbordar (GM-m6: `fit_decide` y `take_op` usan
-/// EXACTAMENTE esta cuenta; antes uno hacía `bytes * 100 > max * 90` y el otro `max / 10 * 9`).
+/// Per-operation limit: 90% of `max`, calculated once without overflow (GM-m6: `fit_decide` and `take_op` use
+/// EXACTLY this calculation; previously one used `bytes * 100 > max * 90` and the other `max / 10 * 9`).
 pub(crate) fn bin_cap(max: u64) -> u64 {
     ((u128::from(max) * BIN_MARGIN_PERCENT) / 100) as u64
 }
 
-/// El umbral de "grande" (10 % de `max`), con la misma cuenta que [`bin_cap`].
+/// "Large" item threshold (10% of `max`), using the same calculation as [`bin_cap`].
 pub(crate) fn bin_big(max: u64) -> u64 {
     ((u128::from(max) * BIN_BIG_PERCENT) / 100) as u64
 }
 
-/// La Papelera no admite rutas de 260 caracteres o más.
+/// The Recycle Bin does not support paths of 260 characters or more.
 const MAX_BIN_PATH: usize = 258;
 
-/// Longitud de una ruta en unidades UTF-16 (lo que cuenta Windows para `MAX_PATH`), no en bytes WTF-8 (GM-M3: un nombre con
-/// caracteres fuera del plano básico o acentos pesa distinto en bytes que en unidades).
+/// Path length in UTF-16 code units (what Windows counts for `MAX_PATH`), not WTF-8 bytes (GM-M3: names with
+/// non-BMP or accented characters have different byte and code-unit lengths).
 pub(crate) fn path_units(p: &Path) -> usize {
     use std::os::windows::ffi::OsStrExt;
     p.as_os_str().encode_wide().count()
@@ -298,6 +394,11 @@ pub(crate) fn path_units(p: &Path) -> usize {
 
 impl Cleaner {
     pub fn new(roots: Roots) -> Cleaner {
+        // Protection (including category-root exemptions) is built ONCE here. A folder created later (for example,
+        // WER creates `ReportQueue` after the first crash while Tesela is open) appears in Recommendations, which reads
+        // roots dynamically, but approval rejects it as protected until restart. This fails closed (nothing extra is
+        // touched); the displayed reason is not the actual cause. Accepted tradeoff: rebuilding it on each approval
+        // would require a few opens per category and would not improve safety.
         let protection = Arc::new(roots.protection());
         let data_dir = roots
             .browser
@@ -313,35 +414,37 @@ impl Cleaner {
             data_dir,
             shell: Arc::new(crate::exec::RealShell),
             elevation: default_elevation(),
+            #[cfg(test)]
+            after_measure_for_test: None,
         }
     }
 
-    /// ¿Se ejecuta el proceso elevado? En ese caso la limpieza real no se hace ([`crate::ExecError::Elevated`]).
+    /// Whether the process is elevated. Real cleanup is not performed in that case ([`crate::ExecError::Elevated`]).
     pub fn is_elevated(&self) -> bool {
         self.elevation.is_elevated()
     }
 
-    /// SOLO PARA PRUEBAS: inyecta el estado de elevación.
+    /// TEST ONLY: inject the elevation state.
     #[cfg(test)]
     pub(crate) fn with_elevation(mut self, e: Arc<dyn crate::exec::Elevation>) -> Cleaner {
         self.elevation = e;
         self
     }
 
-    /// SOLO PARA PRUEBAS: otra shell para enviar a la Papelera (reparto en operaciones y corte de seguridad).
+    /// TEST ONLY: use another shell for Recycle Bin operations (batching and safety aborts).
     #[cfg(test)]
     pub(crate) fn with_shell(mut self, shell: Arc<dyn crate::exec::RecycleShell>) -> Cleaner {
         self.shell = shell;
         self
     }
 
-    /// Cambia la carpeta del registro y del historial (las pruebas usan la suya).
+    /// Changes the log and history folder (tests use their own).
     pub fn with_data_dir(mut self, dir: PathBuf) -> Cleaner {
         self.data_dir = Some(dir);
         self
     }
 
-    /// Restringe el alcance de "vaciar la Papelera" a los elementos que cumplan el filtro.
+    /// Restricts the "empty Recycle Bin" scope to items that match the filter.
     pub fn with_bin_filter(mut self, f: BinFilter) -> Cleaner {
         self.bin_filter = Some(f);
         self
@@ -371,10 +474,12 @@ impl Cleaner {
         cancel: &Arc<AtomicBool>,
         progress: &Arc<AtomicU64>,
         sink: Option<Arc<engine::EventSink>>,
+        allow_local_mail_permanent: bool,
     ) -> Arc<Env> {
         Arc::new(Env {
             protection: self.protection.clone(),
             mode,
+            allow_local_mail_permanent,
             min_age_ft: engine::duration_to_ft(min_age),
             now_ft: engine::now_filetime(),
             cancel: cancel.clone(),
@@ -383,18 +488,18 @@ impl Cleaner {
         })
     }
 
-    /// ¿Cabe `bytes` (el mayor entre el tamaño en disco y el lógico) de un elemento cuya ruta es `path` en la Papelera
-    /// de su volumen? Se calcula AL APROBAR y se vuelve a calcular AL EJECUTAR.
+    /// Does `bytes` (the larger of allocated and logical size) for an item at `path` fit in its volume's Recycle Bin?
+    /// This is calculated during APPROVAL and recalculated during EXECUTION.
     pub fn fit(&self, path: &Path, bytes: u64) -> Fit {
         self.shell.fit(path, bytes)
     }
 
-    /// Como [`Cleaner::fit`], con la longitud de la ruta más larga de lo que hay dentro del elemento (de su medida).
+    /// Like [`Cleaner::fit`], with the longest path length among the item's contents (from its measurement).
     pub(crate) fn fit_deep(&self, path: &Path, bytes: u64, deepest: usize) -> Fit {
         self.shell.fit_deep(path, bytes, deepest)
     }
 
-    /// Aprueba la cesta: captura identidades, re-valida la protección, mide y decide el encaje en la Papelera.
+    /// Approves the basket: captures identities, revalidates protections, measures items, and checks Recycle Bin fit.
     pub fn approve(
         &self,
         basket: &Basket,
@@ -417,11 +522,11 @@ impl Cleaner {
                         if let Some(f) = &self.bin_filter {
                             items.retain(|i| f(i));
                         }
-                        // El tamaño tiene que ser el de la LISTA enumerada: con un filtro, la suma de lo que se listó; sin él,
-                        // el total de toda la Papelera según la shell (o, si falla, lo que sepa quien llama).
+                        // Size must match the ENUMERATED LIST: with a filter, sum the listed items; without one,
+                        // use the shell's total for the entire Recycle Bin (or the caller's value if that query fails).
                         let listed: u64 = items.iter().map(|i| i.size).sum();
-                        // m1: con elementos sin listar, el total de la shell los incluye y se prometería vaciar de más: manda la suma
-                        // de lo listado (puede quedarse corta: la shell no da el tamaño de las carpetas, pero nunca promete de más).
+                        // m1: unlisted items are included in the shell total, which could overpromise how much will be emptied.
+                        // Use the listed sum instead (it may be low because the shell gives no folder sizes, but never overpromises).
                         let hint = if self.bin_filter.is_some() || unlisted > 0 {
                             listed
                         } else {
@@ -443,8 +548,11 @@ impl Cleaner {
                 }
             }
         }
-        // Medir con el mismo recorrido que borrará (aperturas compartidas, nada se toca).
-        let progress = Arc::new(AtomicU64::new(0));
+        // Measure with the same traversal used for deletion (shared opens; nothing is modified).
+        let progress = opts
+            .progress
+            .clone()
+            .unwrap_or_else(|| Arc::new(AtomicU64::new(0)));
         let units: Vec<Arc<Unit>> = cands
             .iter()
             .enumerate()
@@ -452,16 +560,33 @@ impl Cleaner {
                 Unit::new(
                     i,
                     c.spec.clone(),
-                    self.env(Mode::Measure, c.min_age, cancel, &progress, None),
+                    self.env(Mode::Measure, c.min_age, cancel, &progress, None, false),
                 )
             })
             .collect();
         engine::run(&units, self.threads);
+        #[cfg(test)]
+        if let Some(hook) = &self.after_measure_for_test {
+            hook();
+        }
         for (c, u) in cands.into_iter().zip(units) {
             let est = u.stats.snapshot();
             let id = plan.items.len();
             let dest = c.destination;
-            // m-4: lo que va a la Papelera exige una medida COMPLETA (ver `StatsSnapshot::is_complete`).
+            // A category sent to the Recycle Bin item by item (error reports, dumps) offers a child only if NONE of its
+            // contents are newer than the minimum age: a report folder containing a file from today stays intact.
+            if c.category.is_some()
+                && dest == Destination::Recycle
+                && !c.min_age.is_zero()
+                && est.young > 0
+            {
+                plan.rejected.push(Rejected {
+                    path: c.canon,
+                    reason: RejectReason::Young,
+                });
+                continue;
+            }
+            // m-4: sending items to the Recycle Bin requires a COMPLETE measurement (see `StatsSnapshot::is_complete`).
             if dest == Destination::Recycle && !est.is_complete() {
                 plan.rejected.push(Rejected {
                     path: c.canon,
@@ -477,6 +602,7 @@ impl Cleaner {
             } else {
                 Fit::Fits
             };
+            let diagnostic_path = self.roots.is_diagnostic_path(&c.canon);
             plan.items.push(PlanItem {
                 id,
                 category: c.category,
@@ -490,7 +616,11 @@ impl Cleaner {
                 cloud_synced: c.cloud || est.cloud > 0,
                 hard_linked: c.links > 1,
                 volume: c.volume,
+                diagnostic_path,
             });
+        }
+        if plan.mail_totals() != ((0, 0), (0, 0)) {
+            plan.outlook_open = crate::process::outlook_open();
         }
         plan
     }
@@ -504,6 +634,9 @@ impl Cleaner {
         for check in self.roots.category_root_checks(id) {
             let (root, chain_identity) = match check.result {
                 Ok(v) => (v.path, v.identity),
+                // A missing root (for example, `ReportQueue` not created yet) is simply empty: no rejection or warning.
+                // This applies only to diagnostic categories, whose folders Windows creates when needed.
+                Err(RootRejection::Os(2 | 3)) if id.is_diagnostic() => continue,
                 Err(RootRejection::Os(c)) => {
                     plan.rejected.push(Rejected {
                         path: check.raw,
@@ -511,7 +644,7 @@ impl Cleaner {
                     });
                     continue;
                 }
-                // Capa 1 de B1: la cadena tiene un enlace (o cambió): la categoría no se ofrece para esta raíz.
+                // B1 layer 1: the path chain contains a link (or changed); do not offer this category for this root.
                 Err(RootRejection::ReparseInChain { .. } | RootRejection::NotCanonical) => {
                     plan.rejected.push(Rejected {
                         path: check.raw,
@@ -519,8 +652,8 @@ impl Cleaner {
                     });
                     continue;
                 }
-                // Un %TEMP% redirigido fuera de %LOCALAPPDATA%: su propio motivo (coherente con la tarjeta de
-                // Recomendaciones), no "un enlace en su ruta".
+                // %TEMP% redirected outside %LOCALAPPDATA% has its own reason (consistent with the Recommendations card),
+                // rather than "a link in its path".
                 Err(RootRejection::OutsideLocalAppData) => {
                     plan.rejected.push(Rejected {
                         path: check.raw,
@@ -544,9 +677,8 @@ impl Cleaner {
             let Some((m, canon, key)) = self.verify(&h, &root, plan) else {
                 continue;
             };
-            // H1: lo que se abre para listar es EXACTAMENTE lo que vio el recorrido de la cadena (misma identidad y misma
-            // ruta resuelta). Si un ancestro se cambió por un enlace entre los dos pasos, se rechaza: la identidad que se
-            // capturaría ya sería la del objeto equivocado.
+            // H1: the object opened for listing is EXACTLY what the chain traversal saw (same identity and resolved path).
+            // If an ancestor was replaced by a link between these steps, reject it: otherwise we would capture the wrong object's identity.
             if !chain_matches(chain_identity, &root, m.identity, &key) {
                 plan.rejected.push(Rejected {
                     path: canon,
@@ -554,8 +686,8 @@ impl Cleaner {
                 });
                 continue;
             }
-            // La raíz de una categoría solo vale si es un directorio de verdad y NO está denegada (los ancestros de lo
-            // protegido y las carpetas conocidas valen: se limpia su contenido, no ella).
+            // A category root is valid only if it is a real directory and is NOT denied (ancestors of protected paths
+            // and known folders are allowed: their contents are cleaned, not the folders themselves).
             if !m.is_dir
                 || m.is_reparse()
                 || self.protection.target_verdict(&key) == Verdict::Denied
@@ -568,6 +700,26 @@ impl Cleaner {
                         RejectReason::Protected(Verdict::Denied)
                     },
                 });
+                continue;
+            }
+            // The Recycle Bin receives individual items only (`prepare_recycle` does not accept "root contents"): a category
+            // targeting it expands into children, each with its own identity, category, risk, and minimum age (which `approve`
+            // applies to each child after measuring it). The root is never sent.
+            if dest == Destination::Recycle {
+                let start = out.len();
+                self.children_as_entries(
+                    &h,
+                    &canon,
+                    m.identity.volume_serial,
+                    rule.min_age,
+                    out,
+                    plan,
+                );
+                for c in &mut out[start..] {
+                    c.category = Some(id);
+                    c.risk = rule.risk;
+                    c.min_age = rule.min_age;
+                }
                 continue;
             }
             out.push(Candidate {
@@ -587,7 +739,7 @@ impl Cleaner {
         }
     }
 
-    /// Abre `h`, lee su identidad y ruta resuelta. Registra el rechazo y devuelve `None` si no se puede.
+    /// Opens `h` and reads its identity and resolved path. Records the rejection and returns `None` on failure.
     fn verify(
         &self,
         h: &sys::Handle,
@@ -628,15 +780,15 @@ impl Cleaner {
         Some((m, canon, key))
     }
 
-    /// GM-B2: la cadena de ANCESTROS de `path` (tal como se escribió, componente a componente desde la raíz del volumen, con
-    /// aperturas relativas y sin ningún reparse point, salvo las carpetas de la nube: ver [`tolerated_ancestor`]) y el propio elemento abierto RELATIVO a ese padre verificado, con la
-    /// misma identidad que el handle ya abierto por ruta. `GetFinalPathNameByHandleW` resuelve EN SILENCIO los junctions de los
-    /// ancestros y sustituía la ruta pedida por la resuelta: el plan acababa actuando sobre otra carpeta que la que el usuario
-    /// marcó. Compararlo con `PathKey` no vale (en el CI `%TEMP%` es 8.3 y las dos formas de una misma ruta difieren), así
-    /// que se recorre la cadena real: los nombres 8.3 los resuelve el sistema de archivos al abrir.
+    /// GM-B2: the ANCESTOR chain of `path` as written (component by component from the volume root, using relative opens
+    /// and no reparse points except cloud folders; see [`tolerated_ancestor`]), then the item opened RELATIVE to that verified
+    /// parent with the same identity as the handle already opened by path. `GetFinalPathNameByHandleW` silently resolves
+    /// ancestor junctions and would replace the requested path with the resolved one, causing the plan to act on a different
+    /// folder from the one the user selected. Comparing `PathKey` is insufficient (in CI, `%TEMP%` uses 8.3 names and the two
+    /// forms of the same path differ), so traverse the actual chain; the file system resolves 8.3 names during open.
     fn check_ancestors(path: &Path, m: &sys::Meta) -> Result<(), RejectReason> {
         let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
-            // Una raíz de unidad no tiene ancestros (y la protección ya la deniega).
+            // A drive root has no ancestors (and protection already denies it).
             return Ok(());
         };
         let ph = match sys::open_chain_dir(parent, tolerated_ancestor) {
@@ -654,7 +806,7 @@ impl Cleaner {
         };
         match sys::open_child_for_query(&ph, &wide, expect).and_then(|ch| sys::meta(&ch)) {
             Ok(cm) if cm.identity == m.identity => Ok(()),
-            // Otro objeto: lo que se abrió por ruta no es lo que hay bajo el padre verificado (un ancestro cambió entre medias).
+            // Different object: the path-opened object is not the one beneath the verified parent (an ancestor changed in between).
             Ok(_) => Err(RejectReason::ReparseAncestor),
             Err(c) => Err(reason_of(c)),
         }
@@ -674,7 +826,7 @@ impl Cleaner {
         let Some((m, canon, key)) = self.verify(&h, folder, plan) else {
             return;
         };
-        // GM-B2: los ancestros de la carpeta tal como se pidió no pueden ser enlaces (la ruta resuelta la sustituiría).
+        // GM-B2: ancestors of the requested folder cannot be links (the resolved path would replace the requested path).
         if let Err(reason) = Self::check_ancestors(folder, &m) {
             plan.rejected.push(Rejected {
                 path: canon,
@@ -694,16 +846,41 @@ impl Cleaner {
             });
             return;
         }
-        let entries = match sys::list_dir(&h) {
+        self.children_as_entries(
+            &h,
+            &canon,
+            m.identity.volume_serial,
+            Duration::ZERO,
+            out,
+            plan,
+        );
+    }
+
+    /// Children of the opened folder `h` (`canon`) as individual items targeting the Recycle Bin: each child is opened
+    /// RELATIVE to `h` and checked against the listing's `FileId` (GM-B2). Links are rejected. Used by "Contents of X"
+    /// (Downloads, etc.) and "Review" risk categories sent to the Recycle Bin (error reports and dumps). When `min_age` > 0,
+    /// a child whose newest timestamp (creation, write, or change) is newer is left in place; `approve` checks contents inside
+    /// a folder when measuring it.
+    fn children_as_entries(
+        &self,
+        h: &sys::Handle,
+        canon: &Path,
+        volume_serial: u64,
+        min_age: Duration,
+        out: &mut Vec<Candidate>,
+        plan: &mut Plan,
+    ) {
+        let entries = match sys::list_dir(h) {
             Ok(e) => e,
             Err(c) => {
                 plan.rejected.push(Rejected {
-                    path: canon,
+                    path: canon.to_path_buf(),
                     reason: reason_of(c),
                 });
                 return;
             }
         };
+        let (min_ft, now_ft) = (engine::duration_to_ft(min_age), engine::now_filetime());
         for e in entries {
             let child = canon.join(OsString::from_wide(&e.name));
             if e.is_reparse() && (e.is_dir() || !sys::is_cloud_tag(e.reparse_tag)) {
@@ -713,19 +890,28 @@ impl Cleaner {
                 });
                 continue;
             }
-            self.candidate_child(&h, m.identity.volume_serial, &child, &e, out, plan);
+            if min_ft > 0 && now_ft - e.newest_filetime < min_ft {
+                plan.rejected.push(Rejected {
+                    path: child,
+                    reason: RejectReason::Young,
+                });
+                continue;
+            }
+            self.candidate_child(h, volume_serial, &child, &e, min_age, out, plan);
         }
     }
 
-    /// GM-B2: un hijo de una carpeta ya abierta (`dir`), abierto RELATIVO a ese handle y con el `FileId` y el volumen del
-    /// listado. Antes se volvía a abrir por ruta tras listar: entre las dos cosas se podía cambiar el hijo (o un ancestro) y
-    /// la aprobación capturaba la identidad del objeto equivocado.
+    /// GM-B2: a child of an already-open folder (`dir`), opened RELATIVE to that handle and checked against the listing's
+    /// `FileId` and volume. Previously it was reopened by path after listing; the child (or an ancestor) could change in between,
+    /// causing approval to capture the wrong object's identity.
+    #[allow(clippy::too_many_arguments)]
     fn candidate_child(
         &self,
         dir: &sys::Handle,
         volume_serial: u64,
         child: &Path,
         e: &sys::DirEntry,
+        min_age: Duration,
         out: &mut Vec<Candidate>,
         plan: &mut Plan,
     ) {
@@ -746,22 +932,37 @@ impl Cleaner {
                 return;
             }
         };
-        let same = sys::meta(&h).is_ok_and(|m| {
+        let meta = sys::meta(&h);
+        let same = meta.as_ref().is_ok_and(|m| {
             m.identity.file_id == e.file_id && m.identity.volume_serial == volume_serial
         });
         if !same {
-            // Cambió entre el listado y la apertura: no se aprueba lo que no es lo listado.
+            // It changed between listing and opening: do not approve an object that was not listed.
             plan.rejected.push(Rejected {
                 path: child.to_path_buf(),
                 reason: RejectReason::Other(0),
             });
             return;
         }
+        // M-1: minimum age is also checked against the HANDLE timestamp (the listing may predate a file another process just
+        // wrote). A `min_age` of zero has no effect.
+        let min_ft = engine::duration_to_ft(min_age);
+        if min_ft > 0
+            && meta
+                .as_ref()
+                .is_ok_and(|m| engine::now_filetime() - m.newest_filetime < min_ft)
+        {
+            plan.rejected.push(Rejected {
+                path: child.to_path_buf(),
+                reason: RejectReason::Young,
+            });
+            return;
+        }
         self.candidate_from(&h, child, false, out, plan);
     }
 
-    /// Un archivo o una carpeta del usuario ("Tu archivo"): captura su identidad y, si la carpeta contiene algo
-    /// protegido, la expande en sus partes permitidas.
+    /// A user-selected file or folder ("Your file"): captures its identity and, if the folder contains protected items,
+    /// expands it into its allowed parts.
     fn candidate_entry(&self, path: &Path, out: &mut Vec<Candidate>, plan: &mut Plan) {
         let h = match sys::open_for_query(path) {
             Ok(h) => h,
@@ -776,8 +977,8 @@ impl Cleaner {
         self.candidate_from(&h, path, true, out, plan);
     }
 
-    /// El resto de [`Cleaner::candidate_entry`] sobre un handle ya abierto. `check_chain`: comprobar los ancestros de `path`
-    /// (GM-B2); un hijo abierto relativo a un directorio ya verificado no lo necesita.
+    /// The remaining work of [`Cleaner::candidate_entry`] on an already-open handle. `check_chain` checks the ancestors of
+    /// `path` (GM-B2); a child opened relative to a verified directory does not need this check.
     fn candidate_from(
         &self,
         h: &sys::Handle,
@@ -813,7 +1014,7 @@ impl Cleaner {
             return;
         }
         if m.is_dir && self.protection.contains_protected(&key) {
-            // Para listar hace falta otro handle (el de consulta no puede listar); se comprueba que es el mismo objeto.
+            // Listing requires another handle (the query handle cannot enumerate); verify that it is the same object.
             match sys::open_dir_for_listing(&canon) {
                 Ok(lh) if sys::meta(&lh).is_ok_and(|x| x.identity == m.identity) => {
                     self.expand_dir(&lh, &canon, &key, m.identity.volume_serial, out, plan);
@@ -848,8 +1049,8 @@ impl Cleaner {
         });
     }
 
-    /// Una carpeta que contiene algo protegido: sus hijos permitidos pasan a ser elementos y lo protegido se omite. Los hijos
-    /// se abren RELATIVOS a `dir` y con la identidad del listado (GM-B2).
+    /// A folder containing protected items: allowed children become items and protected ones are skipped. Children are opened
+    /// RELATIVE to `dir` and checked against the listing identity (GM-B2).
     fn expand_dir(
         &self,
         dir: &sys::Handle,
@@ -878,11 +1079,11 @@ impl Cleaner {
                     plan.omitted_protected.1 += e.alloc;
                 }
                 ChildAction::Descend if e.is_dir() && !e.is_reparse() => {
-                    // Una carpeta conocida o intocable DENTRO se respeta (ella, no su contenido): cuenta como protegida.
+                    // A known or untouchable folder INSIDE is preserved (the folder itself, not its contents) and counts as protected.
                     if self.protection.is_retained_root(&ckey) {
                         plan.omitted_protected.0 += 1;
                     }
-                    // Se recorre por handle relativo y se verifica que es el mismo objeto que el listado.
+                    // Traverse through a relative handle and verify it is the same object as the listed entry.
                     match sys::open_child_dir_for_listing(dir, &e.name) {
                         Ok(ch) => {
                             let same = sys::meta(&ch).is_ok_and(|m| {
@@ -916,7 +1117,15 @@ impl Cleaner {
                             reason: RejectReason::Reparse,
                         });
                     } else {
-                        self.candidate_child(dir, volume_serial, &child, &e, out, plan);
+                        self.candidate_child(
+                            dir,
+                            volume_serial,
+                            &child,
+                            &e,
+                            Duration::ZERO,
+                            out,
+                            plan,
+                        );
                     }
                 }
             }
@@ -924,11 +1133,11 @@ impl Cleaner {
     }
 }
 
-/// M1: ¿se tolera este ancestro que es un reparse point al aprobar un elemento de la cesta? Solo las carpetas de
-/// sincronización de la nube (OneDrive y similares: etiqueta `IO_REPARSE_TAG_CLOUD*`): son placeholders que no redirigen la
-/// resolución de nombres, y rechazarlas dejaba sin llegar a `cloud_file` ni a `confirm-cloud` todo archivo suelto bajo la
-/// nube (regresión de la primera versión de GM-B2). Junction, symlink, punto de montaje, enlace de WSL y cualquier otra
-/// etiqueta se siguen rechazando. La identidad de cada salto se verifica igualmente.
+/// M1: should this reparse-point ancestor be tolerated when approving a basket item? Only cloud-sync folders
+/// (OneDrive and similar, with an `IO_REPARSE_TAG_CLOUD*` tag) qualify: they are placeholders that do not redirect name
+/// resolution. Rejecting them prevented every standalone file under a cloud folder from reaching `cloud_file` or
+/// `confirm-cloud` (a regression in the first GM-B2 version). Junctions, symlinks, mount points, WSL links, and all other
+/// tags remain rejected. The identity of each path component is still verified.
 pub(crate) fn tolerated_ancestor(m: &sys::Meta) -> bool {
     m.is_dir && sys::is_cloud_tag(m.reparse_tag)
 }
@@ -945,8 +1154,8 @@ struct Candidate {
     cloud: bool,
 }
 
-/// ¿Es el objeto que abrió la aprobación (`opened`, con su ruta resuelta `key`) el mismo que vio el recorrido de la cadena
-/// (`chain`, con la ruta canónica `root`)? Misma identidad (volumen + FileId) Y misma ruta resuelta.
+/// Is the object opened during approval (`opened`, with resolved path `key`) the same one seen during chain traversal
+/// (`chain`, with canonical path `root`)? Both identity (volume + FileId) AND resolved path must match.
 pub(crate) fn chain_matches(
     chain: sys::FileIdentity,
     root: &Path,
@@ -964,22 +1173,22 @@ fn reason_of(code: u32) -> RejectReason {
     }
 }
 
-/// Todo lo que decide si algo cabe en la Papelera, ya leído (así la decisión es una función pura y se prueba sin tocar el
-/// registro ni el volumen).
+/// All inputs used to decide whether an item fits in the Recycle Bin, already read (so the decision is a pure function and
+/// can be tested without touching the registry or volume).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct BinFacts {
-    /// Longitud de la ruta del elemento.
+    /// Item path length.
     pub path_len: usize,
-    /// ¿Se averiguó el volumen del elemento?
+    /// Whether the item's volume was identified.
     pub volume_known: bool,
     /// Directiva `NoRecycleFiles`.
     pub policy_no_recycle: bool,
     pub limit: BinLimit,
 }
 
-/// La decisión (ver [`fit_for`]): ante CUALQUIER duda, `Unfit`.
+/// The decision (see [`fit_for`]): any uncertainty means `Unfit`.
 pub(crate) fn fit_decide(bytes: u64, f: &BinFacts) -> Fit {
-    // La Papelera no admite rutas de 260 caracteres o más.
+    // The Recycle Bin does not support paths of 260 characters or more.
     if f.path_len > MAX_BIN_PATH {
         return Fit::Unfit(UnfitReason::PathTooLong);
     }
@@ -996,23 +1205,24 @@ pub(crate) fn fit_decide(bytes: u64, f: &BinFacts) -> Fit {
         BinLimit::Indeterminate => Fit::Unfit(UnfitReason::Unknown),
         BinLimit::Max(max) if too_big(max) => Fit::Unfit(UnfitReason::TooBig),
         BinLimit::Max(_) => Fit::Fits,
-        // Sin `MaxCapacity` no hay capacidad que garantizar: se acabó el "se asume el 5 %". Planificar y ejecutar
-        // coinciden (el reparto de `exec::take_op` también falla cerrado sin capacidad conocida).
+        // Without `MaxCapacity`, there is no capacity to guarantee: stop assuming 5% of the volume. Planning and execution
+        // must agree (`exec::take_op` also fails closed when capacity is unknown).
         BinLimit::Unknown => Fit::Unfit(UnfitReason::CapacityUnknown),
     }
 }
 
-/// ¿Cabe un elemento de `bytes` con ruta `path` en la Papelera de su volumen? Cualquier error al averiguarlo (raíz del
-/// volumen, límite, tamaño del volumen, directivas) da `Unfit`: nunca falla abierto.
+/// Does an item of `bytes` at `path` fit in its volume's Recycle Bin? Any error while checking (volume root, limit, volume
+/// size, or policy) returns `Unfit`: this never fails open.
 pub(crate) fn fit_for(path: &Path, bytes: u64) -> Fit {
     fit_for_deep(path, bytes, 0)
 }
 
-/// Como [`fit_for`], con la longitud (unidades UTF-16) de la ruta más larga de lo que hay DENTRO (`deepest`, de la medida;
-/// 0 si no se sabe): la shell no admite rutas de 260 o más y un descendiente así deja la carpeta sin Papelera (GM-M3).
+/// Like [`fit_for`], with the longest path length (in UTF-16 code units) among the item's contents (`deepest`, from the
+/// measurement; 0 if unknown): the shell does not support paths of 260 characters or more, so such a descendant makes the
+/// folder ineligible for the Recycle Bin (GM-M3).
 pub(crate) fn fit_for_deep(path: &Path, bytes: u64, deepest: usize) -> Fit {
-    // `GetVolumePathNameW` resuelve una ruta rara o relativa contra el directorio actual: solo se pregunta por rutas
-    // absolutas de unidades locales (las que ya pasaron la comprobación de `is_local_path`).
+    // `GetVolumePathNameW` resolves unusual or relative paths against the current directory: query only absolute local-drive
+    // paths (those already checked by `is_local_path`).
     let root = volume::is_local_path(path)
         .then(|| volume::volume_root(path))
         .flatten();
@@ -1058,7 +1268,7 @@ mod fit_tests {
 
     #[test]
     fn ante_cualquier_duda_no_cabe() {
-        // Volumen desconocido o límite indeterminado: Unfit(Unknown), nunca Fits.
+        // Unknown volume or indeterminate limit: Unfit(Unknown), never Fits.
         let mut f = facts(BinLimit::Max(1 << 40));
         f.volume_known = false;
         assert_eq!(fit_decide(1, &f), Fit::Unfit(UnfitReason::Unknown));
@@ -1066,7 +1276,7 @@ mod fit_tests {
             fit_decide(1, &facts(BinLimit::Indeterminate)),
             Fit::Unfit(UnfitReason::Unknown)
         );
-        // Sin Papelera o con la Papelera desactivada.
+        // No Recycle Bin, or the Recycle Bin is disabled.
         assert_eq!(
             fit_decide(1, &facts(BinLimit::NoBin)),
             Fit::Unfit(UnfitReason::NoBin)
@@ -1085,8 +1295,8 @@ mod fit_tests {
         assert_eq!(fit_decide(1, &f), Fit::Unfit(UnfitReason::Policy));
     }
 
-    /// B2: sin `MaxCapacity` en el registro no hay capacidad que garantizar: no cabe, con su propio motivo, sea cual sea
-    /// el tamaño (ya no se asume el 5 % del volumen).
+    /// B2: without `MaxCapacity` in the registry, capacity cannot be guaranteed: the item does not fit, with its own reason, regardless of
+    /// its size (the volume's 5% is no longer assumed).
     #[test]
     fn sin_capacidad_configurada_no_cabe_nada_con_su_propio_motivo() {
         let f = facts(BinLimit::Unknown);
@@ -1097,7 +1307,7 @@ mod fit_tests {
                 "{bytes}"
             );
         }
-        // Con límite configurado sí cabe lo pequeño; el motivo nuevo es distinto del de "no se pudo comprobar".
+        // With a configured limit, small items fit; the new reason differs from "could not verify."
         assert_eq!(
             fit_decide(1_000, &facts(BinLimit::Max(100_000_000_000))),
             Fit::Fits
@@ -1112,7 +1322,7 @@ mod fit_tests {
         assert_eq!(fit_decide(1, &f), Fit::Unfit(UnfitReason::PathTooLong));
         f.path_len = 258;
         assert_eq!(fit_decide(1, &f), Fit::Fits);
-        // Con cualquier otra duda a la vez, gana la ruta larga (el motivo más concreto).
+        // If any other uncertainty is present too, the long path takes precedence (the more specific reason).
         f.path_len = 300;
         f.volume_known = false;
         assert_eq!(fit_decide(1, &f), Fit::Unfit(UnfitReason::PathTooLong));
@@ -1120,11 +1330,11 @@ mod fit_tests {
 
     #[test]
     fn el_mismo_calculo_sobre_el_volumen_real_no_falla_abierto() {
-        // El temporal de la prueba existe: la respuesta es una de las dos, y un tamaño absurdo nunca "cabe".
+        // The test temp folder exists: either result is valid, but an absurdly large item never "fits."
         let tmp = dunce::canonicalize(std::env::temp_dir()).unwrap();
         assert!(matches!(fit_for(&tmp, 1), Fit::Fits | Fit::Unfit(_)));
         assert!(matches!(fit_for(&tmp, u64::MAX / 2), Fit::Unfit(_)));
-        // Una ruta sin volumen conocido no cabe.
+        // A path with no known volume does not fit.
         assert!(matches!(
             fit_for(Path::new("ZZ:\\no\\existe"), 1),
             Fit::Unfit(_)

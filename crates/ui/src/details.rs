@@ -1,6 +1,6 @@
-//! Panel de detalles (PLAN.md §2.3): en disco frente a tamaño lógico, archivos, porcentaje del padre, desglose por
-//! tipo, frase de antigüedad, avisos de la clase del nodo (bloque del sistema, "solo informar", nube, incompleto) y
-//! acciones. Sin selección muestra la carpeta actual.
+//! Details panel (PLAN.md §2.3): on disk vs logical size, files, percentage of parent, breakdown by
+//! type, age phrase, node class notices (system block, "report only", cloud, incomplete), and
+//! actions. Without selection shows the current folder.
 
 use crate::app::Env;
 use crate::args;
@@ -34,7 +34,7 @@ fn note(ui: &mut Ui, env: &mut Env, icon: Icon, text: String, color: egui::Color
     });
 }
 
-/// Pinta el panel.
+/// Paint the panel.
 pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
     let pal = env.pal;
     let tree = ex.tree.clone();
@@ -42,7 +42,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
     let view = tesela_model::View::new(&tree, overlay.as_deref());
     let sel = ex.selection.unwrap_or(Sel::Node(ex.root.node));
     let is_current = ex.selection.is_none();
-    // Barra SÓLIDA y siempre visible cuando el contenido no cabe (ventana pequeña): nada queda cortado sin aviso.
+    // SOLID bar and always visible when the content does not fit (small window): nothing is cut off without warning.
     ui.style_mut().spacing.scroll = egui::style::ScrollStyle::solid();
     let out = egui::ScrollArea::vertical()
         .auto_shrink([false, false])
@@ -69,7 +69,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
             };
             let lower = group.is_none() && describe::is_lower_bound(&tree, id);
 
-            // Título y ruta.
+            // Title and route.
             let title = match group {
                 Some(o) => env.tr.ta(
                     "others-title",
@@ -110,7 +110,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
                 .on_hover_text(tip);
             }
 
-            // Cifras.
+            // Figures.
             let bytes = group.map_or(view.alloc(id), |o| o.bytes);
             let alloc_txt = if lower {
                 env.tr.size_min(bytes)
@@ -180,7 +180,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
                 stat(&mut cols[1], &pal, &parent_label, share_txt, false);
             });
 
-            // Composición y antigüedad (solo carpetas con datos).
+            // Composition and age (only folders with data).
             if group.is_none() && node.is_dir() && view.alloc(id) > 0 && special.is_none() {
                 let h = tree.hist(id);
                 stacked_bar(ui, &pal, h);
@@ -193,7 +193,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
                 }
             }
 
-            // Avisos por clase.
+            // Notices by class.
             match special {
                 Some(Special::SystemBlock) => {
                     note(ui, env, Icon::Info, env.tr.t("system-tip"), pal.text_muted);
@@ -229,7 +229,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
             if group.is_none() && node.flags & flags::CLOUD != 0 {
                 note(ui, env, Icon::Cloud, env.tr.t("cloud-note"), pal.accent);
             }
-            // Protección y cesta.
+            // Protection and basket.
             let state = ex.add_state(sel);
             match state {
                 AddState::Denied => {
@@ -290,11 +290,14 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
                 );
             }
 
-            // Acciones.
+            // Actions.
             ui.add_space(4.0);
+            // With a cleanup in progress nothing is added (with the same track as the selection bar).
+            let busy = ex.flow.busy();
+            let busy_hint = busy.then_some("sel-add-busy-tip");
             let (label, enabled, hint) = match state {
-                AddState::Addable => (env.tr.t("menu-add-basket"), true, None),
-                AddState::ContentsOf => (env.tr.t("menu-add-contents-short"), true, None),
+                AddState::Addable => (env.tr.t("menu-add-basket"), !busy, busy_hint),
+                AddState::ContentsOf => (env.tr.t("menu-add-contents-short"), !busy, busy_hint),
                 AddState::InBasket if ex.basket_has_own(sel) => {
                     (env.tr.t("menu-remove-basket"), true, None)
                 }
@@ -402,7 +405,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
                 }
             });
 
-            // Lo más grande aquí.
+            // The biggest thing here.
             if group.is_none() && describe::can_enter_view(&view, id) {
                 ui.add_space(6.0);
                 widgets::section_label(ui, &pal, &env.tr.t("details-biggest"));

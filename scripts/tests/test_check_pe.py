@@ -1,4 +1,4 @@
-"""Pruebas de scripts/check-pe.py con PE sintéticos construidos aquí (sin binarios reales ni datos del equipo).
+"""Tests for scripts/check-pe.py using synthetic PEs built here (no real binaries or machine data).
 
     python -I -m unittest discover -s scripts/tests -p "test_*.py"
 """
@@ -21,11 +21,11 @@ FILE_ALIGN = 0x200
 
 
 def make_pe(machine=0x8664, imports=(), delay=(), pe32=False, delay_old=False, load_flags=0x800, repro=True, vsize_extra=0):
-    """Un PE mínimo: una sección con la tabla de imports (y la de carga retardada) y los nombres de las DLL.
+    """A minimal PE: one section with the import (and delay-load) tables and DLL names.
 
-    `load_flags`: `DependentLoadFlags` del directorio de configuración de carga (None = sin directorio). `repro`: lleva una
-    entrada de depuración REPRO. `vsize_extra`: bytes de relleno virtual (sin datos en el archivo) tras los de la sección."""
-    # Datos de la sección: [descriptores de import][terminador][descriptores de delay][terminador][nombres]
+    `load_flags`: `DependentLoadFlags` in the load configuration directory (None = no directory). `repro`: include a
+    REPRO debug entry. `vsize_extra`: virtual padding bytes (no file data) after the section data."""
+    # Section data: [import descriptors][terminator][delay descriptors][terminator][names]
     n_imp = len(imports)
     n_del = len(delay)
     imp_off = 0
@@ -43,14 +43,14 @@ def make_pe(machine=0x8664, imports=(), delay=(), pe32=False, delay_old=False, l
     sec += b"\0" * 20
     image_base = 0x400000 if pe32 else 0x140000000
     for n in delay:
-        # `attrs` con el bit 0 = direcciones RVA; sin el (formato antiguo) = direcciones virtuales absolutas.
-        # (En PE32+ los campos son de 32 bits: una direccion absoluta no cabe, y el descriptor es inválido.)
+        # `attrs` bit 0 means RVA addresses; without it (old format), addresses are absolute virtual addresses.
+        # (In PE32+, fields are 32-bit: an absolute address does not fit, so the descriptor is invalid.)
         absolute = image_base + name_rva[n] if pe32 else name_rva[n]
         attrs, name = (0, absolute) if delay_old else (1, name_rva[n])
         sec += struct.pack("<IIIIIIII", attrs, name, 0, 0, 0, 0, 0, 0)
     sec += b"\0" * 32
     sec += names
-    # Directorio de configuración de carga (con `Size` que cubre `DependentLoadFlags`) y directorio de depuración.
+    # Load configuration directory (with `Size` covering `DependentLoadFlags`) and debug directory.
     sec = bytearray(bytes(sec).ljust((len(sec) + 7) // 8 * 8, b"\0"))
     lc_off = len(sec)
     lc_field = 0x36 if pe32 else 0x4E
@@ -61,7 +61,7 @@ def make_pe(machine=0x8664, imports=(), delay=(), pe32=False, delay_old=False, l
         sec += lc
     dbg_off = len(sec)
     if repro is not None:
-        # Una entrada de tipo CODEVIEW (2) y, si `repro`, otra de tipo REPRO (16).
+        # One CODEVIEW (2) entry and, if `repro`, one REPRO (16) entry.
         for kind in [2] + ([16] if repro else []):
             sec += struct.pack("<IIHHIIII", 0, 0, 0, 0, kind, 0, 0, 0)
     dbg_size = len(sec) - dbg_off
@@ -129,18 +129,18 @@ class CheckPe(unittest.TestCase):
         self.assertEqual((m, imp), (0x014C, ["KERNEL32.dll"]))
 
     def test_un_descriptor_diferido_en_formato_antiguo_se_interpreta_y_no_se_ignora(self):
-        # PE32 con descriptor antiguo (direcciones virtuales absolutas): se convierte con la base de la imagen.
+        # PE32 with the old descriptor (absolute virtual addresses): convert using the image base.
         m, imp, dly = check_pe.parse(make_pe(machine=0x014C, imports=["KERNEL32.dll"], delay=["VCRUNTIME140.dll"], pe32=True, delay_old=True))
         self.assertEqual(dly, ["VCRUNTIME140.dll"])
         self.assertEqual(check_pe.forbidden(imp + dly), ["VCRUNTIME140.dll"])
         with Temp() as t:
             old = t.write("old.exe", make_pe(machine=0x014C, imports=["KERNEL32.dll"], delay=["MSVCP140.dll"], pe32=True, delay_old=True))
             self.assertEqual(len(check_pe.check(old, "x86")), 1)
-            # Un descriptor sin el bit de RVA cuya direccion cae por debajo de la base de la imagen: error, NO se ignora.
+            # A descriptor without the RVA bit whose address is below the image base is an error; do not ignore it.
             bad = t.write("bad.exe", make_pe(imports=["KERNEL32.dll"], delay=["a.dll"], delay_old=True))
             problems = check_pe.check(bad, "x64")
             self.assertEqual(len(problems), 1)
-            self.assertIn("fuera de la imagen", problems[0])
+            self.assertIn("outside the image", problems[0])
 
     def test_acepta_un_ejecutable_sin_runtime_de_c_y_rechaza_cada_dll_prohibida(self):
         with Temp() as t:
@@ -159,13 +159,49 @@ class CheckPe(unittest.TestCase):
                 bad = t.write("bad.exe", make_pe(imports=["KERNEL32.dll", dll]))
                 problems = check_pe.check(bad, "x64")
                 self.assertEqual(len(problems), 1, dll)
-                self.assertIn("runtime de C", problems[0], dll)
-            # También si solo aparece en la carga retardada.
+                self.assertIn("C runtime", problems[0], dll)
+            # Also when it appears only in the delay-load table.
             late = t.write("late.exe", make_pe(imports=["KERNEL32.dll"], delay=["VCRUNTIME140.dll"]))
             self.assertEqual(len(check_pe.check(late, "x64")), 1)
-            # Nombres parecidos que NO son del runtime de C.
+            # Similar names that are NOT C runtime libraries.
             fine = t.write("fine.exe", make_pe(imports=["vcruntime.txt.dll.bak", "myvcruntime140.dll", "api-ms-win-core-file-l1-1-0.dll"]))
             self.assertEqual(check_pe.check(fine, "x64"), [])
+
+    def test_el_unico_modulo_de_red_admitido_es_winhttp(self):
+        with Temp() as t:
+            # winhttp.dll (update checks) and the normal UI DLLs are allowed.
+            ok = t.write("ok.exe", make_pe(imports=["KERNEL32.dll", "winhttp.dll", "WINHTTP.DLL", "dxgi.dll", "user32.dll"]))
+            self.assertEqual(check_pe.check(ok, "x64"), [])
+            for dll in [
+                "ws2_32.dll",
+                "WS2_32.dll",
+                "wsock32.dll",
+                "mswsock.dll",
+                "wininet.dll",
+                "urlmon.dll",
+                "iphlpapi.dll",
+                "dnsapi.dll",
+                "secur32.dll",
+                "crypt32.dll",
+                "httpapi.dll",
+                "netapi32.dll",
+                "wldap32.dll",
+                "rasapi32.dll",
+            ]:
+                # Even when winhttp.dll is present, reject every OTHER network module (normal or delay import).
+                for kw in ({"imports": ["KERNEL32.dll", "winhttp.dll", dll]}, {"imports": ["KERNEL32.dll"], "delay": [dll]}):
+                    bad = t.write("bad.exe", make_pe(**kw))
+                    problems = check_pe.check(bad, "x64")
+                    self.assertEqual(len(problems), 1, (dll, kw))
+                    self.assertIn("network module", problems[0], dll)
+                    self.assertIn(dll, problems[0])
+            # Similar names that are NOT forbidden network modules.
+            fine = t.write("fine.exe", make_pe(imports=["KERNEL32.dll", "ws2_32.dll.bak", "myws2_32.dll", "api-ms-win-core-file-l1-1-0.dll"]))
+            self.assertEqual(check_pe.check(fine, "x64"), [])
+            # Also check main's exit code.
+            bad = t.write("bad.exe", make_pe(imports=["KERNEL32.dll", "wininet.dll"]))
+            self.assertEqual(check_pe.main(["--machine", "x64", ok]), 0)
+            self.assertEqual(check_pe.main(["--machine", "x64", bad]), 1)
 
     def test_exige_dependentloadflags_system32_y_enlace_reproducible(self):
         with Temp() as t:
@@ -173,30 +209,30 @@ class CheckPe(unittest.TestCase):
             self.assertEqual(check_pe.check(ok, "x64"), [])
             info = check_pe.parse_info(make_pe(imports=["KERNEL32.dll"]))
             self.assertEqual((info["load_flags"], info["repro"]), (0x800, True))
-            # PE32 (el campo está en otro desplazamiento).
+            # PE32 (the field is at a different offset).
             pe32 = t.write("pe32.exe", make_pe(machine=0x014C, imports=["KERNEL32.dll"], pe32=True))
             self.assertEqual(check_pe.check(pe32, "x86"), [])
-            # Sin el directorio de configuración de carga, o con otros flags (0x1000 = DEFAULT_DIRS, 0 = ninguno).
+            # Without the load configuration directory, or with other flags (0x1000 = DEFAULT_DIRS, 0 = none).
             for flags in (None, 0, 0x1000, 0x400):
                 bad = t.write("bad.exe", make_pe(imports=["KERNEL32.dll"], load_flags=flags))
                 problems = check_pe.check(bad, "x64")
                 self.assertEqual(len(problems), 1, flags)
                 self.assertIn("DependentLoadFlags", problems[0])
-            # Sin la entrada REPRO (con o sin directorio de depuración).
+            # Without the REPRO entry (with or without a debug directory).
             for repro in (False, None):
                 bad = t.write("bad.exe", make_pe(imports=["KERNEL32.dll"], repro=repro))
                 problems = check_pe.check(bad, "x64")
                 self.assertEqual(len(problems), 1, repro)
                 self.assertIn("REPRO", problems[0])
-            # Los dos problemas a la vez, y el runtime de C: tres mensajes.
+            # Both problems plus the C runtime: three messages.
             worse = t.write("worse.exe", make_pe(imports=["VCRUNTIME140.dll"], load_flags=None, repro=False))
             self.assertEqual(len(check_pe.check(worse, "x64")), 3)
 
     def test_un_rva_en_el_relleno_virtual_de_la_seccion_no_se_lee_del_archivo(self):
-        # La sección ocupa más en memoria que en el archivo: un RVA en esa cola no tiene bytes en el archivo y no puede
-        # leerse de lo que venga después (antes devolvía un desplazamiento fuera de la sección).
+        # The section is larger in memory than in the file: an RVA in that tail has no file bytes and must not read
+        # whatever follows it (previously this returned an offset outside the section).
         data = bytearray(make_pe(imports=["KERNEL32.dll"], vsize_extra=0x1000))
-        # El descriptor de imports apunta a un nombre en la cola virtual: SECTION_RVA + 0x400 (la sección tiene 0x200 en el archivo).
+        # The import descriptor points to a name in the virtual tail: SECTION_RVA + 0x400 (the file section is 0x200 bytes).
         struct.pack_into("<I", data, 0x400 + 12, SECTION_RVA + 0x400)
         with self.assertRaises(check_pe.PeError):
             check_pe.parse(bytes(data))
@@ -209,7 +245,7 @@ class CheckPe(unittest.TestCase):
             self.assertEqual(check_pe.check(arm, "arm64"), [])
             problems = check_pe.check(arm, "x64")
             self.assertEqual(len(problems), 1)
-            self.assertIn("arquitectura", problems[0])
+            self.assertIn("architecture", problems[0])
             x86 = t.write("x86.exe", make_pe(machine=0x014C, imports=[]))
             self.assertEqual(len(check_pe.check(x86, "x64")), 1)
 
@@ -236,7 +272,7 @@ class CheckPe(unittest.TestCase):
             self.assertEqual(check_pe.main(["--machine", "arm64", ok]), 1)
 
     def test_lee_un_ejecutable_real_del_sistema(self):
-        # El propio intérprete es un PE real: se parsea y trae KERNEL32.
+        # The interpreter itself is a real PE: it parses successfully and imports KERNEL32.
         with open(sys.executable, "rb") as f:
             machine, imports, _ = check_pe.parse(f.read())
         self.assertIn(machine, check_pe.MACHINES.values())

@@ -1,5 +1,5 @@
-//! Consultas de volumen que necesita el `cleaner`: raíz del volumen, tipo de unidad, y el límite REAL de la Papelera
-//! de ese volumen (el registro de la shell). Todo es solo lectura.
+//! Volume queries needed by `cleaner`: volume root, drive type, and the REAL Recycle Bin limit
+//! for that volume (the shell registry). Read-only.
 #![allow(unsafe_code)]
 
 use std::ffi::OsString;
@@ -14,10 +14,10 @@ use windows_sys::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RegGetValueW,
 };
 
-/// `%TEMP%` según Windows (`GetTempPathW`).
+/// Windows' `%TEMP%` path (`GetTempPathW`).
 pub fn temp_path() -> Option<PathBuf> {
     let mut buf = vec![0u16; 1024];
-    // SAFETY: `buf` es escribible con `buf.len()` unidades UTF-16.
+    // SAFETY: `buf` is writable for `buf.len()` UTF-16 units.
     let n = unsafe { GetTempPathW(buf.len() as u32, buf.as_mut_ptr()) } as usize;
     if n == 0 || n >= buf.len() {
         return None;
@@ -25,7 +25,7 @@ pub fn temp_path() -> Option<PathBuf> {
     Some(OsString::from_wide(&buf[..n]).into())
 }
 
-/// Tipo de unidad (`GetDriveTypeW`).
+/// Drive type (`GetDriveTypeW`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DriveKind {
     Fixed,
@@ -40,11 +40,11 @@ fn wide_nul(p: &Path) -> Vec<u16> {
     p.as_os_str().encode_wide().chain(Some(0)).collect()
 }
 
-/// Raíz del volumen que contiene `path` (`C:\`), según Windows.
+/// Root of the volume containing `path` (`C:\`), as reported by Windows.
 pub fn volume_root(path: &Path) -> Option<PathBuf> {
     let w = wide_nul(path);
     let mut buf = vec![0u16; 1024];
-    // SAFETY: `w` termina en NUL; `buf` es escribible con `buf.len()` unidades UTF-16.
+    // SAFETY: `w` is NUL-terminated; `buf` is writable for `buf.len()` UTF-16 units.
     let ok = unsafe { GetVolumePathNameW(w.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) };
     if ok == 0 {
         return None;
@@ -53,10 +53,10 @@ pub fn volume_root(path: &Path) -> Option<PathBuf> {
     Some(OsString::from_wide(&buf[..n]).into())
 }
 
-/// Tipo de la unidad cuya raíz es `root` (con barra final).
+/// Drive type for the drive whose root is `root` (with a trailing backslash).
 pub fn drive_kind(root: &Path) -> DriveKind {
     let w = wide_nul(root);
-    // SAFETY: `w` es una cadena UTF-16 terminada en NUL que vive durante la llamada.
+    // SAFETY: `w` is a NUL-terminated UTF-16 string that remains alive for the call.
     match unsafe { GetDriveTypeW(w.as_ptr()) } {
         2 => DriveKind::Removable,
         3 => DriveKind::Fixed,
@@ -67,19 +67,19 @@ pub fn drive_kind(root: &Path) -> DriveKind {
     }
 }
 
-/// ¿Es `path` (la ruta FINAL resuelta por un handle, con o sin `\?\`) un archivo de un volumen LOCAL, fijo o extraíble según
-/// `GetDriveTypeW`? Todo lo demás (UNC, también hacia un disco local con `localhost` o `127.0.0.1`, comparticiones
-/// administrativas, unidades de red, volúmenes sin letra, discos ópticos) NO es local: el `cleaner` lo rechaza porque la
-/// protección se escribe sobre rutas de unidad y una ruta de red al mismo sitio la esquivaría. El escáner sí puede leerlas.
+/// Is `path` (the FINAL path resolved from a handle, with or without `\\?\`) on a LOCAL fixed or removable volume according
+/// to `GetDriveTypeW`? Everything else (UNC, including to a local disk via `localhost` or `127.0.0.1`, administrative
+/// shares, network drives, volumes without drive letters, and optical disks) is NOT local: `cleaner` rejects it because
+/// protection is defined on drive paths, and a network path to the same location could bypass it. The scanner may still read them.
 ///
-/// GM-M6: el tipo es el del VOLUMEN que contiene la ruta (`GetVolumePathNameW`), no el de la letra con la que empieza: una
-/// carpeta de `C:` puede ser el punto de montaje de otro volumen (extraíble, óptico) y se juzga por ese.
+/// GM-M6: this is the type of the VOLUME containing the path (`GetVolumePathNameW`), not the drive letter at its start: a
+/// folder on `C:` may be a mount point for another volume (removable or optical), and is classified by that volume.
 pub fn is_local_path(path: &Path) -> bool {
     is_local_with(path, volume_root, drive_kind)
 }
 
-/// [`is_local_path`] con la raíz del volumen y su tipo inyectados (así se prueba sin montar nada). Falla cerrado: sin raíz de
-/// volumen conocida no es local.
+/// [`is_local_path`] with the volume root and type injected (so it can be tested without mounting anything). Fails closed:
+/// without a known volume root, the path is not local.
 pub(crate) fn is_local_with(
     path: &Path,
     root_of: impl Fn(&Path) -> Option<PathBuf>,
@@ -103,13 +103,13 @@ pub(crate) fn is_local_with(
     matches!(kind_of(&root), DriveKind::Fixed | DriveKind::Removable)
 }
 
-/// Los volúmenes montados en CARPETAS (no en una letra): raíces como `C:\montajes\datos\`. Dentro de ellos `$Recycle.Bin`,
-/// `System Volume Information`, `$MFT` y `pagefile.sys` cuelgan de la raíz del volumen, que no es la de una unidad con letra
-/// (GM-M6). Lista vacía si no se puede enumerar (entonces solo se conocen las raíces con letra).
+/// Volumes mounted in FOLDERS (not on drive letters): roots such as `C:\mounts\data\`. Their `$Recycle.Bin`,
+/// `System Volume Information`, `$MFT`, and `pagefile.sys` entries are children of the volume root, which is not a
+/// drive-letter root (GM-M6). Returns an empty list if enumeration fails (then only drive-letter roots are known).
 pub fn mounted_roots() -> Vec<PathBuf> {
     let mut out = Vec::new();
     let mut vol = vec![0u16; 64];
-    // SAFETY: `vol` es escribible con `vol.len()` unidades UTF-16.
+    // SAFETY: `vol` is writable for `vol.len()` UTF-16 units.
     let h = unsafe { FindFirstVolumeW(vol.as_mut_ptr(), vol.len() as u32) };
     if h == INVALID_HANDLE_VALUE {
         return out;
@@ -117,8 +117,8 @@ pub fn mounted_roots() -> Vec<PathBuf> {
     loop {
         let mut names = vec![0u16; 1024];
         let mut needed = 0u32;
-        // SAFETY: `vol` es el nombre de volumen (terminado en NUL) que dio la enumeración; `names` es escribible con
-        // `names.len()` unidades y `needed` también.
+        // SAFETY: `vol` is the NUL-terminated volume name returned by enumeration; `names` is writable for `names.len()` units,
+        // and `needed` is writable as well.
         let mut ok = unsafe {
             GetVolumePathNamesForVolumeNameW(
                 vol.as_ptr(),
@@ -129,7 +129,7 @@ pub fn mounted_roots() -> Vec<PathBuf> {
         };
         if ok == 0 && needed as usize > names.len() {
             names = vec![0u16; needed as usize];
-            // SAFETY: igual que arriba con el búfer ampliado.
+            // SAFETY: same as above, with the enlarged buffer.
             ok = unsafe {
                 GetVolumePathNamesForVolumeNameW(
                     vol.as_ptr(),
@@ -140,33 +140,33 @@ pub fn mounted_roots() -> Vec<PathBuf> {
             };
         }
         if ok != 0 {
-            // Una lista de cadenas terminadas en NUL que acaba con una vacía.
+            // A list of NUL-terminated strings ending with an empty string.
             for s in names.split(|&c| c == 0).take_while(|s| !s.is_empty()) {
                 let root = PathBuf::from(OsString::from_wide(s));
-                // Solo las que NO son una letra de unidad con su barra (tres unidades UTF-16).
+                // Keep only roots that are NOT a drive letter followed by a backslash (three UTF-16 units).
                 if s.len() > 3 {
                     out.push(root);
                 }
             }
         }
-        // SAFETY: `h` es el handle de la enumeración y `vol` es escribible con `vol.len()` unidades.
+        // SAFETY: `h` is the enumeration handle and `vol` is writable for `vol.len()` units.
         if unsafe { FindNextVolumeW(h, vol.as_mut_ptr(), vol.len() as u32) } == 0 {
             break;
         }
     }
-    // SAFETY: `h` es el handle de la enumeración, que se cierra una sola vez.
+    // SAFETY: `h` is the enumeration handle and is closed exactly once.
     unsafe { FindVolumeClose(h) };
     out
 }
 
-/// GUID del volumen (`{xxxxxxxx-...}`), a partir de su raíz.
+/// Volume GUID (`{xxxxxxxx-...}`) for the given root.
 pub fn volume_guid(root: &Path) -> Option<String> {
     let mut r = wide_nul(root);
     if r.len() >= 2 && r[r.len() - 2] != b'\\' as u16 {
         r.insert(r.len() - 1, b'\\' as u16);
     }
     let mut buf = vec![0u16; 64];
-    // SAFETY: `r` termina en NUL; `buf` es escribible con `buf.len()` unidades UTF-16.
+    // SAFETY: `r` is NUL-terminated; `buf` is writable for `buf.len()` UTF-16 units.
     let ok = unsafe {
         GetVolumeNameForVolumeMountPointW(r.as_ptr(), buf.as_mut_ptr(), buf.len() as u32)
     };
@@ -180,18 +180,18 @@ pub fn volume_guid(root: &Path) -> Option<String> {
     (end > start).then(|| s[start..=end].to_string())
 }
 
-/// Límite de la Papelera de un volumen.
+/// Recycle Bin limit for a volume.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BinLimit {
-    /// El volumen no tiene Papelera (red, extraíble, CD).
+    /// The volume has no Recycle Bin (network, removable, CD).
     NoBin,
-    /// "No mover los archivos a la Papelera": el usuario lo desactivó para el volumen.
+    /// "Don't move files to the Recycle Bin": the user disabled it for this volume.
     NukeOnDelete,
-    /// Tamaño máximo configurado, en bytes.
+    /// Configured maximum size, in bytes.
     Max(u64),
-    /// No hay valor en el registro: la shell usa su porcentaje por defecto, que no se documenta.
+    /// No registry value: the shell uses its undocumented default percentage.
     Unknown,
-    /// No se pudo averiguar nada del volumen (tipo de unidad o GUID desconocidos): NUNCA se da por bueno.
+    /// The volume could not be identified (unknown drive type or GUID): NEVER treat it as valid.
     Indeterminate,
 }
 
@@ -200,8 +200,8 @@ fn reg_dword(hive: HKEY, subkey: &str, value: &str) -> Option<u32> {
     let v: Vec<u16> = value.encode_utf16().chain(Some(0)).collect();
     let mut data = 0u32;
     let mut size = size_of::<u32>() as u32;
-    // SAFETY: `sk` y `v` terminan en NUL; `data` y `size` son escribibles y `size` es el tamaño exacto de `data`; la
-    // clave raíz es una predefinida.
+    // SAFETY: `sk` and `v` are NUL-terminated; `data` and `size` are writable, and `size` is exactly the size of `data`;
+    // the root key is a predefined constant.
     let rc = unsafe {
         RegGetValueW(
             hive,
@@ -216,8 +216,8 @@ fn reg_dword(hive: HKEY, subkey: &str, value: &str) -> Option<u32> {
     (rc == 0).then_some(data)
 }
 
-/// El límite de la Papelera del volumen cuya raíz es `root`, leído del registro del usuario
-/// (`Explorer\BitBucket\Volume\{guid}`: `MaxCapacity` en MB y `NukeOnDelete`).
+/// Recycle Bin limit for the volume rooted at `root`, read from the user's registry
+/// (`Explorer\BitBucket\Volume\{guid}`: `MaxCapacity` in MB and `NukeOnDelete`).
 pub fn bin_limit(root: &Path) -> BinLimit {
     match drive_kind(root) {
         DriveKind::Fixed | DriveKind::RamDisk => {}
@@ -238,8 +238,8 @@ pub fn bin_limit(root: &Path) -> BinLimit {
     }
 }
 
-/// ¿Hay una directiva "No mover los archivos eliminados a la Papelera" (`NoRecycleFiles`) en el usuario (HKCU) o en el
-/// equipo (HKLM)? Con ella la shell elimina de verdad lo que se "envía a la Papelera": todo cuenta como "no cabe".
+/// Is the "Don't move deleted files to the Recycle Bin" policy (`NoRecycleFiles`) set for the user (HKCU) or
+/// machine (HKLM)? When enabled, the shell permanently deletes anything "sent to the Recycle Bin": treat everything as "won't fit".
 pub fn recycle_policy_disabled() -> bool {
     const KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Policies\Explorer";
     [HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE]
@@ -260,14 +260,14 @@ mod tests {
         if let Some(g) = volume_guid(&root) {
             assert!(g.starts_with('{') && g.ends_with('}'), "{g}");
         }
-        // No panica y da una de las cuatro respuestas.
+        // It does not panic and returns one of the four results.
         let _ = bin_limit(&root);
     }
 
     #[test]
     fn solo_las_rutas_de_unidades_locales_con_letra_son_locales() {
         let tmp = dunce::canonicalize(std::env::temp_dir()).unwrap();
-        // El temporal de la prueba está en una unidad local, con o sin prefijo verbatim.
+        // The test's temporary directory is on a local drive, with or without the verbatim prefix.
         assert!(is_local_path(&tmp), "{tmp:?}");
         assert!(is_local_path(&PathBuf::from(format!(
             r"\\?\{}",
@@ -277,7 +277,7 @@ mod tests {
         assert!(is_local_path(&sub));
         let letter = tmp.to_string_lossy().chars().next().unwrap();
         let rest: String = tmp.to_string_lossy().chars().skip(3).collect();
-        // La misma carpeta por la compartición administrativa o por una ruta de red: NO es local.
+        // The same directory through an administrative share or network path is NOT local.
         for host in ["localhost", "127.0.0.1", "[::1]", "equipo.invalid"] {
             let sep = '\\';
             for p in [
@@ -288,7 +288,7 @@ mod tests {
                 assert!(!is_local_path(Path::new(&p)), "{p}");
             }
         }
-        // Volumen sin letra, rutas relativas, raíces sin barra, dispositivos y unidades que no existen.
+        // Volumes without drive letters, relative paths, roots without separators, devices, and nonexistent drives.
         for p in [
             r"\\?\Volume{00000000-0000-0000-0000-000000000000}\x",
             r"\\.\C:\x",
@@ -308,14 +308,14 @@ mod tests {
 
     #[test]
     fn una_unidad_de_red_o_extraible_no_tiene_papelera_por_su_tipo() {
-        // Sin crear ninguna: el mapeo de tipos es el de GetDriveTypeW.
+        // No volumes are created: type mapping follows GetDriveTypeW.
         assert_eq!(drive_kind(Path::new("ZZ:\\")), DriveKind::Unknown);
-        // Lo que no se puede averiguar NUNCA se da por bueno.
+        // Anything that cannot be determined is NEVER treated as valid.
         assert_eq!(bin_limit(Path::new("ZZ:\\")), BinLimit::Indeterminate);
     }
 
-    /// GM-M6: el tipo de unidad es el del VOLUMEN que contiene la ruta, no el de su letra: una carpeta de `C:` que es el punto
-    /// de montaje de un disco óptico o de red no es local aunque `C:` sí lo sea. Sin raíz de volumen conocida, no es local.
+    /// GM-M6: the drive type belongs to the VOLUME containing the path, not its drive letter: a directory on `C:` that is a
+    /// mount point for an optical or network drive is not local even if `C:` is. Without a known volume root, it is not local.
     #[test]
     fn el_tipo_de_unidad_es_el_del_volumen_que_contiene_la_ruta() {
         let root_of = |p: &Path| -> Option<PathBuf> {
@@ -345,16 +345,16 @@ mod tests {
             !local(r"C:\montajes\optico\a.txt"),
             "óptico montado en una carpeta de C:"
         );
-        // Sin raíz de volumen conocida (o con letra desconocida) falla cerrado.
+        // Without a known volume root (or with an unknown drive letter), fail closed.
         assert!(!local(r"ZZ:\a.txt"));
-        // Lo que no tiene forma de unidad con letra no es local, sepa lo que se sepa del volumen.
+        // Anything that is not shaped like a drive-letter path is not local, regardless of what is known about the volume.
         assert!(!local(r"relativa\a.txt"));
         assert!(!local(
             &["\\", "\\", "servidor", "\\", "recurso", "\\", "a.txt"].concat()
         ));
     }
 
-    /// GM-M6: la enumeración de volúmenes montados en carpetas no falla y solo devuelve raíces que no son una letra de unidad.
+    /// GM-M6: enumerating volumes mounted in directories does not fail and returns only roots that are not drive letters.
     #[test]
     fn los_montajes_en_carpetas_no_incluyen_letras_de_unidad() {
         for r in mounted_roots() {

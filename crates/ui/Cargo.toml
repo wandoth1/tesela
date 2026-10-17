@@ -13,6 +13,7 @@ tesela-model.workspace = true
 tesela-layout.workspace = true
 tesela-scanner.workspace = true
 tesela-cleaner.workspace = true
+tesela-update.workspace = true
 rustc-hash.workspace = true
 crossbeam-channel.workspace = true
 dunce.workspace = true

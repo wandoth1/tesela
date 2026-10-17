@@ -1,20 +1,20 @@
-//! Raíces de las categorías y de la protección. Todo lo que el `cleaner` va a tocar sale de aquí, y es INYECTABLE: en
-//! producción lo rellena [`Roots::from_system`] con `SHGetKnownFolderPath` (nunca con variables de entorno, que un
-//! proceso puede alterar); las pruebas construyen un [`Roots`] sobre su carpeta temporal y así nunca tocan el `%TEMP%`,
-//! las cachés ni la Papelera reales.
+//! Category and protection roots. Every path the `cleaner` may touch comes from here, and is INJECTABLE: production
+//! populates it with [`Roots::from_system`] using `SHGetKnownFolderPath` (never environment variables, which a process can
+//! change); tests build a [`Roots`] rooted in their temporary directory and never touch the real `%TEMP%`, caches, or Recycle Bin.
 //!
-//! `%TEMP%` no es una carpeta conocida. Se pregunta a Windows (`GetTempPathW`) y SOLO se ofrece como "Temporales del
-//! usuario" si, ya canonicalizada, es `%LOCALAPPDATA%\Temp` (el sitio por defecto, con `%LOCALAPPDATA%` de
-//! `SHGetKnownFolderPath`) o cuelga de ella: un `TEMP` redirigido a otra parte (Documentos, la raíz de una unidad,
-//! `%LOCALAPPDATA%` entero o `Local\Programs`...) no puede volver "seguro" lo que hay allí. Cualquier otro valor descarta
-//! la categoría.
+//! `%TEMP%` is not a known folder. Windows provides it (`GetTempPathW`), and it is offered as "User temporary files" ONLY
+//! if its canonical path is `%LOCALAPPDATA%\Temp` (the default location, with `%LOCALAPPDATA%` from
+//! `SHGetKnownFolderPath`) or below it. A `TEMP` redirected elsewhere (Documents, a drive root, all of `%LOCALAPPDATA%`, or
+//! `Local\Programs`, for example) cannot make its contents "safe". Any other value rejects the category.
 
 use crate::paths::{PathKey, canonical_path};
 use crate::protect::{Exempt, Protection, ProtectionRoots};
 use crate::rules::CategoryId;
 use crate::sys::{self, FileIdentity};
 use std::path::{Path, PathBuf};
-use tesela_scanner::{BrowserRoots, KnownKind, browser_cache_dirs, known_folder};
+use tesela_scanner::{
+    BrowserRoots, KnownKind, WER_ZONE_REL, browser_cache_dirs, diagnostic_dirs, known_folder,
+};
 use windows_sys::Win32::UI::Shell::{
     FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_LocalAppData,
     FOLDERID_LocalAppDataLow, FOLDERID_Music, FOLDERID_Pictures, FOLDERID_Profile,
@@ -22,74 +22,74 @@ use windows_sys::Win32::UI::Shell::{
     FOLDERID_RoamingAppData, FOLDERID_UserProfiles, FOLDERID_Videos, FOLDERID_Windows,
 };
 
-/// Todas las rutas de las que depende la limpieza.
+/// All paths required for cleanup.
 #[derive(Clone, Debug, Default)]
 pub struct Roots {
-    /// `%TEMP%` del usuario (solo si cuelga de `%LOCALAPPDATA%`).
+    /// User `%TEMP%` (only if it is under `%LOCALAPPDATA%`).
     pub user_temp: Option<PathBuf>,
     /// `Windows\Temp`.
     pub windows_temp: Option<PathBuf>,
-    /// `%LOCALAPPDATA%` y `%APPDATA%`, de las que cuelgan los datos de los navegadores.
+    /// `%LOCALAPPDATA%` and `%APPDATA%`, which contain browser data.
     pub browser: BrowserRoots,
-    /// La carpeta Descargas.
+    /// The Downloads folder.
     pub downloads: Option<PathBuf>,
-    /// Raíces que `from_system` descartó al arrancar (con su motivo): `category_root_checks` las devuelve como rechazos,
-    /// de modo que una categoría que desaparece por un enlace en su ruta no lo hace en silencio (H4).
+    /// Roots rejected by `from_system` at startup, with their reasons. `category_root_checks` returns them as rejections,
+    /// so a category rejected due to a link in its path does not disappear silently (H4).
     pub startup_rejections: Vec<(CategoryId, PathBuf, RootRejection)>,
-    /// Qué proteger.
+    /// Protection rules.
     pub protection: ProtectionRoots,
 }
 
-/// Ruta canónica larga de un directorio que existe, o `None`.
+/// Long canonical path of an existing directory, or `None`.
 fn canon(p: &Path) -> Option<PathBuf> {
     canonical_path(p).ok()
 }
 
-/// Por qué se descartó la raíz de una categoría.
+/// Why a category root was rejected.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RootRejection {
-    /// Un componente de la cadena (desde la raíz del volumen) es un reparse point: un enlace ahí puede llevar la "raíz" a
-    /// una carpeta protegida.
+    /// A component in the path chain (from the volume root) is a reparse point: a link there could redirect the "root" to a
+    /// protected folder.
     ReparseInChain { component: String },
-    /// La ruta resuelta por el handle no es la que se recorrió (cambió mientras se comprobaba).
+    /// The path resolved from the handle differs from the path that was traversed (it changed during verification).
     NotCanonical,
-    /// La carpeta temporal del usuario está redirigida fuera de `%LOCALAPPDATA%` (no es `Local\Temp` ni cuelga de ella).
+    /// The user's temporary folder is redirected outside `%LOCALAPPDATA%` (it is neither `Local\Temp` nor below it).
     OutsideLocalAppData,
-    /// La ruta no es utilizable (no es absoluta con letra de unidad, no existe o no se abre): código de Windows.
+    /// The path cannot be used (it is not an absolute drive-letter path, does not exist, or cannot be opened): Windows error code.
     Os(u32),
 }
 
 impl RootRejection {
-    /// ¿Es algo que el usuario debe saber (la categoría "desaparece" por un motivo de seguridad que puede no esperar)?
-    /// Un `Os` (no existe, sin permiso) no lo es: simplemente no hay nada que limpiar.
+    /// Should the user be told (the category is unavailable for a security reason they may not expect)? An `Os` error
+    /// (missing or inaccessible path) is not shown: there is simply nothing to clean.
     pub fn is_user_visible(&self) -> bool {
         !matches!(self, RootRejection::Os(_))
     }
 }
 
-/// La raíz de una categoría ya comprobada: su ruta canónica y la ÚNICA zona denegada que puede levantar.
+/// A verified category root: its canonical path and the ONLY denied zone it may exempt.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct VerifiedRoot {
-    /// Ruta canónica larga, resuelta por el handle del último componente.
+    /// Long canonical path resolved from the handle to the final component.
     pub path: PathBuf,
-    /// Identidad (volumen + FileId) del objeto que vio el recorrido de la cadena. La aprobación la compara con la del
-    /// handle con el que abre la raíz para listarla: si difieren, algo cambió entre los dos pasos (H1).
+    /// Identity (volume + FileId) of the object seen while traversing the chain. Approval compares it with the handle used
+    /// to open the root for listing; a mismatch means something changed between the two steps (H1).
     pub identity: FileIdentity,
-    /// La zona denegada en cuyo interior vive la raíz (ver [`Exempt`]).
+    /// The denied zone containing this root (see [`Exempt`]).
     pub zone: Option<PathBuf>,
 }
 
-/// Una raíz candidata de una categoría y el resultado de su comprobación.
+/// A candidate category root and the result of its verification.
 #[derive(Clone, Debug)]
 pub struct RootCheck {
-    /// La ruta tal como se tenía (sin resolver nada).
+    /// The path as received (without resolving it).
     pub raw: PathBuf,
     pub result: Result<VerifiedRoot, RootRejection>,
 }
 
-/// Capa 1 de B1: acepta `raw` solo si TODA la cadena, desde la raíz del volumen y componente a componente, está libre de
-/// reparse points (ver [`sys::open_reparse_free_dir`]) y la ruta que da el handle del último coincide con la canónica.
-/// Devuelve la ruta canónica y la identidad del último componente.
+/// B1 layer 1: accepts `raw` only if the entire chain, from the volume root and component by component, contains no
+/// reparse points (see [`sys::open_reparse_free_dir`]) and the path returned by the final handle matches the canonical path.
+/// Returns the canonical path and identity of the final component.
 pub(crate) fn verify_chain(raw: &Path) -> Result<(PathBuf, FileIdentity), RootRejection> {
     let h = sys::open_reparse_free_dir(raw).map_err(|e| match e {
         sys::ChainError::Reparse { component } => RootRejection::ReparseInChain { component },
@@ -98,7 +98,7 @@ pub(crate) fn verify_chain(raw: &Path) -> Result<(PathBuf, FileIdentity), RootRe
     })?;
     let canonical = sys::final_path(&h).map_err(RootRejection::Os)?;
     let identity = sys::meta(&h).map_err(RootRejection::Os)?.identity;
-    // `canonical_path` abre por ruta: si no da el mismo sitio que el handle recorrido, algo cambió entre medias.
+    // `canonical_path` opens by path: if it does not reach the same object as the traversed handle, something changed in between.
     if canon(raw).is_none_or(|c| PathKey::new(&c) != PathKey::new(&canonical)) {
         return Err(RootRejection::NotCanonical);
     }
@@ -108,7 +108,7 @@ pub(crate) fn verify_chain(raw: &Path) -> Result<(PathBuf, FileIdentity), RootRe
 /// `ERROR_BAD_PATHNAME`.
 const ERROR_BAD_PATHNAME: u32 = 161;
 
-/// La carpeta DENEGADA (relativa a `%LOCALAPPDATA%`) en cuyo interior viven las cachés de cada navegador.
+/// The DENIED folder (relative to `%LOCALAPPDATA%`) containing each browser's caches.
 fn browser_zone_rel(id: CategoryId) -> Option<&'static str> {
     match id {
         CategoryId::ChromeCache => Some(r"Google\Chrome\User Data"),
@@ -122,12 +122,12 @@ fn kf(id: &windows_sys::core::GUID) -> Option<PathBuf> {
     known_folder(id).and_then(|p| canon(&p))
 }
 
-/// ¿Se acepta `temp` (canónica) como "Temporales del usuario"? Solo si es `<local>\Temp` o cuelga de ella.
+/// Is canonical `temp` accepted as "User temporary files"? Only if it is `<local>\Temp` or below it.
 pub(crate) fn accept_user_temp(temp: &Path, local: Option<&Path>) -> bool {
     local.is_some_and(|l| PathKey::new(temp).is_same_or_under(&PathKey::new(&l.join("Temp"))))
 }
 
-/// Las carpetas de usuario de otros perfiles: los hijos de `users_dir` que no son `current_profile`.
+/// Other profiles' user folders: children of `users_dir` other than `current_profile`.
 fn other_profiles(users_dir: &Path, current_profile: Option<&Path>) -> Vec<PathBuf> {
     let cur = current_profile.map(PathBuf::from).map(|p| PathKey::new(&p));
     let Ok(rd) = std::fs::read_dir(users_dir) else {
@@ -140,7 +140,7 @@ fn other_profiles(users_dir: &Path, current_profile: Option<&Path>) -> Vec<PathB
 }
 
 impl Roots {
-    /// Las raíces reales del equipo. `exe_dir` es la carpeta de la propia aplicación (se protege).
+    /// Actual system roots. `exe_dir` is the application's own directory (protected).
     pub fn from_system(exe_dir: Option<&Path>) -> Roots {
         let local = kf(&FOLDERID_LocalAppData);
         let roaming = kf(&FOLDERID_RoamingAppData);
@@ -153,8 +153,8 @@ impl Roots {
         let program_data = kf(&FOLDERID_ProgramData);
         let public = kf(&FOLDERID_Public);
 
-        // %TEMP%: solo si su cadena (tal como la da Windows, SIN canonicalizar) no tiene reparse points y, ya
-        // canonicalizada, es %LOCALAPPDATA%\Temp o cuelga de ella.
+        // %TEMP%: only if its chain as returned by Windows (WITHOUT canonicalizing) has no reparse points and, once
+        // canonicalized, is %LOCALAPPDATA%\Temp or a descendant of it.
         let mut startup_rejections: Vec<(CategoryId, PathBuf, RootRejection)> = Vec::new();
         let user_temp = crate::volume::temp_path().and_then(|t| match verify_chain(&t) {
             Ok((p, _)) if accept_user_temp(&p, local.as_deref()) => Some(p),
@@ -189,10 +189,10 @@ impl Roots {
         denied.extend(program_data.iter().cloned());
         denied.extend(public.iter().cloned());
         if let Some(u) = &users {
-            // Los perfiles de otros usuarios (incluidos `Default`, `Public`...), no el actual.
+            // Other users' profiles (including `Default`, `Public`, ...), excluding the current one.
             denied.extend(other_profiles(u, profile.as_deref()));
         }
-        // Los datos de los navegadores: el perfil NUNCA es caché (las cachés concretas son excepciones, abajo).
+        // Browser data: the profile is NEVER cache (specific cache directories are exceptions below).
         if let Some(l) = &local {
             for id in [
                 CategoryId::ChromeCache,
@@ -208,17 +208,19 @@ impl Roots {
         }
         if let Some(l) = &local {
             denied.push(l.join("Tesela"));
+            // WER: the entire folder is denied; only its two report folders are exceptions (see `zone_of`).
+            denied.push(l.join(WER_ZONE_REL));
         }
         denied.extend(exe_dir.map(Path::to_path_buf));
 
-        // Intocables como destino: la raíz del perfil, AppData, Local, Roaming, LocalLow y C:\Users.
+        // Untouchable as destinations: the profile root, AppData, Local, Roaming, LocalLow, and C:\Users.
         let mut untouchable: Vec<PathBuf> = Vec::new();
         untouchable.extend(profile.iter().cloned());
         untouchable.extend(users.iter().cloned());
         untouchable.extend(roaming.iter().cloned());
         untouchable.extend(local.iter().cloned());
         untouchable.extend(local_low.iter().cloned());
-        // AppData: el padre de Roaming (y de Local).
+        // AppData: the parent of Roaming (and Local).
         for base in [&roaming, &local] {
             if let Some(a) = base.as_ref().and_then(|b| b.parent()) {
                 untouchable.push(a.to_path_buf());
@@ -256,9 +258,9 @@ impl Roots {
         }
     }
 
-    /// Las cachés de navegador que existen ahora mismo y cuya cadena está libre de reparse points (ver
-    /// [`verify_chain`]; solo directorios de caché concretos, ver `tesela_scanner::browser_cache_dirs`), con su categoría
-    /// y la ruta CANÓNICA resuelta por handle.
+    /// Browser caches that currently exist and whose path chains contain no reparse points (see [`verify_chain`]; only
+    /// specific cache directories, see `tesela_scanner::browser_cache_dirs`), with their category and canonical path
+    /// resolved from a handle.
     pub fn browser_cache_dirs(&self) -> Vec<(CategoryId, PathBuf)> {
         [
             CategoryId::ChromeCache,
@@ -274,9 +276,9 @@ impl Roots {
         .collect()
     }
 
-    /// Las raíces candidatas de una categoría con acción `Contents`, TAL COMO SE TIENEN (sin resolver), y su
-    /// comprobación: cadena sin reparse points desde la raíz del volumen (capa 1 de B1) y la zona denegada que cada una
-    /// puede levantar (capa 2). Una raíz rechazada no es una categoría: no se ofrece, no se aprueba y no exime nada.
+    /// Candidate roots for a category with the `Contents` action, AS RECEIVED (unresolved), and their verification:
+    /// a chain with no reparse points from the volume root (B1 layer 1) and the denied zone each root may exempt (layer 2).
+    /// A rejected root is not a category: it is not offered or approved and exempts nothing.
     pub fn category_root_checks(&self, id: CategoryId) -> Vec<RootCheck> {
         let raws: Vec<PathBuf> = match id {
             CategoryId::UserTemp => self.user_temp.iter().cloned().collect(),
@@ -288,6 +290,19 @@ impl Roots {
                     _ => KnownKind::FirefoxCache,
                 };
                 browser_cache_dirs(&self.browser)
+                    .into_iter()
+                    .filter(|(k, _)| *k == kind)
+                    .map(|(_, p)| p)
+                    .collect()
+            }
+            // Error report and dump folders come from the scanner (a single definition of these paths).
+            CategoryId::WerReports | CategoryId::CrashDumps => {
+                let kind = if id == CategoryId::WerReports {
+                    KnownKind::WerReports
+                } else {
+                    KnownKind::CrashDumps
+                };
+                diagnostic_dirs(&self.browser)
                     .into_iter()
                     .filter(|(k, _)| *k == kind)
                     .map(|(_, p)| p)
@@ -317,7 +332,7 @@ impl Roots {
         startup.chain(checked).collect()
     }
 
-    /// Las raíces de la categoría que se descartaron y el motivo (solo las que el usuario debe conocer: ver
+    /// Rejected category roots and their reasons (only those the user should know about; see
     /// [`RootRejection::is_user_visible`]).
     pub fn unavailable_roots(&self, id: CategoryId) -> Vec<(PathBuf, RootRejection)> {
         self.category_root_checks(id)
@@ -327,10 +342,9 @@ impl Roots {
             .collect()
     }
 
-    /// La ÚNICA denegación que puede levantar la raíz canónica `root` de la categoría `id` (ver [`Exempt`]): la carpeta
-    /// denegada en cuyo interior vive. `Windows\Temp` → la carpeta de Windows (su padre); las cachés de navegador → su
-    /// `User Data` (Firefox: `Mozilla\Firefox`), calculada con la misma ruta que la denegación; `%TEMP%` → ninguna
-    /// (`Local` es intocable, no denegada).
+    /// The ONLY denial that canonical category root `root` for `id` may exempt (see [`Exempt`]): the denied folder that
+    /// contains it. `Windows\Temp` → the Windows folder (its parent); browser caches → their `User Data` folder (Firefox:
+    /// `Mozilla\Firefox`), computed from the same path as the denial; `%TEMP%` → none (`Local` is untouchable, not denied).
     fn zone_of(&self, id: CategoryId, root: &Path) -> Option<PathBuf> {
         match id {
             CategoryId::WindowsTemp => root.parent().map(Path::to_path_buf),
@@ -338,11 +352,18 @@ impl Roots {
                 let local = self.browser.local_appdata.as_ref()?;
                 browser_zone_rel(id).map(|z| local.join(z))
             }
+            // Error report folders are inside the denied `WER` zone; only that zone is exempted.
+            CategoryId::WerReports => self
+                .browser
+                .local_appdata
+                .as_ref()
+                .map(|l| l.join(WER_ZONE_REL)),
+            // `%LOCALAPPDATA%\CrashDumps` is not inside a denied zone (like `%TEMP%`: `Local` is untouchable, not denied).
             _ => None,
         }
     }
 
-    /// Las raíces (directorios, canónicas) de una categoría con acción `Contents` que pasaron la comprobación.
+    /// Canonical directory roots for a category with the `Contents` action that passed verification.
     pub fn category_roots(&self, id: CategoryId) -> Vec<PathBuf> {
         self.category_root_checks(id)
             .into_iter()
@@ -350,8 +371,18 @@ impl Roots {
             .collect()
     }
 
-    /// La protección con las raíces de las categorías comprobadas como excepciones: lo que cuelga de ellas no se deniega,
-    /// pero SOLO levantan la zona denegada que cada una declara (nunca "esa zona o cualquiera por encima").
+    /// Diagnostic folders are never eligible for permanent deletion. Use the fixed known-folder
+    /// paths rather than currently existing category roots: a folder can disappear while a plan
+    /// is measured and then return with the same identity before execution.
+    pub(crate) fn is_diagnostic_path(&self, path: &Path) -> bool {
+        let candidate = PathKey::new(path);
+        diagnostic_dirs(&self.browser)
+            .into_iter()
+            .any(|(_, root)| candidate.is_same_or_under(&PathKey::new(&root)))
+    }
+
+    /// Protection rules with verified category roots as exceptions: descendants of those roots are not denied, but they
+    /// exempt ONLY the denied zone each one declares (never "that zone or any ancestor").
     pub fn protection(&self) -> Protection {
         let mut pr = self.protection.clone();
         for id in [
@@ -360,6 +391,8 @@ impl Roots {
             CategoryId::ChromeCache,
             CategoryId::EdgeCache,
             CategoryId::FirefoxCache,
+            CategoryId::WerReports,
+            CategoryId::CrashDumps,
         ] {
             pr.exempt.extend(
                 self.category_root_checks(id)
@@ -381,7 +414,7 @@ mod tests {
     fn las_raices_del_sistema_son_coherentes() {
         let r = Roots::from_system(None);
         let p = r.protection();
-        // El perfil es intocable como destino y sus carpetas conocidas solo "Contenido de".
+        // The profile cannot be a destination; its known folders are "Contents" roots only.
         let profile = kf(&FOLDERID_Profile).expect("perfil");
         assert_eq!(
             p.target_verdict(&PathKey::new(&profile)),
@@ -398,7 +431,7 @@ mod tests {
             p.target_verdict(&PathKey::new(&win.join("System32"))),
             Verdict::Denied
         );
-        // Las raíces de las categorías (si existen) son destino permitido y SIEMPRE canónicas largas.
+        // Category roots (if present) are allowed destinations and are ALWAYS long canonical paths.
         for id in [CategoryId::UserTemp, CategoryId::WindowsTemp] {
             for root in r.category_roots(id) {
                 assert_eq!(
@@ -409,11 +442,11 @@ mod tests {
                 assert_eq!(canonical_path(&root).unwrap(), root);
             }
         }
-        // El temporal del usuario, si se ofrece, cuelga de LocalAppData.
+        // If offered, the user's temporary directory is under LocalAppData.
         if let (Some(t), Some(l)) = (&r.user_temp, &r.browser.local_appdata) {
             assert!(PathKey::new(t).is_same_or_under(&PathKey::new(l)));
         }
-        // Las cachés de navegador son directorios de caché concretos: nunca el perfil.
+        // Browser caches are specific cache directories, never the profile.
         for (_, c) in r.browser_cache_dirs() {
             assert_eq!(p.target_verdict(&PathKey::new(&c)), Verdict::Allowed);
             let s = c.to_string_lossy().to_lowercase();
@@ -422,16 +455,16 @@ mod tests {
                 "{c:?}"
             );
         }
-        // Perfiles de navegador denegados.
+        // Deny browser profiles.
         if let Some(l) = &r.browser.local_appdata {
             let ud = l.join(r"Google\Chrome\User Data\Default\History");
             assert_eq!(p.target_verdict(&PathKey::new(&ud)), Verdict::Denied);
         }
     }
 
-    /// La comprobación de la cadena solo pide ATRIBUTOS de cada componente: `Windows\Temp` se acepta aunque un usuario sin
-    /// elevar no pueda listarla (antes de esto, pedir `FILE_LIST_DIRECTORY` la descartaba en silencio). Y las raíces del
-    /// sistema que existen pasan la cadena en este equipo.
+    /// Chain verification requests only ATTRIBUTES for each component: `Windows\Temp` is accepted even if a non-elevated user
+    /// cannot list it (previously, requesting `FILE_LIST_DIRECTORY` silently rejected it). Existing system roots also pass
+    /// chain verification on this machine.
     #[test]
     fn la_cadena_no_exige_poder_listar_la_carpeta() {
         let win = kf(&FOLDERID_Windows).expect("Windows");
@@ -453,12 +486,12 @@ mod tests {
     fn solo_se_acepta_un_temp_que_es_localappdata_temp_o_cuelga_de_el() {
         let local = Path::new(r"C:\Users\<usuario>\AppData\Local");
         let ok = |s: &str| accept_user_temp(Path::new(s), Some(local));
-        // El sitio por defecto, con otra capitalización, con el prefijo verbatim y un subdirectorio.
+        // The default location, with different casing, with the verbatim prefix, and with a subdirectory.
         assert!(ok(r"C:\Users\<usuario>\AppData\Local\Temp"));
         assert!(ok(r"c:\users\<USUARIO>\appdata\local\TEMP"));
         assert!(ok(r"\\?\C:\Users\<usuario>\AppData\Local\Temp"));
         assert!(ok(r"C:\Users\<usuario>\AppData\Local\Temp\sub"));
-        // TEMP = %LOCALAPPDATA% entero, otras carpetas de Local, Documentos o la raíz de la unidad: la categoría se descarta.
+        // TEMP = all of %LOCALAPPDATA%, other Local folders, Documents, or the drive root: reject the category.
         assert!(!ok(r"C:\Users\<usuario>\AppData\Local"));
         assert!(!ok(r"C:\Users\<usuario>\AppData\Local\Programs"));
         assert!(!ok(r"C:\Users\<usuario>\AppData\Local\Temporal"));
@@ -466,7 +499,7 @@ mod tests {
         assert!(!ok(r"C:\Users\<usuario>\Documents"));
         assert!(!ok(r"C:\"));
         assert!(!ok(r"C:\Windows\Temp"));
-        // Sin LocalAppData conocida no se ofrece nada.
+        // Without a known LocalAppData folder, nothing is offered.
         assert!(!accept_user_temp(
             Path::new(r"C:\Users\<usuario>\AppData\Local\Temp"),
             None
