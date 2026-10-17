@@ -16,3 +16,7 @@
 /rust-toolchain.toml @wandoth1
 /scripts/install-wix.ps1 @wandoth1
 /scripts/msi-validate.ps1 @wandoth1
+# Todo lo que se ejecuta al construir, probar o publicar, y las dependencias fijadas (un cambio en ellas cambia lo que se publica).
+/scripts/ @wandoth1
+/Cargo.lock @wandoth1
+/crates/*/Cargo.toml @wandoth1

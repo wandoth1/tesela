@@ -124,18 +124,40 @@ jobs:
       # Para activarla (ver CODE_SIGNING.md): 1) tras la aprobación de SignPath, crea en el repositorio los secretos
       # SIGNPATH_API_TOKEN y SIGNPATH_ORGANIZATION_ID y la variable SIGNPATH_ENABLED=true; 2) rellena project-slug,
       # signing-policy-slug y artifact-configuration-slug con los de SignPath; 3) quita `false &&` de los `if`;
-      # 4) la configuración de artefacto de SignPath debe firmar tesela.exe y tesela-scan.exe Y el MSI (lo ideal es firmar
-      # primero los .exe, reconstruir el MSI con ellos y firmar el MSI: ver CODE_SIGNING.md). Los pasos de abajo firman el
-      # MSI ya construido, y vuelven a calcular SHA256SUMS.txt DESPUÉS de firmar (la attestation del job `attest` cubre lo
-      # firmado). Al activarlo, mira también la v3 de la acción (esta es la 2.x); y fija el SHA de la que uses.
+      # 4) la configuración de artefacto de SignPath debe firmar tesela.exe y tesela-scan.exe (los del zip portable) Y el MSI
+      # (lo ideal es firmar primero los .exe, reconstruir el MSI con ellos y firmar el MSI: ver CODE_SIGNING.md). Los pasos
+      # de abajo firman el MSI ya construido Y los dos .exe del zip (se extraen, se firman y se vuelve a empaquetar el zip),
+      # vuelven a VALIDAR el MSI firmado con Test-MsiPackage (la firma no puede haber cambiado sus tablas) y vuelven a
+      # calcular SHA256SUMS.txt DESPUÉS de firmar (la attestation del job `attest` cubre lo firmado). Al activarlo, mira
+      # también la v3 de la acción (esta es la 2.x); y fija el SHA de la que uses.
+      # El aviso "no está firmada todavía" de las notas de la release SOLO desaparece si el último paso de firma se ejecutó
+      # (deja RELEASE_SIGNED=true en el entorno del job): mientras la firma esté desactivada, el aviso sale siempre.
       # No hay ningún secreto en este archivo.
-      - name: SignPath - subir el MSI sin firmar
+      - name: SignPath - preparar lo que se firma (el MSI y los .exe del zip)
+        if: ${{ false && vars.SIGNPATH_ENABLED == 'true' }}
+        shell: pwsh
+        run: |
+          $dist = Join-Path $env:RUNNER_TEMP 'dist'
+          $unsigned = Join-Path $env:RUNNER_TEMP 'unsigned'
+          New-Item -ItemType Directory -Force -Path $unsigned | Out-Null
+          $msi = @(Get-ChildItem -LiteralPath $dist -Filter '*.msi')
+          $zip = @(Get-ChildItem -LiteralPath $dist -Filter '*.zip')
+          if ($msi.Count -ne 1 -or $zip.Count -ne 1) { throw 'se esperaba exactamente un MSI y un zip' }
+          Copy-Item -LiteralPath $msi[0].FullName -Destination $unsigned
+          $x = Join-Path $env:RUNNER_TEMP 'zip-unsigned'
+          Expand-Archive -LiteralPath $zip[0].FullName -DestinationPath $x
+          foreach ($e in 'tesela.exe', 'tesela-scan.exe') {
+            $f = @(Get-ChildItem -LiteralPath $x -Recurse -Filter $e)
+            if ($f.Count -ne 1) { throw "el zip no tiene exactamente un $e" }
+            Copy-Item -LiteralPath $f[0].FullName -Destination $unsigned
+          }
+      - name: SignPath - subir lo que se firma
         if: ${{ false && vars.SIGNPATH_ENABLED == 'true' }}
         id: signpath-unsigned
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: unsigned-msi
-          path: ${{ runner.temp }}/dist/*.msi
+          name: unsigned-files
+          path: ${{ runner.temp }}/unsigned/*
           if-no-files-found: error
       - name: SignPath - pedir la firma
         if: ${{ false && vars.SIGNPATH_ENABLED == 'true' }}
@@ -145,21 +167,51 @@ jobs:
           organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}
           project-slug: tesela
           signing-policy-slug: release-signing
-          artifact-configuration-slug: msi
+          artifact-configuration-slug: msi-and-exes
           github-artifact-id: ${{ steps.signpath-unsigned.outputs.artifact-id }}
           wait-for-completion-timeout-in-seconds: 3600
           output-artifact-directory: ${{ runner.temp }}/signed
-      - name: SignPath - sustituir el MSI y recalcular las sumas
+      - name: SignPath - sustituir el MSI y los .exe del zip, revalidar y recalcular las sumas
         if: ${{ false && vars.SIGNPATH_ENABLED == 'true' }}
         shell: pwsh
         run: |
           $dist = Join-Path $env:RUNNER_TEMP 'dist'
-          $signed = @(Get-ChildItem -LiteralPath (Join-Path $env:RUNNER_TEMP 'signed') -Filter '*.msi')
+          $signedDir = Join-Path $env:RUNNER_TEMP 'signed'
+          $signed = @(Get-ChildItem -LiteralPath $signedDir -Filter '*.msi')
           if ($signed.Count -ne 1) { throw 'SignPath no devolvio exactamente un MSI' }
+          # Todo lo que sale tiene que llevar una firma valida (Authenticode).
+          foreach ($f in @($signed[0]) + @(Get-ChildItem -LiteralPath $signedDir -Filter '*.exe')) {
+            $sig = Get-AuthenticodeSignature -LiteralPath $f.FullName
+            if ($sig.Status -ne 'Valid') { throw "$($f.Name) no lleva una firma valida: $($sig.Status)" }
+          }
+          # El MSI firmado se vuelve a validar con las mismas reglas que el sin firmar (la firma no toca las tablas, pero esto
+          # lo comprueba en vez de suponerlo). La version esperada es la del propio paquete.
+          . ./scripts/msi-validate.ps1
+          $version = (cargo metadata --format-version 1 --no-deps | ConvertFrom-Json).packages[0].version
+          $problems = Test-MsiPackage -Path $signed[0].FullName -ExpectedVersion $version
+          if ($problems.Count -gt 0) { throw ('el MSI firmado no pasa la validacion: ' + ($problems -join '; ')) }
           Copy-Item -LiteralPath $signed[0].FullName -Destination (Join-Path $dist $signed[0].Name) -Force
+          # Zip portable: se extrae, se sustituyen SOLO los dos .exe por los firmados (mismo nombre y misma carpeta) y se
+          # vuelve a empaquetar con la misma estructura.
+          $zip = @(Get-ChildItem -LiteralPath $dist -Filter '*.zip')
+          if ($zip.Count -ne 1) { throw 'se esperaba exactamente un zip' }
+          $x = Join-Path $env:RUNNER_TEMP 'zip-signed'
+          Expand-Archive -LiteralPath $zip[0].FullName -DestinationPath $x
+          foreach ($e in 'tesela.exe', 'tesela-scan.exe') {
+            $dst = @(Get-ChildItem -LiteralPath $x -Recurse -Filter $e)
+            $src = Join-Path $signedDir $e
+            if ($dst.Count -ne 1 -or -not (Test-Path -LiteralPath $src)) { throw "falta $e firmado o en el zip" }
+            Copy-Item -LiteralPath $src -Destination $dst[0].FullName -Force
+          }
+          $top = @(Get-ChildItem -LiteralPath $x -Directory)
+          if ($top.Count -ne 1) { throw 'el zip tiene que tener una sola carpeta raiz' }
+          Remove-Item -LiteralPath $zip[0].FullName -Force
+          Compress-Archive -LiteralPath $top[0].FullName -DestinationPath $zip[0].FullName -CompressionLevel Optimal
           $lines = Get-ChildItem -LiteralPath $dist -File | Where-Object { $_.Name -ne 'SHA256SUMS.txt' } | Sort-Object Name |
             ForEach-Object { '{0}  {1}' -f (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $_.Name }
           [System.IO.File]::WriteAllText((Join-Path $dist 'SHA256SUMS.txt'), (($lines -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding($false)))
+          # Lo firmado llego hasta aqui: las notas ya no dicen que la release no esta firmada.
+          "RELEASE_SIGNED=true" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       # Notas de la release: la sección de la versión en CHANGELOG.md, y cómo verificarla.
       - name: Notas de la release
@@ -177,11 +229,13 @@ jobs:
           $text = ($body -join "`n").Trim()
           if (-not $text) { throw "la seccion $version de CHANGELOG.md esta vacia" }
           $sums = (Get-Content -LiteralPath (Join-Path $env:RUNNER_TEMP 'dist/SHA256SUMS.txt') -Raw).TrimEnd()
+          # El aviso de "sin firmar" solo se quita si el paso de firma se ejecuto (RELEASE_SIGNED); desactivado, siempre sale.
+          $signedNote = if ($env:RELEASE_SIGNED -eq 'true') { 'Esta versión está firmada (SignPath Foundation).' } else { 'Esta versión **no está firmada** todavía: Windows SmartScreen puede avisar.' }
           $notes = @(
             $text, '',
             '## Verificar la descarga', '',
             '```', $sums, '```', '',
-            "``gh attestation verify <archivo> --repo wandoth1/tesela`` comprueba la procedencia del build. Esta versión **no está firmada** todavía: Windows SmartScreen puede avisar. Instalación, cómo verificar la descarga, qué hacer con SmartScreen y qué queda al desinstalar: [README, sección Instalación](https://github.com/wandoth1/tesela#instalación).")
+            "``gh attestation verify <archivo> --repo wandoth1/tesela`` comprueba la procedencia del build. $signedNote Instalación, cómo verificar la descarga, qué hacer con SmartScreen y qué queda al desinstalar: [README, sección Instalación](https://github.com/wandoth1/tesela#instalación).")
           [System.IO.File]::WriteAllText((Join-Path $env:RUNNER_TEMP 'dist/RELEASE-NOTES.md'), (($notes -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding($false)))
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

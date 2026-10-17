@@ -4,6 +4,9 @@
 [graph]
 # El producto es solo Windows x64 (ARM64 llegará en la v1.0).
 targets = ["x86_64-pc-windows-msvc"]
+# Todas las features (tambien `capture` de tesela-app, que no entra en el build normal): sus dependencias tambien se
+# comprueban en licencias y avisos de seguridad.
+all-features = true
 
 [advisories]
 ignore = []
