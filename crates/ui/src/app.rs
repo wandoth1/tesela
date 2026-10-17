@@ -1,8 +1,8 @@
-//! Estado global de la interfaz: pantallas, ajustes, unidades y el paso de una pantalla a otra.
+//! Global state of the interface: screens, settings, units and the transition from one screen to another.
 //!
-//! `TeselaUi::show` pinta contra un `egui::Ui` (sin depender de `eframe`): el mismo código lo llama `eframe` desde
-//! `App::ui` y `egui_kittest` desde los tests. Las pantallas no cambian el estado global mientras dibujan: devuelven
-//! [`Action`]s que se aplican al terminar el frame.
+//! `TeselaUi::show` paints against a `egui::Ui` (without depending on `eframe`): the same code calls it `eframe` from
+//! `App::ui` and `egui_kittest` from the tests. Screens do not change global state while drawing: they return
+//! [`Action`]s that are applied at the end of the frame.
 
 use crate::demo;
 use crate::error::Notice;
@@ -19,7 +19,7 @@ use std::sync::Arc;
 use tesela_cleaner::Backend;
 use tesela_update::{Transport, Version};
 
-/// Preferencia de idioma: el del sistema o uno fijo.
+/// Language preference: system language or fixed language.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum LangPref {
     #[default]
@@ -32,7 +32,7 @@ pub enum LangPref {
 }
 
 impl LangPref {
-    /// Idioma efectivo.
+    /// Effective language.
     pub fn resolve(self) -> Lang {
         match self {
             LangPref::System => Lang::system(),
@@ -42,24 +42,24 @@ impl LangPref {
     }
 }
 
-/// Lo que se guarda de la comprobación de actualizaciones (OPCIONAL, desactivada por defecto; ver `tesela-update`).
+/// What is saved from checking for updates (OPTIONAL, disabled by default; see `tesela-update`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct UpdatePrefs {
-    /// El ajuste "Buscar actualizaciones al abrir Tesela". Sin activar, Tesela no se conecta a nada.
+    /// The "Check for updates when opening Tesela" setting. When disabled, Tesela does not connect to anything.
     #[serde(default)]
     pub check: bool,
-    /// Segundos Unix del último intento (con o sin éxito): como mucho una petición cada 24 horas.
+    /// Unix seconds of last attempt (successful or unsuccessful): at most one request every 24 hours.
     #[serde(default)]
     pub last_check: Option<u64>,
-    /// La última versión publicada que se supo (para que el aviso sobreviva a reiniciar dentro de las 24 horas).
+    /// The last known published version (so that the notice survives rebooting within 24 hours).
     #[serde(default, deserialize_with = "tesela_update::deserialize_lenient")]
     pub latest_seen: Option<Version>,
-    /// La versión cuyo aviso se descartó: no vuelve a salir para esa misma.
+    /// The version whose warning was discarded: does not appear again for that same one.
     #[serde(default, deserialize_with = "tesela_update::deserialize_lenient")]
     pub dismissed: Option<Version>,
 }
 
-/// Ajustes que se guardan (la ventana y el archivo `config.toml` los gestiona el ejecutable).
+/// Settings that are saved (the window and the `config.toml` file are managed by the executable).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Settings {
     #[serde(default = "default_theme")]
@@ -84,53 +84,53 @@ impl Default for Settings {
     }
 }
 
-/// Opciones del modo demostración.
+/// Demo mode options.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DemoOptions {
-    /// "Parar y ver" produce un árbol con carpetas incompletas, y `StartScreen::Map` arranca con él.
+    /// "Stop and See" produces a tree with incomplete folders, and `StartScreen::Map` boots with it.
     pub stopped: bool,
-    /// El árbol del peor caso (~20 000 celdas) para medir el coste por frame; solo con `StartScreen::Map`.
+    /// The worst case tree (~20,000 cells) to measure the cost per frame; only with `StartScreen::Map`.
     pub stress: bool,
 }
 
-/// Pantalla con la que arranca (solo se usa en el modo demostración, para capturas y pruebas).
+/// Screen with which it starts (only used in demo mode, for screenshots and tests).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum StartScreen {
     #[default]
     Home,
-    /// Escaneo simulado congelado en esa fracción (0..=1).
+    /// Simulated scan frozen at that fraction (0..=1).
     Scan(f32),
-    /// Directamente el mapa (o la lista) del árbol de demostración.
+    /// Directly map (or list) the demo tree.
     Map(MapStart),
-    /// Una pantalla del flujo de limpieza, con el respaldo SIMULADO (capturas y pruebas).
+    /// A screen of the cleaning flow, with SIMULATED support (captures and tests).
     Clean(CleanStart),
 }
 
-/// Pantalla de la limpieza con la que arranca la demostración.
+/// Cleaning screen with which the demonstration starts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CleanStart {
-    /// Recomendaciones.
+    /// Recommendations.
     Recommendations,
-    /// La confirmación, con una cesta de ejemplo (lo seguro, un archivo y una carpeta de proyectos).
+    /// The confirmation screen with an example basket (safe cleanup items, a file, and a project folder).
     Confirm,
-    /// El resumen tras limpiar esa misma cesta.
+    /// The summary after cleaning that same basket.
     Summary,
 }
 
-/// Dónde arranca la exploración de la demostración.
+/// Where the exploration of the demonstration begins.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MapStart {
-    /// Empieza en la lista en vez de en el mapa.
+    /// Start on the list instead of the map.
     pub list: bool,
-    /// Carpetas por las que se entra desde la raíz (por nombre).
+    /// Folders that are entered from the root (by name).
     pub open: Vec<String>,
-    /// Elemento seleccionado dentro de esa carpeta (por nombre).
+    /// Selected item within that folder (by name).
     pub select: Option<String>,
     /// Items marked in the current folder for a deterministic demo screenshot.
     pub marks: Vec<String>,
 }
 
-/// El respaldo de la limpieza (el `cleaner` real o el simulado de `--demo`).
+/// The backup of the cleanup (the real `cleaner` or the simulated `--demo`).
 #[derive(Clone)]
 pub struct BackendRef(pub Arc<dyn Backend>);
 
@@ -140,7 +140,7 @@ impl std::fmt::Debug for BackendRef {
     }
 }
 
-/// Cómo se hace la petición de la comprobación de actualizaciones (la real, de WinHTTP, o la de una prueba).
+/// How to request an update check (the real one, WinHTTP, or a test).
 #[derive(Clone)]
 pub struct TransportRef(pub Arc<dyn Transport>);
 
@@ -150,25 +150,25 @@ impl std::fmt::Debug for TransportRef {
     }
 }
 
-/// Opciones de arranque.
+/// Boot options.
 #[derive(Clone, Debug)]
 pub struct Options {
     pub settings: Settings,
-    /// `Some` = modo demostración: árbol sintético y unidades ficticias; nada se lee del disco.
+    /// `Some` = demo mode: synthetic tree and dummy units; nothing is read from the disk.
     pub demo: Option<DemoOptions>,
-    /// ¿Animar? (`SPI_GETCLIENTAREAANIMATION`); los tests lo desactivan.
+    /// Encourage? (`SPI_GETCLIENTAREAANIMATION`); the tests deactivate it.
     pub animate: bool,
     pub start: StartScreen,
-    /// Modo simulación (`--dry-run`): la limpieza registra las identidades aprobadas SIN tocar nada.
+    /// Simulation mode (`--dry-run`): cleanup records approved file identities WITHOUT touching anything.
     pub dry_run: bool,
-    /// Sustituye al respaldo por defecto (las pruebas inyectan el suyo).
+    /// Replaces the default fallback (tests inject their own).
     pub backend: Option<BackendRef>,
-    /// Sesión AISLADA (las herramientas de medición `--idle-memory` y `--bench-hover`, con o sin `--demo`): no se lee
-    /// nada del disco del usuario. Sin historial de limpiezas y con un respaldo INERTE (sin raíces de limpieza ni carpeta
-    /// de datos: ni `SHGetKnownFolderPath` para las raíces, ni `%LOCALAPPDATA%\Tesela\history.jsonl`).
+    /// ISOLATED session (the `--idle-memory` and `--bench-hover` measurement tools, with or without `--demo`): reads
+    /// nothing from the user's disk. No cleanup history and an INERT backend (no cleanup roots or data folder:
+    /// no `SHGetKnownFolderPath` calls for roots and no `%LOCALAPPDATA%\Tesela\history.jsonl` access).
     pub isolated: bool,
-    /// Con qué se hace la comprobación de actualizaciones. `None` = no hay comprobación (la demostración y las
-    /// herramientas de medición NUNCA comprueban, lo pasen o no: ver `crate::update::Updater`).
+    /// How to check for updates. `None` = no check (demo and
+    /// measurement tools NEVER check for updates, regardless of the setting: see `crate::update::Updater`).
     pub update_transport: Option<TransportRef>,
 }
 
@@ -187,18 +187,18 @@ impl Default for Options {
     }
 }
 
-/// Qué escanear.
+/// What to scan.
 #[derive(Clone, Debug)]
 pub struct ScanRequest {
-    /// Carpeta o raíz de la unidad.
+    /// Folder or root of the drive.
     pub root: PathBuf,
-    /// Nombre para mostrar ("Sistema (C:)" o el nombre de la carpeta).
+    /// Display name ("System (C:)" or the folder name).
     pub label: String,
-    /// La unidad, si se escanea una unidad entera (para el progreso y el espacio libre).
+    /// The drive, if scanning an entire drive (for progress and free space).
     pub drive: Option<DriveInfo>,
 }
 
-/// Lo que una pantalla pide al terminar de dibujar.
+/// What a screen asks for when finishing drawing.
 #[derive(Clone, Debug)]
 pub enum Action {
     GoHome,
@@ -207,19 +207,19 @@ pub enum Action {
     Rescan,
     SetTheme(ThemePref),
     SetLanguage(LangPref),
-    /// Abre la ventana "Acerca de".
+    /// Open the "About" window.
     ShowAbout,
-    /// Borra el historial de limpiezas (Ajustes).
+    /// Clear cleaning history (Settings).
     ClearHistory,
-    /// Activa o desactiva "Buscar actualizaciones al abrir Tesela" (Ajustes).
+    /// Enable or disable "Check for updates when opening Tile" (Settings).
     SetCheckUpdates(bool),
-    /// Descarta el aviso de esa versión.
+    /// Dismiss the notice for that version.
     DismissUpdate(Version),
-    /// Abre en el navegador la página de esa versión (la URL la construye Tesela con la versión validada).
+    /// Open the page for that version in the browser (the URL is built by Tesela with the validated version).
     OpenRelease(Version),
 }
 
-/// Lo que las pantallas necesitan de la interfaz mientras dibujan.
+/// What screens need from the interface while drawing.
 pub struct Env<'a> {
     pub tr: &'a Tr,
     pub pal: Palette,
@@ -229,15 +229,15 @@ pub struct Env<'a> {
     pub drives: &'a [DriveInfo],
     pub drives_loading: bool,
     pub settings: Settings,
-    /// La limpieza (real o simulada).
+    /// Cleaning (real or simulated).
     pub backend: &'a Arc<dyn Backend>,
-    /// Modo simulación: no se borra nada.
+    /// Simulation mode: nothing is deleted.
     pub dry_run: bool,
-    /// Resúmenes de las limpiezas anteriores (`history.jsonl`).
+    /// Summaries of previous cleanups (`history.jsonl`).
     pub history: &'a [tesela_cleaner::HistoryEntry],
-    /// Hay una ventana modal abierta ("Acerca de"): las teclas de navegación de la exploración no actúan.
+    /// There is a modal window open ("About"): the navigation keys of the exploration do not act.
     pub modal_open: bool,
-    /// Lo que la comprobación de actualizaciones enseña (Ajustes y aviso del inicio).
+    /// What checking for updates teaches (Settings and startup notice).
     pub update: crate::update::UpdateView,
     pub actions: &'a mut Vec<Action>,
 }
@@ -248,7 +248,7 @@ pub(crate) enum Screen {
     Explore(Box<Explore>),
 }
 
-/// La interfaz completa.
+/// The complete interface.
 pub struct TeselaUi {
     settings: Settings,
     settings_dirty: bool,
@@ -258,28 +258,28 @@ pub struct TeselaUi {
     animate: bool,
     backend: Arc<dyn Backend>,
     dry_run: bool,
-    /// Sesión aislada: ni historial ni respaldo real (ver [`Options::isolated`]).
+    /// Isolated session: neither history nor real backup (see [`Options::isolated`]).
     isolated: bool,
     history: Vec<tesela_cleaner::HistoryEntry>,
     drives: Vec<DriveInfo>,
     drives_rx: Option<Receiver<Vec<DriveInfo>>>,
     folder_rx: Option<Receiver<Option<PathBuf>>>,
     about: crate::about::About,
-    /// La comprobación de actualizaciones opcional.
+    /// Checking for updates optional.
     updater: crate::update::Updater,
-    /// Ventana principal, padre (modal) del selector de carpeta.
+    /// Main window, parent (modal) of the folder selector.
     parent: Option<crate::platform::ParentWindow>,
     pub(crate) screen: Screen,
     notice: Option<Notice>,
     last_request: Option<ScanRequest>,
-    /// Las fuentes del sistema se activan al empezar el SIGUIENTE pase de egui: el primer pase se descarta.
+    /// System fonts are activated when the NEXT egui pass begins: the first pass is discarded.
     fonts_pending: bool,
-    /// Escrituras cuyas fuentes de reserva ya están cargadas.
+    /// Scripts whose fallback sources are already loaded.
     font_scripts: crate::fonts::Scripts,
 }
 
 impl TeselaUi {
-    /// Crea la interfaz: instala fuentes del sistema y estilos en `ctx`.
+    /// Create the interface: install system fonts and styles in `ctx`.
     pub fn new(ctx: &egui::Context, opts: Options) -> TeselaUi {
         crate::fonts::install(ctx, crate::fonts::Scripts::NONE);
         theme::install(ctx, opts.settings.theme);
@@ -318,7 +318,7 @@ impl TeselaUi {
         if opts.demo.is_some() {
             ui.drives = demo::drives();
         } else {
-            // Las unidades se consultan en un hilo: una unidad de red caída no debe congelar el arranque.
+            // Drives are polled in a thread - a downed network drive should not freeze boot.
             let (tx, rx) = crossbeam_channel::bounded(1);
             let c = ctx.clone();
             std::thread::spawn(move || {
@@ -369,14 +369,14 @@ impl TeselaUi {
         ui
     }
 
-    /// Vuelve a leer el historial de limpiezas (la demostración no lo tiene: nunca escribe nada).
+    /// Reads the wipe history again (the demo doesn't have it: it never writes anything).
     fn reload_history(&mut self) {
         self.history = load_history(self.demo.is_some(), self.isolated, self.backend.data_dir());
     }
 
-    /// Pide la última versión si el ajuste está activado, ya toca (24 horas desde el último intento) y esta sesión no es
-    /// la demostración ni una herramienta de medición. Anota el intento YA: aunque la petición no llegue a terminar, no se
-    /// repite antes de 24 horas.
+    /// Ask for the latest version if the setting is activated, it's time (24 hours since the last attempt) and this session is not
+    /// demonstration nor a measurement tool. Write down the attempt NOW: even if the request does not finish, it is not
+    /// Repeat within 24 hours.
     fn start_update_check(&mut self, ctx: &egui::Context) {
         let now = unix_now();
         if self.updater.start_if_due(ctx, &self.settings.update, now) {
@@ -394,30 +394,30 @@ impl TeselaUi {
         }
     }
 
-    /// Indica la ventana principal: el selector de carpeta se abre como diálogo modal suyo.
+    /// Indicates the main window: the folder selector opens as its modal dialog.
     pub fn set_parent_window(&mut self, w: &impl raw_window_handle::HasWindowHandle) {
         if self.parent.is_none() {
             self.parent = crate::platform::ParentWindow::from_handle(w);
         }
     }
 
-    /// Ajustes actuales.
+    /// Current settings.
     pub fn settings(&self) -> Settings {
         self.settings
     }
 
-    /// Los ajustes si cambiaron desde la última vez que se preguntó (para guardarlos).
+    /// The settings have changed since the last time you asked (so save them).
     pub fn take_settings_change(&mut self) -> Option<Settings> {
         std::mem::take(&mut self.settings_dirty).then_some(self.settings)
     }
 
-    /// Idioma en uso.
+    /// Language in use.
     pub fn lang(&self) -> Lang {
         self.tr.lang()
     }
 
-    /// Empieza a analizar `root` (para `tesela --scan <ruta>`). Si es la raíz de una unidad se usa su espacio para el
-    /// progreso.
+    /// Start analyzing `root` (for `tesela --scan <ruta>`). If it is the root of a unit, its space is used for the
+    /// progress.
     pub fn request_scan(&mut self, ctx: &egui::Context, root: PathBuf) {
         let drive = platform::drives()
             .into_iter()
@@ -432,7 +432,7 @@ impl TeselaUi {
         self.start_scan(ctx, ScanRequest { root, label, drive });
     }
 
-    /// La exploración, si es la pantalla actual (para los tests).
+    /// The scan, if it is the current screen (for tests).
     #[allow(dead_code)]
     pub(crate) fn explore(&self) -> Option<&Explore> {
         match &self.screen {
@@ -441,7 +441,7 @@ impl TeselaUi {
         }
     }
 
-    /// Si la pantalla de escaneo desplaza sus dos tarjetas (para los tests).
+    /// If the scanning screen scrolls your two cards (for tests).
     #[cfg(test)]
     pub(crate) fn scan_overflow(&self) -> Option<(bool, bool)> {
         match &self.screen {
@@ -450,37 +450,37 @@ impl TeselaUi {
         }
     }
 
-    /// Sustituye las unidades que enseña el inicio (para los tests).
+    /// Replaces the units taught at the beginning (for tests).
     #[cfg(test)]
     pub(crate) fn set_drives(&mut self, drives: Vec<DriveInfo>) {
         self.drives = drives;
     }
 
-    /// Sustituye la forma de abrir el navegador de "Ver novedades" (para los tests: no se abre nada).
+    /// Replaces the way of opening the "See what's new" browser (for tests: nothing opens).
     #[cfg(test)]
     pub(crate) fn set_url_opener(&mut self, opener: Box<dyn Fn(&str)>) {
         self.updater.set_opener(opener);
     }
 
-    /// Lo que la comprobación de actualizaciones enseña ahora (para los tests).
+    /// What checking for updates now teaches (for tests).
     #[cfg(test)]
     pub(crate) fn update_view(&self) -> crate::update::UpdateView {
         self.updater.view(&self.settings.update)
     }
 
-    /// Aplica una acción como si una pantalla la hubiera pedido (para los tests).
+    /// Applies an action as if a screen had requested it (for tests).
     #[cfg(test)]
     pub(crate) fn apply_for_test(&mut self, action: Action) {
         self.apply(&egui::Context::default(), vec![action]);
     }
 
-    /// Marca la última comprobación como fallida (para los tests de disposición).
+    /// Marks the last check as failed (for readiness tests).
     #[cfg(test)]
     pub(crate) fn force_update_failed_for_test(&mut self) {
         self.updater.force_failed();
     }
 
-    /// La exploración, mutable (para los tests).
+    /// Exploration, mutable (for tests).
     #[allow(dead_code)]
     pub(crate) fn explore_mut(&mut self) -> Option<&mut Explore> {
         match &mut self.screen {
@@ -489,7 +489,7 @@ impl TeselaUi {
         }
     }
 
-    /// Nombre de la pantalla actual (`home`, `scan` o `explore`), para las herramientas de medición.
+    /// Name of the current screen (`home`, `scan` or `explore`), for measurement tools.
     pub fn screen_name(&self) -> &'static str {
         match self.screen {
             Screen::Home => "home",
@@ -498,7 +498,7 @@ impl TeselaUi {
         }
     }
 
-    /// Cifras del último dibujo del mapa, si se está explorando.
+    /// Figures from the last drawing of the map, if you are exploring.
     pub fn map_stats(&self) -> Option<crate::map::MapStats> {
         match &self.screen {
             Screen::Explore(e) => Some(e.map.stats()),
@@ -506,7 +506,7 @@ impl TeselaUi {
         }
     }
 
-    /// Título de la ventana según la pantalla.
+    /// Window title depending on the screen.
     pub fn window_title(&self) -> String {
         let name = self.tr.t("app-name");
         match &self.screen {
@@ -555,7 +555,7 @@ impl TeselaUi {
                 Err(TryRecvError::Empty) => {}
             }
         }
-        // ¿Terminó el escaneo?
+        // Is the scan finished?
         let outcome = match &mut self.screen {
             Screen::Scan(s) => s.poll(ctx),
             _ => None,
@@ -563,7 +563,7 @@ impl TeselaUi {
         match outcome {
             Some(ScanOutcome::Done(ex)) => self.screen = Screen::Explore(ex),
             Some(ScanOutcome::Failed(e)) => {
-                // El aviso se guarda TIPADO: se traduce al pintarlo (y cambia con el idioma).
+                // The notice is saved TYPE: it is translated when painted (and changes with the language).
                 self.notice = Some(Notice::ScanStart(e));
                 self.screen = Screen::Home;
             }
@@ -587,7 +587,7 @@ impl TeselaUi {
         for a in actions {
             match a {
                 Action::GoHome => {
-                    // Si hay un escaneo en marcha se cancela (los hilos terminan solos).
+                    // If there is a scan in progress it is canceled (the threads terminate themselves).
                     if let Screen::Scan(s) = &mut self.screen {
                         s.cancel();
                     }
@@ -602,7 +602,7 @@ impl TeselaUi {
                 }
                 Action::PickFolder => {
                     if self.demo.is_some() {
-                        // En la demostración no se abre ningún diálogo: se analiza la carpeta de usuario ficticia.
+                        // In the demo no dialog is opened: the fictitious user folder is analyzed.
                         let req = self.demo_request();
                         self.start_scan(ctx, req);
                     } else if self.folder_rx.is_none() {
@@ -622,7 +622,7 @@ impl TeselaUi {
                 }
                 Action::ShowAbout => self.about.open = true,
                 Action::ClearHistory => {
-                    // Una sesión aislada no toca nada del disco del usuario.
+                    // An isolated session does not touch anything on the user's disk.
                     if let Some(dir) = self.backend.data_dir().filter(|_| !self.isolated) {
                         let _ = tesela_cleaner::log::history_clear(&dir);
                     }
@@ -642,7 +642,7 @@ impl TeselaUi {
                     self.settings.update.check = on;
                     self.settings_dirty = true;
                     self.updater.settings_changed(on);
-                    // Al activarlo se comprueba ya (si toca): el usuario acaba de pedirlo.
+                    // When you activate it, it is checked (if it touches): the user has just requested it.
                     self.start_update_check(ctx);
                 }
                 Action::DismissUpdate(v) => {
@@ -654,9 +654,9 @@ impl TeselaUi {
         }
     }
 
-    /// Si se pidió cerrar la ventana (`requested`) mientras se ejecuta una limpieza, devuelve `true` (hay que cancelar el
-    /// cierre) y la ventana de progreso explica que espere o cancele: cerrar a mitad dejaría la limpieza a medias. En
-    /// cualquier otro momento no se interfiere.
+    /// If you were asked to close the window (`requested`) while a cleanup is running, it returns `true` (you must cancel the
+    /// close) and the progress window explains to wait or cancel: closing halfway would leave the cleaning halfway done. In
+    /// any other time is not interfered with.
     pub(crate) fn guard_close(&mut self, requested: bool) -> bool {
         if !requested {
             return false;
@@ -666,7 +666,7 @@ impl TeselaUi {
                 e.flow.block_close();
                 true
             }
-            // "Limpiar lo seguro" también se lanza desde la pantalla de escaneo.
+            // “Wipe Safe” is also launched from the scanning screen.
             Screen::Scan(s) if s.clean_running() => {
                 s.block_close();
                 true
@@ -675,12 +675,12 @@ impl TeselaUi {
         }
     }
 
-    /// Pinta la pantalla actual.
+    /// Paints the current screen.
     pub fn show(&mut self, ui: &mut egui::Ui) {
         let ctx = ui.ctx().clone();
         if std::mem::take(&mut self.fonts_pending) {
-            // `set_fonts` (en `new`) solo vale desde el siguiente pase; sin esto, el primer frame pediría la familia
-            // "semibold" antes de que exista.
+            // `set_fonts` (in `new`) is only valid from the next pass; Without this, the first frame would ask for the family
+            // "semibold" before it exists.
             ctx.request_discard("activar las fuentes del sistema");
             return;
         }
@@ -725,8 +725,8 @@ impl TeselaUi {
         self.ensure_fonts(&ctx);
     }
 
-    /// Carga las fuentes de reserva de las escrituras que hay en pantalla (nombres del árbol, etiquetas de unidades y
-    /// buscador) si aún no están. Valen desde el siguiente frame.
+    /// Loads backup sources for on-screen scripts (tree names, unit labels, and
+    /// search engine) if they are not already there. They are valid from the next frame.
     fn ensure_fonts(&mut self, ctx: &egui::Context) {
         let mut needed = self
             .drives
@@ -745,17 +745,17 @@ impl TeselaUi {
     }
 }
 
-/// ¿Modo simulación efectivo? Una sesión aislada que NO es la demostración (las herramientas de medición sin `--demo`) es siempre
-/// una simulación: su respaldo inerte tiene la protección vacía y solo no borra nada porque no tiene carpeta de datos (sin
-/// registro, la limpieza no se ejecuta); la simulación lo garantiza por sí misma (defensa en profundidad). La demostración
-/// NO cambia (su respaldo simulado bifurca por `dry_run` y los resúmenes y las capturas del README dependen de ello).
+/// Is dry-run mode in effect? An isolated session other than demo mode (measurement tools without `--demo`) always runs
+/// in dry-run mode: its inert backend has no protection entries and no data folder, so cleanup cannot proceed without a log;
+/// dry-run mode independently prevents writes (defense in depth). Demo behavior does not change (its mock backend branches
+/// on `dry_run`, and the README summaries and screenshots depend on this).
 fn effective_dry_run(dry_run: bool, isolated: bool, demo: bool) -> bool {
     dry_run || (isolated && !demo)
 }
 
-/// El historial de limpiezas que se enseña: el de la carpeta de datos del respaldo, salvo en la demostración y en una
-/// sesión aislada, que no leen nada del disco (la demostración nunca tiene carpeta de datos; el aislamiento lo garantiza
-/// aunque el respaldo la tenga).
+/// The cleaning history shown: that of the backup data folder, except in the demonstration and in a
+/// isolated session, which do not read anything from the disk (the demo never has a data folder; isolation guarantees this
+/// although the backup has it).
 fn load_history(
     demo: bool,
     isolated: bool,
@@ -767,9 +767,9 @@ fn load_history(
     }
 }
 
-/// El respaldo por defecto: el `cleaner` real (raíces de `SHGetKnownFolderPath`), el simulado en la demostración, o uno
-/// INERTE en una sesión aislada (`Roots::default()`: sin raíces de limpieza, sin descargas y sin carpeta de datos, así que
-/// no consulta las carpetas conocidas ni lee ni escribe el historial).
+/// The default fallback: the real `cleaner` (roots of `SHGetKnownFolderPath`), the one simulated in the demo, or one
+/// INERT in an isolated session (`Roots::default()`: no cleanup roots, no downloads and no data folder, so
+/// does not check known folders or read or write history).
 fn default_backend(demo: bool, isolated: bool) -> Arc<dyn Backend> {
     if demo {
         return Arc::new(crate::demo_backend::DemoBackend::new(
@@ -790,7 +790,7 @@ fn default_backend(demo: bool, isolated: bool) -> Arc<dyn Backend> {
     ))
 }
 
-/// Segundos Unix de ahora.
+/// Unix seconds from now.
 pub(crate) fn unix_now() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -816,22 +816,22 @@ mod tests {
     fn una_sesion_aislada_no_lee_el_historial_aunque_haya_carpeta_de_datos() {
         let t = TestDir::new();
         tesela_cleaner::log::history_append(t.path(), &entry()).unwrap();
-        // Normal: se lee.
+        // Normal: it reads.
         assert_eq!(
             load_history(false, false, Some(t.path().to_path_buf())).len(),
             1
         );
-        // GM-M4: aislada (`--idle-memory`/`--bench-hover` sin `--demo`) o demostración: nada.
+        // GM-M4: isolated (`--idle-memory`/`--bench-hover` without `--demo`) or demo: nothing.
         assert!(load_history(false, true, Some(t.path().to_path_buf())).is_empty());
         assert!(load_history(true, false, Some(t.path().to_path_buf())).is_empty());
         assert!(load_history(true, true, Some(t.path().to_path_buf())).is_empty());
-        // Sin carpeta de datos tampoco hay historial.
+        // Without a data folder there is no history either.
         assert!(load_history(false, false, None).is_empty());
     }
 
     #[test]
     fn el_respaldo_de_una_sesion_aislada_es_inerte() {
-        // GM-M4: sin raíces de limpieza, sin descargas, sin carpeta de datos (ni historial ni registros) y sin `from_system`.
+        // GM-M4: No cleanup roots, no downloads, no data folder (no history or logs) and no `from_system`.
         let b = default_backend(false, true);
         assert!(!b.is_demo());
         assert_eq!(b.data_dir(), None);
@@ -840,17 +840,17 @@ mod tests {
             assert!(b.category_roots(id).is_empty(), "{id:?}");
             assert!(b.unavailable_roots(id).is_empty(), "{id:?}");
         }
-        // La demostración sigue siendo la simulada, y por defecto el respaldo real tiene su carpeta de datos.
+        // The demo is still the simulated one, and by default the real backup has its data folder.
         assert!(default_backend(true, true).is_demo());
         assert!(default_backend(true, false).is_demo());
     }
 
     #[test]
     fn la_sesion_aislada_sin_demo_es_siempre_una_simulacion_y_la_demo_no_cambia() {
-        // R-S1: herramientas de medición sin `--demo` (aisladas, sin demostración): simulación forzada.
+        // R-S1: measurement tools without `--demo` (isolated, no demonstration): forced simulation.
         assert!(effective_dry_run(false, true, false));
         assert!(effective_dry_run(true, true, false));
-        // La demostración (aislada, con demo) y el uso normal respetan `--dry-run` tal cual.
+        // Demo (isolated, with demo) and normal use respect `--dry-run` as is.
         assert!(!effective_dry_run(false, true, true));
         assert!(effective_dry_run(true, true, true));
         assert!(!effective_dry_run(false, false, false));

@@ -1,5 +1,5 @@
-//! Pruebas de la comprobación de actualizaciones opcional con un transporte FALSO: ninguna toca la red (ni abre el
-//! navegador: la forma de abrirlo también se sustituye).
+//! Testing optional update checking with a FALSE transport: none of them touch the network (nor open the
+//! browser: the way to open it is also replaced).
 
 use crate::app::{BackendRef, TransportRef, UpdatePrefs, unix_now};
 use crate::tests::test_backend;
@@ -13,11 +13,11 @@ use tesela_update::{Request, Transport, TransportError, Version, release_url};
 
 const DAY: u64 = 24 * 60 * 60;
 
-/// Transporte falso: apunta cada petición y contesta lo que se le dio. Nunca toca la red.
+/// False Transportation: write down each request and answer what was given. He never touches the net.
 struct Mock {
     answer: Mutex<Result<Vec<u8>, TransportError>>,
     requests: Mutex<Vec<Request>>,
-    /// Si lo hay, la respuesta espera a que se suelte (para probar qué pasa con una petición en vuelo).
+    /// If there is, the response waits for it to be released (to test what happens with an in-flight request).
     gate: Mutex<Option<std::sync::mpsc::Receiver<()>>>,
 }
 
@@ -29,14 +29,14 @@ impl Mock {
             gate: Mutex::new(None),
         })
     }
-    /// Como [`Mock::tag`], pero no contesta hasta que se envíe algo por el canal que se devuelve.
+    /// Like [`Mock::tag`], but does not respond until something is sent on the returned channel.
     fn gated(tag: &str) -> (Arc<Mock>, std::sync::mpsc::Sender<()>) {
         let mock = Mock::tag(tag);
         let (tx, rx) = std::sync::mpsc::channel();
         *mock.gate.lock().unwrap() = Some(rx);
         (mock, tx)
     }
-    /// Contesta con un JSON de `releases/latest` que lleva ese `tag_name` (y una URL ajena que no debe usarse).
+    /// Reply with a JSON of `releases/latest` that carries that `tag_name` (and a foreign URL that should not be used).
     fn tag(tag: &str) -> Arc<Mock> {
         Mock::new(Ok(format!(
             r#"{{"tag_name":"{tag}","html_url":"https://evil.example/pwned","assets":[{{"browser_download_url":"https://evil.example/tesela.exe"}}]}}"#
@@ -63,7 +63,7 @@ fn current() -> Version {
     Version::current().expect("la versión del producto es X.Y.Z")
 }
 
-/// Una versión más nueva que la de este ejecutable.
+/// A newer version than this executable.
 fn newer() -> Version {
     Version {
         patch: current().patch + 1,
@@ -74,7 +74,7 @@ fn newer() -> Version {
 struct App {
     opts: Options,
     ui: Option<TeselaUi>,
-    /// Lo que se habría abierto en el navegador.
+    /// What would have been opened in the browser.
     opened: Arc<Mutex<Vec<String>>>,
 }
 
@@ -143,7 +143,7 @@ fn harness(o: Options) -> Harness<'static, App> {
     harness_sized(o, 1280.0, 800.0)
 }
 
-/// Sigue pintando hasta que `cond` se cumple (la petición va en otro hilo) o se acaba la paciencia.
+/// Keep painting until `cond` is fulfilled (the request is in another thread) or your patience runs out.
 fn wait_until(
     h: &mut Harness<'static, App>,
     cond: impl Fn(&mut Harness<'static, App>) -> bool,
@@ -158,7 +158,7 @@ fn wait_until(
     false
 }
 
-/// Deja pasar tiempo y fotogramas para comprobar que NO ocurre nada.
+/// Allow time and frames to pass to verify that nothing is happening.
 fn settle(h: &mut Harness<'static, App>) {
     std::thread::sleep(Duration::from_millis(120));
     h.run_steps(8);
@@ -181,7 +181,7 @@ fn desactivado_no_se_hace_ninguna_peticion() {
     let p = prefs(&mut h);
     assert!(!p.check && p.last_check.is_none() && p.latest_seen.is_none());
     assert!(view(&mut h).notice.is_none());
-    // La configuración por defecto es "desactivado".
+    // The default setting is "disabled".
     assert!(!Settings::default().update.check);
     assert!(h.state_mut().ui_mut().take_settings_change().is_none());
 }
@@ -193,7 +193,7 @@ fn activado_hace_una_peticion_y_no_mas_de_una_cada_24_horas() {
     let mut h = harness(opts(on(None), LangPref::Es, Some(&mock)));
     assert!(wait_until(&mut h, |h| prefs(h).latest_seen.is_some()));
     assert_eq!(mock.calls(), 1);
-    // El intento quedó anotado (y se guarda: los ajustes cambiaron).
+    // The attempt was noted (and saved: settings changed).
     let last = prefs(&mut h).last_check.expect("fecha del intento");
     assert!((before..=unix_now()).contains(&last));
     let saved = h
@@ -202,11 +202,11 @@ fn activado_hace_una_peticion_y_no_mas_de_una_cada_24_horas() {
         .take_settings_change()
         .expect("se guarda");
     assert_eq!(saved.update.latest_seen, Some(newer()));
-    // Pintar más no repite la petición.
+    // Painting more does not repeat the request.
     settle(&mut h);
     assert_eq!(mock.calls(), 1);
 
-    // Reiniciar Tesela con lo guardado, una hora después: no vuelve a preguntar, y el aviso sigue ahí.
+    // Restart Tesela with what was saved, an hour later: it does not ask again, and the warning is still there.
     let again = Mock::tag(&newer().tag());
     let mut saved_prefs = saved.update;
     saved_prefs.last_check = Some(unix_now() - 3600);
@@ -219,7 +219,7 @@ fn activado_hace_una_peticion_y_no_mas_de_una_cada_24_horas() {
     );
     assert_eq!(view(&mut h2).notice, Some(newer()));
 
-    // Pasadas las 24 horas, sí.
+    // After 24 hours, yes.
     let late = Mock::tag(&newer().tag());
     let mut h3 = harness(opts(
         on(Some(unix_now() - DAY - 5)),
@@ -269,7 +269,7 @@ fn activarlo_en_ajustes_comprueba_al_momento_y_desactivarlo_olvida_la_respuesta(
     assert!(wait_until(&mut h, |h| prefs(h).latest_seen.is_some()));
     assert_eq!(mock.calls(), 1);
     assert_eq!(view(&mut h).notice, Some(newer()));
-    // Desactivar: el aviso desaparece y no se vuelve a preguntar (aunque se reactive enseguida: faltan 24 horas).
+    // Deactivate: the warning disappears and is not asked again (although it is reactivated immediately: there are 24 hours left).
     h.state_mut()
         .ui_mut()
         .apply_for_test(crate::app::Action::SetCheckUpdates(false));
@@ -287,7 +287,7 @@ fn una_respuesta_que_llega_con_el_ajuste_desactivado_se_olvida() {
     let (mock, release) = Mock::gated(&newer().tag());
     let mut h = harness(opts(on(None), LangPref::Es, Some(&mock)));
     assert!(wait_until(&mut h, |_| mock.calls() == 1));
-    // Se desactiva con la petición en vuelo; después llega la respuesta.
+    // It is deactivated with the request in flight; then the answer comes.
     h.state_mut()
         .ui_mut()
         .apply_for_test(crate::app::Action::SetCheckUpdates(false));
@@ -299,7 +299,7 @@ fn una_respuesta_que_llega_con_el_ajuste_desactivado_se_olvida() {
 
 #[test]
 fn la_demostracion_y_las_herramientas_de_medicion_nunca_comprueban() {
-    // Demostración con el ajuste activado y un transporte a mano: nada.
+    // Demo with the setting on and a hand carry: nothing.
     let mock = Mock::tag(&newer().tag());
     let mut o = opts(on(None), LangPref::Es, Some(&mock));
     o.demo = Some(DemoOptions::default());
@@ -309,7 +309,7 @@ fn la_demostracion_y_las_herramientas_de_medicion_nunca_comprueban() {
     let v = view(&mut h);
     assert!(!v.available && v.notice.is_none() && !v.failed);
     assert!(prefs(&mut h).last_check.is_none());
-    // No se ofrece el ajuste en la demostración.
+    // Adjustment is not offered in the demo.
     h.get_by_label("Ajustes").click();
     h.run_steps(3);
     assert!(
@@ -317,7 +317,7 @@ fn la_demostracion_y_las_herramientas_de_medicion_nunca_comprueban() {
             .is_none()
     );
 
-    // Herramientas de medición (sesión aislada, con y sin `--demo`).
+    // Measurement tools (isolated session, with and without `--demo`).
     for demo in [None, Some(DemoOptions::default())] {
         let mock = Mock::tag(&newer().tag());
         let mut o = opts(on(None), LangPref::Es, Some(&mock));
@@ -327,14 +327,14 @@ fn la_demostracion_y_las_herramientas_de_medicion_nunca_comprueban() {
         settle(&mut h);
         assert_eq!(mock.calls(), 0, "aislada (demo: {})", demo.is_some());
         assert!(!view(&mut h).available);
-        // Ni siquiera abrir una página: no hay forma de llegar a la URL.
+        // It doesn't even open a page: there is no way to get to the URL.
         h.state_mut()
             .ui_mut()
             .apply_for_test(crate::app::Action::OpenRelease(newer()));
         assert!(h.state().opened.lock().unwrap().is_empty());
     }
 
-    // Sin transporte (el ejecutable no lo pasa): tampoco hay nada que ofrecer.
+    // No transport (the executable does not pass it): there is nothing to offer either.
     let mut h = harness(opts(on(None), LangPref::Es, None));
     settle(&mut h);
     assert!(!view(&mut h).available);
@@ -394,7 +394,7 @@ fn json_roto_y_errores_del_transporte_se_ignoran_con_una_linea_en_ajustes() {
         let mut h = harness(opts(on(None), LangPref::Es, Some(&mock)));
         assert!(wait_until(&mut h, |h| view(h).failed), "{answer:?}");
         assert!(view(&mut h).notice.is_none(), "{answer:?}");
-        // El aviso del inicio no sale y la línea solo aparece dentro del menú de Ajustes.
+        // The startup notice does not appear and the line only appears within the Settings menu.
         assert!(h.query_by_label_contains("Hay una versión nueva").is_none());
         h.get_by_label("Ajustes").click();
         h.run_steps(3);
@@ -420,7 +420,7 @@ fn el_aviso_sale_se_descarta_y_no_vuelve_a_salir_para_esa_version() {
         .expect("se guarda");
     assert_eq!(saved.update.dismissed, Some(newer()));
 
-    // Al reiniciar con lo guardado (pasadas las 24 horas, vuelve a preguntar y GitHub dice lo mismo): sigue sin salir.
+    // When restarting with the saved (after 24 hours, ask again and GitHub says the same): it still doesn't exit.
     let mut p = saved.update;
     p.last_check = Some(unix_now() - DAY - 5);
     let again = Mock::tag(&newer().tag());
@@ -433,7 +433,7 @@ fn el_aviso_sale_se_descarta_y_no_vuelve_a_salir_para_esa_version() {
             .is_none()
     );
 
-    // Una versión posterior sí vuelve a avisar.
+    // A later version does warn again.
     let later = Version {
         patch: newer().patch + 1,
         ..newer()
@@ -488,7 +488,7 @@ fn ver_novedades_abre_la_pagina_que_construye_tesela_y_no_una_url_de_la_respuest
     );
     assert_eq!(opened[0], release_url(newer()));
     assert!(!opened[0].contains("evil"));
-    // Abrir la página no descarta el aviso.
+    // Opening the page does not dismiss the notice.
     assert_eq!(view(&mut h).notice, Some(newer()));
 }
 
@@ -525,27 +525,27 @@ fn los_textos_del_aviso_y_de_ajustes_salen_en_los_dos_idiomas() {
         h.get_by_label_contains(available);
         h.get_by_label(view_text);
         h.get_by_label(dismiss);
-        // Los separadores "·" se pintan: no son nodos de accesibilidad que un lector de pantalla lea.
+        // The "·" separators are painted: they are not accessibility nodes that a screen reader will read.
         assert!(h.query_by_label_contains("·").is_none());
         h.get_by_label(settings).click();
         h.run_steps(3);
         h.get_by_label(check);
         h.get_by_label_contains(explain);
-        // El consentimiento dice cuándo se consulta por primera vez y qué se descarga de verdad.
+        // Consent says when it is first consulted and what is actually downloaded.
         h.get_by_label_contains(when_first);
         h.get_by_label_contains(only_number);
-        // La explicación dice qué se consulta y qué se envía, sin prometer más de lo que hace.
+        // The explanation says what is consulted and what is sent, without promising more than it does.
         h.get_by_label_contains("GitHub");
     }
 }
 
-/// El aviso y el menú de Ajustes caben y no se pisan a 960x600 (el mínimo) y a 1280x800, en los dos idiomas.
+/// The notice and the Settings menu fit and are not stepped on at 960x600 (the minimum) and 1280x800, in both languages.
 #[test]
 fn la_disposicion_cabe_a_960x600_y_a_1280x800_en_es_y_en() {
     for (w, hgt) in [(960.0_f32, 600.0_f32), (1280.0, 800.0)] {
         for lang in [LangPref::Es, LangPref::En] {
             let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, vec2(w, hgt));
-            // Con un fallo anterior, para que el menú lleve también la línea de "no se pudo comprobar".
+            // With a previous failure, so that the menu also has the line "could not be verified".
             let mock = Mock::tag(&newer().tag());
             let mut h = harness_sized(opts(on(None), lang, Some(&mock)), w, hgt);
             assert!(wait_until(&mut h, |h| view(h).notice.is_some()));
@@ -590,7 +590,7 @@ fn la_disposicion_cabe_a_960x600_y_a_1280x800_en_es_y_en() {
                     "{w}x{hgt} {lang:?}: {r:?} fuera de la ventana"
                 );
             }
-            // En una sola línea, a la izquierda del botón de Ajustes, sin pisar el título.
+            // In a single line, to the left of the Settings button, without stepping on the title.
             assert!(
                 dismiss.max.x <= button.min.x,
                 "{w}x{hgt} {lang:?}: el aviso pisa Ajustes"
@@ -610,7 +610,7 @@ fn la_disposicion_cabe_a_960x600_y_a_1280x800_en_es_y_en() {
                 );
             }
 
-            // El menú de Ajustes con la explicación y la línea de fallo: dentro de la ventana y sin solaparse.
+            // The Settings menu with explanation and fault line: inside the window and without overlapping.
             h.get_by_label(settings).click();
             h.run_steps(3);
             let c = h.get_by_label(check).rect();
@@ -631,7 +631,7 @@ fn la_disposicion_cabe_a_960x600_y_a_1280x800_en_es_y_en() {
                 "{w}x{hgt} {lang:?}: la explicación ensancha el menú ({})",
                 e.width()
             );
-            // La explicación se parte en varias líneas, no se corta ni se sale del menú.
+            // The explanation is divided into several lines, it is not cut off or left the menu.
             assert!(
                 e.height() > 40.0,
                 "{w}x{hgt} {lang:?}: la explicación no se partió ({})",

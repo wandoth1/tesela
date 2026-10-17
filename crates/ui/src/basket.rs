@@ -1,5 +1,5 @@
-//! La cesta y la pantalla de Recomendaciones sobre la exploración: qué se puede añadir, la barra de la cesta, su lista
-//! ("Ver") y las tarjetas Seguro / Revisar / Solo informar (PLAN.md §2.3, §2.5 y §2.6).
+//! The basket and Browse Recommendations screen: what can be added, the basket bar, your list
+//! ("View") and the Secure / Review / Report Only cards (PLAN.md §2.3, §2.5 and §2.6).
 
 use crate::app::Env;
 use crate::args;
@@ -16,16 +16,16 @@ use tesela_cleaner::paths::PathKey;
 use tesela_cleaner::{AddOutcome, Browser, CategoryId, Destination, Source, Verdict, rules};
 use tesela_model::{NodeId, flags};
 
-/// Ancho que se reserva a la derecha del titular de Recomendaciones para el botón "Limpiar lo seguro (X)" (unos 215 px) y su hueco.
+/// Width reserved to the right of the Recommendations headline for the "Clear safe (X)" button (about 215 px) and its gap.
 const RECS_BUTTON_RESERVE: f32 = 250.0;
 
 impl Explore {
-    /// Clave de comparación de la ruta de un nodo.
+    /// Comparison key of the path of a node.
     pub(crate) fn node_key(&self, id: NodeId) -> PathKey {
         PathKey::new(&self.tree.path(id))
     }
 
-    /// Qué se puede hacer con `sel` respecto a la cesta.
+    /// What can be done with `sel` regarding the basket.
     pub(crate) fn add_state(&self, sel: Sel) -> AddState {
         let id = match sel {
             Sel::Group(_) => return AddState::Group,
@@ -61,11 +61,11 @@ impl Explore {
         }
     }
 
-    /// Añade `sel` a la cesta (un archivo o carpeta, o el contenido de una carpeta conocida) y dice si entró. Es el ÚNICO
-    /// camino hacia la cesta desde el mapa y la lista: el menú, el panel de detalles y la selección múltiple pasan por aquí,
-    /// con las mismas comprobaciones (`add_state` y las del propio `Basket`).
+    /// Adds `sel` to the basket (a file or folder, or the contents of a known folder) and says if it entered. It is the ONLY
+    /// path to basket from map and list: menu, details panel and multi selection go through here,
+    /// with the same checks (`add_state` and those of `Basket` itself).
     pub(crate) fn basket_add_one(&mut self, sel: Sel) -> bool {
-        // Con una limpieza en curso la cesta no se toca (los botones ya salen desactivados; esto lo garantiza).
+        // With a cleaning in progress, the basket is not touched (the buttons are already deactivated; this guarantees it).
         if self.flow.busy() {
             return false;
         }
@@ -80,14 +80,14 @@ impl Explore {
         matches!(out, AddOutcome::Added { .. })
     }
 
-    /// Como [`Explore::basket_add_one`], con el aviso "Añadido a la cesta".
+    /// Like [`Explore::basket_add_one`], with the notice "Added to cart".
     pub(crate) fn basket_add(&mut self, sel: Sel, env: &Env, now: f64) {
         if self.basket_add_one(sel) {
             self.toast = Some((env.tr.t("basket-added"), now + 2.0));
         }
     }
 
-    /// Quita `sel` de la cesta (solo si está como entrada propia).
+    /// Remove `sel` from the basket (only if it is as its own entry).
     pub(crate) fn basket_remove(&mut self, sel: Sel) {
         let Sel::Node(id) = sel else { return };
         let path = self.tree.path(id);
@@ -95,13 +95,13 @@ impl Explore {
         self.flow.basket.remove(&Source::ContentsOf(path));
     }
 
-    /// ¿Está `sel` en la cesta como entrada propia (se puede quitar)?
+    /// Is `sel` in the basket as its own entry (can be removed)?
     pub(crate) fn basket_has_own(&self, sel: Sel) -> bool {
         let Sel::Node(id) = sel else { return false };
         self.flow.basket.has_own(&self.node_key(id))
     }
 
-    /// Recalcula las recomendaciones si cambió el árbol (o el overlay).
+    /// Recalculate the recommendations if you changed the tree (or the overlay).
     pub(crate) fn ensure_recs(&mut self, env: &Env) {
         if self.recs.as_ref().is_some_and(|(v, _)| *v == self.version) {
             return;
@@ -117,7 +117,7 @@ impl Explore {
         self.recs = Some((self.version, r));
     }
 
-    /// Vuelve a mirar qué navegadores están abiertos y recalcula ("Volver a comprobar").
+    /// Look again at which browsers are open and recalculate ("Recheck").
     pub(crate) fn recheck_browsers(&mut self, env: &Env) {
         self.browsers_open = env.backend.running_browsers();
         self.recs = None;
@@ -125,9 +125,9 @@ impl Explore {
         self.ensure_recs(env);
     }
 
-    /// Tamaño estimado de la cesta con el árbol (la cifra definitiva la mide el `cleaner` al confirmar). Se recalcula solo
-    /// si cambió la cesta o el árbol (versiones): con decenas de miles de entradas no se puede localizar cada ruta en
-    /// cada fotograma.
+    /// Estimated size of the basket with the tree (the final figure is measured by `cleaner` upon confirmation). It recalculates itself
+    /// if you changed the basket or the tree (versions): with tens of thousands of entries you cannot locate every path in
+    /// every frame.
     pub(crate) fn basket_estimate(&mut self, env: &Env) -> (usize, u64) {
         self.ensure_recs(env);
         let stamp = (self.flow.basket.rev(), self.version);
@@ -157,7 +157,7 @@ impl Explore {
         out
     }
 
-    /// Empieza la limpieza de lo que hay en la cesta (aprobación y confirmación).
+    /// The cleaning of what is in the basket begins (approval and confirmation).
     pub(crate) fn start_clean(&mut self, ctx: &egui::Context, env: &Env) {
         let vol = self.volume_ctx();
         self.flow.start(ctx, env.backend, vol, false);
@@ -174,7 +174,7 @@ impl Explore {
         }
     }
 
-    /// Barra de la cesta (PLAN.md §2.3): resumen, "Ver", "Vaciar cesta" y el botón principal.
+    /// Basket bar (PLAN.md §2.3): overview, "View", "Empty basket" and the main button.
     pub(crate) fn basket_bar(&mut self, ui: &mut Ui, env: &mut Env) {
         let pal = env.pal;
         let (n, bytes) = self.basket_estimate(env);
@@ -212,9 +212,9 @@ impl Explore {
         });
     }
 
-    /// La lista de la cesta agrupada por destino, con las frases de PLAN.md §2.5. Lo que el usuario añadió ("Tu archivo" y
-    /// "Contenido de") puede ser de decenas de miles de entradas: esa lista se virtualiza (solo se construyen y miden las
-    /// filas que se ven).
+    /// The basket list grouped by destination, with the phrases from PLAN.md §2.5. What the user added ("Your file" and
+    /// "Contents of") can be tens of thousands of entries: that list is virtualized (only the
+    /// rows that are seen).
     pub(crate) fn basket_window(&mut self, ctx: &egui::Context, env: &mut Env) {
         if !self.basket_open {
             self.locator_cache = None;
@@ -228,8 +228,8 @@ impl Explore {
         self.ensure_recs(env);
         let recs = self.recs.as_ref().map(|r| r.1.clone()).unwrap_or_default();
         let tree = self.tree.clone();
-        // El índice de hermanos del localizador se conserva entre fotogramas mientras la ventana está abierta y no cambian
-        // ni el árbol ni la cesta.
+        // The sibling index of the locator is preserved between frames while the window is open and does not change
+        // neither the tree nor the basket.
         let key = (self.version, self.flow.basket.rev());
         let index = match self.locator_cache.take() {
             Some((k, idx)) if k == key => idx,
@@ -358,10 +358,10 @@ impl Explore {
     }
 }
 
-/// Alto de una fila de la lista de la cesta (nombre, ruta y botón de quitar): fijo, para poder virtualizar la lista.
+/// Height of a row of the basket list (name, path and remove button): fixed, to be able to virtualize the list.
 const BASKET_ROW_H: f32 = 40.0;
 
-/// Cabecera de un grupo de la cesta: icono, título y la frase de lo que pasará con él.
+/// Header of a basket group: icon, title and the phrase of what will happen to it.
 fn basket_head(ui: &mut Ui, env: &mut Env, icon: Icon, head: &str, phrase: &str) {
     let pal = env.pal;
     ui.horizontal(|ui| {
@@ -376,7 +376,7 @@ fn basket_head(ui: &mut Ui, env: &mut Env, icon: Icon, head: &str, phrase: &str)
     ui.add_space(4.0);
 }
 
-/// Una fila de la cesta: nombre, ruta (si hay), tamaño y el botón de quitarla.
+/// A basket row: name, path (if any), size and the remove button.
 fn basket_row(
     ui: &mut Ui,
     env: &mut Env,
@@ -416,7 +416,7 @@ pub(crate) fn category_is_recycled(id: CategoryId) -> bool {
     rules().get(id).destination == Some(Destination::Recycle)
 }
 
-/// Nombre de una categoría en la cesta y en las recomendaciones.
+/// Name of a category in the basket and in recommendations.
 pub(crate) fn category_name(env: &Env, id: CategoryId) -> String {
     env.tr.t(match id {
         CategoryId::UserTemp => "known-user-temp",
@@ -435,7 +435,7 @@ pub(crate) fn category_name(env: &Env, id: CategoryId) -> String {
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
-// Recomendaciones
+// Recommendations
 // ---------------------------------------------------------------------------------------------------------------------
 
 fn card_frame(pal: &Palette) -> egui::Frame {
@@ -464,12 +464,12 @@ fn tag(
 }
 
 impl Explore {
-    /// La pantalla de Recomendaciones (PLAN.md §2.3 y la maqueta aprobada).
+    /// The Recommendations screen (PLAN.md §2.3 and the approved layout).
     pub(crate) fn recs_ui(&mut self, ui: &mut Ui, env: &mut Env) {
         let pal = env.pal;
         self.ensure_recs(env);
         let recs: Recs = self.recs.as_ref().map(|r| r.1.clone()).unwrap_or_default();
-        // "Ya marcado": la primera vez, lo seguro que se puede limpiar ahora entra en la cesta.
+        // "Already marked": the first time, the safe thing that can be cleaned now goes into the basket.
         if !self.recs_preselected {
             self.recs_preselected = true;
             for id in recs.preselected() {
@@ -486,8 +486,8 @@ impl Explore {
                 ui.add_space(4.0);
                 ui.horizontal(|ui| {
                     ui.vertical(|ui| {
-                        // R-1: el titular (largo: "Hasta X en candidatos de bajo riesgo...") se limita al ancho que deja el botón
-                        // principal y pasa a varias líneas; con la ventana mínima (960 px) ocupaba su sitio y lo pisaba.
+                        // R-1: the headline (length: "Up to X in low-risk candidates...") is limited to the width left by the button
+                        // main and goes to several lines; with the minimum window (960 px) it took its place and stepped on it.
                         ui.set_max_width((ui.available_width() - RECS_BUTTON_RESERVE).max(240.0));
                         let title = if safe > 0 {
                             env.tr
@@ -601,7 +601,7 @@ impl Explore {
         if !browsers.is_empty() {
             self.safe_card(ui, env, &browsers, CategoryId::ChromeCache);
         }
-        // H4: lo que existe pero Tesela no ofrece, con su motivo, en vez de desaparecer en silencio.
+        // H4: what exists but Tesela does not offer, with its reason, instead of disappearing in silence.
         if !recs.unavailable.is_empty() {
             card_frame(&pal).show(ui, |ui| {
                 ui.set_width(ui.available_width());
@@ -635,7 +635,7 @@ impl Explore {
         }
     }
 
-    /// Una tarjeta "Seguro". `rows` tiene una fila (temporales) o las de los navegadores (agrupadas en una tarjeta).
+    /// An "Insurance" card. `rows` has one row (temporary) or those of browsers (grouped in a card).
     fn safe_card(&mut self, ui: &mut Ui, env: &mut Env, rows: &[&RecRow], lead: CategoryId) {
         let pal = env.pal;
         let grouped = rows.len() > 1 || rows.first().is_some_and(|r| r.id.is_browser_cache());
@@ -889,7 +889,7 @@ fn browser_label(env: &Env, id: CategoryId) -> String {
     })
 }
 
-/// Una fila de las tarjetas "Revisar" y "Solo informar": nombre, explicación, tamaño y, si lo hay, un botón.
+/// A row of "Review" and "Report Only" cards: name, explanation, size, and, if present, a button.
 #[allow(clippy::too_many_arguments)]
 fn review_row(
     ui: &mut Ui,

@@ -1,9 +1,9 @@
-//! Modo demostración (`tesela --demo`): un árbol SINTÉTICO y determinista (semilla fija) con carpetas de nombres
-//! inventados, unidades ficticias y un escaneo simulado. Es el ÚNICO modo con el que se hacen capturas: nada de aquí
-//! sale de un disco real ni de ningún equipo.
+//! Demo mode (`tesela --demo`): a SYNTHETIC, deterministic tree (fixed seed) with name folders
+//! invented, dummy units and a simulated scan. It is the ONLY way to take screenshots: nothing here
+//! It comes from a real disk or from any computer.
 //!
-//! Los tamaños se reparten con una distribución de cola pesada, y las fechas de modificación caen en todos los tramos
-//! de antigüedad, de modo que los histogramas y los colores del mapa se ven tal como en un disco de verdad.
+//! Sizes are distributed with a heavy-tailed distribution, and modification dates fall across all sections
+//! old, so the histograms and map colors look just like on a real disk.
 
 use crate::platform::{DriveInfo, DriveKind};
 use std::collections::VecDeque;
@@ -12,24 +12,24 @@ use tesela_model::{Batch, EntryData, FinishOptions, Tree, TreeBuilder, flags};
 const GIB: u64 = 1 << 30;
 const MIB: u64 = 1 << 20;
 const DAY: u32 = 86_400;
-/// SID ficticio del usuario de la demostración (nombre de su carpeta en la Papelera).
+/// Fictitious SID of the demo user (name of their Recycle Bin folder).
 pub const DEMO_SID: &str = "S-1-5-DEMO-1001";
-/// "Ahora" fijo del árbol de demostración (segundos Unix), para que las edades no dependan del reloj.
+/// Fixed "now" of the demo tree (Unix seconds), so that ages don't depend on the clock.
 pub const DEMO_NOW: u32 = 1_760_000_000;
 
-/// Variante del árbol de demostración.
+/// Demo tree variant.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Variant {
-    /// Análisis completo de la unidad: con el bloque "Windows y otros datos del sistema".
+    /// Full drive scan - with the "Windows and other system data" block.
     Complete,
-    /// Análisis detenido con "Parar y ver": carpetas `INCOMPLETE` (rayas, "≥") y sin bloque del sistema.
+    /// Scan stopped with "Stop and See": `INCOMPLETE` folders (stripes, "≥") and no system block.
     Stopped,
-    /// Una carpeta con ~20 000 celdas visibles (600 carpetas de 33 archivos): el peor caso del mapa, para medir el coste
-    /// por frame (`--stress`). No es un disco "realista".
+    /// A folder with ~20,000 visible cells (600 folders of 33 files): the worst case of the map, to measure the cost
+    /// per frame (`--stress`). It is not a "realistic" album.
     Stress,
 }
 
-/// Unidades ficticias para la pantalla de inicio.
+/// Dummy units for the home screen.
 pub fn drives() -> Vec<DriveInfo> {
     vec![
         DriveInfo {
@@ -62,15 +62,15 @@ pub fn drives() -> Vec<DriveInfo> {
     ]
 }
 
-/// Raíz del árbol de demostración (la unidad ficticia del sistema), construida en tiempo de ejecución.
+/// Root of the demo tree (the dummy unit of the system), constructed at run time.
 pub fn root_name() -> String {
     format!("{}:\\", drives()[0].letter)
 }
 
-/// Nombre del usuario ficticio.
+/// Fictitious user name.
 pub const USER: &str = "usuario";
 
-/// SplitMix64: generador pseudoaleatorio mínimo y reproducible.
+/// SplitMix64 - Minimal and reproducible pseudorandom generator.
 struct Rng(u64);
 
 impl Rng {
@@ -100,8 +100,8 @@ enum Spec {
         name: String,
         kids: Vec<Spec>,
         flags: u16,
-        /// Escaneo detenido aqui: se entrega el listado de esta carpeta y el de sus subcarpetas directas, pero no el de
-        /// las siguientes (quedan `INCOMPLETE`).
+        /// Scanning stopped here: the list of this folder and its direct subfolders is delivered, but not the list of
+        /// the following (`INCOMPLETE` remain).
         stop: bool,
     },
 }
@@ -132,8 +132,8 @@ fn file(name: &str, alloc: u64, age_days: u32) -> Spec {
     }
 }
 
-/// `n` archivos que suman `total` bytes (repartidos con cola pesada), con extensiones ponderadas y edades entre
-/// `age.0` y `age.1` días.
+/// `n` files totaling `total` bytes (spread with heavy tail), with weighted extensions and ages between
+/// `age.0` and `age.1` days.
 fn files(
     rng: &mut Rng,
     prefix: &str,
@@ -162,7 +162,7 @@ fn files(
                 })
                 .map_or("bin", |e| e.0);
             let a = ((total as f64) * weights[i] / sum) as u64;
-            // Redondea al clúster de 4 KiB, como `AllocationSize`.
+            // Round to the 4 KiB cluster, such as `AllocationSize`.
             let alloc = a.div_ceil(4096) * 4096;
             let span = age.1.saturating_sub(age.0).max(1);
             let days = age.0 + (rng.next() % span as u64) as u32;
@@ -171,8 +171,8 @@ fn files(
         .collect()
 }
 
-/// Datos de los navegadores del usuario ficticio, con SUS cachés reales (`Cache`, `Code Cache`, `cache2`) y su perfil
-/// (historial, cookies...), que NO es caché. Se generan con un generador aparte para no alterar el resto del árbol.
+/// Data from the fictitious user's browsers, with HIS real caches (`Cache`, `Code Cache`, `cache2`) and his profile
+/// (history, cookies...), which is NOT cache. They are generated with a separate generator so as not to alter the rest of the tree.
 fn browsers(extra: &mut Rng) -> Vec<Spec> {
     let cache = |extra: &mut Rng, prefix: &str, n: usize, total: u64| {
         files(extra, prefix, n, total, &[("dat", 6), ("bin", 2)], (0, 20))
@@ -239,7 +239,7 @@ fn browsers(extra: &mut Rng) -> Vec<Spec> {
 fn build_spec(rng: &mut Rng, variant: Variant) -> Spec {
     let mut extra = Rng(0xD0CA_11ED_5EED_0002);
     let user = USER;
-    // --- Carpeta del usuario ---
+    // --- User folder ---
     let videos = dir(
         "Vídeos",
         vec![
@@ -509,7 +509,7 @@ fn build_spec(rng: &mut Rng, variant: Variant) -> Spec {
                 &[("docx", 2), ("jpg", 2), ("pdf", 2)],
                 (20, 800),
             );
-            // Archivos que solo están en la nube: no ocupan disco aunque pesen.
+            // Files that are only in the cloud: they do not take up disk even if they are heavy.
             for i in 0..30 {
                 v.push(Spec::File {
                     name: format!("solo-nube-{i:02}.pdf"),
@@ -521,7 +521,7 @@ fn build_spec(rng: &mut Rng, variant: Variant) -> Spec {
             v
         },
     };
-    // 40 carpetas pequeñas (de 80 a 275 MiB): acaban agrupadas en "Otros".
+    // 40 small folders (80 to 275 MiB): they end up grouped in "Others".
     let mut small: Vec<Spec> = (0..40)
         .map(|i| {
             dir(
@@ -611,7 +611,7 @@ fn build_spec(rng: &mut Rng, variant: Variant) -> Spec {
         vms, appdata, videos, downloads, projects, images, documents, music, onedrive,
     ];
     user_kids.append(&mut small);
-    // Una carpeta de usuario más y otra pública, pequeñas.
+    // One more user folder and another public folder, small.
     let users = dir(
         "Users",
         vec![
@@ -630,7 +630,7 @@ fn build_spec(rng: &mut Rng, variant: Variant) -> Spec {
         ],
     );
 
-    // --- Raíz de la unidad ---
+    // --- Root of drive ---
     let stopped = variant == Variant::Stopped;
     let nested = |rng: &mut Rng,
                   name: &str,
@@ -768,7 +768,7 @@ fn build_spec(rng: &mut Rng, variant: Variant) -> Spec {
             k
         },
     };
-    // La Papelera del usuario: su carpeta lleva el SID (ficticio).
+    // The user's Recycle Bin: their folder has the SID (fictitious).
     let recycle_bin = dir(
         "$Recycle.Bin",
         vec![dir(
@@ -794,7 +794,7 @@ fn build_spec(rng: &mut Rng, variant: Variant) -> Spec {
         file("hiberfil.sys", 13 * GIB, 3),
         file("swapfile.sys", 256 * MIB, 3),
     ];
-    // Algunos archivos sueltos en la raíz.
+    // Some loose files in root.
     root_kids.extend(files(
         rng,
         "raiz-",
@@ -812,7 +812,7 @@ fn build_spec(rng: &mut Rng, variant: Variant) -> Spec {
     }
 }
 
-/// 600 carpetas de 33 archivos de tamaños parecidos (cada archivo da una celda insinuada de más de 3 × 3 px).
+/// 600 folders of 33 files of similar sizes (each file gives a hinted cell of more than 3 × 3 px).
 fn stress_spec(rng: &mut Rng) -> Spec {
     let kids = (0..600)
         .map(|i| {
@@ -848,7 +848,7 @@ fn emit(root: &Spec) -> Vec<Batch> {
     );
     let mut batches = vec![rb];
     let mut counter = 1u32;
-    // (carpeta, id, ¿el escaneo se detuvo en su padre? Entonces se lista pero no se baja más).
+    // (folder, id, did the scan stop at its parent? So it is listed but not downloaded further).
     let mut queue: VecDeque<(&Spec, u32, bool)> = VecDeque::new();
     queue.push_back((root, 0, false));
     while let Some((spec, id, below_stop)) = queue.pop_front() {
@@ -868,9 +868,9 @@ fn emit(root: &Spec) -> Vec<Batch> {
                 } => EntryData {
                     flags: *flags,
                     alloc: *alloc,
-                    // El tamaño lógico es algo menor que el de disco (redondeo al clúster).
+                    // The logical size is slightly smaller than the disk size (rounding to the nearest cluster).
                     logical: if *alloc == 0 {
-                        // Solo en la nube: no ocupa disco pero pesa (el escáner informa el tamaño lógico).
+                        // Only in the cloud: does not take up disk but weighs (the scanner reports the logical size).
                         MIB + 4096 * (*mtime as u64 % 700)
                     } else {
                         alloc.saturating_sub(alloc / 40)
@@ -887,8 +887,8 @@ fn emit(root: &Spec) -> Vec<Batch> {
             ids.push(batch.push(id, k.name().as_bytes(), data));
         }
         batches.push(batch);
-        // Una carpeta con `stop` baja un nivel más (sus subcarpetas se listan); las de debajo de esas, no: sin lote,
-        // el builder las marca `INCOMPLETE`.
+        // A folder with `stop` moves down one more level (its subfolders are listed); the ones below those, no: without lot,
+        // the builder marks them `INCOMPLETE`.
         if !below_stop {
             for (k, cid) in kids.iter().zip(ids) {
                 queue.push_back((k, cid, *stop));
@@ -898,7 +898,7 @@ fn emit(root: &Spec) -> Vec<Batch> {
     batches
 }
 
-/// El árbol de demostración. Determinista: la misma variante da siempre el mismo árbol.
+/// The demo tree. Deterministic: the same variant always gives the same tree.
 pub fn tree(variant: Variant) -> Tree {
     let mut rng = Rng(0x7E5E_1A00_D3A0_0001);
     let spec = if variant == Variant::Stress {
@@ -924,8 +924,8 @@ pub fn tree(variant: Variant) -> Tree {
     })
 }
 
-/// Un árbol de pruebas con `n` carpetas de un archivo cada una colgando de la raíz (para probar la escala de la selección
-/// múltiple y de la cesta). Solo datos sintéticos.
+/// A test tree with `n` folders of one file each hanging from the root (to test the scale of the selection
+/// multiple and basket). Synthetic data only.
 #[cfg(test)]
 pub(crate) fn flat_tree(n: usize) -> Tree {
     let mut rng = Rng(0x5CA1_AB1E_0000_0001);
@@ -954,8 +954,8 @@ pub(crate) fn flat_tree(n: usize) -> Tree {
     })
 }
 
-/// Fila de "sitios conocidos" del escaneo simulado: (clave i18n, bytes finales, fracción del escaneo en que acaba). Los
-/// tamaños son los de las carpetas correspondientes del árbol de demostración.
+/// Simulated scan "known sites" row: (i18n key, ending bytes, fraction of scan ending). The
+/// sizes are those of the corresponding folders in the demo tree.
 pub const DEMO_KNOWN_ROWS: [(&str, u64, f32); 6] = [
     ("known-user-temp", 2_254_000_000, 0.10),
     ("known-windows-temp", 314_572_800, 0.22),
@@ -986,7 +986,7 @@ mod tests {
         let last = t.children(0).last().unwrap();
         assert!(t.node(last).flags & flags::SYSTEM_INFO != 0);
         assert_eq!(t.stats().incomplete_dirs, 0);
-        // Con la unidad ficticia de 476 GiB y 38 libres, lo usado es 438 GiB.
+        // With the fictitious unit of 476 GiB and 38 free, what is used is 438 GiB.
         assert_eq!(t.node(0).alloc, 438 * GIB);
 
         let s = tree(Variant::Stopped);
@@ -1013,14 +1013,14 @@ mod tests {
         let me = t.child_by_name(users, USER.as_bytes()).unwrap();
         let od = t.child_by_name(me, b"OneDrive").unwrap();
         assert!(t.node(od).flags & flags::CLOUD != 0);
-        // Hay archivos solo en la nube (CLOUD con alloc 0).
+        // There are files only in the cloud (CLOUD with alloc 0).
         assert!(t.children(od).any(|c| {
             let n = t.node(c);
             n.flags & flags::CLOUD != 0 && n.alloc == 0 && n.logical > 0
         }));
-        // 40 carpetas pequeñas para que "Otros" aparezca de verdad.
+        // 40 small folders to make "Other" really appear.
         assert!(t.children(me).count() >= 45);
-        // Los tipos dominantes varían (vídeo en Vídeos, imágenes en Imágenes...).
+        // The dominant types vary (video in Videos, images in Images...).
         let v = t.child_by_name(me, "Vídeos".as_bytes()).unwrap();
         assert_eq!(
             t.hist(v).dominant_type(),

@@ -1,8 +1,8 @@
-//! Respaldo SIMULADO de la limpieza para `tesela --demo`: la cesta, la confirmación y el resumen funcionan, pero contra el
-//! árbol sintético y SIN tocar el disco (no abre, lista, renombra ni borra nada: solo lee el `Tree` en memoria).
+//! SIMULATED cleanup backup for `tesela --demo`: basket, confirmation and summary work, but against
+//! synthetic tree and WITHOUT touching the disk (it does not open, list, rename or delete anything: it only reads the `Tree` in memory).
 //!
-//! Imita lo observable del `cleaner` real: protección por carpetas, "Contenido de…", antigüedad mínima de los temporales,
-//! el límite de la Papelera (el 10 % de la unidad ficticia), enlaces con la nube y los tres contadores.
+//! Imitates the observable of the real `cleaner`: protection by folders, "Content of...", minimum age of temporary ones,
+//! the Recycle Bin limit (10% of the dummy unit), links to the cloud and the three counters.
 
 use crate::demo::{self, DEMO_NOW, DEMO_SID, USER};
 use crate::recs::eligible_by_age;
@@ -26,15 +26,15 @@ use tesela_cleaner::{
 };
 use tesela_model::{Tree, View};
 
-/// El respaldo simulado.
+/// The simulated backup.
 pub struct DemoBackend {
     tree: Arc<Tree>,
     root: String,
     prot: Arc<Protection>,
     browsers: Mutex<Vec<Browser>>,
-    /// Categorías "no disponibles" (lo pone una prueba de la interfaz).
+    /// Categories "not available" (this is indicated by an interface test).
     unavailable: Mutex<Vec<(CategoryId, tesela_cleaner::roots::RootRejection)>>,
-    /// Cuánto dura la ejecución simulada (para que se vea el progreso). 0 en las pruebas.
+    /// How long the simulated run lasts (so you can see the progress). 0 in the tests.
     delay: Duration,
     cache_dirs: Vec<(CategoryId, PathBuf)>,
 }
@@ -131,13 +131,13 @@ impl DemoBackend {
         }
     }
 
-    /// Marca una categoría como "no disponible" (como si una raíz se hubiera descartado por un enlace en su ruta): las
-    /// pruebas de la interfaz lo usan.
+    /// Marks a category as "unavailable" (as if a root had been discarded by a link in its path):
+    /// interface tests use it.
     pub fn set_unavailable(&self, id: CategoryId, why: tesela_cleaner::roots::RootRejection) {
         *self.unavailable.lock().unwrap_or_else(|e| e.into_inner()) = vec![(id, why)];
     }
 
-    /// Navegadores "abiertos" (en la demostración, Chrome por defecto; las pruebas lo cambian).
+    /// "Open" browsers (in the demo, Chrome by default; tests change this).
     pub fn set_browsers(&self, b: Vec<Browser>) {
         *self.browsers.lock().unwrap_or_else(|e| e.into_inner()) = b;
     }
@@ -146,8 +146,8 @@ impl DemoBackend {
         format!("{}Users\\{USER}", self.root)
     }
 
-    /// ¿Cabe en la Papelera de la unidad ficticia? La unidad de la demostración tiene un tamaño máximo CONFIGURADO (el 5 %
-    /// de la unidad); como en el `cleaner` real, solo cabe lo que cabe en ese máximo, con un margen del 90 %.
+    /// Does it fit in the dummy drive's Recycle Bin? The demo drive has a CONFIGURED maximum size (5%
+    /// of the unit); as in the real `cleaner`, only what fits in that maximum, with a margin of 90%.
     fn fit(&self, bytes: u64) -> Fit {
         let limit = demo::drives()[0].total / 100 * 5;
         if (bytes as u128) * 100 > (limit as u128) * 90 {
@@ -191,7 +191,7 @@ impl DemoBackend {
         let tree = &self.tree;
         let n = tree.node(node);
         if n.is_dir() && self.prot.contains_protected(&key) {
-            // Carpeta con algo protegido dentro: sus hijos permitidos son los elementos; lo protegido se omite.
+            // Folder with something protected inside: your allowed children are the items; what is protected is omitted.
             for c in view.kids(node).iter() {
                 let cpath = path.join(tree.name_lossy(c).as_ref());
                 let ckey = PathKey::new(&cpath);
@@ -366,7 +366,7 @@ impl Backend for DemoBackend {
                         .recycle_dir(&drive)
                         .and_then(|d| loc.locate(&d))
                         .map_or(opts.bin_bytes_hint, |n| view.alloc(n));
-                    // Una lista de elementos ficticios: la cuenta de la carpeta de la Papelera del árbol de demostración.
+                    // A list of dummy items: the demo tree's Recycle Bin contents.
                     let n = loc
                         .locate(&self.recycle_dir(&drive).unwrap_or_default())
                         .map_or(0, |n| self.tree.node(n).files_below as usize);
@@ -461,7 +461,7 @@ impl Backend for DemoBackend {
                 if let Some(node) = loc.locate(&it.path) {
                     match &it.spec {
                         UnitSpec::Contents { .. } => {
-                            // Una entrada por cada hijo de primer nivel que cumple la antigüedad.
+                            // One entry for each first-level son who reaches seniority.
                             let cutoff = if it.min_age.is_zero() {
                                 u32::MAX
                             } else {
@@ -482,7 +482,7 @@ impl Backend for DemoBackend {
                                 });
                             }
                             if it.category == Some(CategoryId::UserTemp) {
-                                // Lo que un programa tenía abierto (simulado).
+                                // What a program had open (simulated).
                                 stats.in_use = 37;
                             }
                         }
@@ -530,7 +530,7 @@ impl Backend for DemoBackend {
         step(Phase::Verifying);
         rep.cancelled = progress.is_cancelled();
         if !opts.dry_run && rep.recycled_bytes > 0 {
-            // Toda la Papelera ficticia: lo que ya tenía (la carpeta del árbol, si no se vació) más lo recién enviado.
+            // The entire dummy Recycle Bin: what you already had (the tree folder, if it wasn't emptied) plus what you just sent.
             let before = if rep.bin.is_some() {
                 0
             } else {

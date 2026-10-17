@@ -1,4 +1,4 @@
-//! Pantalla de inicio: tarjetas por unidad con anillo de uso y "Analizar una carpeta…" (PLAN.md §2.2).
+//! Home screen: cards per unit with usage ring and "Analyze a folder..." (PLAN.md §2.2).
 
 use crate::app::{Action, Env, LangPref, ScanRequest};
 use crate::args;
@@ -11,7 +11,7 @@ use egui::{
     Ui, Vec2, vec2,
 };
 
-/// Anillo de uso: pista y arco del `frac` (0..=1) empezando arriba.
+/// Use ring: track and arc of `frac` (0..=1) starting at the top.
 pub fn ring(
     painter: &egui::Painter,
     center: Pos2,
@@ -37,12 +37,12 @@ pub fn ring(
     painter.add(Shape::line(pts, Stroke::new(width, color)));
 }
 
-/// Nombre de una unidad para mostrar: "Sistema (C:)". Sin etiqueta, "Disco local (C:)".
+/// Display drive name: "System (C:)". No label, "Local Disk (C:)".
 pub fn drive_title(env: &Env, d: &DriveInfo) -> String {
     drive_title_plain(env.tr, d)
 }
 
-/// Como [`drive_title`], sin necesitar un `Env`.
+/// Like [`drive_title`], without needing a `Env`.
 pub fn drive_title_plain(tr: &crate::i18n::Tr, d: &DriveInfo) -> String {
     let label = if d.label.is_empty() {
         tr.t(match d.kind {
@@ -56,13 +56,13 @@ pub fn drive_title_plain(tr: &crate::i18n::Tr, d: &DriveInfo) -> String {
     format!("{label} ({}:)", d.letter)
 }
 
-/// Ancho máximo del menú de ajustes (el texto de la comprobación de actualizaciones se parte en líneas).
+/// Maximum width of the settings menu (the update check text is broken into lines).
 const UPDATE_MENU_WIDTH: f32 = 340.0;
 
-/// Altura de la franja superior del inicio (la del botón de ajustes y la del aviso de versión nueva).
+/// Height of the top strip at the beginning (that of the settings button and that of the new version notice).
 const TOP_BAND: f32 = 36.0;
 
-/// Botón de ajustes con su menú (tema, idioma y comprobación de actualizaciones).
+/// Settings button with its menu (theme, language and checking for updates).
 pub fn settings_button(ui: &mut Ui, env: &mut Env) {
     let label = env.tr.t("settings");
     let resp = widgets::icon_button(ui, env, Icon::Settings, &label, true);
@@ -71,7 +71,7 @@ pub fn settings_button(ui: &mut Ui, env: &mut Env) {
     let mut acts: Vec<Action> = Vec::new();
     egui::Popup::menu(&resp).show(|ui| {
         ui.set_min_width(200.0);
-        // El texto explicativo de abajo se parte en líneas en vez de ensanchar el menú.
+        // The explanatory text below is broken into lines instead of expanding the menu.
         ui.set_max_width(UPDATE_MENU_WIDTH);
         ui.label(RichText::new(tr.t("settings-theme")).font(theme::font_semibold(12.0)));
         for (pref, key) in [
@@ -100,7 +100,7 @@ pub fn settings_button(ui: &mut Ui, env: &mut Env) {
                 acts.push(Action::SetLanguage(pref));
             }
         }
-        // La comprobación de actualizaciones: opcional y desactivada por defecto. Se explica ANTES de activarla.
+        // Checking for updates: optional and disabled by default. It is explained BEFORE activating it.
         if update.available {
             ui.separator();
             let mut check = settings.update.check;
@@ -124,7 +124,7 @@ pub fn settings_button(ui: &mut Ui, env: &mut Env) {
             }
         }
         ui.separator();
-        // El historial guarda solo resúmenes (fecha, unidad, usado, liberado, enviado a la Papelera): se puede borrar.
+        // History stores only summaries (date, drive, space used and freed, items sent to the Recycle Bin); it can be deleted.
         let has_history = !history.is_empty();
         let clear = ui.add_enabled(
             has_history,
@@ -207,9 +207,9 @@ fn card(ui: &mut Ui, env: &mut Env, d: &DriveInfo) {
                 ))
                 .color(pal.text_muted),
             );
-            // Con una cuota de disco, lo que el usuario puede usar es menos que lo libre del volumen: nota aparte.
+            // With a disk quota, what the user can use is less than what is free on the volume: separate note.
             if !d.volume_scope {
-                // Hay cuota y Windows no da la capacidad del volumen: las cifras de arriba son las de tu cuenta.
+                // There is a quota and Windows does not give the volume capacity: the figures above are those of your account.
                 ui.label(
                     RichText::new(env.tr.t("drive-quota-scope"))
                         .size(12.0)
@@ -225,7 +225,7 @@ fn card(ui: &mut Ui, env: &mut Env, d: &DriveInfo) {
                     .color(pal.text_muted),
                 );
             }
-            // La última limpieza de esta unidad (solo si hay historial).
+            // The last cleaning of this drive (only if there is history).
             if let Some(h) = env.history.iter().rev().find(|e| e.drive != 0 && e.drive as char == d.letter) {
                 let secs = crate::app::unix_now().saturating_sub(h.unix);
                 ui.label(
@@ -283,7 +283,7 @@ fn card(ui: &mut Ui, env: &mut Env, d: &DriveInfo) {
     });
 }
 
-/// Botón de ancho completo con el texto visible `text` y la etiqueta accesible `label` (más descriptiva).
+/// Full-width button with visible text `text` and accessible label `label` (more descriptive).
 fn wide_button(
     ui: &mut Ui,
     env: &mut Env,
@@ -336,8 +336,8 @@ fn wide_button(
     resp
 }
 
-/// El separador "·" del aviso. Se PINTA (no es un `Label`): así no sale en el árbol de accesibilidad y un lector de
-/// pantalla lee el aviso y los dos enlaces, no "punto medio".
+/// The "·" separator of the notice. It is PAINTED (it is not a `Label`): so it does not appear in the accessibility tree and a reader
+/// screen reads the notice and the two links, not "middle point".
 fn dot_separator(ui: &mut Ui, color: Color32) {
     let galley =
         ui.painter()
@@ -346,12 +346,12 @@ fn dot_separator(ui: &mut Ui, color: Color32) {
     ui.painter().galley(rect.min, galley, color);
 }
 
-/// El aviso discreto de una versión nueva: "Hay una versión nueva de Tesela: v0.1.5 · Ver novedades · Descartar". Ocupa la
-/// franja superior, a la izquierda del botón de ajustes. NO descarga nada: "Ver novedades" abre la página de la versión en
-/// el navegador, y "Descartar" lo oculta para esa versión.
+/// The discreet notice of a new version: "There is a new version of Tesela: v0.1.5 · See what's new · Discard." Occupies the
+/// top strip, to the left of the settings button. DO NOT download anything: "See what's new" opens the version page in
+/// the browser, and "Dismiss" hides it for that version.
 fn update_notice(ui: &mut Ui, env: &mut Env, v: tesela_update::Version) {
     let (tr, pal) = (env.tr, env.pal);
-    // A la derecha queda el botón de ajustes.
+    // To the right is the settings button.
     let rect = Rect::from_min_size(
         ui.max_rect().left_top(),
         vec2((ui.max_rect().width() - TOP_BAND - 16.0).max(0.0), TOP_BAND),
@@ -387,7 +387,7 @@ fn update_notice(ui: &mut Ui, env: &mut Env, v: tesela_update::Version) {
     env.actions.extend(acts);
 }
 
-/// Pinta la pantalla de inicio.
+/// Paint the home screen.
 pub fn show(ui: &mut Ui, env: &mut Env, notice: Option<&str>, dialog_open: bool) {
     let pal = env.pal;
     egui::CentralPanel::default()
@@ -397,12 +397,12 @@ pub fn show(ui: &mut Ui, env: &mut Env, notice: Option<&str>, dialog_open: bool)
                 .inner_margin(egui::Margin::symmetric(64, 32)),
         )
         .show(ui, |ui| {
-            // El aviso de versión nueva, arriba a la izquierda (primero: ocupa la misma franja que el botón de ajustes, así
-            // no mueve nada si aparece).
+            // The new version notice, at the top left (first: it occupies the same strip as the settings button, like this
+            // it doesn't move anything if it appears).
             if let Some(v) = env.update.notice.filter(|_| !env.demo) {
                 update_notice(ui, env, v);
             }
-            // Ajustes arriba a la derecha.
+            // Settings top right.
             let top_right = ui.max_rect().right_top() + vec2(-8.0, 0.0);
             ui.scope_builder(
                 egui::UiBuilder::new().max_rect(Rect::from_min_size(
@@ -440,7 +440,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, notice: Option<&str>, dialog_open: bool)
                     ui.label(RichText::new(env.tr.t("home-no-drives")).color(pal.text_muted));
                 }
                 let drives = env.drives.to_vec();
-                // Las tarjetas se centran y saltan de línea si no caben.
+                // Cards are centered and jump lines if they don't fit.
                 ui.with_layout(Layout::top_down(Align::Center), |ui| {
                     let per_row = ((ui.available_width() + 24.0) / (302.0 + 24.0))
                         .floor()

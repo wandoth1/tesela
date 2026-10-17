@@ -1,16 +1,17 @@
-//! Fuentes del sistema cargadas en tiempo de ejecución (PLAN.md §2.10). NO se redistribuye ninguna fuente: ni las de
-//! Windows ni las de egui (se compila sin `default_fonts`, así que en el `.exe` no hay fuentes OFL ni Ubuntu).
+//! System fonts loaded at runtime (PLAN.md §2.10). NO sources are redistributed: not even those from
+//! Windows nor those from egui (it is compiled without `default_fonts`, so in `.exe` there are no OFL or Ubuntu sources).
 //!
-//! * Principal: `SegUIVar.ttf` (variable: egui aplica el eje `wght`; DOS pesos, 400 y 600, compartiendo los bytes), si
-//!   no `segoeui.ttf` + `segoeuib.ttf`, si no Tahoma o Arial. Segoe UI Variable cubre latino, griego y cirílico; árabe y hebreo salen de `segoeui.ttf` bajo demanda.
-//! * Reserva POR ESCRITURA y bajo demanda: las fuentes CJK pesan 14-20 MB y se leen a memoria, así que solo se cargan
-//!   cuando un nombre (o el buscador) trae esa escritura: Yu Gothic (kana y kanji), YaHei/JhengHei (hanzi), Malgun Gothic
-//!   (hangul), Leelawadee UI (tailandés y lao), Nirmala UI (escrituras índicas), Segoe UI Symbol (símbolos; los emoji en color no se pueden dibujar).
-//!   Van al final de las familias Proporcional y Monoespaciada, y las que no existan se omiten.
-//! * Para las rutas se usa Consolas si existe.
+//! * Main font: `SegUIVar.ttf` (variable; egui applies the `wght` axis, with weights 400 and 600 in one file),
+//!   falling back to Tahoma or Arial if unavailable. Segoe UI Variable covers Latin, Greek, and Cyrillic; Arabic and
+//!   Hebrew are loaded from `segoeui.ttf` on demand.
+//! * CJK and other fallback fonts are loaded on demand because they are 14–20 MB and read into memory. When a name or
+//!   search result uses that script, the UI loads Yu Gothic (kana and kanji), YaHei/JhengHei (hanzi), Malgun Gothic
+//!   (Hangul), Leelawadee UI (Thai and Lao), Nirmala UI (Indic scripts), or Segoe UI Symbol (symbols; color emoji are
+//!   not supported). Available fallback fonts are appended to the Proportional and Monospaced families.
+//! * For routes, Consolas is used if it exists.
 //!
-//! Si no hay NINGUNA fuente utilizable ([`available`] devuelve `false`) la aplicación no puede dibujar texto: el
-//! ejecutable lo avisa y sale en vez de colgarse en un pánico de egui.
+//! If there is NO usable font ([`available`] returns `false`) the application cannot draw text: the
+//! executable warns you and exits instead of hanging in a panic.
 
 use crate::platform;
 use egui::epaint::text::VariationCoords;
@@ -18,9 +19,9 @@ use egui::{Context, FontData, FontDefinitions, FontFamily, FontTweak};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-/// Bytes de una fuente del sistema, compartidos por todos los pesos y por todas las llamadas: se leen y se "fijan" una
-/// sola vez por archivo (`Box::leak`, de duración igual a la del proceso, que es lo que dura una fuente cargada). Sin
-/// esto cada peso de `SegUIVar.ttf` (1,8 MB) tendría su propia copia en memoria.
+/// Bytes from a system source, shared by all weights and by all calls: they are read and "set" a
+/// only once per file (`Box::leak`, duration equal to the duration of the process, which is the duration of a loaded source). Without
+/// this each weight of `SegUIVar.ttf` (1.8 MB) would have its own copy in memory.
 fn shared_bytes(path: &Path) -> Option<&'static [u8]> {
     static CACHE: Mutex<Vec<(PathBuf, &'static [u8])>> = Mutex::new(Vec::new());
     let mut cache = CACHE.lock().ok()?;
@@ -32,37 +33,37 @@ fn shared_bytes(path: &Path) -> Option<&'static [u8]> {
     Some(bytes)
 }
 
-/// Qué fuente principal acabó cargada (para los tests y para el informe).
+/// Which main source ended up loaded (for the tests and for the report).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Loaded {
-    /// `SegUIVar.ttf`: pesos 400 y 600.
+    /// `SegUIVar.ttf`: weights 400 and 600.
     SegoeVariable,
-    /// `segoeui.ttf` y `segoeuib.ttf`.
+    /// `segoeui.ttf` and `segoeuib.ttf`.
     SegoeStatic,
-    /// Tahoma o Arial (regular y negrita).
+    /// Tahoma or Arial (regular and bold).
     OtherSystem,
-    /// Ninguna: no se puede dibujar texto.
+    /// None: Text cannot be drawn.
     None,
 }
 
-/// Escrituras que necesitan una fuente de reserva (conjunto de banderas).
+/// Scripts that need a fallback source (flag set).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Scripts(u8);
 
 impl Scripts {
     pub const NONE: Scripts = Scripts(0);
-    /// Hanzi/kanji y la puntuación CJK.
+    /// Hanzi/kanji and CJK punctuation.
     pub const HAN: Scripts = Scripts(1);
     pub const KANA: Scripts = Scripts(2);
     pub const HANGUL: Scripts = Scripts(4);
-    /// Tailandés y lao.
+    /// Thai and Lao.
     pub const THAI: Scripts = Scripts(8);
-    /// Devanagari, bengalí, tamil, telugu... (hasta el cingalés).
+    /// Devanagari, Bengali, Tamil, Telugu... (even Sinhala).
     pub const INDIC: Scripts = Scripts(16);
-    /// Flechas, símbolos matemáticos y varios.
+    /// Arrows, mathematical symbols and various.
     pub const SYMBOLS: Scripts = Scripts(32);
     pub const EMOJI: Scripts = Scripts(64);
-    /// Árabe y hebreo (Segoe UI Variable no los lleva; `segoeui.ttf` sí).
+    /// Arabic and Hebrew (Segoe UI Variable does not have them; `segoeui.ttf` does).
     pub const RTL: Scripts = Scripts(128);
 
     pub fn contains(self, other: Scripts) -> bool {
@@ -83,7 +84,7 @@ impl std::ops::BitOr for Scripts {
     }
 }
 
-/// Escritura de un carácter que la fuente principal NO cubre (latino, griego y cirílico sí).
+/// Writing a character that the main font does NOT cover (Latin, Greek and Cyrillic do).
 pub fn script_of(c: char) -> Scripts {
     match c as u32 {
         0x3040..=0x30FF | 0x31F0..=0x31FF | 0xFF66..=0xFF9F => Scripts::KANA,
@@ -103,13 +104,13 @@ pub fn script_of(c: char) -> Scripts {
     }
 }
 
-/// Escrituras de un texto.
+/// Writings of a text.
 pub fn scripts_of_str(s: &str) -> Scripts {
     s.chars().fold(Scripts::NONE, |a, c| a | script_of(c))
 }
 
-/// Escrituras de un arena de nombres en WTF-8 (lo que guarda el árbol). Recorre los bytes una vez y solo decodifica los
-/// que no son ASCII, así que un árbol de millones de nombres latinos cuesta unas decenas de milisegundos.
+/// Writes a name arena in WTF-8 (what keeps the tree). Loops through the bytes once and only decodes the
+/// which are not ASCII, so a tree of millions of Latin names costs a few tens of milliseconds.
 pub fn scripts_of_wtf8(bytes: &[u8]) -> Scripts {
     let mut acc = Scripts::NONE;
     let mut i = 0;
@@ -142,13 +143,13 @@ pub fn scripts_of_wtf8(bytes: &[u8]) -> Scripts {
     acc
 }
 
-/// Archivos que, aunque existan, egui 0.36 no consigue usar (no dan ningún glifo). Los tests no cuentan con ellos: un equipo
-/// que solo tenga esas fuentes (por ejemplo un Windows Server sin MS Gothic ni YaHei) debe saltarse la comprobación de la
-/// escritura, no fallar.
+/// Files that, even if they exist, egui 0.36 cannot use (they do not provide any glyphs). The tests do not have them: a team
+/// If you only have those fonts (for example a Windows Server without MS Gothic or YaHei) you should skip the font check.
+/// writing, not failing.
 #[cfg(test)]
 pub(crate) const UNUSABLE_IN_EGUI: [&str; 3] = ["YuGothR.ttc", "LeelawUI.ttf", "leelawad.ttf"];
 
-/// Grupos de reserva de `s` para los que `dir` no tiene ninguna fuente utilizable por egui (vacío = todo cubierto).
+/// `s` fallback groups for which `dir` does not have any egui-usable sources (empty = all covered).
 #[cfg(test)]
 pub(crate) fn missing_groups(dir: &Path, s: Scripts) -> Vec<&'static str> {
     fallback_groups(s)
@@ -161,21 +162,21 @@ pub(crate) fn missing_groups(dir: &Path, s: Scripts) -> Vec<&'static str> {
         .collect()
 }
 
-/// Archivos de reserva (en la carpeta de fuentes) para un conjunto de escrituras, por orden de preferencia; de cada
-/// grupo se usa el primero que exista. `(nombre de la fuente en egui, candidatos)`.
+/// Backup font files (in the `fonts` folder) for a set of scripts, in order of preference;
+/// the first available font in each group is used. `(egui font family name, candidate fonts)`.
 pub(crate) fn fallback_groups(s: Scripts) -> Vec<(&'static str, &'static [&'static str])> {
     let mut v: Vec<(&'static str, &'static [&'static str])> = Vec::new();
     if s.contains(Scripts::KANA) {
-        // Yu Gothic (`YuGothR.ttc`) NO se carga en egui 0.36 (no da ningún glifo): se usa si no hay otra. MS Gothic y Meiryo
-        // sí; Microsoft YaHei (que está en toda instalación) trae también kana.
+        // Yu Gothic (`YuGothR.ttc`) is NOT loaded in egui 0.36 (does not give any glyph): it is used if there is no other. MS Gothic and Meiryo
+        // Yeah; Microsoft YaHei (which is in every installation) also comes with kana.
         v.push((
             "Tesela-kana",
             &["meiryo.ttc", "msgothic.ttc", "YuGothR.ttc", "msyh.ttc"],
         ));
     }
     if s.contains(Scripts::HAN) {
-        // SIEMPRE después de la japonesa (si la hay): MS Gothic o Meiryo cubren los kanji, pero no los caracteres solo del
-        // chino simplificado (como 夹), que saldrían como recuadro en un árbol con japonés y chino a la vez.
+        // ALWAYS after the Japanese (if there is one): MS Gothic or Meiryo cover the kanji, but not the characters only of the
+        // simplified Chinese (like 夹), which would appear as a box in a tree with Japanese and Chinese at the same time.
         v.push((
             "Tesela-han",
             &["msyh.ttc", "msjh.ttc", "YuGothR.ttc", "simsun.ttc"],
@@ -199,16 +200,16 @@ pub(crate) fn fallback_groups(s: Scripts) -> Vec<(&'static str, &'static [&'stat
     if s.contains(Scripts::RTL) {
         v.push(("Tesela-rtl", &["segoeui.ttf", "tahoma.ttf", "arial.ttf"]));
     }
-    // Emoji: egui no dibuja fuentes de color (Segoe UI Emoji), así que solo se obtiene lo que Segoe UI Symbol trae en
-    // monocromo; el resto de emoji de un nombre sale como recuadro (limitación conocida, ver el informe).
+    // Emoji: egui does not draw color fonts (Segoe UI Emoji), so you only get what Segoe UI Symbol brings in
+    // monochrome; the rest of the emoji of a name appear as a box (known limitation, see the report).
     if s.contains(Scripts::SYMBOLS) || s.contains(Scripts::EMOJI) {
         v.push(("Tesela-symbols", &["seguisym.ttf"]));
     }
     v
 }
 
-/// Construye las definiciones de fuentes a partir de la carpeta `dir` de fuentes del sistema (la inyecta el test) y de
-/// las escrituras que hay que cubrir además de la principal.
+/// Builds font definitions from the system font folder `dir` (injected by the test) and
+/// the writings that must be covered in addition to the main one.
 pub fn definitions(dir: Option<&Path>, scripts: Scripts) -> (FontDefinitions, Loaded) {
     let mut fd = FontDefinitions::empty();
     fd.families.insert(FontFamily::Proportional, Vec::new());
@@ -248,11 +249,11 @@ pub fn definitions(dir: Option<&Path>, scripts: Scripts) -> (FontDefinitions, Lo
         return (fd, loaded);
     }
 
-    // Reservas por escritura (las que existan).
+    // Deed reserves (those that exist).
     let mut fallback_names: Vec<String> = Vec::new();
     let mut chosen: Vec<&str> = Vec::new();
     for (name, candidates) in fallback_groups(scripts) {
-        // El mismo archivo no se carga dos veces (YaHei puede ser a la vez la reserva de kana y la de han).
+        // The same file is not loaded twice (YaHei can be both kana's and han's reservation).
         if let Some((file, bytes)) = candidates.iter().find_map(|c| read(c).map(|b| (*c, b)))
             && !chosen.contains(&file)
         {
@@ -284,14 +285,14 @@ pub fn definitions(dir: Option<&Path>, scripts: Scripts) -> (FontDefinitions, Lo
     (fd, loaded)
 }
 
-/// ¿Hay alguna fuente de sistema utilizable?
+/// Is there any usable system font?
 pub fn available() -> bool {
     let dir = platform::fonts_dir();
     definitions(dir.as_deref(), Scripts::NONE).1 != Loaded::None
 }
 
-/// Carga las fuentes del sistema (y las de `scripts`) en `ctx` y devuelve cuál es la principal. Los cambios valen desde
-/// el SIGUIENTE pase de egui.
+/// Loads the system fonts (and those from `scripts`) into `ctx` and returns which one is the primary one. The changes are valid from
+/// egui's NEXT pass.
 pub fn install(ctx: &Context, scripts: Scripts) -> Loaded {
     let dir = platform::fonts_dir();
     let (fd, loaded) = definitions(dir.as_deref(), scripts);
@@ -301,8 +302,8 @@ pub fn install(ctx: &Context, scripts: Scripts) -> Loaded {
     loaded
 }
 
-/// Como [`install`], y además aplica las fuentes ya (con un pase vacío). Para los tests y para quien necesite medir
-/// texto de inmediato.
+/// Like [`install`], and also applies the sources already (with an empty pass). For tests and for whoever needs to measure
+/// text immediately.
 pub fn install_now(ctx: &Context, scripts: Scripts) -> Loaded {
     let loaded = install(ctx, scripts);
     let mut out = ctx.run_ui(Default::default(), |_| {});
@@ -339,10 +340,10 @@ mod tests {
             "Tesela-semibold"
         );
         assert!(available());
-        // Sin escrituras pedidas no se carga ninguna reserva (memoria).
+        // Without requested writes, no reservation (memory) is loaded.
         assert_eq!(fd.families[&FontFamily::Proportional].len(), 1);
-        // Con ellas, van detrás de la principal en las tres familias (si el equipo tiene alguna de esas fuentes: un Windows
-        // Server mínimo puede no tener ninguna, y entonces no hay nada que comprobar).
+        // With them, they go after the main one in the three families (if the computer has any of those sources: a Windows
+        // Minimal Server may not have any, and then there is nothing to check).
         let wanted = Scripts::KANA | Scripts::THAI | Scripts::SYMBOLS;
         let (fd, _) = definitions(Some(&dir), wanted);
         if !fallback_groups(wanted)
@@ -372,7 +373,7 @@ mod tests {
 
     #[test]
     fn un_equipo_sin_las_fuentes_de_reserva_las_declara_ausentes_para_saltarse_la_prueba() {
-        // Carpeta de fuentes FALSA (solo `%TEMP%\tesela-test-<uuid>`, con guarda): un Windows Server mínimo.
+        // FAKE Fonts Folder (`%TEMP%\tesela-test-<uuid>` only, guarded): A minimal Windows Server.
         let dir = crate::testdir::TestDir::new();
         let all = Scripts::KANA
             | Scripts::HANGUL
@@ -380,14 +381,14 @@ mod tests {
             | Scripts::INDIC
             | Scripts::RTL
             | Scripts::SYMBOLS;
-        // Vacía: faltan todos los grupos.
+        // Empty: all groups are missing.
         assert_eq!(missing_groups(&dir, all).len(), fallback_groups(all).len());
-        // Con solo las fuentes que egui no puede usar, siguen faltando (no se cuentan).
+        // With only the fonts that egui cannot use, they are still missing (not counted).
         for f in UNUSABLE_IN_EGUI {
             std::fs::write(dir.join(f), b"x").unwrap();
         }
         assert_eq!(missing_groups(&dir, all).len(), fallback_groups(all).len());
-        // Con una utilizable por grupo, no falta ninguno.
+        // With one usable per group, none are missing.
         for f in [
             "msyh.ttc",
             "malgun.ttf",
@@ -399,7 +400,7 @@ mod tests {
             std::fs::write(dir.join(f), b"x").unwrap();
         }
         assert!(missing_groups(&dir, all).is_empty());
-        // Sin la fuente de símbolos, solo falta ese grupo.
+        // Without the symbol font, only that group is missing.
         std::fs::remove_file(dir.join("seguisym.ttf")).unwrap();
         assert_eq!(missing_groups(&dir, all), vec!["Tesela-symbols"]);
     }
@@ -413,12 +414,12 @@ mod tests {
         let both = Scripts::KANA | Scripts::HAN;
         let (fd, _) = definitions(Some(dir.path()), both);
         let prop = &fd.families[&FontFamily::Proportional];
-        // La japonesa primero y la china después (para los caracteres solo simplificados).
+        // Japanese first and Chinese later (for simplified characters only).
         let kana = prop.iter().position(|n| n == "Tesela-kana").expect("kana");
         let han = prop.iter().position(|n| n == "Tesela-han").expect("han");
         assert!(kana < han, "{prop:?}");
-        // Si la única fuente CJK es YaHei, sirve para las dos y no se carga dos veces.
-        // (otra carpeta: los bytes de cada ruta se comparten y se recuerdan durante el proceso)
+        // If the only CJK source is YaHei, it works for both and is not loaded twice.
+        // (another folder: the bytes of each path are shared and remembered during the process)
         let dir2 = crate::testdir::TestDir::new();
         for f in ["segoeui.ttf", "segoeuib.ttf", "msyh.ttc"] {
             std::fs::write(dir2.join(f), b"x").unwrap();
@@ -450,7 +451,7 @@ mod tests {
         assert!(scripts_of_str("नमस्ते").contains(Scripts::INDIC));
         assert!(scripts_of_str("→ ★").contains(Scripts::SYMBOLS));
         assert!(scripts_of_str("📁").contains(Scripts::EMOJI));
-        // El arena WTF-8 da lo mismo que el texto.
+        // The WTF-8 arena is the same as the text.
         for s in [
             "日本語 y ひらがな",
             "العربية",
@@ -462,7 +463,7 @@ mod tests {
         ] {
             assert_eq!(scripts_of_wtf8(s.as_bytes()), scripts_of_str(s), "{s}");
         }
-        // Bytes sueltos o truncados no hacen daño.
+        // Loose or truncated bytes don't hurt.
         let _ = scripts_of_wtf8(&[0xE6, 0x97]);
         let _ = scripts_of_wtf8(&[0xFF, 0x80, 0xC3]);
     }

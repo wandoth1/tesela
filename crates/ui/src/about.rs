@@ -1,6 +1,6 @@
-//! Ventana "Acerca de Tesela": versión, licencia y avisos de terceros. Los avisos (`THIRD-PARTY-NOTICES.md`, generado con
-//! `cargo about`) van DENTRO del ejecutable: así quien reciba solo `tesela.exe` también tiene las licencias de lo que
-//! incluye, sin depender de que un archivo viaje al lado.
+//! "About Tesela" window: version, license and third-party notices. The warnings (`THIRD-PARTY-NOTICES.md`, generated with
+//! `cargo about`) go INSIDE the executable: so whoever receives only `tesela.exe` also has the licenses for what
+//! includes, without depending on a file traveling next to it.
 
 use crate::args;
 use crate::i18n::Tr;
@@ -8,23 +8,23 @@ use crate::theme::Palette;
 use egui::{FontId, Id, RichText};
 use std::sync::OnceLock;
 
-/// Texto completo de los avisos de terceros.
+/// Full text of third party notices.
 pub const NOTICES: &str = include_str!("../../../THIRD-PARTY-NOTICES.md");
 
-/// Versión del producto (la del espacio de trabajo).
+/// Product version (that of the workspace).
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Columnas a las que se parte cada línea de los avisos para mostrarlos con filas de altura fija (y pintar solo las que se
-/// ven: el texto tiene muchos miles de líneas).
+/// Columns from which each line of the notices is divided to show them with rows of fixed height (and paint only those that are
+/// see: the text has many thousands of lines).
 const WRAP_COLUMNS: usize = 92;
 
-/// Los avisos partidos en líneas de como mucho `WRAP_COLUMNS` caracteres.
+/// The notices split into lines of at most `WRAP_COLUMNS` characters.
 fn lines() -> &'static [String] {
     static LINES: OnceLock<Vec<String>> = OnceLock::new();
     LINES.get_or_init(|| wrap(NOTICES, WRAP_COLUMNS))
 }
 
-/// Parte `text` en líneas de como mucho `cols` caracteres, por palabras cuando se puede (y en seco si una palabra no cabe).
+/// Part `text` in lines of at most `cols` characters, by words when possible (and dry if a word does not fit).
 pub(crate) fn wrap(text: &str, cols: usize) -> Vec<String> {
     let mut out = Vec::new();
     for line in text.lines() {
@@ -33,7 +33,7 @@ pub(crate) fn wrap(text: &str, cols: usize) -> Vec<String> {
             out.push(line.to_owned());
             continue;
         }
-        // Se conserva la sangría de la línea original.
+        // The indentation of the original line is preserved.
         let indent: String = line.chars().take_while(|c| *c == ' ').collect();
         let mut cur = indent.clone();
         for word in line.split_whitespace() {
@@ -66,7 +66,7 @@ pub(crate) fn wrap(text: &str, cols: usize) -> Vec<String> {
     out
 }
 
-/// Estado de la ventana.
+/// Window status.
 #[derive(Default)]
 pub(crate) struct About {
     pub open: bool,
@@ -74,8 +74,8 @@ pub(crate) struct About {
 }
 
 impl About {
-    /// Escape cierra la ventana. Se llama ANTES de pintar las pantallas: con la ventana abierta, Escape es suyo (si no, la
-    /// exploración lo gastaría quitando la selección).
+    /// Escape closes the window. It's called BEFORE you paint the screens: with the window open, Escape is yours (if not, the
+    /// exploration would waste it deselecting).
     pub fn handle_escape(&mut self, ctx: &egui::Context) {
         if self.open && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
             self.open = false;
@@ -83,7 +83,7 @@ impl About {
         }
     }
 
-    /// Pinta la ventana si está abierta.
+    /// Paint the window if it is open.
     pub fn show(&mut self, ctx: &egui::Context, tr: &Tr, pal: &Palette) {
         if !self.open {
             return;
@@ -143,7 +143,7 @@ mod tests {
         assert!(NOTICES.contains("Third-party notices"));
         assert!(NOTICES.contains("MIT"));
         assert!(NOTICES.contains("Apache License"));
-        // Las dependencias directas del producto aparecen.
+        // Direct product dependencies appear.
         for c in [
             "egui ",
             "eframe ",
@@ -163,7 +163,7 @@ mod tests {
         let text = format!("corta\n{long}\n{}\nfin", "x".repeat(250));
         let w = wrap(&text, 40);
         assert!(w.iter().all(|l| l.chars().count() <= 40), "{w:?}");
-        // Mismo texto sin espacios ni saltos.
+        // Same text without spaces or breaks.
         let squash = |s: &str| s.chars().filter(|c| !c.is_whitespace()).collect::<String>();
         assert_eq!(squash(&w.join("\n")), squash(&text));
         assert_eq!(wrap("a\n\nb", 40), vec!["a", "", "b"]);

@@ -1,6 +1,6 @@
-//! Vista de lista: la vista accesible, sincronizada con el mapa. Cada fila lleva una etiqueta accesible completa
-//! (nombre, "≥" si es un mínimo, tamaño, porcentaje del padre y número de archivos) y comparte la selección con el
-//! mapa y los detalles. Con muchas filas solo se pintan las visibles.
+//! List View: The accessible view, synchronized with the map. Each row carries a complete accessible label
+//! (name, "≥" if it is a minimum, size, percentage of parent and number of files) and share the selection with the
+//! map and details. With many rows, only the visible ones are painted.
 
 use crate::app::Env;
 use crate::args;
@@ -16,29 +16,29 @@ use tesela_model::NodeId;
 
 const ROW_H: f32 = 32.0;
 
-/// Columnas de la lista según el ancho de la fila. El NOMBRE manda: las demás columnas se ocultan por orden (primero
-/// "archivos", luego la barra y el porcentaje) hasta que el nombre tenga sitio. Todas las posiciones son distancias al
-/// borde DERECHO de la fila.
+/// List columns based on row width. The NAME rules: the other columns are hidden in order (first
+/// "files", then the bar and the percentage) until the name has room. All positions are distances to
+/// RIGHT edge of the row.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Cols {
-    /// Ancho que le queda a la columna del nombre (desde `NAME_LEFT`).
+    /// Width remaining for the name column (from `NAME_LEFT`).
     pub name_w: f32,
-    /// Borde derecho de "Tamaño" (distancia al borde derecho de la fila).
+    /// "Size" right edge (distance to the right edge of the row).
     pub size_right: f32,
-    /// Inicio de la barra y el porcentaje (distancia al borde derecho), si se muestran.
+    /// Bar start and percentage (distance to right edge), if displayed.
     pub bar_left: Option<f32>,
-    /// Borde derecho de "Archivos" (distancia al borde derecho), si se muestra.
+    /// Right edge of "Files" (distance to right edge), if displayed.
     pub files_right: Option<f32>,
 }
 
-/// Dónde empieza el nombre (tras el icono).
+/// Where the name begins (after the icon).
 pub(crate) const NAME_LEFT: f32 = 36.0;
-/// Ancho mínimo que se garantiza al nombre mientras se pueda quitar otra columna.
+/// Minimum width guaranteed to the name as long as another column can be removed.
 pub(crate) const NAME_MIN_W: f32 = 150.0;
 
-/// Reparte el ancho `width` de la fila.
+/// Spreads the `width` width of the row.
 pub(crate) fn columns(width: f32) -> Cols {
-    // (columna "archivos", barra) → anchura que ocupan las columnas de la derecha.
+    // (column "files", bar) → width occupied by the columns on the right.
     const FULL: f32 = 320.0;
     const NO_FILES: f32 = 242.0;
     const SIZE_ONLY: f32 = 120.0;
@@ -87,7 +87,7 @@ impl Items {
     }
 }
 
-/// Pinta la lista de los elementos de la carpeta actual.
+/// Paints the list of items in the current folder.
 pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
     let pal = env.pal;
     let items = match ex.search_matches() {
@@ -97,11 +97,11 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
     let n = items.len();
     let total: u64 = ex.view().alloc(ex.root.node).max(1);
     let tree = ex.tree.clone();
-    // Con el modo "Seleccionar" activo o con algo marcado aparece la columna de casillas (y el resto se desplaza).
+    // With "Select" mode active or with something checked, the column of boxes appears (and the rest scrolls).
     let checks = ex.multi.mode || !ex.multi.is_empty();
     let off = if checks { CHECK_W } else { 0.0 };
 
-    // Cabecera de columnas.
+    // Column header.
     let (hr, _) = ui.allocate_exact_size(vec2(ui.available_width(), 28.0), Sense::hover());
     let cols = columns(hr.width() - off);
     let hdr = |text: String, x: f32, anchor: Align2| {
@@ -140,7 +140,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
     ui.painter()
         .hline(hr.x_range(), hr.bottom(), Stroke::new(1.0, pal.border));
     if checks && n > 0 {
-        // Casilla de la cabecera: marca o desmarca todo lo que se ve (la vía con ratón de "todo menos uno").
+        // Header box: Check or uncheck everything you see (the "everything but one" mouse path).
         let marked_here = (0..n).filter(|&i| ex.multi.contains(items.get(i))).count();
         let all = marked_here == n;
         let cb = Rect::from_center_size(pos2(hr.left() + 16.0, hr.center().y), vec2(16.0, 16.0));
@@ -155,7 +155,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
         });
         crate::multisel::paint_checkbox(ui.painter(), env, cb, all);
         if marked_here > 0 && !all {
-            // Estado mixto: una raya en la casilla.
+            // Mixed status: a check mark in the box.
             ui.painter().hline(
                 cb.shrink2(vec2(4.0, 0.0)).x_range(),
                 cb.center().y,
@@ -213,7 +213,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
                 ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::hover());
             let resp = ui.interact(rect, ui.id().with(("fila", id)), Sense::click());
             if want_focus == Some(id) {
-                // La fila a la que acaba de llegar el teclado (flecha arriba/abajo): se enfoca y se deja a la vista.
+                // The row that the keyboard just reached (up/down arrow): is focused and left in view.
                 resp.request_focus();
                 ui.scroll_to_rect(rect, None);
             }
@@ -222,7 +222,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
                 ex.nav_focus = Some(resp.id);
             }
             if resp.gained_focus() {
-                // Con Tab la selección sigue al foco: así Intro abre justo la fila enfocada.
+                // With Tab the selection follows the focus: thus Enter opens just the focused row.
                 ex.selection = Some(sel);
                 ui.scroll_to_rect(rect, None);
             }
@@ -271,8 +271,8 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
                 }
                 s
             };
-            // Con las casillas visibles la fila es una casilla y su estado ("marcada") lo da `toggled`, no la etiqueta; sin
-            // ellas, el de siempre (`toggled` = elemento activo). El elemento activo se expone siempre como `selected`.
+            // With visible boxes the row is a box and its status ("checked") is given by `toggled`, not the label; without
+            // them, the usual one (`toggled` = active element). The active element is always exposed as `selected`.
             resp.widget_info(|| {
                 if checks {
                     egui::WidgetInfo::selected(
@@ -351,7 +351,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
                     pal.text,
                     cols.name_w,
                 );
-                // Candado si está protegido (no se puede añadir a la cesta) y carrito si ya está en ella.
+                // Padlock if it is protected (cannot be added to the cart) and cart if it is already in it.
                 let (protected, in_basket) = if describe::special(&tree, id).is_none() {
                     let key = tesela_cleaner::paths::PathKey::new(&tree.path(id));
                     (
@@ -376,7 +376,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
                         x += 22.0;
                     }
                 }
-                // Barra de cuota y porcentaje (se ocultan si el nombre no tiene sitio).
+                // Share and percentage bar (hidden if the name does not have a place).
                 if let Some(b) = cols.bar_left {
                     let bar =
                         Rect::from_min_size(pos2(rect.right() - b, cy - 4.0), vec2(90.0, 8.0));
@@ -428,12 +428,12 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
             if resp.secondary_clicked() {
                 ex.ctx_target = Some(sel);
             }
-            // Selección múltiple. Con el puntero: Mayús+clic marca el rango desde el ancla, Ctrl+clic (o el modo "Seleccionar",
-            // o pulsar la casilla) alterna la fila y un clic normal solo fija el ancla. Con el teclado, Espacio alterna.
+            // Multiple selection. With the pointer: Shift+click marks the range from the anchor, Ctrl+click (or "Select" mode,
+            // or clicking the box) toggles the row and a normal click just sets the anchor. With the keyboard, Space toggles.
             let mods = ui.input(|i| i.modifiers);
             if resp.clicked() {
                 if let Some(p) = resp.interact_pointer_pos() {
-                    // Un clic de ratón enfoca la fila: así Espacio y Mayús+flechas funcionan sin pasar por Tab.
+                    // A mouse click focuses the row: so Space and Shift+arrows work without going through Tab.
                     resp.request_focus();
                     let on_check = checks && p.x < rect.left() + off;
                     if mods.shift {
@@ -445,12 +445,12 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
                         ex.multi.plain_move(id);
                     }
                 } else if ui.input(crate::multisel::keyboard_click_toggles) {
-                    // Sin puntero: el clic por defecto de un lector de pantalla o la pulsación de Espacio alternan la marca
-                    // (Intro entra en la carpeta y la autorrepetición de Espacio no vuelve a alternar).
+                    // No pointer: The default click of a screen reader or pressing Space toggles the mark
+                    // (Enter enters the folder and Space auto-repeat does not toggle again.)
                     ex.marks_toggle(sel);
                 }
             }
-            // Con Ctrl o Mayús un doble clic son dos marcas seguidas, no "entrar".
+            // With Ctrl or Shift a double click is two marks in a row, not "enter".
             if resp.double_clicked() && !(mods.command || mods.shift) {
                 entered = ex.enter(sel);
             }
@@ -461,7 +461,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
                 }
             });
         }
-        // Teclado: con una fila enfocada, ↑/↓ (y Re Pág, Av Pág, Inicio, Fin) mueven la selección y el foco.
+        // Keyboard: With a row in focus, ↑/↓ (and Page Up, Page Down, Home, End) move the selection and focus.
         let shift = ui.input(|i| i.modifiers.shift);
         if let Some(fi) = focused
             && !entered
@@ -471,8 +471,8 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
             ex.selection = Some(Sel::Node(items.get(to)));
             ex.list_focus = Some(items.get(to));
             if shift {
-                // Mayús+flechas: lo marcado es lo de antes más el rango desde el ancla (la fila de la que se salió, si aún
-                // no hay ancla); con la flecha contraria el rango encoge.
+                // Shift+arrows: what is marked is what was before plus the range from the anchor (the row from which you left, if still
+                // there is no anchor); With the opposite arrow the range shrinks.
                 if ex.multi.anchor.is_none() {
                     ex.multi.anchor = Some(items.get(fi));
                 }
@@ -488,7 +488,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
     });
 }
 
-/// Fila a la que lleva la tecla de navegación pulsada (y la consume), o `None` si no se pulsó ninguna.
+/// Row to which the pressed navigation key takes (and consumes it), or `None` if none was pressed.
 fn key_target(i: &mut egui::InputState, from: usize, n: usize) -> Option<usize> {
     use egui::{Key, Modifiers};
     let last = n.saturating_sub(1);

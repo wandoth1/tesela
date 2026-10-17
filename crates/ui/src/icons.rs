@@ -1,16 +1,16 @@
-//! Iconos: un subconjunto de 30 de Fluent UI System Icons (MIT, © Microsoft; ver `assets/icons/LICENSE`).
+//! Icons: A subset of 30 of Fluent UI System Icons (MIT, © Microsoft; see `assets/icons/LICENSE`).
 //!
-//! Los SVG se guardan tal como salen del repositorio oficial. Son un único `<path>` relleno con las órdenes
-//! `M L H V C Z` absolutas, así que en lugar de depender de un rasterizador de SVG completo, un rasterizador propio de
-//! ~100 líneas los convierte a una máscara de transparencia al tamaño en píxeles que pide la pantalla (PerMonitorV2:
-//! `puntos × pixels_per_point`) y la cachea como textura blanca que egui tiñe. Relleno de devanado no nulo, cobertura
-//! exacta en horizontal y 8 sub-líneas en vertical. Un test comprueba que los 30 se interpretan y que la cobertura de
-//! formas conocidas (cuadrado, agujero) es exacta.
+//! The SVGs are saved as they come from the official repository. They are a single `<path>` filled with the orders
+//! `M L H V C Z` absolute, so instead of relying on a full SVG rasterizer, a proprietary SVG rasterizer.
+//! ~100 lines converts them to a transparency mask at the size in pixels requested by the screen (PerMonitorV2:
+//! `puntos × pixels_per_point`) and searches it as a white texture that Egui dyes. Non-zero winding filling, coverage
+//! exact horizontally and 8 vertical sub-lines. A test verifies that the 30 are interpreted and that the coverage of
+//! known shapes (square, hole) is exact.
 
 use egui::{Color32, ColorImage, Context, TextureHandle, TextureOptions, Vec2};
 use std::collections::HashMap;
 
-/// Un icono del subconjunto.
+/// A subset icon.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Icon {
     ArrowClockwise,
@@ -53,7 +53,7 @@ macro_rules! svg {
 }
 
 impl Icon {
-    /// Todos los iconos.
+    /// All icons.
     pub const ALL: [Icon; 31] = [
         Icon::ArrowClockwise,
         Icon::ArrowUp,
@@ -88,7 +88,7 @@ impl Icon {
         Icon::Warning,
     ];
 
-    /// El SVG original.
+    /// The original SVG.
     pub fn svg(self) -> &'static str {
         match self {
             Icon::ArrowClockwise => svg!("arrow_clockwise"),
@@ -126,12 +126,12 @@ impl Icon {
     }
 }
 
-// --- Intérprete del atributo `d` y rasterizador --------------------------------------------------------------------
+// --- `d` attribute interpreter and rasterizer --------------------------------------------------------------------
 
-/// Segmento de recta en el espacio del `viewBox`.
+/// Line segment in the `viewBox` space.
 type Edge = ((f32, f32), (f32, f32));
 
-/// Extrae el valor del atributo `d` del primer `<path>` del SVG.
+/// Extracts the value of the `d` attribute from the first `<path>` of the SVG.
 pub fn path_data(svg: &str) -> Option<&str> {
     let p = svg.find("<path")?;
     let rest = &svg[p..];
@@ -140,11 +140,11 @@ pub fn path_data(svg: &str) -> Option<&str> {
     Some(&rest[d..d + end])
 }
 
-/// Lado del `viewBox` de los SVG de Fluent (todos son 24 × 24).
+/// `viewBox` side of the Fluent SVGs (they are all 24×24).
 pub const VIEWBOX: f32 = 24.0;
 
-/// Convierte las órdenes `M L H V C Z` (absolutas o relativas) en segmentos, aplanando las curvas de Bézier.
-/// Devuelve `Err` si aparece otra orden (arcos, `S`, `Q`...): los iconos incluidos no las usan.
+/// Converts `M L H V C Z` commands (absolute or relative) into segments, flattening Bezier curves.
+/// Returns `Err` if another command appears (arcs, `S`, `Q`...): the included icons do not use them.
 pub fn flatten(d: &str) -> Result<Vec<Edge>, String> {
     let bytes = d.as_bytes();
     let mut i = 0usize;
@@ -216,13 +216,13 @@ pub fn flatten(d: &str) -> Result<Vec<Edge>, String> {
         match cmd.to_ascii_uppercase() {
             b'M' => {
                 let (x, y) = (number(bytes, &mut i)? + ox, number(bytes, &mut i)? + oy);
-                // Cierra implícitamente el subtrazado anterior (el relleno siempre cierra).
+                // Implicitly closes the previous subpath (fill always closes).
                 if (cx, cy) != (sx, sy) {
                     edges.push(((cx, cy), (sx, sy)));
                 }
                 (cx, cy) = (x, y);
                 (sx, sy) = (x, y);
-                cmd = if rel { b'l' } else { b'L' }; // los pares siguientes son `L`
+                cmd = if rel { b'l' } else { b'L' }; // The following pairs are `L` commands.
             }
             b'L' => {
                 let (x, y) = (number(bytes, &mut i)? + ox, number(bytes, &mut i)? + oy);
@@ -244,7 +244,7 @@ pub fn flatten(d: &str) -> Result<Vec<Edge>, String> {
                 for q in &mut p {
                     *q = (number(bytes, &mut i)? + ox, number(bytes, &mut i)? + oy);
                 }
-                // 16 segmentos por curva: sobrados para curvas de iconos de 24 unidades a 64 px o menos.
+                // 16 segments per curve: more than enough for icon curves of 24 units at 64 px or less.
                 const N: usize = 16;
                 let (p0, p1, p2, p3) = ((cx, cy), p[0], p[1], p[2]);
                 let mut prev = p0;
@@ -270,13 +270,13 @@ pub fn flatten(d: &str) -> Result<Vec<Edge>, String> {
     Ok(edges)
 }
 
-/// Máscara de cobertura `size × size` (0..=255) de unos segmentos del `viewBox` de 24 unidades, con relleno de
-/// devanado no nulo.
+/// `size × size` coverage mask (0..=255) of some `viewBox` segments of 24 units, filled with
+/// non-zero winding.
 pub fn rasterize(edges: &[Edge], size: u32) -> Vec<u8> {
     const SUB: u32 = 8;
     let s = size as usize;
     let k = size as f32 / VIEWBOX;
-    // Segmentos en píxeles, sin los horizontales (no cruzan ninguna línea de muestreo).
+    // Segments in pixels, without horizontal ones (they do not cross any sampling lines).
     let px: Vec<(f32, f32, f32, f32, i32)> = edges
         .iter()
         .filter(|((_, y0), (_, y1))| y0 != y1)
@@ -315,7 +315,7 @@ pub fn rasterize(edges: &[Edge], size: u32) -> Vec<u8> {
         .collect()
 }
 
-/// Suma a la fila la cobertura horizontal exacta del intervalo `[a, b)`.
+/// Adds the exact horizontal coverage of the interval `[a, b)` to the row.
 fn add_span(row: &mut [f32], a: f32, b: f32) {
     let (a, b) = (a.max(0.0), b.min(row.len() as f32));
     if b <= a {
@@ -329,7 +329,7 @@ fn add_span(row: &mut [f32], a: f32, b: f32) {
     }
 }
 
-/// Máscara del icono a `size` px.
+/// Icon mask to `size` px.
 pub fn rasterize_icon(icon: Icon, size: u32) -> Vec<u8> {
     let d = path_data(icon.svg())
         .expect("todos los SVG incluidos tienen un <path d=...> (lo prueba un test)");
@@ -337,16 +337,16 @@ pub fn rasterize_icon(icon: Icon, size: u32) -> Vec<u8> {
     rasterize(&edges, size)
 }
 
-// --- Caché de texturas ---------------------------------------------------------------------------------------------
+// --- Texture cache ---------------------------------------------------------------------------------------------
 
-/// Texturas de los iconos por (icono, tamaño en píxeles).
+/// Icon textures by (icon, size in pixels).
 #[derive(Default)]
 pub struct IconCache {
     textures: HashMap<(Icon, u32), TextureHandle>,
 }
 
 impl IconCache {
-    /// Textura del icono a `px` píxeles de lado (blanca con la cobertura como transparencia: egui la tiñe).
+    /// Texture of the icon at `px` pixels from the side (white with the coverage as transparency: egui dyes it).
     pub fn texture(&mut self, ctx: &Context, icon: Icon, px: u32) -> &TextureHandle {
         let px = px.clamp(8, 256);
         self.textures.entry((icon, px)).or_insert_with(|| {
@@ -360,7 +360,7 @@ impl IconCache {
         })
     }
 
-    /// Dibuja el icono de `size` puntos en `rect` con el color `tint`.
+    /// Draws the `size` dotted icon on `rect` with color `tint`.
     pub fn paint(&mut self, painter: &egui::Painter, rect: egui::Rect, icon: Icon, tint: Color32) {
         let ppp = painter.ctx().pixels_per_point();
         let px = (rect.width().max(rect.height()) * ppp).round() as u32;
@@ -373,7 +373,7 @@ impl IconCache {
         );
     }
 
-    /// Añade el icono como widget y devuelve su respuesta.
+    /// Adds the icon as a widget and returns its response.
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -399,31 +399,31 @@ mod tests {
 
     #[test]
     fn un_cuadrado_cubre_exactamente_su_area() {
-        // 12 × 12 de un viewBox de 24: la cuarta parte.
+        // 12 × 12 of a 24 viewBox: the fourth part.
         let e = flatten("M6 6H18V18H6Z").unwrap();
         let m = rasterize(&e, 24);
         assert!((coverage(&m) - 0.25).abs() < 1e-3, "{}", coverage(&m));
-        // A otra escala la fracción es la misma (los bordes caen entre píxeles).
+        // At another scale the fraction is the same (the edges fall between pixels).
         let m = rasterize(&e, 48);
         assert!((coverage(&m) - 0.25).abs() < 1e-3);
-        // Con bordes en mitad de un píxel, la cobertura parcial también es exacta en horizontal.
+        // With edges at half a pixel, partial coverage is also accurate horizontally.
         let e = flatten("M0.5 0H23.5V24H0.5Z").unwrap();
         assert!((coverage(&rasterize(&e, 24)) - 23.0 / 24.0).abs() < 1e-3);
     }
 
     #[test]
     fn el_devanado_inverso_hace_un_agujero_y_el_mismo_sentido_no() {
-        // Marco: cuadrado grande y cuadrado pequeño en sentido contrario = agujero (devanado no nulo).
+        // Frame: large square and small square in opposite direction = hole (non-zero winding).
         let hole = flatten("M0 0H24V24H0Z M6 6V18H18V6Z").unwrap();
         assert!((coverage(&rasterize(&hole, 24)) - 0.75).abs() < 1e-3);
-        // Mismo sentido: el interior sigue relleno.
+        // Same sense: the interior is still stuffed.
         let solid = flatten("M0 0H24V24H0Z M6 6H18V18H6Z").unwrap();
         assert!((coverage(&rasterize(&solid, 24)) - 1.0).abs() < 1e-3);
     }
 
     #[test]
     fn un_circulo_de_bezier_mide_pi_r2() {
-        // Círculo de radio 8 centrado en (12, 12) con 4 curvas (kappa = 0,5523).
+        // Circle of radius 8 centered at (12, 12) with 4 curves (kappa = 0.5523).
         let k = 8.0 * 0.552_284_75;
         let d = format!(
             "M20 12C20 {a} {b} 20 12 20C{c} 20 4 {a} 4 12C4 {c} {c} 4 12 4C{b} 4 20 {c} 20 12Z",
@@ -442,9 +442,9 @@ mod tests {
 
     #[test]
     fn numeros_pegados_y_ordenes_relativas() {
-        // "4.5-3" son dos números; `l` relativo.
+        // "4.5-3" is two numbers; relative `l`.
         let e = flatten("M4.5-3l1.5.5").unwrap();
-        assert_eq!(e.len(), 2); // un segmento y el cierre implícito
+        assert_eq!(e.len(), 2); // One segment and the implicit close.
         assert_eq!(e[0], ((4.5, -3.0), (6.0, -2.5)));
         assert!(flatten("M0 0A1 1 0 0 1 2 2").is_err());
         assert!(flatten("M0 0Q1 1 2 2").is_err());
@@ -459,14 +459,14 @@ mod tests {
             let m = rasterize(&edges, 24);
             let c = coverage(&m);
             assert!((0.02..0.6).contains(&c), "{icon:?}: cobertura {c}");
-            // Dentro del viewBox: ningún segmento se sale de 0..24 (con margen de curva).
+            // Inside the viewBox: no segment goes beyond 0..24 (with curve margin).
             for ((x0, y0), (x1, y1)) in &edges {
                 for v in [x0, y0, x1, y1] {
                     assert!((-0.5..=24.5).contains(v), "{icon:?}: {v}");
                 }
             }
         }
-        // Y las licencias van junto a los iconos.
+        // And the licenses go along with the icons.
         assert!(include_str!("../assets/icons/LICENSE").contains("MIT License"));
     }
 
