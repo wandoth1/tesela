@@ -632,8 +632,60 @@ fn map_label(ex: &Explore, env: &Env) -> String {
         }
         None => {}
     }
+    // Selección múltiple: cuántos hay marcados y si el elemento activo es uno de ellos.
+    if !ex.multi.is_empty() {
+        s.push(' ');
+        s.push_str(&tr.ta(
+            "sel-map-count",
+            args!["count" => tr.int(ex.multi.len() as u64)],
+        ));
+        if let Some(Sel::Node(id)) = ex.selection
+            && ex.child_of_root(id).is_some_and(|c| ex.multi.contains(c))
+        {
+            s.push(' ');
+            s.push_str(&tr.t("sel-map-this"));
+        }
+    }
     s
 }
+
+/// Velo, borde e insignia de lo que está marcado para la cesta (se pintan cada frame sobre el mesh, nunca dentro de él).
+fn draw_marks(painter: &egui::Painter, env: &mut Env, ex: &Explore, layout: &Layout, rect: Rect) {
+    if ex.multi.is_empty() {
+        return;
+    }
+    let pal = env.pal;
+    let tint = crate::multisel::mark_tint(&pal);
+    for c in layout.cells() {
+        let marked = match c.kind {
+            CellKind::Node(id) => c.level == 0 && ex.multi.contains(id),
+            CellKind::Others(i) => ex.others_all_marked(layout.others()[i as usize]),
+        };
+        if !marked {
+            continue;
+        }
+        let r = Rect::from_min_size(
+            rect.min + vec2(c.rect.x, c.rect.y),
+            vec2(c.rect.w, c.rect.h),
+        )
+        .shrink(1.0);
+        painter.rect_filled(r, CornerRadius::same(4), tint);
+        painter.rect_stroke(
+            r,
+            CornerRadius::same(4),
+            Stroke::new(2.0, pal.accent),
+            StrokeKind::Inside,
+        );
+        // La insignia va abajo a la derecha: arriba a la izquierda está el nombre y arriba a la derecha el carrito.
+        if c.rect.w >= 34.0 && c.rect.h >= 52.0 {
+            let center = r.right_bottom() - vec2(CHECK_BADGE_INSET, CHECK_BADGE_INSET);
+            crate::multisel::paint_check_badge(painter, env, center);
+        }
+    }
+}
+
+/// Distancia de la insignia de "seleccionado" a la esquina inferior derecha de su celda.
+pub(crate) const CHECK_BADGE_INSET: f32 = 18.0;
 
 /// El mapa. Dibuja en todo el espacio disponible.
 pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
@@ -757,7 +809,6 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
         egui::WidgetInfo::labeled(egui::WidgetType::Other, true, map_label(ex, env))
     });
     let pointer = ctx.input(|i| i.pointer.hover_pos());
-    let entry = ex.map.mesh.as_ref().expect("mesh");
     let hovered = if resp.hovered() && !animating {
         pointer.and_then(|p| layout.hit(p.x - rect.min.x, p.y - rect.min.y))
     } else {
@@ -769,7 +820,22 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
     // selección.
     let pointer_click =
         (resp.clicked() || resp.secondary_clicked()) && resp.interact_pointer_pos().is_some();
-    if pointer_click {
+    let mods = ctx.input(|i| i.modifiers);
+    // Ctrl+clic, Mayús+clic (en el mapa no hay un orden 2D razonable para un rango: alterna igual) o el modo "Seleccionar":
+    // marca o desmarca la celda. Una celda insinuada (nivel 1) marca a su carpeta, que es la que lleva etiqueta.
+    let multi_click = resp.clicked()
+        && pointer_click
+        && hovered.is_some()
+        && (mods.command || mods.shift || ex.multi.mode);
+    if multi_click {
+        resp.request_focus();
+        let i = hovered.expect("hay celda bajo el puntero");
+        let c = &layout.cells()[i];
+        let sel = sel_of_cell(&layout, base_cell(c.level, c.parent, i));
+        ex.marks_toggle(sel);
+        ex.selection = Some(sel);
+        ex.scroll_to_selection = true;
+    } else if pointer_click {
         resp.request_focus();
         ex.selection = hovered.map(|i| sel_of_cell(&layout, i));
         ex.scroll_to_selection = true;
@@ -777,7 +843,9 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
     if resp.secondary_clicked() {
         ex.ctx_target = ex.selection.or(Some(Sel::Node(ex.root.node)));
     }
+    // Con Ctrl o Mayús un doble clic son dos marcas seguidas, no "entrar".
     if resp.double_clicked()
+        && !(mods.command || mods.shift)
         && let Some(i) = hovered
     {
         let sel = sel_of_cell(&layout, i);
@@ -808,10 +876,17 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
                 ex.scroll_to_selection = true;
             }
         }
+        // Espacio marca o desmarca el elemento activo (la vía de teclado de Ctrl+clic).
+        if ctx.input(|i| i.key_pressed(Key::Space))
+            && let Some(sel) = ex.selection
+        {
+            ex.marks_toggle(sel);
+        }
     }
 
     // --- Overlays ---
     if !animating {
+        let entry = ex.map.mesh.as_ref().expect("mesh");
         draw_labels(&painter, env, ex, entry, &params);
         // Lo que está en la cesta lleva una insignia con el carrito.
         for c in layout.cells().iter().filter(|c| c.level == 0) {
@@ -830,6 +905,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
                 );
             }
         }
+        draw_marks(&painter, env, ex, &layout, rect);
         // Veladura de la búsqueda.
         if let Some(hits) = ex.search_set() {
             let veil = pal.bg.gamma_multiply(0.72);
@@ -1221,6 +1297,35 @@ pub(crate) fn menu_items(ui: &mut Ui, env: &mut Env, ex: &mut Explore, sel: Sel)
         AddState::SystemBlock => disabled(ui, tr.t("menu-add-basket"), "menu-unavailable-system"),
         AddState::CloudOnly => disabled(ui, tr.t("menu-add-basket"), "menu-unavailable-cloud"),
         AddState::Group => disabled(ui, tr.t("menu-add-basket"), "tip-open-group"),
+    }
+    // Selección múltiple: marcar este elemento, marcar todo lo de la carpeta o invertir lo marcado ("todo menos uno").
+    ui.separator();
+    let (target, marked) = match sel {
+        Sel::Node(id) => {
+            let c = ex.child_of_root(id);
+            (c.is_some(), c.is_some_and(|c| ex.multi.contains(c)))
+        }
+        Sel::Group(o) => (true, ex.others_all_marked(o)),
+    };
+    let key = if marked {
+        "menu-sel-unthis"
+    } else {
+        "menu-sel-this"
+    };
+    if ui
+        .add_enabled(target, egui::Button::new(tr.t(key)))
+        .clicked()
+    {
+        ex.marks_toggle(sel);
+        ui.close();
+    }
+    if ui.button(tr.t("menu-sel-all")).clicked() {
+        ex.marks_all_here();
+        ui.close();
+    }
+    if ui.button(tr.t("menu-sel-invert")).clicked() {
+        ex.marks_invert_here();
+        ui.close();
     }
 }
 
