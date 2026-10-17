@@ -635,7 +635,11 @@ mod tests {
         assert_eq!(RECYCLE_BIN_MASK & SEE_MASK_NOASYNC, SEE_MASK_NOASYNC);
         assert_eq!(RECYCLE_BIN_MASK & SEE_MASK_FLAG_NO_UI, SEE_MASK_FLAG_NO_UI);
         let src = include_str!("platform.rs");
-        let body = &src[src.find("pub fn open_recycle_bin").unwrap()..];
+        // La Papelera se abre con el hilo común de la shell (`shell_open_async`), que es el que inicializa COM.
+        let open = &src[src.find("pub fn open_recycle_bin").unwrap()..];
+        let open = &open[..open.find("\n}\n").unwrap()];
+        assert!(open.contains("shell_open_async"));
+        let body = &src[src.find("fn shell_open_async").unwrap()..];
         let body = &body[..body.find("\n}\n").unwrap()];
         assert!(body.contains("CoInitializeEx") && body.contains("CoUninitialize"));
     }

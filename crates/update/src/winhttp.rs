@@ -248,6 +248,18 @@ mod tests {
         }
     }
 
+    /// MANUAL, never part of the automated run (`--ignored`): ONE real request to `api.github.com` through WinHTTP, to
+    /// check the transport end to end (status, body, parsing). Run it by hand, once, never in a loop:
+    ///
+    /// `cargo test -p tesela-update -- --ignored --nocapture real_request`
+    #[test]
+    #[ignore = "makes one real request to api.github.com: run it by hand, once"]
+    fn real_request_by_hand() {
+        let latest = crate::fetch_latest(&WinHttp);
+        println!("latest published version: {latest:?}");
+        assert!(latest.is_ok(), "{latest:?}");
+    }
+
     #[test]
     fn a_request_that_cannot_be_made_fails_before_touching_the_network() {
         // Not `https`, or no user agent: rejected before any WinHTTP call.
