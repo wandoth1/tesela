@@ -180,6 +180,16 @@ Treinta casos son un piloto para orientar el proyecto, no una certificación est
 
 ## 9. Riesgos y tareas abiertas
 
+- **Antivirus:** un antivirus heurístico puede desconfiar del comportamiento de un limpiador (borrado masivo, uso de la
+  Papelera por COM). Ya ocurrió con el binario de **pruebas** al ejecutarlo en bucle. Antes de anunciar la limpieza hay
+  que probar `tesela.exe` con los antivirus más comunes (Microsoft Defender y otros dos o tres) y, si alguno lo marca,
+  reportar el falso positivo al fabricante. La firma de código ayuda a la reputación, pero no lo resuelve por sí sola.
+- **Canal Microsoft Store (experimento, no decidido):** es la única forma de evitar del todo el aviso de SmartScreen,
+  porque Microsoft firma el paquete. Exige MSIX. Una app de escritorio `runFullTrust` puede leer todo el disco, pero
+  Windows **virtualiza las escrituras en AppData**, que es justo donde están las cachés y los temporales que se limpian.
+  Antes de decidir hay que comprobar en una prueba si, con la capacidad restringida `unvirtualizedResources`, la limpieza
+  de AppData funciona exactamente igual que con el MSI, y si la Tienda la acepta para un limpiador. Hasta entonces el MSI
+  sigue siendo el canal principal.
 - **Firma:** SignPath no está garantizado (pide reputación verificable y política de privacidad). Hay que confirmar la
   disponibilidad y el coste reales de las alternativas antes de contar con ellas.
 - **Responsabilidad:** la licencia no da inmunidad automática. Antes de promocionar mucho la limpieza conviene una
