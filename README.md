@@ -131,13 +131,18 @@ tesela --help
 
 ## Roadmap
 
-| Version | Content |
-|---|---|
-| Phase 0 ✅ | Measurement tests: graphical interface, folder-reading API, Recycle Bin (done: [findings](docs/phase-0-findings.md)) |
-| v0.1 | Scan, map + list, basket, cleaning of temporary files, caches and Recycle Bin. Deliverable: **per-user MSI installer** from v0.1 |
-| v0.2 | Full assistant (project folders, old downloads, large files), undo |
-| v0.3 | Fast mode reading the MFT (administrator) |
-| v1.0 | Duplicates, incremental rescan, signed installer, winget, ARM64 |
+| Version | Status | Content |
+|---|---|---|
+| Phase 0 | ✅ Done | Measurement tests: graphical interface, folder-reading API, Recycle Bin ([findings](docs/phase-0-findings.md)) |
+| v0.1.0 – v0.1.4 | ✅ Released | Scan, map + list, basket, cleaning of temporary files, caches and the Recycle Bin, per-user MSI installer. Four rounds of fixes after independent security audits; v0.1.4 adds the Home button and change monitoring when sending folders to the Recycle Bin |
+| v0.1.5 | 🧪 Beta in progress | Installer with a setup UI: only for me or for all users, install folder, optional desktop shortcut. Select several items before adding them to the basket. New *Review* categories: Windows error reports and crash dumps |
+| v0.1.6 | Planned | New home screen with three entries: **Quick clean** (temporary files and caches without scanning the whole disk, including developer tool caches), **Optimize** and **Explore the disk** |
+| v0.1.7 | Planned | **Optimize**, honest version: memory explained, the programs using the most, startup apps. No "free RAM" button (it usually makes things slower) |
+| v0.2 | Planned | Full assistant (project folders, old downloads, large files), undo, and a limited administrator helper for some Windows areas (only in the all-users install, after an external audit) |
+| v0.3 | Planned | Fast mode reading the MFT (administrator) |
+| v1.0 | Planned | Duplicates, incremental rescan, signed installer, winget, ARM64 |
+
+The product plan, its validation phase and its rules are in [docs/ROADMAP.md](docs/ROADMAP.md).
 
 ## Technology
 
