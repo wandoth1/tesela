@@ -649,27 +649,40 @@ fn map_label(ex: &Explore, env: &Env) -> String {
     s
 }
 
-/// Velo, borde e insignia de lo que está marcado para la cesta (se pintan cada frame sobre el mesh, nunca dentro de él).
-fn draw_marks(painter: &egui::Painter, env: &mut Env, ex: &Explore, layout: &Layout, rect: Rect) {
+/// Las celdas de nivel 0 que están marcadas para la cesta, con su rectángulo en pantalla (sin el margen de 1 px).
+fn marked_cells(ex: &Explore, layout: &Layout, rect: Rect) -> Vec<(Rect, Rect)> {
     if ex.multi.is_empty() {
-        return;
+        return Vec::new();
     }
-    let pal = env.pal;
-    let tint = crate::multisel::mark_tint(&pal);
-    for c in layout.cells() {
-        let marked = match c.kind {
+    layout
+        .cells()
+        .iter()
+        .filter(|c| match c.kind {
             CellKind::Node(id) => c.level == 0 && ex.multi.contains(id),
             CellKind::Others(i) => ex.others_all_marked(layout.others()[i as usize]),
-        };
-        if !marked {
-            continue;
-        }
-        let r = Rect::from_min_size(
-            rect.min + vec2(c.rect.x, c.rect.y),
-            vec2(c.rect.w, c.rect.h),
-        )
-        .shrink(1.0);
+        })
+        .map(|c| {
+            let full = Rect::from_min_size(
+                rect.min + vec2(c.rect.x, c.rect.y),
+                vec2(c.rect.w, c.rect.h),
+            );
+            (full, full.shrink(1.0))
+        })
+        .collect()
+}
+
+/// Velo de acento de lo marcado para la cesta: va ANTES de las etiquetas para no restarles contraste.
+fn draw_mark_tint(painter: &egui::Painter, env: &Env, ex: &Explore, layout: &Layout, rect: Rect) {
+    let tint = crate::multisel::mark_tint(&env.pal);
+    for (_, r) in marked_cells(ex, layout, rect) {
         painter.rect_filled(r, CornerRadius::same(4), tint);
+    }
+}
+
+/// Borde e insignia de verificación de lo marcado (después de las etiquetas; se pintan cada frame, nunca dentro del mesh).
+fn draw_marks(painter: &egui::Painter, env: &mut Env, ex: &Explore, layout: &Layout, rect: Rect) {
+    let pal = env.pal;
+    for (full, r) in marked_cells(ex, layout, rect) {
         painter.rect_stroke(
             r,
             CornerRadius::same(4),
@@ -677,7 +690,7 @@ fn draw_marks(painter: &egui::Painter, env: &mut Env, ex: &Explore, layout: &Lay
             StrokeKind::Inside,
         );
         // La insignia va abajo a la derecha: arriba a la izquierda está el nombre y arriba a la derecha el carrito.
-        if c.rect.w >= 34.0 && c.rect.h >= 52.0 {
+        if full.width() >= 34.0 && full.height() >= 52.0 {
             let center = r.right_bottom() - vec2(CHECK_BADGE_INSET, CHECK_BADGE_INSET);
             crate::multisel::paint_check_badge(painter, env, center);
         }
@@ -886,6 +899,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
 
     // --- Overlays ---
     if !animating {
+        draw_mark_tint(&painter, env, ex, &layout, rect);
         let entry = ex.map.mesh.as_ref().expect("mesh");
         draw_labels(&painter, env, ex, entry, &params);
         // Lo que está en la cesta lleva una insignia con el carrito.
