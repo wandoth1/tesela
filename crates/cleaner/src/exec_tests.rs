@@ -3749,6 +3749,122 @@ fn un_archivo_que_encoge_se_mide_con_su_tamano_nuevo() {
     assert_eq!(st.changed, 2);
 }
 
+/// GM-m6: lo que se INFORMA de un archivo que encogió entre la aprobación y el envío es lo de ahora (su tamaño medido por la
+/// guarda), no la estimación aprobada: `stats.bytes`, `removed` y el contador `recycled_bytes`.
+#[test]
+fn un_archivo_que_encogio_se_informa_con_su_tamano_de_ahora() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake);
+    sb.write("Docs/e.bin", 20_000);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/e.bin"), c.protection());
+    let plan = approve(&c, &b);
+    let approved = plan.items[0].estimate;
+    assert!(approved.bytes >= 20_000 && approved.logical == 20_000);
+    // Encoge tras aprobar: de 20 000 a 5 000 bytes.
+    let f = fs::OpenOptions::new()
+        .write(true)
+        .open(sb.path("Docs/e.bin"))
+        .unwrap();
+    f.set_len(5_000).unwrap();
+    drop(f);
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    assert_eq!(
+        rep.items[0].status,
+        ItemStatus::Recycled,
+        "{:?}",
+        rep.items[0]
+    );
+    let now = rep.items[0].stats;
+    assert!(now.bytes < approved.bytes, "{now:?} frente a {approved:?}");
+    assert_eq!(rep.recycled_bytes, now.bytes);
+    let r = &rep.items[0].removed[0];
+    assert_eq!((r.bytes, r.logical), (now.bytes, 5_000));
+}
+
+/// GM-B1: lo que ocupan los reparse points de DENTRO de una carpeta cuenta contra la Papelera. Antes un archivo de la nube
+/// hidratado (o cualquier reparse point) sumaba 0 a `bytes` y `logical`: la shell mueve la carpeta ENTERA y cuenta esos
+/// archivos contra `MaxCapacity`, así que una carpeta que parecía pequeña no cabía y la shell la eliminaba. Aquí el reparse
+/// point es un archivo de un tercero con un tamaño lógico enorme (disperso: no ocupa disco).
+#[test]
+fn una_carpeta_con_un_reparse_point_grande_dentro_no_cabe_en_la_papelera() {
+    let sb = Sandbox::new();
+    // Capacidad 100 000: el 90 % son 90 000 bytes.
+    let fake = FakeShell::new(&sb, Some(100_000), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    sb.write("Docs/nube/pequeno.bin", 1_000);
+    sb.mkdir("Docs/nube");
+    if !crate::testutil::make_reparse_file(&sb.path("Docs/nube/hidratado.bin"), 5 << 20) {
+        eprintln!("el volumen no admite reparse points de prueba: se omite");
+        return;
+    }
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/nube"), c.protection());
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 1, "{:?}", plan.rejected);
+    let it = &plan.items[0];
+    let est = it.estimate;
+    // El reparse point está contado aparte (y no en `bytes`/`logical`, que son lo que liberaría borrar).
+    assert_eq!(est.reparse, 1, "{est:?}");
+    assert_eq!(est.reparse_logical, 5 << 20, "{est:?}");
+    assert!(est.logical < 5_000, "{est:?}");
+    // La cuenta anterior (sin reparse points) habría dicho "cabe".
+    let old = est.bytes.max(est.logical).max(est.shared_bytes);
+    assert!(old <= 90_000, "{est:?}");
+    assert!(est.recycle_charge() >= 5 << 20);
+    assert_eq!(it.fit, Fit::Unfit(UnfitReason::TooBig), "{it:?}");
+    // Sin la casilla, no se toca y nunca llega a la shell.
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    assert_eq!(rep.items[0].status, ItemStatus::SkippedUnfit);
+    assert!(fake.names().is_empty());
+    assert!(sb.path("Docs/nube/pequeno.bin").exists());
+
+    // Control: el mismo árbol con el reparse point pequeño sí cabe y se envía.
+    let sb2 = Sandbox::new();
+    let fake2 = FakeShell::new(&sb2, Some(100_000), 0, "nunca");
+    let c2 = cleaner_for(&sb2).with_shell(fake2.clone());
+    sb2.write("Docs/nube/pequeno.bin", 1_000);
+    assert!(crate::testutil::make_reparse_file(
+        &sb2.path("Docs/nube/chico.bin"),
+        2_000
+    ));
+    let mut b2 = Basket::new();
+    b2.add_path(sb2.long("Docs/nube"), c2.protection());
+    let plan2 = approve(&c2, &b2);
+    assert_eq!(plan2.items[0].fit, Fit::Fits, "{:?}", plan2.items[0]);
+    let rep2 = exec(&c2, &plan2, false, false, None).unwrap();
+    assert_eq!(rep2.items[0].status, ItemStatus::Recycled);
+}
+
+/// GM-B1: la medida de una carpeta con un reparse point cambia si ese reparse point cambia de tamaño (va en la huella y en la
+/// instantánea): no se envía con otra cosa que lo aprobado.
+#[test]
+fn un_reparse_point_que_cambia_de_tamano_tras_aprobar_no_se_envia() {
+    let sb = Sandbox::new();
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    sb.write("Docs/nube/pequeno.bin", 1_000);
+    if !crate::testutil::make_reparse_file(&sb.path("Docs/nube/r.bin"), 2_000) {
+        return;
+    }
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/nube"), c.protection());
+    let plan = approve(&c, &b);
+    // Cambia el reparse point por otro de otro tamaño (otro objeto).
+    fs::remove_file(sb.path("Docs/nube/r.bin")).unwrap();
+    assert!(crate::testutil::make_reparse_file(
+        &sb.path("Docs/nube/r.bin"),
+        3_000
+    ));
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    assert_eq!(
+        rep.items[0].status,
+        ItemStatus::Root(crate::engine::RootStatus::Changed)
+    );
+    assert!(fake.names().is_empty());
+}
+
 /// Una shell simulada cuya ocupación de la Papelera cambia entre una lectura y la siguiente (otra aplicación llenándola):
 /// la primera lectura decide el grupo, y la comprobación de DESPUÉS de volver a medir (A-B1) ve otra cosa.
 struct FlakyRoom {

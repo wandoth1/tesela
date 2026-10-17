@@ -81,6 +81,11 @@ pub struct Stats {
     /// Longitud (unidades UTF-16) de la ruta más larga de lo que hay dentro (GM-M3): la
     /// shell no admite rutas de 260 o más y una carpeta con un descendiente así no se puede mover a la Papelera entera.
     pub max_path: AtomicU64,
+    /// Bytes en disco y tamaño lógico de los reparse points de dentro (GM-B1): la carpeta se mueve ENTERA y la shell cuenta
+    /// contra la capacidad también lo que no se recorre (archivos de la nube hidratados, p. ej.). No entran en `bytes` ni
+    /// `logical`, que son lo que liberaría borrar: el borrado salta los reparse points.
+    pub reparse_bytes: AtomicU64,
+    pub reparse_logical: AtomicU64,
 }
 
 impl Stats {
@@ -120,6 +125,8 @@ impl Stats {
             fp_sum: Self::get(&self.fp_sum),
             fp_xor: Self::get(&self.fp_xor),
             max_path: Self::get(&self.max_path),
+            reparse_bytes: Self::get(&self.reparse_bytes),
+            reparse_logical: Self::get(&self.reparse_logical),
         }
     }
 }
@@ -184,17 +191,26 @@ pub struct StatsSnapshot {
     pub fp_xor: u64,
     /// Ruta más larga (unidades UTF-16) de lo que hay dentro (ver [`Stats::max_path`]).
     pub max_path: u64,
+    /// Bytes en disco y tamaño lógico de los reparse points de dentro (ver [`Stats::reparse_bytes`]).
+    pub reparse_bytes: u64,
+    pub reparse_logical: u64,
 }
 
 impl StatsSnapshot {
-    /// Lo que se cuenta contra la capacidad de la Papelera (GM-M3): `bytes` (archivos de un solo enlace) y `shared_bytes`
-    /// (archivos con varios enlaces) son conjuntos DISJUNTOS que la shell cuenta los dos, así que se SUMAN (el máximo de los
-    /// dos subestimaba una carpeta con las dos clases); el tamaño lógico se compara aparte porque un archivo disperso o
-    /// comprimido ocupa más lógicamente que en disco. El mayor manda.
+    /// Lo que se cuenta contra la capacidad de la Papelera (GM-M3, GM-B1): `bytes` (archivos de un solo enlace),
+    /// `shared_bytes` (archivos con varios enlaces) y `reparse_bytes` (reparse points de dentro) son conjuntos DISJUNTOS que la
+    /// shell cuenta todos, así que se SUMAN (el máximo de los dos primeros subestimaba una carpeta con las dos clases y los
+    /// reparse points no contaban nada). El tamaño lógico (también con los reparse points) se compara aparte porque un
+    /// archivo disperso o comprimido ocupa más lógicamente que en disco. El mayor manda.
+    ///
+    /// Reparse points de dentro: se cuenta su PROPIO tamaño tal como lo da el listado (un archivo de la nube hidratado ocupa
+    /// su tamaño; un junction, un symlink o un punto de montaje, prácticamente nada). Nunca se mide a dónde apuntan: mover la
+    /// carpeta mueve el enlace, no el destino, y no se entra en ellos.
     pub fn recycle_charge(&self) -> u64 {
         self.bytes
             .saturating_add(self.shared_bytes)
-            .max(self.logical)
+            .saturating_add(self.reparse_bytes)
+            .max(self.logical.saturating_add(self.reparse_logical))
     }
 
     /// ¿Es COMPLETA una medida (modo `Measure`)? Solo si el recorrido vio TODO lo que había: ningún error al abrir o listar
@@ -232,6 +248,8 @@ impl StatsSnapshot {
         self.fp_sum = self.fp_sum.wrapping_add(o.fp_sum);
         self.fp_xor ^= o.fp_xor;
         self.max_path = self.max_path.max(o.max_path);
+        self.reparse_bytes += o.reparse_bytes;
+        self.reparse_logical += o.reparse_logical;
     }
 }
 
@@ -1118,6 +1136,10 @@ fn process_child(
     }
     if entry.is_reparse() {
         Stats::add(&unit.stats.reparse, 1);
+        // GM-B1: lo que ocupa NO se pierde: la carpeta se mueve entera y la shell lo cuenta (un archivo de la nube hidratado
+        // ocupa su tamaño). No entra en `bytes`/`logical` (lo que liberaría borrar: aquí se salta), sino en su propio contador.
+        Stats::add(&unit.stats.reparse_bytes, entry.alloc);
+        Stats::add(&unit.stats.reparse_logical, entry.logical);
         unit.stats.add_fp(
             fp_class(FP_REPARSE, entry.is_dir()),
             entry.file_id,

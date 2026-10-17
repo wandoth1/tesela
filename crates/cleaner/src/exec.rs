@@ -1563,7 +1563,7 @@ struct Pending {
 /// Lo que se compara de un directorio antes y después: bytes en disco, tamaño lógico, archivos, directorios, lo compartido y
 /// la HUELLA del contenido (independiente del orden: identidad, tamaños y enlaces de cada entrada). Los totales solos no
 /// bastan: quitar un hijo y crear otro del mismo tamaño los deja iguales (A-M1).
-type DirSnap = (u64, u64, u64, u64, u64, u64, u64, u64, u64);
+type DirSnap = (u64, u64, u64, u64, u64, u64, u64, u64, u64, u64, u64);
 
 fn snap_of(s: &StatsSnapshot) -> DirSnap {
     (
@@ -1577,6 +1577,9 @@ fn snap_of(s: &StatsSnapshot) -> DirSnap {
         s.fp_xor,
         // La ruta más larga de dentro (GM-M3): renombrar algo a un nombre más largo cambia lo que cabe en la Papelera.
         s.max_path,
+        // Lo que ocupan los reparse points de dentro (GM-B1).
+        s.reparse_bytes,
+        s.reparse_logical,
     )
 }
 
