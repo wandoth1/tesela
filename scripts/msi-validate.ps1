@@ -19,7 +19,8 @@
       nombre, su DefaultDir) y los componentes solo en la carpeta de instalacion y el menu Inicio;
     * un acceso directo del menu Inicio (sin Arguments y con WkDir = INSTALLFOLDER), un icono;
     * los GUID fijos de los 6 componentes (Windows Installer identifica el componente por su GUID entre versiones);
-    * INSTALLFOLDER en SecureCustomProperties, AppSearch sin condicion y ANTES de CostFinalize en las dos secuencias de
+    * INSTALLFOLDER NO en SecureCustomProperties (sin interfaz ni elevacion no hace falta, y marcarla segura dejaria que el
+      valor del usuario dirigiera donde escribe una instalacion elevada), AppSearch sin condicion y ANTES de CostFinalize en las dos secuencias de
       instalacion, y la tabla Signature vacia (no hay busquedas de archivos ni carpetas);
     * MajorUpgrade y bloqueo de versiones anteriores, con valores exactos (ver $MsiExpectedUpgradeRows): las dos filas de la
       tabla Upgrade (UpgradeCode, VersionMin/VersionMax, idioma, Attributes y ActionProperty), la LaunchCondition
@@ -288,10 +289,12 @@ function Test-MsiPackage {
         # Las dos propiedades que rellena la tabla Upgrade tienen que figurar en SecureCustomProperties (propiedades publicas
         # restringidas: sin ello Windows Installer no las conserva al pasar de la fase de interfaz a la de ejecucion).
         $secure = @(($props['SecureCustomProperties'] -split ';') | Where-Object { $_ })
-        # INSTALLFOLDER tambien (`<Property Secure="yes">`): la carpeta de la linea de comandos y la de la busqueda de registro.
-        foreach ($a in 'WIX_UPGRADE_DETECTED', 'WIX_DOWNGRADE_DETECTED', 'INSTALLFOLDER') {
+        foreach ($a in 'WIX_UPGRADE_DETECTED', 'WIX_DOWNGRADE_DETECTED') {
             if ($secure -cnotcontains $a) { $problems.Add("SecureCustomProperties no incluye $a (tiene: '$($props['SecureCustomProperties'])')") }
         }
+        # INSTALLFOLDER, en cambio, NO es segura a proposito (ver installer/Tesela.wxs): el valor que escribe el usuario no debe
+        # poder dirigir donde escribe una instalacion elevada.
+        if ($secure -ccontains 'INSTALLFOLDER') { $problems.Add("SecureCustomProperties incluye INSTALLFOLDER (tiene: '$($props['SecureCustomProperties'])'): no tiene que ser una propiedad segura") }
 
         # RemoveFile: SOLO las dos filas esperadas (quitar INSTALLFOLDER y ProgramsFolder si quedan vacias), sin nombre de
         # archivo: una fila con FileName (p. ej. *.*) borraria archivos del usuario al desinstalar.

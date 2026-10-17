@@ -249,8 +249,8 @@ try {
     $path = New-Mutant 'case-secure' @("UPDATE ``Property`` SET ``Value``='wix_upgrade_detected;wix_downgrade_detected' WHERE ``Property``='SecureCustomProperties'")
     Check 'SecureCustomProperties en minusculas' ((Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*SecureCustomProperties no incluye WIX_DOWNGRADE_DETECTED*') -and (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*SecureCustomProperties no incluye WIX_UPGRADE_DETECTED*'))
 
-    $path = New-Mutant 'secure-installfolder' @("UPDATE ``Property`` SET ``Value``='WIX_UPGRADE_DETECTED;WIX_DOWNGRADE_DETECTED' WHERE ``Property``='SecureCustomProperties'")
-    Check 'SecureCustomProperties sin INSTALLFOLDER' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*SecureCustomProperties no incluye INSTALLFOLDER*')
+    $path = New-Mutant 'secure-installfolder' @("UPDATE ``Property`` SET ``Value``='WIX_UPGRADE_DETECTED;WIX_DOWNGRADE_DETECTED;INSTALLFOLDER' WHERE ``Property``='SecureCustomProperties'")
+    Check 'INSTALLFOLDER como propiedad segura (no debe serlo)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*SecureCustomProperties incluye INSTALLFOLDER*')
 
     # --- Acceso directo: sin argumentos y con la carpeta de trabajo de la instalacion -----------------------------------------
     $path = New-Mutant 'shortcut-args' @("UPDATE ``Shortcut`` SET ``Arguments``='--demo'")

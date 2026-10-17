@@ -62,10 +62,13 @@
       huerfanos. No hace falta ninguna accion personalizada. (La busqueda tiene prioridad sobre el valor de la linea de
       comandos: una actualizacion o reparacion se queda donde estaba instalada.)
     -->
-    <!-- Secure="yes": INSTALLFOLDER entra en SecureCustomProperties (propiedad publica restringida), igual que las dos que
-         rellena MajorUpgrade: sin ello, una instalacion elevada o administrada ignora el valor de la linea de comandos y
-         el que lleva la busqueda de registro puede no llegar de la interfaz a la fase de ejecucion. -->
-    <Property Id="INSTALLFOLDER" Secure="yes">
+    <!-- SIN Secure="yes" a proposito: no hay interfaz (la fase de interfaz no tiene nada que pasar al servidor) y el paquete es por
+         usuario y sin elevar, donde todas las propiedades publicas llegan a la ejecucion. Marcarla segura solo importaria con
+         una instalacion elevada (AlwaysInstallElevated) o administrada, y entonces dejaria que el valor que escribe el
+         usuario (linea de comandos o HKCU\Software\Tesela\InstallFolder) dirigiera donde escribe el servidor elevado. Sin
+         Secure, ese servidor ignora el valor del cliente y vuelve a hacer la busqueda de registro por su cuenta (AppSearch va
+         tambien en InstallExecuteSequence). msi-validate.ps1 exige que NO este en SecureCustomProperties. -->
+    <Property Id="INSTALLFOLDER">
       <RegistrySearch Id="InstallFolderSearch" Root="HKCU" Key="Software\Tesela" Name="InstallFolder" Type="raw" />
     </Property>
 
