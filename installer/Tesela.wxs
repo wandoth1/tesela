@@ -189,6 +189,11 @@
       con interfaz son las propias ventanas las que avisan y no dejan seguir (la ventana de ambito y la de carpeta), y estas
       condiciones se evaluan ANTES de que el usuario elija. Sin interfaz (/qn, /qb) no hay nadie a quien avisar y mandan ellas.
       "Instalacion para todos" = ALLUSERS=1, o ALLUSERS=2 con MSIINSTALLPERUSER vacio.
+      La carpeta protegida (Archivos de programa, Windows) se rechaza en "solo para mi" para QUIEN SEA, administrador incluido: no se
+      usa la propiedad Privileged: segun la documentacion de Windows Installer vale lo mismo que AdminUser (el USUARIO es administrador),
+      no que el proceso este elevado, y un administrador sin elevar tampoco puede escribir en Archivos de programa (acabaria en un 1603
+      sin explicacion). Ademas, en "solo para mi" una carpeta de Archivos de programa es un error de eleccion: lo suyo es "para todos"
+      (ALLUSERS=1).
       Los mensajes van en espanol e ingles juntos (no hay forma de elegir idioma aqui sin acciones personalizadas).
     -->
     <Launch
@@ -198,7 +203,7 @@
       Condition="Installed OR UILevel&gt;=5 OR (ALLUSERS=1 OR (ALLUSERS=2 AND NOT MSIINSTALLPERUSER)) OR TESELA_PREV_MACHINE=&quot;&quot;"
       Message="Tesela ya está instalada para todos los usuarios: actualízala con ALLUSERS=1 o desinstálala antes de cambiar de ámbito. / Tesela is already installed for all users: update it with ALLUSERS=1 or uninstall it before changing scope." />
     <Launch
-      Condition="Installed OR UILevel&gt;=5 OR Privileged OR ALLUSERS=1 OR (ALLUSERS=2 AND NOT MSIINSTALLPERUSER) OR NOT (INSTALLFOLDER~&lt;&lt;TESELA_PF64 OR INSTALLFOLDER~&lt;&lt;TESELA_PF32 OR INSTALLFOLDER~&lt;&lt;TESELA_WIN)"
+      Condition="Installed OR UILevel&gt;=5 OR ALLUSERS=1 OR (ALLUSERS=2 AND NOT MSIINSTALLPERUSER) OR NOT (INSTALLFOLDER~&lt;&lt;TESELA_PF64 OR INSTALLFOLDER~&lt;&lt;TESELA_PF32 OR INSTALLFOLDER~&lt;&lt;TESELA_WIN)"
       Message="INSTALLFOLDER está en un sitio protegido y esta instalación es solo para tu usuario: elige otra carpeta o usa ALLUSERS=1. / INSTALLFOLDER is in a protected location and this install is for your user only: choose another folder or use ALLUSERS=1." />
 
     <!--

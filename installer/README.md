@@ -57,9 +57,9 @@ cálculo de espacio). Sin imágenes ni iconos (`Binary` está prohibida). Solo e
   ejecuta como administrador (decisión de seguridad E1)*. Windows pide administrador solo al pulsar Instalar si se eligió «para
   todos» (no al abrir el MSI: el paquete declara «no hace falta elevar»).
 - **Carpeta.** Cambia con el ámbito, salvo que el usuario ya la haya personalizado. En una actualización la carpeta es la de la
-  instalación existente y no se puede cambiar (campo y botón desactivados, con una nota). Si en «solo para mí» y sin permisos de
-  administrador se elige una carpeta protegida (Archivos de programa, Windows), sale un aviso en el diálogo y Siguiente abre una
-  ventana de «carpeta no válida» en vez de dejar seguir hasta un 1603 sin explicación.
+  instalación existente y no se puede cambiar (campo y botón desactivados, con una nota). Si en «solo para mí» se elige una carpeta
+  protegida (Archivos de programa, Windows), sale un aviso en el diálogo y Siguiente abre una ventana de «carpeta no válida» en vez de
+  dejar seguir hasta un 1603 sin explicación (aunque quien instala sea administrador: ahí lo que toca es «para todos»).
 - **Escritorio.** Casilla «Crear un acceso directo en el escritorio», desmarcada por defecto (`DESKTOPSHORTCUT`).
 - **Anclar a la barra de tareas: no.** Windows prohíbe que un instalador lo haga. La pantalla final lo dice: *Para anclar Tesela a
   la barra de tareas: menú Inicio, clic derecho en Tesela, Anclar a la barra de tareas.*
@@ -150,9 +150,10 @@ de fondo):
 - Y **no se puede comprobar aquí**: validar la condición exige ejecutar `msiexec /i`, que en local no se hace desde un agente (las pruebas de
   instalación corren en el CI: `scripts/tests/msi-install.tests.ps1`).
 
-Lo que sí hay, **solo para dar un mensaje legible y no como barrera**: en «solo para mí» y sin permisos de administrador, una carpeta dentro de
-Archivos de programa o de Windows se avisa en el diálogo (y con `/qn`, una condición de lanzamiento con mensaje), en vez de acabar en un 1603
-sin explicación.
+Lo que sí hay, **solo para dar un mensaje legible y no como barrera**: en «solo para mí», una carpeta dentro de Archivos de programa o de
+Windows se avisa en el diálogo (y con `/qn`, una condición de lanzamiento con mensaje que sugiere `ALLUSERS=1`), en vez de acabar en un
+1603 sin explicación. No depende de `Privileged`: según la documentación de Windows Installer vale lo mismo que `AdminUser` (el usuario es
+administrador), no que el proceso esté elevado, y un administrador sin elevar tampoco puede escribir en Archivos de programa.
 
 Qué hacer: instala en la carpeta predeterminada (`%LOCALAPPDATA%\Programs\Tesela`, que es tuya) o en otra **a la que solo tu cuenta (y
 los administradores) pueda escribir**. Para comprobarlo: `icacls "<carpeta>"` no debe mostrar `Users`, `Everyone` ni `Authenticated Users` con
@@ -222,8 +223,7 @@ común, carpeta personalizada, actualización y desinstalación sin restos); el 
 `DESKTOPSHORTCUT` (por usuario y para todos, recordado al actualizar, quitado al desinstalar). El resumen del job lista cada comprobación.
 **Lo que no prueba ningún agente ni el CI:** la interfaz (ventanas: aspecto, textos, flujo), la petición de administrador (UAC) al pulsar
 Instalar en «para todos», el idioma de la interfaz con un Windows en español, las propiedades seguras con un usuario **sin** privilegios (el
-runner es administrador: todas las propiedades llegan al servidor) y la condición de la carpeta protegida (con el runner `Privileged` es
-verdadero). Eso lo prueba una persona, con el usuario avisado.
+runner es administrador: todas las propiedades llegan al servidor) y la ventana de carpeta con su aviso de carpeta protegida. Eso lo prueba una persona, con el usuario avisado.
 
 El icono **no se versiona** (`privacy-check` rechaza las imágenes): `crates/app/build.rs` lo dibuja en cada compilación y lo
 incrusta en `tesela.exe`; `scripts/extract-ico.py` lo saca del ejecutable para el MSI. (Apuntar la tabla `Icon` al `.exe`

@@ -29,7 +29,7 @@
       condicion y numero) son las esperadas;
     * MajorUpgrade y bloqueo de versiones anteriores, con valores exactos (ver $MsiExpectedUpgradeRows);
     * CUATRO LaunchCondition exactas: el bloqueo de versiones posteriores y las tres del ambito (cambio de ambito en las dos
-      direcciones y carpeta protegida en una instalacion por usuario sin permisos), con mensaje;
+      direcciones y carpeta protegida en una instalacion por usuario), con mensaje;
     * LA INTERFAZ: las ventanas esperadas, solo tipos de control sin imagen, solo eventos de control NATIVOS (NewDialog,
       SpawnDialog, EndDialog, SetTargetPath, Reinstall...) y las propiedades que pueden cambiar las ventanas, cada NewDialog /
       SpawnDialog apunta a una ventana que existe, las filas de la ventana de ambito y de carpeta fijadas una a una, y cada
@@ -127,7 +127,7 @@ $MsiExpectedLaunchConditions = @(
     'NOT WIX_DOWNGRADE_DETECTED',
     'Installed OR UILevel>=5 OR NOT (ALLUSERS=1 OR (ALLUSERS=2 AND NOT MSIINSTALLPERUSER)) OR TESELA_PREV_USER=""',
     'Installed OR UILevel>=5 OR (ALLUSERS=1 OR (ALLUSERS=2 AND NOT MSIINSTALLPERUSER)) OR TESELA_PREV_MACHINE=""',
-    'Installed OR UILevel>=5 OR Privileged OR ALLUSERS=1 OR (ALLUSERS=2 AND NOT MSIINSTALLPERUSER) OR NOT (INSTALLFOLDER~<<TESELA_PF64 OR INSTALLFOLDER~<<TESELA_PF32 OR INSTALLFOLDER~<<TESELA_WIN)'
+    'Installed OR UILevel>=5 OR ALLUSERS=1 OR (ALLUSERS=2 AND NOT MSIINSTALLPERUSER) OR NOT (INSTALLFOLDER~<<TESELA_PF64 OR INSTALLFOLDER~<<TESELA_PF32 OR INSTALLFOLDER~<<TESELA_WIN)'
 )
 
 # Propiedades seguras: las que de verdad llegan al servidor en una instalacion elevada. EXACTAMENTE estas.

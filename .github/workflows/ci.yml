@@ -268,22 +268,28 @@ jobs:
       # 1) La v0.1.4 publicada se baja de la release y se VERIFICA (procedencia con `gh attestation verify`, igual que el job
       #    `verify` de release.yml, y suma SHA-256) antes de instalarla: es lo que tienen los usuarios y de donde se actualiza.
       - name: Bajar y verificar la v0.1.4 publicada
-        shell: bash
+        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/tesela-v014"
-          cd "$RUNNER_TEMP/tesela-v014"
-          gh release download v0.1.4 --repo "$REPO" --pattern 'tesela-0.1.4-x64.msi' --pattern 'SHA256SUMS.txt'
-          for f in tesela-0.1.4-x64.msi SHA256SUMS.txt; do
-            echo "verificando $f"
-            gh attestation verify "$f" --repo "$REPO" \
-              --signer-workflow "$REPO/.github/workflows/release.yml" \
-              --source-ref refs/tags/v0.1.4
-          done
-          grep ' tesela-0.1.4-x64.msi$' SHA256SUMS.txt | sha256sum -c -
+          $ErrorActionPreference = 'Stop'
+          $dir = Join-Path $env:RUNNER_TEMP 'tesela-v014'
+          New-Item -ItemType Directory -Force -Path $dir | Out-Null
+          Set-Location -LiteralPath $dir
+          gh release download v0.1.4 --repo $env:REPO --pattern 'tesela-0.1.4-x64.msi' --pattern 'SHA256SUMS.txt'
+          if ($LASTEXITCODE -ne 0) { throw "gh release download fallo ($LASTEXITCODE)" }
+          foreach ($f in 'tesela-0.1.4-x64.msi', 'SHA256SUMS.txt') {
+            Write-Host "verificando $f"
+            gh attestation verify $f --repo $env:REPO --signer-workflow "$env:REPO/.github/workflows/release.yml" --source-ref refs/tags/v0.1.4
+            if ($LASTEXITCODE -ne 0) { throw "gh attestation verify fallo para $f ($LASTEXITCODE)" }
+          }
+          $line = @(Get-Content -LiteralPath SHA256SUMS.txt | Where-Object { $_ -match '^[0-9a-f]{64}\s+tesela-0\.1\.4-x64\.msi$' })
+          if ($line.Count -ne 1) { throw 'SHA256SUMS.txt no tiene exactamente una linea para el MSI' }
+          $expected = ($line[0] -split '\s+')[0]
+          $actual = (Get-FileHash -LiteralPath tesela-0.1.4-x64.msi -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $expected) { throw "la suma SHA-256 del MSI no coincide ($actual frente a $expected)" }
+          Write-Host "SHA-256 correcta: $actual"
       # 2) Instalar, reparar, actualizar, bajar de version (bloqueado), para todos, cambio de ambito (bloqueado), acceso directo
       #    del escritorio y desinstalar sin restos, siempre sin interfaz (/qn). Escribe en el resumen del job que comprobo. NO
       #    prueba la interfaz (ventanas), la peticion de administrador ni las propiedades seguras con un usuario sin privilegios

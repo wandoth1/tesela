@@ -23,11 +23,12 @@
     5. Cambio de ambito BLOQUEADO en las dos direcciones, con su mensaje, sin tocar la instalacion existente.
     6. DESKTOPSHORTCUT: por defecto no hay acceso directo; =1 lo crea (por usuario y para todos), se RECUERDA al actualizar sin
        repetirlo, =0 lo quita y desinstalar lo elimina.
+    7. Carpeta protegida (Archivos de programa) en una instalacion por usuario: bloqueada con su mensaje aunque el runner sea
+       administrador; para todos, permitida.
 
   Lo que NO prueba (no se puede sin una persona o sin un usuario sin privilegios): la interfaz (ventanas), la peticion de
   administrador (UAC), las propiedades seguras con un usuario NO administrador (el runner es administrador: con el, todas las
-  propiedades llegan al servidor, seguras o no) y la LaunchCondition de la carpeta protegida (con el runner `Privileged` es
-  verdadero).
+  propiedades llegan al servidor, seguras o no).
 
 .PARAMETER NewMsi
   El MSI recien construido por scripts/build-msi.ps1.
@@ -101,13 +102,14 @@ function Repair-Msi([string]$Msi, [string]$Name) { return Invoke-Msi -MsiArgs @(
 $installer = New-Object -ComObject WindowsInstaller.Installer
 function Get-Products {
     # Productos con el UpgradeCode de Tesela que ve Windows Installer (por usuario del usuario actual y para todos).
-    $list = [System.__ComObject].InvokeMember('RelatedProducts', 'GetProperty', $null, $installer, @($UpgradeCode))
+    $list = [System.__ComObject].InvokeMember('RelatedProducts', 'GetProperty', $null, $installer, @([string]$UpgradeCode))
     $res = New-Object System.Collections.Generic.List[object]
     foreach ($pc in $list) {
-        $ver = [string][System.__ComObject].InvokeMember('ProductInfo', 'GetProperty', $null, $installer, @($pc, 'VersionString'))
-        $res.Add([pscustomobject]@{ Code = [string]$pc; Version = $ver })
+        $code = [string]$pc
+        $ver = [string][System.__ComObject].InvokeMember('ProductInfo', 'GetProperty', $null, $installer, @($code, 'VersionString'))
+        $res.Add([pscustomobject]@{ Code = $code; Version = $ver })
     }
-    return , $res.ToArray()
+    return $res.ToArray()
 }
 function Get-UninstallEntries {
     # Entradas "Tesela" de Aplicaciones instaladas (HKCU y HKLM, vistas de 64 y 32 bits).
@@ -391,6 +393,20 @@ try {
     $r = Uninstall-Installed 'desktop-machine-uninstall'
     Check 'desinstalar para todos termina con 0 y quita el acceso directo comun' ($r.Code -eq 0 -and -not (Test-Path -LiteralPath $commonDesktop)) "codigo $($r.Code)"
     Assert-Clean 'tras desinstalar para todos con acceso directo del escritorio'
+
+    # ---------------------------------------------------------------------------------------------------------------------------
+    Step '7. Carpeta protegida en una instalacion por usuario (mensaje legible, no un 1603 mudo)'
+    # El runner es administrador, y aun asi "solo para mi" rechaza Archivos de programa (no depende de Privileged).
+    $protectedFolder = Join-Path $env:ProgramFiles 'TeselaCiProtegida'
+    $r = Install-Msi $NewMsi @("INSTALLFOLDER=`"$protectedFolder`"") 'protected-user'
+    Check 'por usuario con INSTALLFOLDER en Archivos de programa se BLOQUEA (codigo 1603)' ($r.Code -eq 1603) "codigo $($r.Code)"
+    Check 'el bloqueo dice que la carpeta esta protegida y sugiere ALLUSERS=1' ($r.Text -match 'INSTALLFOLDER is in a protected location') 'no sale el mensaje en el registro'
+    Check 'no se instalo nada ni se creo la carpeta' (-not (Test-Path -LiteralPath $protectedFolder) -and (@(Get-Products)).Count -eq 0)
+    $r = Install-Msi $NewMsi @('ALLUSERS=1', "INSTALLFOLDER=`"$protectedFolder`"") 'protected-machine'
+    Check 'para todos con INSTALLFOLDER en Archivos de programa SI se instala' ($r.Code -eq 0 -and (Test-Files $protectedFolder)) "codigo $($r.Code)"
+    $r = Uninstall-Installed 'protected-machine-uninstall'
+    Check 'desinstalar termina con 0 y quita la carpeta' ($r.Code -eq 0 -and -not (Test-Path -LiteralPath $protectedFolder)) "codigo $($r.Code)"
+    Assert-Clean 'tras la carpeta protegida'
 } catch {
     $failed.Add("la prueba se interrumpio: $($_.Exception.Message)")
     Write-Host "ERROR: $($_.Exception.Message)" -ForegroundColor Red

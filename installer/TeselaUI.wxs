@@ -342,7 +342,7 @@
     </Dialog>
 
     <!-- 3. Carpeta y opciones. Siguiente: SetTargetPath fija la carpeta; solo se avanza si la ruta parece completa (con unidad o de red) y,
-         en "solo para mi" sin permisos de administrador, no esta en un sitio protegido; si no, ventana de carpeta no valida. -->
+         en "solo para mi", no esta en un sitio protegido (Archivos de programa, Windows); si no, ventana de carpeta no valida. -->
     <Dialog Id="FolderDlg" Width="370" Height="270" Title="[TxSetupTitle]" NoMinimize="yes">
       <Control Id="Title" Type="Text" X="20" Y="15" Width="330" Height="20" Transparent="yes" NoPrefix="yes" Text="{\TeselaTitle}[TxFolderTitle]" />
       <Control Id="FolderLabel" Type="Text" X="20" Y="50" Width="330" Height="11" Transparent="yes" NoPrefix="yes" Text="[TxFolderLabel]" />
@@ -354,7 +354,7 @@
       </Control>
       <Control Id="FolderFixed" Type="Text" X="20" Y="88" Width="330" Height="22" Transparent="yes" NoPrefix="yes" Hidden="yes" Text="[TxFolderFixed]" ShowCondition="(TESELA_SCOPE=&quot;user&quot; AND TESELA_PREV_USER&lt;&gt;&quot;&quot;) OR (TESELA_SCOPE=&quot;machine&quot; AND TESELA_PREV_MACHINE&lt;&gt;&quot;&quot;)">
       </Control>
-      <Control Id="FolderProtected" Type="Text" X="20" Y="114" Width="330" Height="44" Transparent="yes" NoPrefix="yes" Hidden="yes" Text="{\TeselaBold}[TxFolderProtected]" ShowCondition="TESELA_SCOPE=&quot;user&quot; AND NOT Privileged AND (INSTALLFOLDER~&lt;&lt;TESELA_PF64 OR INSTALLFOLDER~&lt;&lt;TESELA_PF32 OR INSTALLFOLDER~&lt;&lt;TESELA_WIN)">
+      <Control Id="FolderProtected" Type="Text" X="20" Y="114" Width="330" Height="44" Transparent="yes" NoPrefix="yes" Hidden="yes" Text="{\TeselaBold}[TxFolderProtected]" ShowCondition="TESELA_SCOPE=&quot;user&quot; AND (INSTALLFOLDER~&lt;&lt;TESELA_PF64 OR INSTALLFOLDER~&lt;&lt;TESELA_PF32 OR INSTALLFOLDER~&lt;&lt;TESELA_WIN)">
       </Control>
       <Control Id="DesktopShortcut" Type="CheckBox" X="20" Y="170" Width="330" Height="18" Property="DESKTOPSHORTCUT" CheckBoxValue="1" Text="[TxDesktopCheck]" />
       <Control Id="BottomLine" Type="Line" X="0" Y="234" Width="370" Height="0" />
@@ -363,8 +363,8 @@
       </Control>
       <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17" Default="yes" Text="[TxNext]">
         <Publish Event="SetTargetPath" Value="INSTALLFOLDER" Order="1" />
-        <Publish Event="NewDialog" Value="VerifyReadyDlg" Order="2" Condition="(INSTALLFOLDER&gt;&lt;&quot;:\&quot; OR INSTALLFOLDER&lt;&lt;&quot;\\&quot;) AND NOT (TESELA_SCOPE=&quot;user&quot; AND NOT Privileged AND (INSTALLFOLDER~&lt;&lt;TESELA_PF64 OR INSTALLFOLDER~&lt;&lt;TESELA_PF32 OR INSTALLFOLDER~&lt;&lt;TESELA_WIN))" />
-        <Publish Event="SpawnDialog" Value="InvalidDirDlg" Order="3" Condition="NOT ((INSTALLFOLDER&gt;&lt;&quot;:\&quot; OR INSTALLFOLDER&lt;&lt;&quot;\\&quot;) AND NOT (TESELA_SCOPE=&quot;user&quot; AND NOT Privileged AND (INSTALLFOLDER~&lt;&lt;TESELA_PF64 OR INSTALLFOLDER~&lt;&lt;TESELA_PF32 OR INSTALLFOLDER~&lt;&lt;TESELA_WIN)))" />
+        <Publish Event="NewDialog" Value="VerifyReadyDlg" Order="2" Condition="(INSTALLFOLDER&gt;&lt;&quot;:\&quot; OR INSTALLFOLDER&lt;&lt;&quot;\\&quot;) AND NOT (TESELA_SCOPE=&quot;user&quot; AND (INSTALLFOLDER~&lt;&lt;TESELA_PF64 OR INSTALLFOLDER~&lt;&lt;TESELA_PF32 OR INSTALLFOLDER~&lt;&lt;TESELA_WIN))" />
+        <Publish Event="SpawnDialog" Value="InvalidDirDlg" Order="3" Condition="NOT ((INSTALLFOLDER&gt;&lt;&quot;:\&quot; OR INSTALLFOLDER&lt;&lt;&quot;\\&quot;) AND NOT (TESELA_SCOPE=&quot;user&quot; AND (INSTALLFOLDER~&lt;&lt;TESELA_PF64 OR INSTALLFOLDER~&lt;&lt;TESELA_PF32 OR INSTALLFOLDER~&lt;&lt;TESELA_WIN)))" />
       </Control>
       <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17" Cancel="yes" Text="[TxCancel]">
         <Publish Event="SpawnDialog" Value="CancelDlg" />
