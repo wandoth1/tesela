@@ -52,13 +52,17 @@ pub enum CategoryId {
     FirefoxCache,
     RecycleBin,
     Downloads,
+    /// Informes de errores de Windows del usuario (`ReportArchive` y `ReportQueue`).
+    WerReports,
+    /// Volcados de bloqueo de aplicaciones (`%LOCALAPPDATA%\CrashDumps`).
+    CrashDumps,
     Pagefile,
     Hiberfil,
     Swapfile,
 }
 
 impl CategoryId {
-    pub const ALL: [CategoryId; 10] = [
+    pub const ALL: [CategoryId; 12] = [
         CategoryId::UserTemp,
         CategoryId::WindowsTemp,
         CategoryId::ChromeCache,
@@ -66,6 +70,8 @@ impl CategoryId {
         CategoryId::FirefoxCache,
         CategoryId::RecycleBin,
         CategoryId::Downloads,
+        CategoryId::WerReports,
+        CategoryId::CrashDumps,
         CategoryId::Pagefile,
         CategoryId::Hiberfil,
         CategoryId::Swapfile,
@@ -81,6 +87,8 @@ impl CategoryId {
             CategoryId::FirefoxCache => "firefox-cache",
             CategoryId::RecycleBin => "recycle-bin",
             CategoryId::Downloads => "downloads",
+            CategoryId::WerReports => "wer-reports",
+            CategoryId::CrashDumps => "crash-dumps",
             CategoryId::Pagefile => "pagefile",
             CategoryId::Hiberfil => "hiberfil",
             CategoryId::Swapfile => "swapfile",
@@ -89,6 +97,12 @@ impl CategoryId {
 
     pub fn from_key(k: &str) -> Option<CategoryId> {
         CategoryId::ALL.into_iter().find(|c| c.key() == k)
+    }
+
+    /// ¿Es una categoría de diagnóstico del usuario (informes de errores y volcados)? Riesgo "Revisar", con casilla y
+    /// destino Papelera: nunca se preselecciona.
+    pub fn is_diagnostic(self) -> bool {
+        matches!(self, CategoryId::WerReports | CategoryId::CrashDumps)
     }
 
     /// ¿Es una caché de navegador?
@@ -216,6 +230,23 @@ fn validate(r: &Rule) -> Result<(), String> {
     if r.action == Action::EmptyBin && r.risk == Risk::Safe {
         return Err(format!("{k}: vaciar la Papelera no es «seguro»"));
     }
+    if r.id.is_diagnostic()
+        && (r.risk != Risk::Review || r.destination != Some(Destination::Recycle))
+    {
+        return Err(format!(
+            "{k}: los informes de errores y los volcados son «Revisar» y van a la Papelera, nunca «seguros»"
+        ));
+    }
+    // M-1/m-7: la Papelera por elementos de estas categorías solo es seguro con una antigüedad mínima (la comparación de
+    // `prepare_recycle` y de `fresh_size` la exige) y borrando el contenido de las raíces.
+    if r.id.is_diagnostic()
+        && (r.min_age != Duration::from_secs(7 * 24 * 3600) || r.action != Action::Contents)
+    {
+        // Exactamente 7 días: los textos de la interfaz dicen "7 días" fijo.
+        return Err(format!(
+            "{k}: los informes de errores y los volcados exigen action = contents y min_age_hours = 168"
+        ));
+    }
     if r.id == CategoryId::Downloads && (r.risk == Risk::Safe || r.selectable) {
         return Err("downloads: es informativo, nunca «seguro» ni con casilla".into());
     }
@@ -290,6 +321,27 @@ mod tests {
         }
     }
 
+    #[test]
+    fn informes_y_volcados_son_revisar_a_la_papelera_con_7_dias_y_sin_preseleccionar() {
+        let r = rules();
+        for id in [CategoryId::WerReports, CategoryId::CrashDumps] {
+            let rule = r.get(id);
+            assert!(id.is_diagnostic() && !id.is_browser_cache());
+            assert_eq!(rule.risk, Risk::Review, "{id:?}");
+            assert_eq!(rule.destination, Some(Destination::Recycle), "{id:?}");
+            assert_eq!(rule.action, Action::Contents, "{id:?}");
+            assert_eq!(rule.min_age, Duration::from_secs(7 * 24 * 3600), "{id:?}");
+            assert!(rule.selectable && !rule.preselected(), "{id:?}");
+        }
+        assert_eq!(CategoryId::WerReports.key(), "wer-reports");
+        assert_eq!(CategoryId::CrashDumps.key(), "crash-dumps");
+        // Ninguna otra categoría es de diagnóstico.
+        assert_eq!(
+            CategoryId::ALL.iter().filter(|c| c.is_diagnostic()).count(),
+            2
+        );
+    }
+
     fn with(extra: &str) -> String {
         // Una tabla mínima válida más una regla de prueba (sustituye a la existente con ese id).
         let mut s = String::new();
@@ -331,6 +383,31 @@ mod tests {
         // Destino definitivo en algo que no es regenerable por regla.
         let e = Rules::parse(&with("[[rule]]\nid = \"downloads\"\nrisk = \"review\"\ndestination = \"permanent\"\naction = \"none\"\n")).unwrap_err();
         assert!(e.contains("definitivo"), "{e}");
+        // Informes de errores o volcados: ni definitivos (no son regenerables) ni "seguros" (se preseleccionarían).
+        for id in ["wer-reports", "crash-dumps"] {
+            let rule = |risk: &str, dest: &str| {
+                with(&format!(
+                    "[[rule]]\nid = \"{id}\"\nrisk = \"{risk}\"\ndestination = \"{dest}\"\naction = \"contents\"\nselectable = true\n"
+                ))
+            };
+            let e = Rules::parse(&rule("review", "permanent")).unwrap_err();
+            assert!(e.contains("definitivo"), "{e}");
+            let e = Rules::parse(&rule("safe", "recycle")).unwrap_err();
+            assert!(e.contains(id) && e.contains("Revisar"), "{e}");
+            // m-7: sin antigüedad mínima de 7 días, o sin borrar el contenido de la raíz, tampoco valen.
+            for (hours, action) in [
+                (0, "contents"),
+                (167, "contents"),
+                (169, "contents"),
+                (168, "none"),
+            ] {
+                let e = Rules::parse(&with(&format!(
+                    "[[rule]]\nid = \"{id}\"\nrisk = \"review\"\ndestination = \"recycle\"\naction = \"{action}\"\nmin_age_hours = {hours}\nselectable = true\n"
+                )))
+                .unwrap_err();
+                assert!(e.contains(id) && e.contains("168"), "{hours} {action}: {e}");
+            }
+        }
         // «Solo informar» con destino.
         let e = Rules::parse(&with("[[rule]]\nid = \"pagefile\"\nrisk = \"info\"\ndestination = \"recycle\"\naction = \"none\"\n")).unwrap_err();
         assert!(e.contains("solo informar"), "{e}");

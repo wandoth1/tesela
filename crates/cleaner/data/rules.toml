@@ -70,6 +70,43 @@ action = "none"
 min_age_hours = 0
 selectable = false
 
+# Informes de errores de Windows del usuario (WER): SOLO las dos carpetas de informes de
+# %LOCALAPPDATA%\Microsoft\Windows\WER, `ReportArchive` (ya enviados; queda lo que dejó WER) y `ReportQueue` (en cola).
+# Nunca la carpeta `WER` ni otra cosa de dentro. Riesgo "Revisar" y destino Papelera: sirven para diagnosticar un fallo y
+# el soporte de un programa puede pedirlos; NO son regenerables (el invariante "definitivo = solo lo regenerable" no cambia).
+# Si no caben en la Papelera, el flujo existente pide el borrado definitivo expreso (grupo ámbar). 7 días: lo reciente puede
+# ser un fallo de esta semana que se quiera enviar o mirar.
+# Fuentes (revisadas el 2026-10-17; caducidad: 1 año, revisar antes si cambia el formato de WER en Windows):
+#   - https://learn.microsoft.com/en-us/windows/win32/wer/wer-settings (ms.date 2021-03-12): archivo y cola con tope
+#     (MaxArchiveCount 1000, MaxQueueCount 50 por defecto).
+#   - https://learn.microsoft.com/en-us/windows-server/failover-clustering/troubleshooting-using-wer-reports (ms.date
+#     2021-10-21): qué guarda cada carpeta (cola = pendientes de subir; archivo = ya subidos, queda `Report.wer`).
+#   - https://learn.microsoft.com/en-us/archive/blogs/oanapl/windows-error-reporting-wer-for-developers (archivada, 2009):
+#     la ruta por usuario `%LOCALAPPDATA%\Microsoft\Windows\WER` con `ReportArchive` y `ReportQueue`.
+[[rule]]
+id = "wer-reports"
+risk = "review"
+destination = "recycle"
+action = "contents"
+min_age_hours = 168
+selectable = true
+
+# Volcados de bloqueo de aplicaciones: la carpeta por defecto de los volcados locales de WER,
+# %LOCALAPPDATA%\CrashDumps. Mismo criterio que arriba: Revisar, Papelera y 7 días (un volcado de ayer puede ser el que se
+# envía al soporte). Un volcado completo puede ocupar GB: si no cabe en la Papelera, grupo ámbar con confirmación expresa.
+# Solo la ruta por defecto: si `DumpFolder` está redirigida (HKLM, necesita administrador) no se toca nada.
+# Fuente (revisada el 2026-10-17; caducidad: 1 año):
+#   - https://learn.microsoft.com/en-us/windows/win32/wer/collecting-user-mode-dumps (ms.date 2024-07-18): `DumpFolder`
+#     por defecto `%LOCALAPPDATA%\CrashDumps`, `DumpCount` 10 (sustituye el más antiguo), `DumpType` 1 (mini); la
+#     función no está activada por defecto (la carpeta solo existe si alguien la activó o un programa escribe ahí).
+[[rule]]
+id = "crash-dumps"
+risk = "review"
+destination = "recycle"
+action = "contents"
+min_age_hours = 168
+selectable = true
+
 [[rule]]
 id = "pagefile"
 risk = "info"

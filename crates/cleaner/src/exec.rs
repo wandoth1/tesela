@@ -25,7 +25,9 @@
 use crate::engine::{self, Event, Mode, Outcome, RootStatus, StatsSnapshot, Unit, UnitSpec};
 use crate::log::LogWriter;
 use crate::paths::PathKey;
-use crate::plan::{Cleaner, Fit, Plan, PlanItem, bin_big, bin_cap, fit_for, fit_for_deep};
+use crate::plan::{
+    Cleaner, Fit, Plan, PlanItem, RejectReason, bin_big, bin_cap, fit_for, fit_for_deep,
+};
 use crate::protect::Verdict;
 use crate::recycle::{self, BinItem, RecycleMode};
 use crate::rules::{CategoryId, Destination};
@@ -191,7 +193,8 @@ pub enum ItemStatus {
     Unverified,
     /// La raíz no se pudo procesar (no existe, cambió, protegida, en uso, cancelada...).
     Root(RootStatus),
-    /// No cabe en la Papelera y no se marcó la casilla: no se toca.
+    /// No se toca: no cabe en la Papelera y no se marcó la casilla de borrado definitivo, o es de los que NUNCA se borran
+    /// definitivamente ([`PlanItem::never_permanent`]: informes de errores y volcados).
     SkippedUnfit,
 }
 
@@ -407,8 +410,18 @@ impl Cleaner {
             l.cancel_on_error(progress.cancel.clone());
             // Lo que no llegó al plan consta en el registro con su motivo (una raíz descartada por un enlace, p. ej.).
             // Con tope: un plan con miles de rechazados no puede inflar el registro (R4).
-            for r in plan.rejected.iter().take(MAX_REJECTED_NOTES) {
-                l.write_rejected(&r.path, &format!("{:?}", r.reason));
+            // Los "demasiado recientes" van los últimos: pueden ser muchos y no deben tapar un rechazo de seguridad.
+            let ordered = plan
+                .rejected
+                .iter()
+                .filter(|r| r.reason != RejectReason::Young)
+                .chain(
+                    plan.rejected
+                        .iter()
+                        .filter(|r| r.reason == RejectReason::Young),
+                );
+            for r in ordered.take(MAX_REJECTED_NOTES) {
+                l.write_rejected(&r.path, &r.reason.log_text());
             }
             if plan.rejected.len() > MAX_REJECTED_NOTES {
                 l.write_rejected(
@@ -457,17 +470,23 @@ impl Cleaner {
         let mut perm: Vec<&PlanItem> = Vec::new();
         let mut recyc: Vec<&PlanItem> = Vec::new();
         for it in &plan.items {
+            // Falla cerrado: lo que `never_permanent` prohíbe (informes y volcados, o una unidad suelta con antigüedad mínima,
+            // cuyo recorrido definitivo no es todo-o-nada) no llega nunca a la rama definitiva: ni por destino ni con la casilla.
             match (it.destination, it.is_unfit()) {
-                (Destination::Permanent, _) => perm.push(it),
+                (Destination::Permanent, _) if !it.never_permanent() => perm.push(it),
                 (Destination::Recycle, false) => recyc.push(it),
-                (Destination::Recycle, true) if opts.allow_unfit_permanent => perm.push(it),
-                (Destination::Recycle, true) => {
+                (Destination::Recycle, true)
+                    if opts.allow_unfit_permanent && !it.never_permanent() =>
+                {
+                    perm.push(it)
+                }
+                (Destination::Permanent | Destination::Recycle, _) => {
                     report.skipped_unfit += 1;
                     report.items.push(ItemReport {
                         id: it.id,
                         category: it.category,
                         path: it.path.clone(),
-                        destination: Destination::Recycle,
+                        destination: it.destination,
                         status: ItemStatus::SkippedUnfit,
                         stats: StatsSnapshot::default(),
                         removed: Vec::new(),
@@ -1399,6 +1418,12 @@ impl Cleaner {
             st.changed += 1;
             return Prepared::Rejected(ItemStatus::Root(RootStatus::Changed), Outcome::Changed);
         }
+        // M-1: una unidad con antigüedad mínima (informes, volcados) solo se envía si el objeto SIGUE siendo así de antiguo. La
+        // identidad y el tamaño no bastan: un volcado "tocado" tras la confirmación conserva ambos.
+        if too_young(it, m.newest_filetime) {
+            st.changed += 1;
+            return Prepared::Rejected(ItemStatus::Root(RootStatus::Changed), Outcome::Young);
+        }
         let final_path = match sys::final_path(&h) {
             Ok(p) => p,
             Err(c) => return map_open_error(c, st),
@@ -1514,6 +1539,12 @@ impl Cleaner {
             st.changed += 1;
             Err((ItemStatus::Root(RootStatus::Changed), Outcome::Changed))
         };
+        // Lo que ya no cumple la antigüedad mínima: el mismo estado ("cambió desde la confirmación"), pero en el registro consta
+        // como "demasiado reciente" (S-7), no como un cambio cualquiera.
+        let young = |st: &mut StatsSnapshot| {
+            st.changed += 1;
+            Err((ItemStatus::Root(RootStatus::Changed), Outcome::Young))
+        };
         if !it.is_dir() {
             // Por el handle de guarda: el objeto que se aprobó, no lo que haya ahora en la ruta.
             let Ok(m) = sys::meta(&p.held) else {
@@ -1521,6 +1552,10 @@ impl Cleaner {
             };
             if m.identity != p.identity || m.is_dir || m.delete_pending || m.links != p.links {
                 return changed(st);
+            }
+            // M-1: otra vez la antigüedad mínima, ahora justo antes de la operación.
+            if too_young(it, m.newest_filetime) {
+                return young(st);
             }
             let fresh = m.alloc.max(m.logical);
             // Si creció frente a lo APROBADO o frente a la última medida real (la de `prepare_recycle` y las posteriores),
@@ -1535,6 +1570,13 @@ impl Cleaner {
             p.disk = if m.links > 1 { 0 } else { m.alloc };
             p.logical = m.logical;
             return Ok(());
+        }
+        // M-1: la fecha de la propia carpeta (lo de dentro lo comprueba la huella: un archivo reciente cambia la clase de su
+        // entrada). Sin leerla, o con otro objeto, no se envía.
+        match sys::meta(&p.held) {
+            Ok(m) if !too_young(it, m.newest_filetime) => {}
+            Ok(_) => return young(st),
+            Err(_) => return changed(st),
         }
         // A3-M1: la vigilancia de cambios se abre ANTES del recorrido (lo que cambie antes no se vería) y vive hasta el
         // `PreDeleteItem` de su operación: una carpeta puede crecer MIENTRAS se mide (el recorrido ya contó el primer archivo
@@ -1995,6 +2037,13 @@ fn classify_hr(hr: i32) -> RecycleFail {
             }
         }
     }
+}
+
+/// ¿Es el objeto (con esa fecha más reciente de creación, escritura y cambio) más nuevo que la antigüedad mínima de `it`? Sin
+/// antigüedad mínima nunca. Un reloj adelantado o fechas futuras cuentan como "reciente" (falla cerrado).
+fn too_young(it: &PlanItem, newest_filetime: i64) -> bool {
+    let min = engine::duration_to_ft(it.min_age);
+    min > 0 && engine::now_filetime() - newest_filetime < min
 }
 
 enum Prepared {

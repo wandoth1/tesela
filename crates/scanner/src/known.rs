@@ -14,6 +14,7 @@ use windows_sys::Win32::UI::Shell::{FOLDERID_Downloads, SHGetKnownFolderPath};
 use windows_sys::core::GUID;
 
 use crate::browser::{BrowserRoots, browser_cache_dirs_verified};
+use crate::diagnostic::diagnostic_dirs_verified;
 
 /// Longitud de una cadena UTF-16 terminada en NUL.
 ///
@@ -124,11 +125,15 @@ pub enum KnownKind {
     Downloads,
     /// La carpeta de la Papelera del usuario en el volumen.
     RecycleBin,
+    /// `ReportArchive` y `ReportQueue` de los informes de errores de Windows del usuario (ver [`crate::diagnostic_dirs`]).
+    WerReports,
+    /// `%LOCALAPPDATA%\CrashDumps`, los volcados locales de bloqueo de aplicaciones.
+    CrashDumps,
 }
 
 /// Rutas conocidas candidatas, con su clase (sin comprobar que existan ni que cuelguen de la ruta escaneada):
 /// `%TEMP%`, `Windows\Temp`, los directorios de CACHÉ de Chrome, Edge y Firefox ([`browser_cache_dirs`]; nunca sus
-/// perfiles), Descargas y la carpeta de la Papelera del usuario actual en el volumen `drive_root` (`C:\`). Esa carpeta
+/// perfiles), las carpetas de informes de errores y de volcados ([`crate::diagnostic_dirs_verified`]), Descargas y la carpeta de la Papelera del usuario actual en el volumen `drive_root` (`C:\`). Esa carpeta
 /// solo se LISTA, como todo el escaneo.
 pub fn known_paths_labeled(drive_root: Option<&Path>) -> Vec<(KnownKind, PathBuf)> {
     known_paths_labeled_with(&BrowserRoots::from_system(), drive_root)
@@ -145,6 +150,8 @@ fn known_paths_labeled_with(
     v.extend(env_path("SystemRoot").map(|p| (KnownKind::WindowsTemp, p.join("Temp"))));
     // Lo que el escáner recorre primero: solo cachés con TODOS sus ancestros reales (el `cleaner` usa las candidatas sin ese filtro).
     v.extend(browser_cache_dirs_verified(roots));
+    // Informes de errores de Windows y volcados de bloqueo del usuario (solo los que existen y sin enlaces en el camino).
+    v.extend(diagnostic_dirs_verified(roots));
     v.extend(
         downloads_dir()
             .or_else(|| env_path("USERPROFILE").map(|p| p.join("Downloads")))
@@ -262,6 +269,9 @@ mod tests {
         mk("Local/Google/Chrome/User Data/Default/Service Worker/CacheStorage");
         mk("Roaming/Mozilla/Firefox/Profiles/p/cache2");
         mk("Local/Mozilla/Firefox/Profiles/p/cache2/entries");
+        mk("Local/Microsoft/Windows/WER/ReportArchive/Informe1");
+        mk("Local/Microsoft/Windows/WER/ERC");
+        mk("Local/CrashDumps");
         let roots = BrowserRoots {
             local_appdata: Some(root.join("Local")),
             roaming_appdata: Some(root.join("Roaming")),
@@ -276,6 +286,17 @@ mod tests {
                 )
             })
             .collect();
+        // Informes de errores y volcados: solo `ReportArchive` (existe) y `CrashDumps`; nunca `ERC` ni la carpeta `WER`.
+        let diag: Vec<&(KnownKind, PathBuf)> = v
+            .iter()
+            .filter(|(k, _)| matches!(k, KnownKind::WerReports | KnownKind::CrashDumps))
+            .collect();
+        assert_eq!(diag.len(), 2, "{diag:?}");
+        assert!(diag.contains(&&(
+            KnownKind::WerReports,
+            root.join("Local/Microsoft/Windows/WER/ReportArchive")
+        )));
+        assert!(diag.contains(&&(KnownKind::CrashDumps, root.join("Local/CrashDumps"))));
         // Solo `Default\Cache` de Chrome y `cache2` de Firefox LOCAL.
         assert_eq!(browsers.len(), 2, "{browsers:?}");
         for (k, p) in browsers {

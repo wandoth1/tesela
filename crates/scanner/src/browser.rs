@@ -150,7 +150,7 @@ fn is_real_dir(p: &Path) -> bool {
 /// intermedio (`Google`, `Chrome`...) que sea un enlace desviaría todo lo que se liste debajo a otro sitio. `base` en sí
 /// es la carpeta de datos que da Windows (`%LOCALAPPDATA%`) y no se comprueba. `None` si `p` no cuelga de `base` o algún
 /// componente no es un directorio real.
-fn real_dir_under(base: &Path, p: &Path) -> Option<PathBuf> {
+pub(crate) fn real_dir_under(base: &Path, p: &Path) -> Option<PathBuf> {
     let rel = p.strip_prefix(base).ok()?;
     let mut cur = base.to_path_buf();
     for c in rel.components() {

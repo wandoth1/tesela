@@ -22,6 +22,7 @@
 
 mod browser;
 mod classify;
+mod diagnostic;
 mod known;
 mod paths;
 mod priority;
@@ -32,6 +33,9 @@ mod walker;
 pub use browser::{
     BrowserFamily, BrowserPath, BrowserRoots, browser_cache_dirs, browser_cache_dirs_verified,
     classify_browser_path,
+};
+pub use diagnostic::{
+    CRASH_DUMPS_REL, WER_REPORT_DIRS, WER_ZONE_REL, diagnostic_dirs, diagnostic_dirs_verified,
 };
 pub use known::{
     KnownKind, current_user_sid, downloads_dir, known_folder, known_paths, known_paths_labeled,

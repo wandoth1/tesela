@@ -84,6 +84,8 @@ enum Stage {
 /// Aviso breve (toast) pendiente de pintar.
 pub(crate) enum Note {
     NothingToClean,
+    /// No queda nada que ofrecer porque todo se modificó hace menos de la antigüedad mínima (7 días).
+    NothingYoung,
     /// No se pudo crear el registro local: sin registro no se limpia (M4). No se ha tocado nada.
     NoLog,
     /// Lo que cabe en la Papelera cambió desde la confirmación: hay que revisar y confirmar otra vez.
@@ -137,6 +139,27 @@ fn unix_now() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_secs())
+}
+
+/// El aviso de un plan vacío, si lo es: "nada que limpiar", o, si TODO lo rechazado es "demasiado reciente" (un plan sin
+/// elementos y solo con rechazos `Young`), el aviso que lo explica. Un plan vacío con otros rechazos se enseña (con su motivo).
+pub(crate) fn empty_plan_note(plan: &Plan) -> Option<Note> {
+    if !plan.is_empty() {
+        return None;
+    }
+    if plan.rejected.is_empty() {
+        return Some(Note::NothingToClean);
+    }
+    plan.rejected
+        .iter()
+        .all(|r| r.reason == RejectReason::Young)
+        .then_some(Note::NothingYoung)
+}
+
+/// Cuántos elementos se tocarían de verdad: los del plan sin los que "se quedan donde están" (`kept`), más la Papelera si se
+/// vacía. La confirmación cuenta con esto y desactiva el botón si es cero.
+pub(crate) fn actionable_count(items: usize, kept: usize, has_bin: bool) -> usize {
+    items.saturating_sub(kept) + usize::from(has_bin)
 }
 
 /// ¿Cuánto ocupa lo que se libera "de verdad" (definitivo + vaciar la Papelera + lo que no cabe si se confirmó)?
@@ -268,8 +291,8 @@ impl CleanFlow {
             Stage::Approving { rx, reconfirm, .. } => match rx.try_recv() {
                 Ok(plan) => {
                     let reconfirm = *reconfirm;
-                    if plan.is_empty() && plan.rejected.is_empty() {
-                        self.note = Some(Note::NothingToClean);
+                    if let Some(note) = empty_plan_note(&plan) {
+                        self.note = Some(note);
                         self.stage = Stage::Idle;
                     } else {
                         self.stage = Stage::Confirm(Box::new(Confirm {
@@ -386,6 +409,7 @@ impl CleanFlow {
         if let Some(note) = &self.note {
             let (key, secs) = match note {
                 Note::NothingToClean => ("confirm-empty", 4.0),
+                Note::NothingYoung => ("confirm-empty-young", 8.0),
                 // Más larga: explica por qué no pasó nada.
                 Note::NoLog => ("confirm-no-log", 12.0),
                 Note::Reconfirm => ("confirm-reconfirm", 8.0),
@@ -496,6 +520,7 @@ fn item_name(env: &Env, it: &PlanItem) -> String {
         Some(CategoryId::FirefoxCache) => env.tr.t("known-firefox-cache"),
         Some(CategoryId::Downloads) => env.tr.t("known-downloads"),
         Some(CategoryId::RecycleBin) => env.tr.t("known-recycle-bin"),
+        // Cada elemento es una carpeta de informe o un volcado: se muestra con su propio nombre y la categoría va de etiqueta.
         _ => it.path.file_name().map_or_else(
             || it.path.display().to_string(),
             |n| n.to_string_lossy().into_owned(),
@@ -640,7 +665,9 @@ fn confirm_ui(
                 let title = env.tr.t("confirm-title");
                 let r = ui.label(RichText::new(&title).font(theme::font_semibold(24.0)).color(pal.text));
                 r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, title.clone()));
-                let n_items = plan.items.len() as u64 + u64::from(plan.bin.is_some());
+                let kept = plan.kept_unfit_items().count();
+                let actionable = actionable_count(plan.items.len(), kept, plan.bin.is_some());
+                let n_items = actionable as u64;
                 let total = free_bytes(&plan, c.allow_unfit) + plan.recycle_bytes();
                 ui.label(
                     RichText::new(env.tr.ta(
@@ -649,6 +676,11 @@ fn confirm_ui(
                     ))
                     .color(pal.text_muted),
                 );
+                // Solo hay lo que se queda donde está: el botón está desactivado y aquí se dice por qué.
+                if actionable == 0 && kept > 0 {
+                    ui.add_space(6.0);
+                    note_line(ui, &pal, &env.tr.t("confirm-only-kept"), true);
+                }
                 if dry {
                     ui.add_space(6.0);
                     note_line(ui, &pal, &env.tr.t("confirm-dry-banner"), true);
@@ -674,7 +706,11 @@ fn confirm_ui(
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let unfit = plan.unfit_items().count() > 0;
-                        let nothing = plan.items.is_empty() && plan.bin.is_none();
+                        let nothing = actionable_count(
+                            plan.items.len(),
+                            plan.kept_unfit_items().count(),
+                            plan.bin.is_some(),
+                        ) == 0;
                         let label = go_label(env, &plan, c.allow_unfit, dry);
                         let enabled = !nothing;
                         let r = widgets::button(ui, env, ButtonStyle::Primary, Some(Icon::ShieldCheckmark), &label, enabled);
@@ -789,7 +825,26 @@ fn confirm_groups(ui: &mut Ui, env: &mut Env, c: &mut Confirm, plan: &Plan) {
             );
         }
         ui.add_space(4.0);
-        note_line(ui, &pal, &env.tr.t("confirm-recycle-note"), false);
+        // "Son archivos tuyos" solo si hay archivos tuyos: los informes y los volcados tienen su propia nota.
+        let is_diag = |i: &&PlanItem| i.category.is_some_and(CategoryId::is_diagnostic);
+        if rec.iter().any(|i| !is_diag(i)) {
+            note_line(ui, &pal, &env.tr.t("confirm-recycle-note"), false);
+        }
+        if rec.iter().any(is_diag) {
+            note_line(ui, &pal, &env.tr.t("confirm-diag-note"), false);
+        }
+        // m-1: una operación de la Papelera por carpeta; con muchas, tarda (se puede cancelar).
+        if let Some(n) = plan.many_diagnostic_items() {
+            note_line(
+                ui,
+                &pal,
+                &env.tr.ta(
+                    "confirm-diag-many",
+                    args!["n" => n as u64, "count" => env.tr.int(n as u64)],
+                ),
+                true,
+            );
+        }
         ui.add_space(16.0);
     }
     // 4. Lo que no cabe en la Papelera: grupo ámbar con su casilla.
@@ -844,6 +899,56 @@ fn confirm_groups(ui: &mut Ui, env: &mut Env, c: &mut Confirm, plan: &Plan) {
             });
         ui.add_space(16.0);
     }
+    // 4b. Lo que no cabe y NUNCA se borra definitivamente (informes, volcados): se deja donde está, sin casilla.
+    let kept: Vec<&PlanItem> = plan.kept_unfit_items().collect();
+    if !kept.is_empty() {
+        let sum: u64 = kept.iter().map(|i| i.bytes()).sum();
+        group_header(
+            ui,
+            env,
+            Icon::Warning,
+            &env.tr.t("confirm-group-kept"),
+            &env.tr.size(sum),
+        );
+        ui.add_space(4.0);
+        let shown = if c.show_all {
+            kept.len()
+        } else {
+            kept.len().min(5)
+        };
+        for it in &kept[..shown] {
+            let why = match it.fit {
+                Fit::Unfit(r) => env.tr.t(unfit_reason_key(r)),
+                Fit::Fits => String::new(),
+            };
+            let chip = it.category.map(|id| crate::basket::category_name(env, id));
+            row(
+                ui,
+                &pal,
+                &item_name(env, it),
+                chip.as_deref(),
+                &env.tr.size(it.bytes()),
+                Some(&why),
+                Some(&it.path.display().to_string()),
+            );
+        }
+        if shown < kept.len() {
+            let more = (kept.len() - shown) as u64;
+            ui.label(
+                RichText::new(env.tr.ta(
+                    "confirm-more",
+                    args!["n" => more, "count" => env.tr.int(more)],
+                ))
+                .size(13.0)
+                .color(pal.text_muted),
+            );
+        }
+        if has_capacity_unknown(kept.iter().map(|i| i.fit)) {
+            note_line(ui, &pal, &env.tr.t("confirm-unfit-capacity-hint"), false);
+        }
+        note_line(ui, &pal, &env.tr.t("confirm-kept-note"), true);
+        ui.add_space(16.0);
+    }
     // 5. Avisos: enlaces duros, nube, protegidos, rechazados.
     let (shared_n, shared_b) = plan.shared_total();
     if shared_n > 0 {
@@ -872,8 +977,21 @@ fn confirm_groups(ui: &mut Ui, env: &mut Env, c: &mut Confirm, plan: &Plan) {
         };
         note_line(ui, &pal, &text, false);
     }
-    if !plan.rejected.is_empty() {
-        let n = plan.rejected.len() as u64;
+    // m-2: lo que se deja por reciente tiene su propio aviso (no es "cambió, no existe o está protegido").
+    let young = plan.young_count() as u64;
+    if young > 0 {
+        note_line(
+            ui,
+            &pal,
+            &env.tr.ta(
+                "confirm-young",
+                args!["n" => young, "count" => env.tr.int(young)],
+            ),
+            false,
+        );
+    }
+    let n = plan.rejected.len() as u64 - young;
+    if n > 0 {
         note_line(
             ui,
             &pal,
@@ -883,38 +1001,47 @@ fn confirm_groups(ui: &mut Ui, env: &mut Env, c: &mut Confirm, plan: &Plan) {
             ),
             true,
         );
-        if c.show_all {
-            for r in plan.rejected.iter().take(30) {
-                let why = match r.reason {
-                    RejectReason::Incomplete(k) => env.tr.ta(
-                        "reject-incomplete",
-                        args!["n" => k, "count" => env.tr.int(k)],
-                    ),
-                    RejectReason::Missing => env.tr.t("reject-missing"),
-                    RejectReason::AccessDenied => env.tr.t("reject-denied"),
-                    RejectReason::NoIdentity => env.tr.t("reject-identity"),
-                    RejectReason::Reparse => env.tr.t("reject-reparse"),
-                    RejectReason::ReparseAncestor => env.tr.t("reject-reparse-ancestor"),
-                    RejectReason::OutsideLocalAppData => env.tr.t("reject-outside-local"),
-                    RejectReason::Protected(Verdict::Denied) => env.tr.t("reject-protected"),
-                    RejectReason::Protected(_) => env.tr.t("reject-untouchable"),
-                    RejectReason::NotLocal => env.tr.t("reject-not-local"),
-                    RejectReason::Other(_) => env.tr.t("reject-other"),
-                };
-                let name = r.path.file_name().map_or_else(
-                    || r.path.display().to_string(),
-                    |n| n.to_string_lossy().into_owned(),
-                );
-                row(
-                    ui,
-                    &pal,
-                    &name,
-                    None,
-                    &why,
-                    None,
-                    Some(&r.path.display().to_string()),
-                );
-            }
+    }
+    if !plan.rejected.is_empty() && c.show_all {
+        let others = plan
+            .rejected
+            .iter()
+            .filter(|r| r.reason != RejectReason::Young);
+        let youngs = plan
+            .rejected
+            .iter()
+            .filter(|r| r.reason == RejectReason::Young);
+        for r in others.chain(youngs).take(30) {
+            let why = match r.reason {
+                RejectReason::Incomplete(k) => env.tr.ta(
+                    "reject-incomplete",
+                    args!["n" => k, "count" => env.tr.int(k)],
+                ),
+                RejectReason::Missing => env.tr.t("reject-missing"),
+                RejectReason::AccessDenied => env.tr.t("reject-denied"),
+                RejectReason::NoIdentity => env.tr.t("reject-identity"),
+                RejectReason::Reparse => env.tr.t("reject-reparse"),
+                RejectReason::ReparseAncestor => env.tr.t("reject-reparse-ancestor"),
+                RejectReason::OutsideLocalAppData => env.tr.t("reject-outside-local"),
+                RejectReason::Protected(Verdict::Denied) => env.tr.t("reject-protected"),
+                RejectReason::Protected(_) => env.tr.t("reject-untouchable"),
+                RejectReason::NotLocal => env.tr.t("reject-not-local"),
+                RejectReason::Young => env.tr.t("reject-young"),
+                RejectReason::Other(_) => env.tr.t("reject-other"),
+            };
+            let name = r.path.file_name().map_or_else(
+                || r.path.display().to_string(),
+                |n| n.to_string_lossy().into_owned(),
+            );
+            row(
+                ui,
+                &pal,
+                &name,
+                None,
+                &why,
+                None,
+                Some(&r.path.display().to_string()),
+            );
         }
     }
 }
@@ -922,7 +1049,12 @@ fn confirm_groups(ui: &mut Ui, env: &mut Env, c: &mut Confirm, plan: &Plan) {
 fn recycle_row(ui: &mut Ui, env: &mut Env, it: &PlanItem) {
     let pal = env.pal;
     let name = item_name(env, it);
-    let chip = it.category.is_none().then(|| env.tr.t("confirm-your-file"));
+    // "Tu archivo", o la categoría de diagnóstico (informes de errores, volcados) a la que pertenece el elemento.
+    let chip = match it.category {
+        None => Some(env.tr.t("confirm-your-file")),
+        Some(id) if id.is_diagnostic() => Some(crate::basket::category_name(env, id)),
+        Some(_) => None,
+    };
     let mut size = env.tr.size(it.bytes());
     if it.hard_linked || it.estimate.shared_files > 0 {
         size = env.tr.t("confirm-no-space");
@@ -940,9 +1072,10 @@ fn recycle_row(ui: &mut Ui, env: &mut Env, it: &PlanItem) {
 }
 
 /// Para los archivos y carpetas del usuario ("Tu archivo"): "en <carpeta padre>" y la ruta completa (para el ratón). Las
-/// categorías con regla se llaman por su nombre conocido y no lo necesitan.
+/// categorías con regla se llaman por su nombre conocido y no lo necesitan; los informes y los volcados (cada elemento es una
+/// carpeta o un archivo concreto) llevan también su carpeta y la ruta completa.
 fn folder_hint(env: &Env, it: &PlanItem) -> (Option<String>, Option<String>) {
-    if it.category.is_some() {
+    if it.category.is_some_and(|c| !c.is_diagnostic()) {
         return (None, None);
     }
     let folder = it.path.parent().map(|p| {
@@ -1344,6 +1477,43 @@ fn summary_ui(ui: &mut Ui, env: &mut Env, s: &Summary) -> Option<SummaryClick> {
             });
         });
     click
+}
+
+#[cfg(test)]
+mod actionable_tests {
+    use super::{Note, actionable_count, empty_plan_note};
+    use std::path::PathBuf;
+    use tesela_cleaner::{Plan, RejectReason, Rejected};
+
+    /// m-12: un plan vacío con solo rechazos "demasiado reciente" vuelve a dar el aviso de "nada que limpiar", con su texto; con
+    /// otros rechazos se enseña la confirmación para que se vea el motivo.
+    #[test]
+    fn un_plan_vacio_con_solo_recientes_da_el_aviso_de_que_no_hay_nada() {
+        let rej = |reason| Rejected {
+            path: PathBuf::from("x"),
+            reason,
+        };
+        let mut plan = Plan::default();
+        assert!(matches!(empty_plan_note(&plan), Some(Note::NothingToClean)));
+        plan.rejected = vec![rej(RejectReason::Young), rej(RejectReason::Young)];
+        assert!(matches!(empty_plan_note(&plan), Some(Note::NothingYoung)));
+        plan.rejected.push(rej(RejectReason::Missing));
+        assert!(empty_plan_note(&plan).is_none());
+    }
+
+    /// Lo que "se queda donde está" no cuenta; sin nada que tocar (ni Papelera que vaciar) el botón se desactiva.
+    #[test]
+    fn lo_que_se_queda_donde_esta_no_cuenta_como_elemento() {
+        assert_eq!(actionable_count(5, 2, false), 3);
+        assert_eq!(actionable_count(5, 0, false), 5);
+        // Solo elementos que se quedan: nada que hacer.
+        assert_eq!(actionable_count(2, 2, false), 0);
+        // Vaciar la Papelera sí es algo que hacer.
+        assert_eq!(actionable_count(2, 2, true), 1);
+        assert_eq!(actionable_count(0, 0, false), 0);
+        // Nunca por debajo de cero.
+        assert_eq!(actionable_count(1, 3, false), 0);
+    }
 }
 
 #[cfg(test)]

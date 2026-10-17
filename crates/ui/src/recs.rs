@@ -86,9 +86,18 @@ impl Recs {
             .sum()
     }
 
-    /// Lo que conviene mirar a mano (Revisar): Descargas y la Papelera.
+    /// Lo que conviene mirar a mano (Revisar): Descargas, la Papelera y los informes de errores y volcados.
     pub fn review_total(&self) -> u64 {
-        self.downloads.map_or(0, |d| d.1) + self.recycle.map_or(0, |d| d.1)
+        self.downloads.map_or(0, |d| d.1)
+            + self.recycle.map_or(0, |d| d.1)
+            + self.diagnostics().map(|r| r.bytes).sum::<u64>()
+    }
+
+    /// Las filas de informes de errores y volcados de bloqueo con algo que ofrecer (Revisar, con casilla, a la Papelera).
+    pub fn diagnostics(&self) -> impl Iterator<Item = &RecRow> {
+        self.rows
+            .iter()
+            .filter(|r| r.id.is_diagnostic() && r.usable())
     }
 
     /// Las categorías seguras que se pueden preseleccionar.
@@ -153,6 +162,8 @@ pub(crate) fn compute(
         CategoryId::ChromeCache,
         CategoryId::EdgeCache,
         CategoryId::FirefoxCache,
+        CategoryId::WerReports,
+        CategoryId::CrashDumps,
     ] {
         let rule = rules().get(id);
         let cutoff = if rule.min_age.is_zero() {
@@ -249,6 +260,39 @@ mod tests {
         b.add_batch(root).unwrap();
         b.add_batch(Batch::listing(0, 1)).unwrap();
         b.finish(&FinishOptions::new(DEMO_NOW))
+    }
+
+    /// Informes de errores y volcados de bloqueo: «Revisar». Cuentan en lo que conviene mirar, nunca en lo seguro, nunca se
+    /// preseleccionan y la cesta los pone con lo que va a la Papelera.
+    #[test]
+    fn informes_y_volcados_son_revisar_y_no_cuentan_como_seguros() {
+        let row = |id, bytes| RecRow {
+            id,
+            bytes,
+            parts: Vec::new(),
+            blocked_by: None,
+        };
+        let recs = Recs {
+            rows: vec![
+                row(CategoryId::UserTemp, 100),
+                row(CategoryId::WerReports, 40),
+                row(CategoryId::CrashDumps, 0),
+            ],
+            ..Recs::default()
+        };
+        assert_eq!(recs.safe_total(), 100);
+        assert_eq!(recs.review_total(), 40);
+        assert_eq!(recs.preselected(), vec![CategoryId::UserTemp]);
+        let ids: Vec<CategoryId> = recs.diagnostics().map(|r| r.id).collect();
+        assert_eq!(ids, vec![CategoryId::WerReports]);
+        // Van a la Papelera (lo recuperable), no al grupo "se borra y se recrea".
+        for id in CategoryId::ALL {
+            assert_eq!(
+                crate::basket::category_is_recycled(id),
+                id.is_diagnostic() || matches!(id, CategoryId::Downloads),
+                "{id:?}"
+            );
+        }
     }
 
     /// GM-m7: una raíz descartada solo se enseña si está DENTRO de lo analizado, no por ser de la misma unidad.

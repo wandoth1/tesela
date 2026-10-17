@@ -1729,6 +1729,555 @@ fn las_raices_sin_reparse_points_siguen_siendo_categorias() {
     assert!(plan.rejected.is_empty());
 }
 
+/// Informes de errores de WER y volcados de bloqueo (v0.1.5): «Revisar», a la Papelera, por elementos y solo lo de más de 7
+/// días. `WER` está denegada entera y solo `ReportArchive` y `ReportQueue` levantan esa zona; nada de lo demás (`ERC`, `Temp`,
+/// la configuración) se aprueba. Una carpeta de informe con un archivo de hoy se queda entera, un enlace dentro de la raíz se
+/// rechaza y un enlace EN la ruta descarta la raíz. Todo con una shell simulada y carpetas sintéticas del sandbox.
+#[test]
+fn informes_de_wer_y_volcados_van_a_la_papelera_por_elementos_y_solo_los_de_mas_de_7_dias() {
+    use crate::paths::PathKey;
+    let mut sb = Sandbox::new();
+    let wer = "Local/Microsoft/Windows/WER";
+    // Informes: uno viejo entero, uno con un archivo de hoy dentro, uno reciente y uno viejo en la cola.
+    sb.write_aged(
+        &format!("{wer}/ReportArchive/Informe_viejo/Report.wer"),
+        3_000,
+        240,
+    );
+    sb.write_aged(
+        &format!("{wer}/ReportArchive/Informe_viejo/mem.hdmp"),
+        8_000,
+        240,
+    );
+    sb.write_aged(
+        &format!("{wer}/ReportArchive/Informe_mixto/Report.wer"),
+        3_000,
+        240,
+    );
+    sb.write(
+        &format!("{wer}/ReportArchive/Informe_mixto/mem.hdmp"),
+        2_000,
+    );
+    sb.write(
+        &format!("{wer}/ReportArchive/Informe_reciente/Report.wer"),
+        3_000,
+    );
+    sb.write_aged(
+        &format!("{wer}/ReportQueue/Cola_vieja/Report.wer"),
+        2_000,
+        240,
+    );
+    // Lo que NO es un informe: nunca se toca.
+    sb.write_aged(&format!("{wer}/ERC/ajustes.dat"), 500, 240);
+    sb.write_aged(&format!("{wer}/Temp/t.tmp"), 500, 240);
+    sb.write_aged(&format!("{wer}/config.ini"), 100, 240);
+    // Volcados: uno viejo y uno de hoy.
+    sb.write_aged("Local/CrashDumps/app.1111.dmp", 6_000, 240);
+    sb.write("Local/CrashDumps/app.2222.dmp", 6_000);
+    // Un enlace dentro de la raíz hacia una carpeta ajena.
+    sb.write_aged("Prot/ajeno/secreto.dat", 4_000, 240);
+    sb.junction(&format!("{wer}/ReportArchive/enlace"), "Prot/ajeno");
+    // Las fechas de las carpetas se fijan al final (escribir dentro las cambia).
+    for d in [
+        "ReportArchive/Informe_viejo",
+        "ReportArchive/Informe_mixto",
+        "ReportQueue/Cola_vieja",
+    ] {
+        sb.set_age(&sb.path(&format!("{wer}/{d}")), 240);
+    }
+    let mut roots = roots_with_raw(&sb, sb.long("Local"), None);
+    roots.protection.denied.push(sb.long(wer));
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = Cleaner::new(roots).with_threads(4).with_shell(fake.clone());
+
+    // Las raíces: exactamente las dos carpetas de informes (con la zona `WER`) y la de volcados (sin zona).
+    let wer_checks = c.roots().category_root_checks(CategoryId::WerReports);
+    let paths: Vec<PathBuf> = wer_checks
+        .iter()
+        .map(|k| k.result.as_ref().unwrap().path.clone())
+        .collect();
+    assert_eq!(
+        paths,
+        vec![
+            sb.long(&format!("{wer}/ReportArchive")),
+            sb.long(&format!("{wer}/ReportQueue"))
+        ]
+    );
+    for k in &wer_checks {
+        assert_eq!(
+            k.result.as_ref().unwrap().zone.as_deref(),
+            Some(sb.long(wer).as_path())
+        );
+    }
+    let dumps = c.roots().category_root_checks(CategoryId::CrashDumps);
+    assert_eq!(dumps.len(), 1);
+    let v = dumps[0].result.as_ref().unwrap();
+    assert_eq!(v.path, sb.long("Local/CrashDumps"));
+    assert_eq!(v.zone, None);
+
+    // La protección: `WER` y todo lo que no es una de las dos carpetas, denegado; ellas y lo que cuelga, permitido.
+    let prot = c.protection();
+    let verdict = |rel: &str| prot.target_verdict(&PathKey::new(&sb.long(rel)));
+    for denied in [
+        wer.to_string(),
+        format!("{wer}/ERC"),
+        format!("{wer}/ERC/ajustes.dat"),
+        format!("{wer}/Temp"),
+        format!("{wer}/Temp/t.tmp"),
+        format!("{wer}/config.ini"),
+    ] {
+        assert_eq!(verdict(&denied), Verdict::Denied, "{denied}");
+    }
+    for allowed in [
+        format!("{wer}/ReportArchive"),
+        format!("{wer}/ReportArchive/Informe_viejo"),
+        format!("{wer}/ReportArchive/Informe_viejo/Report.wer"),
+        format!("{wer}/ReportQueue/Cola_vieja"),
+        "Local/CrashDumps".to_string(),
+        "Local/CrashDumps/app.1111.dmp".to_string(),
+    ] {
+        assert_eq!(verdict(&allowed), Verdict::Allowed, "{allowed}");
+    }
+    // Los ancestros de lo denegado no se pueden borrar como tal.
+    assert_eq!(verdict("Local/Microsoft/Windows"), Verdict::Untouchable);
+
+    // Aprobar: tres elementos sueltos (el informe viejo, el de la cola y el volcado viejo), todos «Revisar» a la Papelera,
+    // con su categoría. Quedan fuera lo reciente, la carpeta con un archivo de hoy y el enlace.
+    let mut b = Basket::new();
+    b.set_category(CategoryId::WerReports, true);
+    b.set_category(CategoryId::CrashDumps, true);
+    let plan = approve(&c, &b);
+    let mut got: Vec<(PathBuf, Option<CategoryId>)> = plan
+        .items
+        .iter()
+        .map(|i| (i.path.clone(), i.category))
+        .collect();
+    got.sort();
+    let mut want = vec![
+        (
+            sb.long("Local/CrashDumps/app.1111.dmp"),
+            Some(CategoryId::CrashDumps),
+        ),
+        (
+            sb.long(&format!("{wer}/ReportArchive/Informe_viejo")),
+            Some(CategoryId::WerReports),
+        ),
+        (
+            sb.long(&format!("{wer}/ReportQueue/Cola_vieja")),
+            Some(CategoryId::WerReports),
+        ),
+    ];
+    want.sort();
+    assert_eq!(got, want, "{:?}", plan.rejected);
+    for it in &plan.items {
+        assert_eq!(it.risk, Risk::Review);
+        assert_eq!(it.destination, Destination::Recycle);
+        assert_eq!(it.fit, Fit::Fits);
+        assert!(!it.min_age.is_zero());
+    }
+    // Los rechazos: el enlace de dentro de la raíz y lo que se deja por reciente (consta, no desaparece en silencio).
+    let young: Vec<String> = plan
+        .rejected
+        .iter()
+        .filter(|r| r.reason == RejectReason::Young)
+        .map(|r| r.path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    assert_eq!(plan.rejected.len(), 4, "{:?}", plan.rejected);
+    assert_eq!(
+        plan.rejected
+            .iter()
+            .filter(|r| r.reason == RejectReason::Reparse)
+            .count(),
+        1,
+        "{:?}",
+        plan.rejected
+    );
+    assert_eq!(plan.young_count(), 3, "{young:?}");
+    for n in ["Informe_mixto", "Informe_reciente", "app.2222.dmp"] {
+        assert!(young.iter().any(|y| y == n), "{n}: {young:?}");
+    }
+
+    // Simulación y ejecución real (shell simulada): lo aprobado va a su «Papelera» y TODO lo demás queda donde estaba.
+    exec(&c, &plan, true, false, None).unwrap();
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    assert_eq!(rep.items.len(), 3);
+    assert!(
+        rep.items.iter().all(|i| i.status == ItemStatus::Recycled),
+        "{:?}",
+        rep.items.iter().map(|i| &i.status).collect::<Vec<_>>()
+    );
+    for gone in [
+        format!("{wer}/ReportArchive/Informe_viejo"),
+        format!("{wer}/ReportQueue/Cola_vieja"),
+        "Local/CrashDumps/app.1111.dmp".to_string(),
+    ] {
+        assert!(!sb.path(&gone).exists(), "{gone}");
+    }
+    for kept in [
+        format!("{wer}/ReportArchive"),
+        format!("{wer}/ReportQueue"),
+        format!("{wer}/ReportArchive/Informe_mixto/Report.wer"),
+        format!("{wer}/ReportArchive/Informe_mixto/mem.hdmp"),
+        format!("{wer}/ReportArchive/Informe_reciente/Report.wer"),
+        format!("{wer}/ERC/ajustes.dat"),
+        format!("{wer}/Temp/t.tmp"),
+        format!("{wer}/config.ini"),
+        "Local/CrashDumps".to_string(),
+        "Local/CrashDumps/app.2222.dmp".to_string(),
+        "Prot/ajeno/secreto.dat".to_string(),
+    ] {
+        assert!(sb.path(&kept).exists(), "{kept}");
+    }
+
+    // Un enlace EN la ruta de una raíz la descarta (capa 1): `ReportQueue` -> carpeta ajena.
+    let mut sb2 = Sandbox::new();
+    sb2.mkdir(&format!("{wer}/ReportArchive"));
+    sb2.write_aged("Prot/q/ajeno.dat", 1_000, 240);
+    sb2.junction(&format!("{wer}/ReportQueue"), "Prot/q");
+    let mut roots2 = roots_with_raw(&sb2, sb2.long("Local"), None);
+    roots2.protection.denied.push(sb2.long(wer));
+    let c2 = Cleaner::new(roots2).with_shell(FakeShell::new(&sb2, Some(1 << 40), 0, "nunca"));
+    let checks = c2.roots().category_root_checks(CategoryId::WerReports);
+    assert_eq!(checks.len(), 2);
+    assert!(checks[0].result.is_ok(), "{:?}", checks[0].result);
+    assert!(
+        matches!(
+            &checks[1].result,
+            Err(crate::roots::RootRejection::ReparseInChain { component }) if component == "ReportQueue"
+        ),
+        "{:?}",
+        checks[1].result
+    );
+    let mut b2 = Basket::new();
+    b2.set_category(CategoryId::WerReports, true);
+    let plan2 = approve(&c2, &b2);
+    assert!(plan2.items.is_empty(), "{:?}", plan2.rejected);
+    assert!(sb2.path("Prot/q/ajeno.dat").exists());
+}
+
+const WER_REL: &str = "Local/Microsoft/Windows/WER";
+
+/// Un `Cleaner` sobre el sandbox con la denegación de `WER` (como `from_system`) y la shell dada.
+fn diag_cleaner(sb: &Sandbox, shell: Arc<dyn RecycleShell>) -> Cleaner {
+    let mut roots = roots_with_raw(sb, sb.long("Local"), None);
+    roots.protection.denied.push(sb.long(WER_REL));
+    Cleaner::new(roots).with_threads(4).with_shell(shell)
+}
+
+/// Una shell sin `MaxCapacity` (como una Papelera sin tamaño máximo configurado): nada "cabe" (`CapacityUnknown`).
+struct NoCapacityShell(Arc<FakeShell>);
+
+impl RecycleShell for NoCapacityShell {
+    fn recycle(&self, items: &[recycle::SendItem]) -> recycle::BatchOutcome {
+        self.0.recycle(items)
+    }
+    fn bin_room(&self, _: &Path) -> BinRoom {
+        BinRoom {
+            max: None,
+            used: Some(0),
+        }
+    }
+    fn fit(&self, _: &Path, _: u64) -> Fit {
+        Fit::Unfit(UnfitReason::CapacityUnknown)
+    }
+    fn is_bin_path(&self, p: &Path) -> bool {
+        self.0.is_bin_path(p)
+    }
+}
+
+fn status_of(rep: &Report, name: &str) -> ItemStatus {
+    rep.items
+        .iter()
+        .find(|i| i.path.ends_with(name))
+        .unwrap_or_else(|| panic!("no hay `{name}` en el informe"))
+        .status
+}
+
+/// M-1: un volcado, una carpeta de informe o un archivo de dentro que se "tocan" DESPUÉS de aprobar (misma identidad y mismo
+/// tamaño, fechas de ahora) no se envían: la antigüedad mínima se vuelve a comprobar por handle al ejecutar. El control, sin
+/// tocar, sí llega a la Papelera.
+#[test]
+fn lo_que_se_toca_tras_aprobar_deja_de_cumplir_los_7_dias_y_no_se_envia() {
+    let sb = Sandbox::new();
+    sb.write_aged("Local/CrashDumps/app.1111.dmp", 6_000, 240);
+    for d in ["Informe_a", "Informe_b", "Informe_c"] {
+        sb.write_aged(
+            &format!("{WER_REL}/ReportArchive/{d}/Report.wer"),
+            3_000,
+            240,
+        );
+    }
+    for d in ["Informe_a", "Informe_b", "Informe_c"] {
+        sb.set_age(&sb.path(&format!("{WER_REL}/ReportArchive/{d}")), 240);
+    }
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = diag_cleaner(&sb, fake.clone());
+    let mut b = Basket::new();
+    b.set_category(CategoryId::WerReports, true);
+    b.set_category(CategoryId::CrashDumps, true);
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 4, "{:?}", plan.rejected);
+    assert!(plan.rejected.is_empty(), "{:?}", plan.rejected);
+    // Después de aprobar: el volcado y la fecha de la carpeta A, y el archivo de dentro de la B.
+    sb.set_age(&sb.path("Local/CrashDumps/app.1111.dmp"), 0);
+    sb.set_age(&sb.path(&format!("{WER_REL}/ReportArchive/Informe_a")), 0);
+    sb.set_age(
+        &sb.path(&format!("{WER_REL}/ReportArchive/Informe_b/Report.wer")),
+        0,
+    );
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    for n in ["app.1111.dmp", "Informe_a", "Informe_b"] {
+        assert_eq!(
+            status_of(&rep, n),
+            ItemStatus::Root(crate::engine::RootStatus::Changed),
+            "{n}"
+        );
+    }
+    assert_eq!(status_of(&rep, "Informe_c"), ItemStatus::Recycled);
+    // S-7: lo que se rechaza por reciente al ejecutar consta en el registro como "demasiado reciente" (el volcado y la fecha de
+    // la propia carpeta A), no como un cambio cualquiera; lo de dentro de la B (la huella) sigue siendo un cambio.
+    let log = std::fs::read_to_string(rep.log_path.as_ref().expect("registro")).unwrap();
+    let young = log.matches("too-recent").count();
+    assert!((2..=3).contains(&young), "{young}: {log}");
+    for kept in [
+        "Local/CrashDumps/app.1111.dmp".to_string(),
+        format!("{WER_REL}/ReportArchive/Informe_a/Report.wer"),
+        format!("{WER_REL}/ReportArchive/Informe_b/Report.wer"),
+    ] {
+        assert!(sb.path(&kept).exists(), "{kept}");
+    }
+    assert!(
+        !sb.path(&format!("{WER_REL}/ReportArchive/Informe_c"))
+            .exists()
+    );
+}
+
+/// Residuo 1: lo que cuelga de una raíz de diagnóstico y se añade a mano como "Tu archivo" tampoco se borra definitivamente: si
+/// no cabe en la Papelera, no entra en el grupo ámbar y ni con la casilla se toca. Un archivo cualquiera sí sigue yendo al ámbar.
+#[test]
+fn una_carpeta_de_informe_anadida_a_mano_que_no_cabe_no_va_al_grupo_ambar() {
+    let sb = Sandbox::new();
+    sb.write_aged(
+        &format!("{WER_REL}/ReportArchive/Informe_a/Report.wer"),
+        3_000,
+        240,
+    );
+    sb.write_aged("Local/CrashDumps/app.1111.dmp", 3_000, 240);
+    sb.write_aged("Docs/mio.txt", 6_000, 240);
+    let fake = FakeShell::new(&sb, Some(1_000), 0, "nunca");
+    let c = diag_cleaner(&sb, fake.clone());
+    let mut b = Basket::new();
+    b.add_path(
+        sb.long(&format!("{WER_REL}/ReportArchive/Informe_a")),
+        c.protection(),
+    );
+    b.add_path(sb.long("Local/CrashDumps/app.1111.dmp"), c.protection());
+    b.add_path(sb.long("Docs/mio.txt"), c.protection());
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 3, "{:?}", plan.rejected);
+    for it in &plan.items {
+        // Añadidos a mano: sin categoría y sin antigüedad mínima; solo la ruta los distingue.
+        assert_eq!(it.category, None);
+        assert!(it.min_age.is_zero());
+        assert_eq!(it.fit, Fit::Unfit(UnfitReason::TooBig), "{:?}", it.path);
+    }
+    assert_eq!(plan.kept_unfit_items().count(), 2);
+    let amber: Vec<_> = plan.unfit_items().collect();
+    assert_eq!(amber.len(), 1);
+    assert!(amber[0].path.ends_with("mio.txt"));
+    let rep = exec(&c, &plan, false, true, None).unwrap();
+    assert_eq!(status_of(&rep, "Informe_a"), ItemStatus::SkippedUnfit);
+    assert_eq!(status_of(&rep, "app.1111.dmp"), ItemStatus::SkippedUnfit);
+    assert_eq!(status_of(&rep, "mio.txt"), ItemStatus::Done);
+    assert!(
+        sb.path(&format!("{WER_REL}/ReportArchive/Informe_a/Report.wer"))
+            .exists()
+    );
+    assert!(sb.path("Local/CrashDumps/app.1111.dmp").exists());
+    assert!(!sb.path("Docs/mio.txt").exists());
+}
+
+/// M-2: los informes y los volcados NUNCA se borran definitivamente. Si no caben en la Papelera (sin `MaxCapacity` o por
+/// tamaño) no pasan al grupo ámbar (el de borrado definitivo con casilla): quedan aparte, con su motivo, y ni siquiera
+/// con la casilla marcada se tocan. Un archivo del usuario con el mismo problema sí sigue yendo al grupo ámbar.
+#[test]
+fn lo_que_no_cabe_en_la_papelera_no_se_borra_definitivamente_ni_con_la_casilla() {
+    for (shell_kind, reason) in [
+        ("tamano", UnfitReason::TooBig),
+        ("sin-capacidad", UnfitReason::CapacityUnknown),
+    ] {
+        let sb = Sandbox::new();
+        sb.write_aged("Local/CrashDumps/app.1111.dmp", 6_000, 240);
+        sb.write_aged(
+            &format!("{WER_REL}/ReportArchive/Informe_a/Report.wer"),
+            3_000,
+            240,
+        );
+        sb.set_age(&sb.path(&format!("{WER_REL}/ReportArchive/Informe_a")), 240);
+        sb.write_aged("Docs/mio.txt", 6_000, 240);
+        let fake = FakeShell::new(&sb, Some(1_000), 0, "nunca");
+        let shell: Arc<dyn RecycleShell> = if shell_kind == "tamano" {
+            fake.clone()
+        } else {
+            Arc::new(NoCapacityShell(fake.clone()))
+        };
+        let c = diag_cleaner(&sb, shell);
+        let mut b = Basket::new();
+        b.set_category(CategoryId::WerReports, true);
+        b.set_category(CategoryId::CrashDumps, true);
+        b.add_path(sb.long("Docs/mio.txt"), c.protection());
+        let plan = approve(&c, &b);
+        assert_eq!(plan.items.len(), 3, "{shell_kind}: {:?}", plan.rejected);
+        for it in &plan.items {
+            assert_eq!(it.fit, Fit::Unfit(reason), "{shell_kind}: {:?}", it.path);
+        }
+        // Informe y volcado: aparte (no se tocan); el archivo del usuario: grupo ámbar.
+        assert_eq!(plan.kept_unfit_items().count(), 2, "{shell_kind}");
+        assert!(
+            plan.kept_unfit_items()
+                .all(|i| i.category.is_some_and(CategoryId::is_diagnostic)),
+            "{shell_kind}"
+        );
+        let amber: Vec<_> = plan.unfit_items().collect();
+        assert_eq!(amber.len(), 1, "{shell_kind}");
+        assert!(amber[0].path.ends_with("mio.txt"), "{shell_kind}");
+        // Con la casilla marcada: el archivo del usuario se borra definitivamente; lo de diagnóstico se queda.
+        exec(&c, &plan, true, true, None).unwrap();
+        let rep = exec(&c, &plan, false, true, None).unwrap();
+        assert_eq!(status_of(&rep, "app.1111.dmp"), ItemStatus::SkippedUnfit);
+        assert_eq!(status_of(&rep, "Informe_a"), ItemStatus::SkippedUnfit);
+        assert_eq!(status_of(&rep, "mio.txt"), ItemStatus::Done);
+        assert_eq!(rep.skipped_unfit, 2, "{shell_kind}");
+        assert!(sb.path("Local/CrashDumps/app.1111.dmp").exists());
+        assert!(
+            sb.path(&format!("{WER_REL}/ReportArchive/Informe_a/Report.wer"))
+                .exists()
+        );
+        assert!(!sb.path("Docs/mio.txt").exists());
+    }
+}
+
+/// Defensa general: una unidad suelta (`Entry`) con antigüedad mínima nunca llega a la rama definitiva, aunque se cambie su
+/// destino o su categoría y se marque la casilla (falla cerrado): el recorrido definitivo no es todo-o-nada.
+#[test]
+fn una_unidad_suelta_con_antiguedad_minima_nunca_llega_a_la_rama_definitiva() {
+    // 1. Con destino definitivo (un plan manipulado).
+    let sb = Sandbox::new();
+    sb.write_aged("Local/CrashDumps/app.1111.dmp", 6_000, 240);
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = diag_cleaner(&sb, fake.clone());
+    let mut b = Basket::new();
+    b.set_category(CategoryId::CrashDumps, true);
+    let mut plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 1, "{:?}", plan.rejected);
+    plan.items[0].destination = Destination::Permanent;
+    plan.items[0].category = None;
+    assert!(plan.items[0].never_permanent());
+    let rep = exec(&c, &plan, false, true, None).unwrap();
+    assert_eq!(status_of(&rep, "app.1111.dmp"), ItemStatus::SkippedUnfit);
+    assert!(sb.path("Local/CrashDumps/app.1111.dmp").exists());
+    // 2. Papelera que no la admite, sin categoría de diagnóstico y con la casilla: tampoco.
+    let sb = Sandbox::new();
+    sb.write_aged("Local/CrashDumps/app.1111.dmp", 6_000, 240);
+    let fake = FakeShell::new(&sb, Some(1_000), 0, "nunca");
+    let c = diag_cleaner(&sb, fake.clone());
+    let mut b = Basket::new();
+    b.set_category(CategoryId::CrashDumps, true);
+    let mut plan = approve(&c, &b);
+    plan.items[0].category = None;
+    assert_eq!(plan.items[0].fit, Fit::Unfit(UnfitReason::TooBig));
+    assert_eq!(plan.unfit_items().count(), 0);
+    assert_eq!(plan.kept_unfit_items().count(), 1);
+    let rep = exec(&c, &plan, false, true, None).unwrap();
+    assert_eq!(status_of(&rep, "app.1111.dmp"), ItemStatus::SkippedUnfit);
+    assert!(sb.path("Local/CrashDumps/app.1111.dmp").exists());
+    // 3. Control: lo mismo con antigüedad cero (un archivo "Tu archivo") sí puede ir a la rama definitiva.
+    plan.items[0].min_age = Duration::ZERO;
+    // (El volcado cuelga de `CrashDumps`: sin la marca de ruta tampoco, para aislar la regla de la antigüedad.)
+    plan.items[0].diagnostic_path = false;
+    assert!(!plan.items[0].never_permanent());
+    assert_eq!(plan.unfit_items().count(), 1);
+}
+
+/// m-2: lo que se deja por reciente consta como rechazado (`Young`) en el plan y en el registro. m-3: una raíz que no existe no
+/// es un rechazo ni lleva aviso. m-1: con más de 200 elementos de diagnóstico, el plan lo dice (la confirmación avisa).
+#[test]
+fn lo_reciente_consta_una_raiz_inexistente_no_avisa_y_muchos_elementos_se_cuentan() {
+    // Sin `ReportQueue` ni `CrashDumps`; un informe viejo, uno reciente y uno viejo con un archivo de hoy dentro.
+    let sb = Sandbox::new();
+    sb.write_aged(
+        &format!("{WER_REL}/ReportArchive/Informe_viejo/Report.wer"),
+        3_000,
+        240,
+    );
+    sb.write_aged(
+        &format!("{WER_REL}/ReportArchive/Informe_mixto/Report.wer"),
+        3_000,
+        240,
+    );
+    sb.write(
+        &format!("{WER_REL}/ReportArchive/Informe_mixto/mem.hdmp"),
+        2_000,
+    );
+    sb.write(
+        &format!("{WER_REL}/ReportArchive/Informe_reciente/Report.wer"),
+        3_000,
+    );
+    for d in ["Informe_viejo", "Informe_mixto"] {
+        sb.set_age(&sb.path(&format!("{WER_REL}/ReportArchive/{d}")), 240);
+    }
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = diag_cleaner(&sb, fake.clone());
+    let mut b = Basket::new();
+    b.set_category(CategoryId::WerReports, true);
+    b.set_category(CategoryId::CrashDumps, true);
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 1, "{:?}", plan.rejected);
+    assert!(plan.items[0].path.ends_with("Informe_viejo"));
+    // Solo los dos "recientes" constan; las raíces que no existen no añaden nada.
+    assert_eq!(plan.rejected.len(), 2, "{:?}", plan.rejected);
+    assert!(
+        plan.rejected
+            .iter()
+            .all(|r| r.reason == RejectReason::Young),
+        "{:?}",
+        plan.rejected
+    );
+    assert_eq!(plan.young_count(), 2);
+    let mut names: Vec<String> = plan
+        .rejected
+        .iter()
+        .map(|r| r.path.file_name().unwrap().to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    assert_eq!(names, ["Informe_mixto", "Informe_reciente"]);
+    assert_eq!(plan.many_diagnostic_items(), None);
+    // En el registro de la ejecución.
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    let log = std::fs::read_to_string(rep.log_path.as_ref().expect("registro")).unwrap();
+    assert_eq!(log.matches("\"t\":\"rejected\"").count(), 2, "{log}");
+    assert!(
+        log.contains("Young (modified less than the minimum age ago)"),
+        "{log}"
+    );
+
+    // Muchos elementos: 201 volcados viejos.
+    let sb = Sandbox::new();
+    for i in 0..=200 {
+        sb.write_aged(&format!("Local/CrashDumps/app.{i}.dmp"), 100, 240);
+    }
+    let fake = FakeShell::new(&sb, Some(1 << 40), 0, "nunca");
+    let c = diag_cleaner(&sb, fake.clone());
+    let mut b = Basket::new();
+    b.set_category(CategoryId::CrashDumps, true);
+    let mut plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 201, "{:?}", plan.rejected);
+    assert_eq!(plan.many_diagnostic_items(), Some(201));
+    // El umbral es "más de 200".
+    plan.items.pop();
+    assert_eq!(plan.many_diagnostic_items(), None);
+}
+
 // ---- El receptor de eventos: identidad (no nombre), carreras tras soltar el handle, y el juicio por elemento ----------
 
 /// B1: `.lnk`, `.url` y extensiones conocidas (`.txt`, `.jpg`...): el elemento se reconoce en la Papelera por su

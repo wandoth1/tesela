@@ -475,6 +475,8 @@ struct Row {
     /// Datos del usuario (Descargas, Papelera): riesgo "Revisar". Se enseñan, pero NO cuentan en la cifra grande de
     /// "sitios conocidos" (PLAN.md §2.4: el titular suma solo lo seguro) y llevan la etiqueta "Revisar".
     review: bool,
+    /// Informes de errores o volcados de bloqueo (también "Revisar"): llevan su propia frase de "no cuentan".
+    diag: bool,
     /// Categoría segura de la fila (la que mide el `cleaner` al terminar), si la tiene.
     safe: Option<CategoryId>,
     /// El navegador de esta caché está abierto: la fila no cuenta y dice "Cierra X para liberar hasta N".
@@ -489,7 +491,11 @@ fn safe_category(k: Option<KnownKind>) -> Option<CategoryId> {
         KnownKind::ChromeCache => Some(CategoryId::ChromeCache),
         KnownKind::EdgeCache => Some(CategoryId::EdgeCache),
         KnownKind::FirefoxCache => Some(CategoryId::FirefoxCache),
-        KnownKind::Downloads | KnownKind::RecycleBin => None,
+        // Datos del usuario o de diagnóstico: riesgo "Revisar", nunca la categoría "segura" de una fila.
+        KnownKind::Downloads
+        | KnownKind::RecycleBin
+        | KnownKind::WerReports
+        | KnownKind::CrashDumps => None,
     }
 }
 
@@ -502,13 +508,23 @@ fn kind_of_key(key: &str) -> Option<KnownKind> {
         "known-firefox-cache" => KnownKind::FirefoxCache,
         "known-downloads" => KnownKind::Downloads,
         "known-recycle-bin" => KnownKind::RecycleBin,
+        "known-wer-reports" => KnownKind::WerReports,
+        "known-crash-dumps" => KnownKind::CrashDumps,
         _ => return None,
     })
 }
 
-/// ¿Es una clase de sitio conocido con datos del usuario (riesgo "Revisar", nunca "seguro")?
+/// ¿Es una clase de sitio conocido con datos del usuario o de diagnóstico (riesgo "Revisar", nunca "seguro")?
 fn kind_is_review(k: Option<KnownKind>) -> bool {
-    matches!(k, Some(KnownKind::Downloads | KnownKind::RecycleBin))
+    matches!(
+        k,
+        Some(
+            KnownKind::Downloads
+                | KnownKind::RecycleBin
+                | KnownKind::WerReports
+                | KnownKind::CrashDumps
+        )
+    )
 }
 
 /// Junta las rutas prioritarias de la misma clase en una sola fila (suma de bytes; terminada si todas lo están), en el
@@ -538,6 +554,8 @@ fn kind_key(k: Option<KnownKind>) -> &'static str {
         Some(KnownKind::FirefoxCache) => "known-firefox-cache",
         Some(KnownKind::Downloads) => "known-downloads",
         Some(KnownKind::RecycleBin) => "known-recycle-bin",
+        Some(KnownKind::WerReports) => "known-wer-reports",
+        Some(KnownKind::CrashDumps) => "known-crash-dumps",
         None => "known-other",
     }
 }
@@ -596,6 +614,7 @@ fn view_of(s: &ScanScreen, env: &Env) -> View {
                 bytes,
                 done,
                 review: kind_is_review(k),
+                diag: matches!(k, Some(KnownKind::WerReports | KnownKind::CrashDumps)),
                 safe: safe_category(k),
                 blocked: None,
             })
@@ -635,7 +654,8 @@ fn view_of(s: &ScanScreen, env: &Env) -> View {
                     name: env.tr.t(key),
                     bytes: (*bytes as f32 * (f / end).min(1.0)) as u64,
                     done: f >= *end,
-                    review: matches!(*key, "known-downloads" | "known-recycle-bin"),
+                    review: kind_is_review(kind_of_key(key)),
+                    diag: false,
                     safe: safe_category(kind_of_key(key)),
                     blocked: None,
                 })
@@ -980,9 +1000,16 @@ fn known_places(ui: &mut Ui, env: &mut Env, v: &View, clean_click: &mut bool) {
                 .size(13.0)
                 .color(pal.text_muted),
         );
-        if v.rows.iter().any(|r| r.review) {
+        if v.rows.iter().any(|r| r.review && !r.diag) {
             ui.label(
                 RichText::new(env.tr.t("scan-known-excluded"))
+                    .size(13.0)
+                    .color(pal.text_muted),
+            );
+        }
+        if v.rows.iter().any(|r| r.diag) {
+            ui.label(
+                RichText::new(env.tr.t("scan-known-excluded-diag"))
                     .size(13.0)
                     .color(pal.text_muted),
             );
@@ -1360,6 +1387,12 @@ mod group_tests {
     fn descargas_y_papelera_son_datos_del_usuario_y_no_cuentan_como_seguros() {
         assert!(kind_is_review(Some(KnownKind::Downloads)));
         assert!(kind_is_review(Some(KnownKind::RecycleBin)));
+        // Informes de errores y volcados: también "Revisar", sin categoría segura.
+        for k in [KnownKind::WerReports, KnownKind::CrashDumps] {
+            assert!(kind_is_review(Some(k)), "{k:?}");
+            assert_eq!(safe_category(Some(k)), None, "{k:?}");
+            assert_eq!(kind_of_key(kind_key(Some(k))), Some(k), "{k:?}");
+        }
         for k in [
             KnownKind::UserTemp,
             KnownKind::WindowsTemp,
