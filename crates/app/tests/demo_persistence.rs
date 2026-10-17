@@ -1,6 +1,6 @@
-//! `--demo` no lee ni guarda NADA bajo `%APPDATA%` / `%LOCALAPPDATA%` ("nada se lee de tu disco"): se lanza el ejecutable real con
-//! las dos variables apuntando a una carpeta temporal propia, se cierra la ventana como lo haría el usuario (WM_CLOSE, que es
-//! cuando `Shell::on_exit` guardaría la configuración) y la carpeta tiene que seguir VACÍA.
+//! `--demo` does not read or write ANYTHING under `%APPDATA%` / `%LOCALAPPDATA%` ("nothing is read from your disk"): launch the real
+//! executable with both variables pointing to a test-owned temporary folder, close the window as the user would (WM_CLOSE, when
+//! `Shell::on_exit` would save settings), and verify that the folder remains EMPTY.
 #![allow(unsafe_code)]
 
 mod common;
@@ -26,19 +26,19 @@ struct Find {
     hwnd: HWND,
 }
 
-/// Función de ventana de `EnumWindows`: guarda la primera ventana visible del proceso buscado.
+/// `EnumWindows` callback: stores the first visible window belonging to the target process.
 unsafe extern "system" fn visit(hwnd: HWND, lparam: LPARAM) -> i32 {
-    // SAFETY: `lparam` es el `*mut Find` que pasa `window_of`, vivo durante toda la enumeración.
+    // SAFETY: `lparam` is the `*mut Find` passed by `window_of`, which remains alive for the entire enumeration.
     let find = unsafe { &mut *(lparam as *mut Find) };
     let mut pid = 0u32;
-    // SAFETY: `hwnd` lo da el sistema y `pid` es un entero local escribible.
+    // SAFETY: `hwnd` is supplied by the system and `pid` is a writable local integer.
     unsafe { GetWindowThreadProcessId(hwnd, &mut pid) };
     let mut title = [0u16; 16];
-    // SAFETY: `title` es un búfer local escribible de 16 unidades UTF-16.
+    // SAFETY: `title` is a writable local buffer of 16 UTF-16 units.
     let n = unsafe { GetWindowTextW(hwnd, title.as_mut_ptr(), title.len() as i32) };
     let is_main = String::from_utf16_lossy(&title[..n.max(0) as usize]) == "Tesela";
-    // SAFETY: `IsWindowVisible` solo lee el estado de la ventana. La ventana principal ("Tesela") solo es visible tras pintar el
-    // primer fotograma; el proceso tiene además ventanas auxiliares (destino de eventos de winit, IME) que no sirven.
+    // SAFETY: `IsWindowVisible` only reads the window state. The main window ("Tesela") is visible only after rendering the
+    // first frame; the process also has auxiliary windows (winit event target, IME) that do not qualify.
     if pid == find.pid && is_main && unsafe { IsWindowVisible(hwnd) } != 0 {
         find.hwnd = hwnd;
         return 0; // encontrada: se para
@@ -51,7 +51,7 @@ fn window_of(pid: u32) -> Option<HWND> {
         pid,
         hwnd: std::ptr::null_mut(),
     };
-    // SAFETY: `visit` es una función de ventana válida y `find` vive hasta que `EnumWindows` vuelve.
+    // SAFETY: `visit` is a valid window callback and `find` remains alive until `EnumWindows` returns.
     unsafe { EnumWindows(Some(visit), &mut find as *mut Find as LPARAM) };
     (!find.hwnd.is_null()).then_some(find.hwnd)
 }
@@ -60,7 +60,7 @@ fn count_entries(dir: &Path) -> usize {
     std::fs::read_dir(dir).map_or(0, |d| d.count())
 }
 
-/// Espera a que el proceso muestre su ventana (hasta `limit`); `None` si no llega (sin escritorio gráfico).
+/// Waits for the process to show its window (up to `limit`); returns `None` if it does not (no graphical desktop).
 fn wait_for_window(child: &mut Child, limit: Duration) -> Option<HWND> {
     let start = Instant::now();
     while start.elapsed() < limit {
@@ -96,9 +96,9 @@ fn una_sesion_de_demostracion_no_deja_nada_en_appdata() {
         eprintln!("sin ventana en este entorno (no hay escritorio gráfico o DX12): se omite");
         return;
     };
-    // Unos fotogramas, y se cierra como lo haría el usuario: ahí se guardaría la configuración y el tamaño de la ventana.
+    // Allow a few frames, then close as the user would: this is when settings and window size would be saved.
     std::thread::sleep(Duration::from_millis(2000));
-    // SAFETY: `hwnd` es una ventana de ESTE proceso hijo; WM_CLOSE no lleva punteros.
+    // SAFETY: `hwnd` belongs to THIS child process; WM_CLOSE carries no pointers.
     unsafe { PostMessageW(hwnd, WM_CLOSE, 0, 0) };
     let start = Instant::now();
     let status = loop {
@@ -130,10 +130,9 @@ fn una_sesion_de_demostracion_no_deja_nada_en_appdata() {
     );
 }
 
-/// Las herramientas de medición (`--idle-memory`, `--bench-hover`) tampoco guardan nada, ni siquiera con `--demo` y sin ventana
-/// que cerrar a mano: terminan solas. Y `--idle-memory` también SIN `--demo` (X1: el aislamiento de las herramientas de
-/// medición no depende de la demostración; con `APPDATA`/`LOCALAPPDATA` redirigidas no queda nada ni de la configuración ni
-/// del historial).
+/// The measurement tools (`--idle-memory`, `--bench-hover`) do not save anything either, even with `--demo` and no window
+/// to close manually: they exit on their own. `--idle-memory` also works WITHOUT `--demo` (X1: measurement-tool isolation
+/// does not depend on the demo; with `APPDATA`/`LOCALAPPDATA` redirected, nothing from settings or history remains).
 #[test]
 fn las_herramientas_de_medicion_no_dejan_nada_en_appdata() {
     if !common::process_tests_enabled() {
@@ -155,8 +154,8 @@ fn las_herramientas_de_medicion_no_dejan_nada_en_appdata() {
             .env("LOCALAPPDATA", &local)
             .output()
             .unwrap();
-        // Si no hay escritorio la herramienta puede fallar; lo que no puede es dejar archivos. Si termina bien, tiene que haber
-        // llegado a medir (que el aislamiento se pruebe con la herramienta funcionando, no con un error de argumentos).
+        // The tool may fail without a desktop, but it must not leave files. If it succeeds, it must have measured something
+        // (so isolation is tested with the tool working, not with an argument error).
         if args.contains(&"--idle-memory") && out.status.success() {
             assert!(
                 String::from_utf8_lossy(&out.stderr).contains("idle-memory:"),
