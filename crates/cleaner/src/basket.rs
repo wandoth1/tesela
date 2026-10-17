@@ -1,9 +1,9 @@
-//! La cesta (PLAN.md §2.5 y §2.7): lo que el usuario ha marcado, normalizado.
+//! The basket (PLAN.md §2.5 and §2.7): the normalized set of items selected by the user.
 //!
-//! Normalización por ancestros: si se añade un elemento cuyo ancestro ya está en la cesta, no se duplica; si se añade un
-//! ancestro, absorbe a sus descendientes. "Contenido de X" cubre lo que cuelga de X (no a X). La cesta guarda solo lo
-//! que el usuario pidió (rutas y categorías); lo que de verdad se borra lo decide la aprobación (`plan`), que vuelve a
-//! comprobar la protección por handle.
+//! Ancestor normalization: adding an item whose ancestor is already in the basket does not duplicate it; adding an
+//! ancestor absorbs its descendants. "Contents of X" covers items under X (not X itself). The basket stores only
+//! what the user requested (paths and categories); approval (`plan`) decides what is actually deleted and rechecks
+//! protection by handle.
 
 use crate::paths::PathKey;
 use crate::protect::{Protection, Verdict};
@@ -12,30 +12,30 @@ use std::collections::{BTreeSet, HashSet};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
-/// Qué ha pedido el usuario.
+/// What the user requested.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Source {
-    /// Una categoría con regla (se marca en Recomendaciones).
+    /// A rule-based category (selected in Recommendations).
     Category(CategoryId),
-    /// "Tu archivo": un archivo o una carpeta cualquiera. Riesgo Revisar, destino Papelera.
+    /// "Your file": any file or folder. Review risk, Recycle Bin destination.
     Path(PathBuf),
-    /// "Contenido de X": lo que hay dentro de una carpeta conocida, sin la carpeta en sí.
+    /// "Contents of X": items inside a known folder, excluding the folder itself.
     ContentsOf(PathBuf),
-    /// Vaciar la Papelera (alcance enumerado al aprobar).
+    /// Empty the Recycle Bin (scope enumerated during approval).
     EmptyBin,
 }
 
-/// Resultado de añadir una ruta a la cesta.
+/// Result of adding a path to the basket.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AddOutcome {
-    /// Se añadió; `absorbed` entradas anteriores (descendientes) quedaron cubiertas por la nueva.
+    /// Added; `absorbed` earlier entries (descendants) are now covered by the new entry.
     Added { absorbed: usize },
-    /// Ya estaba cubierta por un ancestro (o igual) de la cesta: no se duplica.
+    /// Already covered by an ancestor (or identical entry) in the basket; no duplicate is added.
     AlreadyCovered,
-    /// No se puede añadir (intocable, denegada, o es una carpeta conocida que solo admite "Contenido de").
+    /// Cannot be added (untouchable, denied, or a known folder that only accepts "Contents of").
     Rejected(Verdict),
-    /// No es una ruta de una unidad local con letra (UNC, también hacia un disco propio por su compartición
-    /// administrativa): el `cleaner` solo limpia unidades locales y lo dice ya al añadir, no solo al aprobar.
+    /// Not a local drive-letter path (UNC, including a local disk reached through its administrative
+    /// share): `cleaner` only cleans local drives and reports this when adding the item, not just at approval.
     NotLocal,
 }
 
@@ -45,21 +45,21 @@ struct Entry {
     key: Option<PathKey>,
 }
 
-/// Qué se añade en un lote ([`Basket::add_batch`]).
+/// What to add in a batch ([`Basket::add_batch`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum BatchKind {
-    /// Como [`Basket::add_path`].
+    /// Same as [`Basket::add_path`].
     Path,
-    /// Como [`Basket::add_contents_of`].
+    /// Same as [`Basket::add_contents_of`].
     ContentsOf,
 }
 
-/// Contador global de versiones de cestas: cada modificación de cualquier cesta toma un número nuevo, así que dos cestas
-/// distintas (o una sustituida por otra) nunca comparten versión salvo estando vacías y sin tocar.
+/// Global basket version counter: every basket modification gets a new number, so two baskets
+/// (or a replaced basket) never share a version unless both are empty and untouched.
 static REV: AtomicU64 = AtomicU64::new(1);
 
-/// ¿Cubre algo de este par de índices la ruta `key`? Una entrada de ruta cubre esa ruta y todo lo que cuelga de ella;
-/// "Contenido de X" cubre lo que cuelga de X (no a X). Sube por los ancestros (O(profundidad) consultas al índice).
+/// Does either index cover path `key`? A path entry covers itself and everything beneath it;
+/// "Contents of X" covers items beneath X (not X itself). Walk ancestors (O(depth) index lookups).
 fn covered_by(paths: &BTreeSet<PathKey>, contents: &BTreeSet<PathKey>, key: &PathKey) -> bool {
     if paths.contains(key) {
         return true;
@@ -74,7 +74,7 @@ fn covered_by(paths: &BTreeSet<PathKey>, contents: &BTreeSet<PathKey>, key: &Pat
     false
 }
 
-/// Las claves de `set` que cuelgan de `key` (sin incluirla): son contiguas en el orden del índice, a partir de `key\`.
+/// Keys in `set` under `key` (excluding `key` itself): they are contiguous in index order, starting at `key\`.
 fn below<'a>(
     set: &'a BTreeSet<PathKey>,
     key: &'a PathKey,
@@ -83,11 +83,11 @@ fn below<'a>(
     set.range(lo..).take_while(move |k| k.is_same_or_under(key))
 }
 
-/// La cesta.
+/// The basket.
 ///
-/// Además de la lista de entradas (en el orden en que se añadieron) lleva dos índices ordenados por clave, el de las rutas
-/// y el de los "Contenido de", para que `covers`, la absorción de descendientes y las altas por lotes cuesten
-/// O(profundidad · log n) y no recorran la cesta entera: con decenas de miles de entradas lo segundo era cuadrático.
+/// Besides the entries in insertion order, this stores two key-sorted indexes: one for paths
+/// and one for "Contents of". This makes `covers`, descendant absorption, and batch additions cost
+/// O(depth · log n) instead of scanning the entire basket, which was quadratic with tens of thousands of entries.
 #[derive(Clone, Debug, Default)]
 pub struct Basket {
     entries: Vec<Entry>,
@@ -105,8 +105,8 @@ impl Basket {
         self.rev = REV.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Versión de la cesta: cambia con cada modificación y no se repite entre cestas. La interfaz la usa como clave de
-    /// sus cachés (estimaciones, resumen de la selección) en vez de recorrer la cesta en cada fotograma.
+    /// Basket version: changes on every modification and is unique across baskets. The interface uses it as a cache key for
+    /// estimates and selection summaries instead of traversing the basket on every frame.
     pub fn rev(&self) -> u64 {
         self.rev
     }
@@ -126,7 +126,7 @@ impl Basket {
         self.touch();
     }
 
-    /// Las entradas, en el orden en que se añadieron.
+    /// Entries, in the order they were added.
     pub fn sources(&self) -> impl Iterator<Item = &Source> {
         self.entries.iter().map(|e| &e.source)
     }
@@ -141,7 +141,7 @@ impl Basket {
         self.entries.iter().any(|e| e.source == Source::EmptyBin)
     }
 
-    /// Marca o desmarca una categoría.
+    /// Select or deselect a category.
     pub fn set_category(&mut self, id: CategoryId, on: bool) {
         self.entries.retain(|e| e.source != Source::Category(id));
         if on {
@@ -153,7 +153,7 @@ impl Basket {
         self.touch();
     }
 
-    /// Marca o desmarca "vaciar la Papelera".
+    /// Select or deselect "empty the Recycle Bin".
     pub fn set_empty_bin(&mut self, on: bool) {
         self.entries.retain(|e| e.source != Source::EmptyBin);
         if on {
@@ -165,7 +165,7 @@ impl Basket {
         self.touch();
     }
 
-    /// Quita una entrada exacta.
+    /// Remove an exact entry.
     pub fn remove(&mut self, source: &Source) {
         let before = self.entries.len();
         self.entries.retain(|e| &e.source != source);
@@ -183,18 +183,18 @@ impl Basket {
         }
     }
 
-    /// ¿Está esta ruta cubierta por la cesta (igual a una entrada, o dentro de una carpeta añadida o del contenido de una)?
+    /// Is this path covered by the basket (equal to an entry, or under an added folder or its contents)?
     pub fn covers(&self, key: &PathKey) -> bool {
         covered_by(&self.paths, &self.contents, key)
     }
 
-    /// ¿Hay una entrada PROPIA (de ruta o "Contenido de") exactamente en `key`, que se pueda quitar? A diferencia de
-    /// [`Basket::covers`] no mira los ancestros. O(log n) con los índices.
+    /// Is there an entry of its own (a path or "Contents of") exactly at `key` that can be removed? Unlike
+    /// [`Basket::covers`], this does not check ancestors. O(log n) with the indexes.
     pub fn has_own(&self, key: &PathKey) -> bool {
         self.paths.contains(key) || self.contents.contains(key)
     }
 
-    /// ¿Está "Contenido de X" en la cesta para la carpeta `key`?
+    /// Is "Contents of X" in the basket for folder `key`?
     pub fn has_contents_of(&self, key: &PathKey) -> bool {
         self.contents.contains(key)
     }
@@ -271,15 +271,15 @@ impl Basket {
         AddOutcome::Added { absorbed }
     }
 
-    /// Añade muchas rutas de una vez, con las MISMAS comprobaciones que [`Basket::add_path`] y
-    /// [`Basket::add_contents_of`] para cada una (ruta de unidad local, veredicto de la protección, ya cubierta) y el
-    /// mismo resultado que añadirlas una a una en orden, pero en una sola pasada: los índices se consultan por clave y la
-    /// absorción de lo que ya había se hace al final, una vez. Devuelve un resultado por elemento, en el mismo orden.
+    /// Add many paths at once, using the SAME checks as [`Basket::add_path`] and
+    /// [`Basket::add_contents_of`] for each path (local drive path, protection verdict, and existing coverage), with the
+    /// same result as adding them one by one in order, but in one pass: query indexes by key and
+    /// absorb existing entries once at the end. Returns one result per item, in the same order.
     ///
-    /// No hace falta que los elementos del lote sean hermanos, y la cesta final es la misma sea cual sea el orden. Lo único
-    /// que difiere de añadir uno a uno es el resultado INDIVIDUAL de un elemento que cuelga de otro del mismo lote: sale
-    /// `AlreadyCovered` aunque vaya antes que su ancestro (uno a uno saldría `Added` y luego quedaría absorbido), porque
-    /// la cesta nunca guarda un elemento y su ancestro.
+    /// Batch items need not be siblings, and the final basket is the same regardless of order. The only
+    /// difference from adding them one by one is the INDIVIDUAL result for an item under another item in the same batch: it returns
+    /// `AlreadyCovered` even if it appears before its ancestor (one by one it would return `Added` and later be absorbed), because
+    /// the basket never stores both an item and its ancestor.
     pub fn add_batch(
         &mut self,
         items: Vec<(PathBuf, BatchKind)>,

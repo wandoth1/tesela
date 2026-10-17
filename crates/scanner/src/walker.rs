@@ -1,6 +1,6 @@
-//! Motor del escaneo: work-stealing con una tarea por directorio, cola prioritaria y un `Batch` por directorio hacia el
-//! hilo colector (PLAN.md §3.3). Sin `unsafe` ni arena compartida: lo único compartido son contadores atómicos y las
-//! colas de `crossbeam-deque`.
+//! Scan engine: work stealing with one task per directory, a priority queue, and one `Batch` per directory sent to the
+//! collector thread (PLAN.md §3.3). No `unsafe` or shared arena: the only shared state is atomic counters and
+//! `crossbeam-deque` queues.
 
 use crate::classify;
 use crate::progress::Progress;
@@ -14,40 +14,41 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, OnceLock};
 use tesela_model::{Batch, EntryData};
 
-/// Marca de "esta tarea no pertenece a ninguna ruta prioritaria".
+/// Marker that this task does not belong to a priority path.
 pub(crate) const NO_PRIO: u16 = u16::MAX;
 
-/// Códigos de Windows con los que `GetFileInformationByHandleEx(FileIdExtdDirectoryInfo)` indica que el sistema o
-/// el sistema de archivos no soportan esa clase (87 = parámetro inválido, 1 = función inválida, 50 = no soportado,
-/// 124 = nivel inválido).
+/// Windows error codes indicating that `GetFileInformationByHandleEx(FileIdExtdDirectoryInfo)` is unsupported by the system or
+/// file system (87 = invalid parameter, 1 = invalid function, 50 = not supported,
+/// 124 = invalid level).
 const UNSUPPORTED_CODES: [u32; 4] = [87, 1, 50, 124];
 
-/// `ERROR_ARITHMETIC_OVERFLOW`: el contador de ids provisionales se agotó.
+/// `ERROR_ARITHMETIC_OVERFLOW`: provisional ID counter exhausted.
 const ERROR_ARITHMETIC_OVERFLOW: u32 = 534;
 
-/// Un directorio por procesar.
+/// A directory to process.
 pub(crate) struct Task {
-    /// Ruta con prefijo `\\?\` y sin NUL final.
+    /// Path with the `\\?\` prefix and no trailing NUL.
     pub path: Vec<u16>,
-    /// Id provisional del directorio (ya reservado).
+    /// Reserved provisional directory ID.
     pub id: u32,
-    /// Carpeta de primer nivel a la que pertenece (0 = archivos de la raíz).
+    /// Top-level folder this belongs to (0 = files in the root).
     pub tag: u16,
-    /// Índice de la ruta prioritaria a la que pertenece, o [`NO_PRIO`].
+    /// Index of the priority path this belongs to, or [`NO_PRIO`].
     pub prio: u16,
-    /// Tarea inicial de una ruta prioritaria: hay que reclamarla antes de recorrerla (el recorrido general puede
-    /// haber llegado antes y adoptado ya ese directorio).
+    /// Initial task for a priority path: claim it before traversal (general traversal may
+
+    /// have reached and adopted this directory already).
     pub claim: bool,
-    /// Carpeta de la nube (reparse point con etiqueta de nube): se abre dejando actuar a su filtro.
+    /// Cloud folder (reparse point with a cloud tag): open it and let its filter handle access.
     pub cloud: bool,
 }
 
-/// Qué es un directorio cuyo `FileId` conocemos de antemano (cadena de ancestros de las rutas prioritarias).
+/// Kind of directory whose `FileId` is known in advance (an ancestor chain of priority paths).
 #[derive(Clone, Copy)]
 pub(crate) enum AdoptKind {
-    /// Ancestro: el recorrido general lo adopta Y lo recorre.
+    /// Ancestor: general traversal adopts AND traverses it.
     Ancestor,
-    /// Ruta prioritaria `idx`: se adopta y solo se recorre si nadie la ha reclamado ya.
+    /// Priority path `idx`: adopt it and traverse only if no one has claimed it yet.
     Target(u16),
 }
 
@@ -58,33 +59,33 @@ pub(crate) struct Adopt {
     pub kind: AdoptKind,
 }
 
-/// Estado compartido entre hilos.
+/// State shared between threads.
 pub(crate) struct Shared {
-    /// Siguiente id provisional (se reserva por bloques con `fetch_add`).
+    /// Next provisional ID (reserved in blocks with `fetch_add`).
     pub ids: AtomicU32,
     pub injector: Injector<Task>,
     pub prio: Injector<Task>,
-    /// Cota superior de las tareas en `prio` (evita consultar la cola cuando está vacía).
+    /// Upper bound on tasks in `prio` (avoids checking the queue when it is empty).
     pub prio_hint: AtomicUsize,
-    /// Tareas creadas y aún no terminadas (el escaneo acaba cuando llega a 0).
+    /// Created tasks that have not finished (the scan ends when this reaches 0).
     pub pending: AtomicUsize,
     pub cancel: Arc<AtomicBool>,
     pub progress: Arc<Progress>,
     pub adopt: OnceLock<HashMap<u128, Adopt>>,
-    /// Una bandera por ruta prioritaria: quién la recorre.
+    /// One flag per priority path, indicating who is traversing it.
     pub claimed: OnceLock<Vec<AtomicBool>>,
-    /// Se usa `FindFirstFileExW` para todo el escaneo (la extendida no está soportada o se forzó).
+    /// `FindFirstFileExW` is used for the whole scan (the extended API is unsupported or was forced).
     pub find_mode: AtomicBool,
-    /// Algún directorio se listó con `FindFirstFileExW`.
+    /// At least one directory was listed with `FindFirstFileExW`.
     pub any_find: AtomicBool,
     pub cluster: u64,
-    /// Guardar el `FileId` de los archivos (NTFS/ReFS con la API extendida).
+    /// Store file `FileId`s (NTFS/ReFS with the extended API).
     pub store_ids: bool,
-    /// Los ids provisionales se agotaron.
+    /// Provisional IDs were exhausted.
     pub id_overflow: AtomicBool,
     /// Se descartaron subdirectorios pendientes por cancelación: el árbol queda incompleto aunque `pending` llegue a 0.
     pub dropped: AtomicBool,
-    /// Un hilo trabajador entró en pánico.
+    /// A worker thread panicked.
     pub panicked: AtomicBool,
 }
 
@@ -115,7 +116,7 @@ impl Shared {
         }
     }
 
-    /// Reserva `n` ids provisionales consecutivos y devuelve el primero.
+    /// Reserve `n` consecutive provisional IDs and return the first.
     pub fn reserve_ids(&self, n: u32) -> u32 {
         let base = self.ids.fetch_add(n, Ordering::SeqCst);
         if base.checked_add(n).is_none_or(|end| end >= u32::MAX - 1) {
@@ -133,7 +134,7 @@ impl Shared {
     }
 }
 
-/// Entrada ya leída y convertida, a la espera de recibir su id.
+/// Entry already read and converted, waiting to receive its ID.
 struct Staged {
     name_off: u32,
     name_len: u16,
@@ -145,7 +146,7 @@ struct Staged {
     mtime: u32,
 }
 
-/// Cifras de un directorio recién procesado.
+/// Statistics for a newly processed directory.
 #[derive(Default)]
 pub(crate) struct DirStats {
     pub files: u64,
@@ -153,7 +154,7 @@ pub(crate) struct DirStats {
     pub alloc: u64,
 }
 
-/// Estado privado de un hilo.
+/// Per-thread private state.
 pub(crate) struct WorkerState {
     buf: Vec<u64>,
     entries: Vec<Staged>,
@@ -190,11 +191,11 @@ impl WorkerState {
     }
 }
 
-/// Carpetas de primer nivel con acumulador propio. Las etiquetas son `u16`: de más carpetas, las sobrantes comparten
-/// una última etiqueta ("otras") en vez de dar la vuelta y atribuirse a otra carpeta.
+/// Top-level folders with their own accumulator. Tags are `u16`: if there are too many folders, the remaining ones share
+/// a final "other" tag rather than wrapping around and being attributed to another folder.
 pub(crate) const MAX_TOP_NAMES: usize = 65_000;
 
-/// Etiqueta de la carpeta de primer nivel `name` (índice + 1; 0 es "archivos de la raíz").
+/// Tag for top-level folder `name` (index + 1; 0 means "files in the root").
 fn top_tag(names: &mut Vec<OsString>, overflow: &mut bool, cap: usize, name: &[u16]) -> u16 {
     if names.len() < cap {
         names.push(OsString::from_wide(name));
@@ -215,7 +216,7 @@ fn join(parent: &[u16], name: &[u16]) -> Vec<u16> {
     v
 }
 
-/// Convierte una entrada leída y la deja en la lista de espera.
+/// Convert a read entry and add it to the staging list.
 fn stage(entries: &mut Vec<Staged>, names: &mut Vec<u16>, cluster: u64, e: &RawEntry) {
     let off = names.len() as u32;
     names.extend_from_slice(e.name);
@@ -277,9 +278,9 @@ fn list_dir(
     sys::enum_dir_find(path, &mut |e| stage(entries, names, cluster, e))
 }
 
-/// Procesa un directorio: lo lista, entrega su `Batch` al colector y deja en `st.children` los subdirectorios.
-/// Siempre se entrega un lote (también si el directorio está vacío o falla), para que el builder distinga un
-/// directorio vacío de uno que no se llegó a listar.
+/// Process a directory: list it, send its `Batch` to the collector, and put its subdirectories in `st.children`.
+/// Always send a batch (even if the directory is empty or listing fails) so the builder can distinguish
+/// an empty directory from one that could not be listed.
 pub(crate) fn process_dir(
     sh: &Shared,
     tx: &Sender<Batch>,

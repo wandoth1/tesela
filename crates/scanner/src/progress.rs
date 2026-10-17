@@ -1,18 +1,18 @@
-//! Contadores de progreso en vivo (atómicos): la interfaz los lee 15-30 veces por segundo sin bloquear a los hilos.
+//! Live progress counters (atomic): the interface reads them 15–30 times per second without blocking worker threads.
 
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
-/// Acumulador de una carpeta de primer nivel de la ruta escaneada.
+/// Accumulator for a top-level folder under the scanned path.
 #[derive(Debug)]
 pub struct TopLevel {
-    /// Nombre de la carpeta (el índice 0 es "los archivos sueltos de la raíz" y no tiene nombre).
+    /// Folder name (index 0 represents loose files in the root and has no name).
     pub name: OsString,
-    /// Archivos vistos.
+    /// Files seen.
     pub files: AtomicU64,
-    /// Bytes en disco vistos (incluye los enlaces duros repetidos: la deduplicación se hace al construir el árbol).
+    /// Disk bytes seen (including repeated hard links; deduplication happens when building the tree).
     pub alloc: AtomicU64,
 }
 
@@ -26,14 +26,14 @@ impl TopLevel {
     }
 }
 
-/// Estado de una ruta prioritaria (temporales, cachés, Papelera propia, Descargas).
+/// State for a priority path (temporary files, caches, the user's Recycle Bin, Downloads).
 #[derive(Debug)]
 pub struct PriorityTarget {
-    /// Ruta canónica de la carpeta.
+    /// Canonical folder path.
     pub path: PathBuf,
-    /// Bytes en disco vistos hasta ahora en su subárbol.
+    /// Disk bytes seen so far in its subtree.
     pub alloc: AtomicU64,
-    /// Archivos vistos hasta ahora en su subárbol.
+    /// Files seen so far in its subtree.
     pub files: AtomicU64,
     pub(crate) pending: AtomicU32,
     pub(crate) done: AtomicBool,
@@ -50,36 +50,36 @@ impl PriorityTarget {
         }
     }
 
-    /// ¿Se terminó de recorrer todo su subárbol? Entonces `alloc` ya no cambia.
+    /// Has its entire subtree been traversed? If so, `alloc` no longer changes.
     pub fn is_done(&self) -> bool {
         self.done.load(Ordering::Acquire)
     }
 }
 
-/// Progreso de un escaneo. Todos los campos se pueden leer desde otro hilo mientras se escanea.
+/// Scan progress. All fields can be read from another thread while scanning.
 #[derive(Debug, Default)]
 pub struct Progress {
-    /// Archivos (entradas que no son directorios) vistos.
+    /// Files seen (entries that are not directories).
     pub files: AtomicU64,
-    /// Directorios vistos (no cuenta los reparse points, que no se siguen).
+    /// Directories seen (unfollowed reparse points are not counted).
     pub dirs: AtomicU64,
-    /// Bytes en disco vistos (sin deduplicar enlaces duros).
+    /// Disk bytes seen (without deduplicating hard links).
     pub alloc: AtomicU64,
-    /// Directorios que no se pudieron listar.
+    /// Directories that could not be listed.
     pub errors: AtomicU64,
-    /// El escaneo terminó (o se canceló y ya se ha construido el árbol).
+    /// The scan finished (or was cancelled and the tree has been built).
     pub finished: AtomicBool,
     pub(crate) top: OnceLock<Vec<TopLevel>>,
     pub(crate) priority: OnceLock<Vec<PriorityTarget>>,
 }
 
 impl Progress {
-    /// Acumuladores por carpeta de primer nivel (vacío hasta que se lista la raíz, que es lo primero que se hace).
+    /// Per-folder accumulators for the top level (empty until the root is listed, which happens first).
     pub fn top_levels(&self) -> &[TopLevel] {
         self.top.get().map_or(&[], Vec::as_slice)
     }
 
-    /// Rutas prioritarias que se están escaneando (vacío si ninguna cuelga de la ruta escaneada).
+    /// Priority paths being scanned (empty if none are under the scanned path).
     pub fn priority_targets(&self) -> &[PriorityTarget] {
         self.priority.get().map_or(&[], Vec::as_slice)
     }

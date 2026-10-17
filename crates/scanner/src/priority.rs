@@ -1,11 +1,11 @@
-//! Resolución de la cola prioritaria (PLAN.md §3.3): para cada ruta conocida que cuelga de la ruta escaneada se
-//! reservan, ANTES de arrancar los hilos, los ids de su cadena de ancestros (nodos precreados con sus metadatos
-//! reales) y se anota el `FileId` de cada directorio de la cadena. Así el recorrido general los reconoce por `FileId`
-//! (no por la ruta en minúsculas: NTFS admite carpetas que distinguen mayúsculas) y adopta el id existente en vez de
-//! crear otro nodo. Al terminar, el mapa de adopción es de solo lectura, sin locks.
+//! Priority queue resolution (PLAN.md §3.3): for each known path under the scanned path,
+//! reserve the IDs of its ancestor chain BEFORE starting threads (precreated nodes with actual metadata)
+//! and record each directory's `FileId`. General traversal then recognizes them by `FileId`
+//! (not by a lowercased path: NTFS supports case-sensitive folders) and adopts the existing ID instead of
+//! creating another node. Once resolved, the adoption map is read-only and needs no locks.
 //!
-//! Los ancestros se quedan sin lote propio hasta que el recorrido general los lista, de modo que el builder los marca
-//! `INCOMPLETE` mientras tanto y "Parar y ver" nunca enseña huérfanos.
+//! Ancestors have no batch until general traversal lists them, so the builder marks them
+//! `INCOMPLETE` in the meantime and "Stop and view" never displays orphan nodes.
 
 use crate::classify;
 use crate::sys::{self, EntryInfo};
@@ -16,7 +16,7 @@ use std::os::windows::ffi::OsStringExt;
 use std::path::{Component, Path, PathBuf, Prefix, PrefixComponent};
 use tesela_model::{Batch, EntryData};
 
-/// Carpeta de primer nivel ya listada (la raíz se lista antes de resolver nada).
+/// A listed top-level folder (the root is listed before anything is resolved).
 pub(crate) struct RootChild {
     /// Nombre EXACTO tal como lo lista el disco (una carpeta que distingue mayúsculas puede tener `Temp` y `temp`).
     pub name: OsString,
@@ -43,8 +43,8 @@ fn lower(s: &std::ffi::OsStr) -> String {
     s.to_string_lossy().to_lowercase()
 }
 
-/// Carpeta de primer nivel `name`: la coincidencia EXACTA gana; la insensible a mayúsculas solo es un respaldo y
-/// solo vale si es única.
+/// Top-level folder `name`: an exact match wins; a case-insensitive match is only a fallback and
+/// is accepted only if unique.
 fn find_root_child<'a>(children: &'a [RootChild], name: &OsString) -> Option<&'a RootChild> {
     if let Some(c) = children.iter().find(|c| c.name == *name) {
         return Some(c);
@@ -97,29 +97,29 @@ struct Planned {
     target: Option<u16>,
 }
 
-/// ¿Se recorre este directorio, tal como lo da el listado de su padre? SOLO si es un directorio normal
-/// (`DirAction::Walk`): ni un junction, un symlink o un punto de montaje, ni una carpeta de la nube (poblada o no: las
-/// no pobladas no se listan nunca, y las pobladas se abren con su filtro y no son un destino prioritario), ni una con los
-/// atributos de recuperación aunque no lleve la marca de reparse.
+/// Should this directory, as listed by its parent, be traversed? ONLY if it is a normal directory
+/// (`DirAction::Walk`): not a junction, symlink, mount point, or cloud folder (populated or not: unpopulated folders
+/// are never listed, and populated ones are opened with their filter and are not priority targets), nor one with
+/// recall attributes even if it lacks the reparse flag.
 fn walkable(attrs: u32, reparse_tag: u32) -> bool {
     classify::is_dir(attrs) && classify::dir_action(attrs, reparse_tag) == classify::DirAction::Walk
 }
 
-/// Una candidata ya validada: su ruta canónica, sus componentes con los nombres EXACTOS del disco (relativos a la raíz) y
-/// los datos que da de cada uno el listado de su padre.
+/// A validated candidate: its canonical path, components with their exact on-disk names (relative to the root), and
+/// metadata for each component from its parent's listing.
 struct Candidate {
     canon: PathBuf,
     rel: Vec<OsString>,
     metas: Vec<EntryInfo>,
 }
 
-/// Valida la candidata `p` (una ruta sin canonizar) componente a componente DESDE LA RAÍZ, sin abrirla antes: en cada paso
-/// se lista el padre (ya validado: la raíz es canónica y no es un enlace, y cada componente anterior es un directorio
-/// normal) y se busca el nombre; si la entrada es un enlace (de cualquier tipo, también en un ancestro), una carpeta de la
-/// nube o no es un directorio normal, se descarta SIN abrir su destino. Así la ruta final se construye solo con nombres
-/// reales del disco que cuelgan de la raíz, nunca resolviendo enlaces del camino. Lo único que se hace antes sobre la
-/// ruta cruda es expandir sus nombres 8.3 (`%TEMP%` suele estar abreviado) con `GetLongPathNameW`, que no abre nada para
-/// recorrerlo.
+/// Validate candidate `p` (a non-canonicalized path) component by component FROM THE ROOT, without opening it first: at each step
+/// list the parent (already validated: the root is canonical and not a link, and each previous component is a normal
+/// directory) and look up the name. If the entry is a link (of any kind, including an ancestor), a cloud folder, or not a
+/// normal directory, discard it WITHOUT opening its target. This builds the final path only from real on-disk names
+/// under the root, without resolving links along the way. The only operation performed on the raw candidate beforehand
+/// is expanding its 8.3 names (`%TEMP%` is often abbreviated) with `GetLongPathNameW`, which does not open paths for
+/// traversal.
 fn resolve_candidate(
     root: &Path,
     root_prefix: &str,
@@ -165,7 +165,7 @@ fn resolve_candidate(
     Some(Candidate { canon, rel, metas })
 }
 
-/// Resuelve `candidates` (rutas sin canonizar, sin comprobar). `root` es la ruta escaneada, canónica.
+/// Resolve `candidates` (uncanonicalized, unchecked paths). `root` is the canonical scanned path.
 pub(crate) fn resolve(
     sh: &Shared,
     root: &Path,
@@ -176,7 +176,7 @@ pub(crate) fn resolve(
     // 1. Candidatas que cuelgan de la raíz, validadas componente a componente desde ella (ver `resolve_candidate`).
     let mut accepted: Vec<Candidate> = Vec::new();
     for p in candidates {
-        // Cancelado durante el arranque: no se sigue validando rutas (E/S que puede tardar).
+        // Cancelled during startup: stop validating paths (I/O here may take time).
         if sh.cancel.load(std::sync::atomic::Ordering::Relaxed) {
             break;
         }
@@ -184,7 +184,7 @@ pub(crate) fn resolve(
             accepted.push(c);
         }
     }
-    // 2. Las más cercanas a la raíz primero; una ruta dentro de otra ya aceptada (o repetida) sobra.
+    // 2. Process paths closest to the root first; paths under an accepted path (or duplicates) are redundant.
     accepted.sort_by_key(|c| (c.rel.len(), c.rel.clone()));
     let key = |rel: &[OsString]| -> Vec<OsString> { rel.to_vec() };
     let mut kept_keys: Vec<Vec<OsString>> = Vec::new();

@@ -1,26 +1,27 @@
-//! La Papelera de reciclaje: enviar rutas, listar su contenido y purgar una lista enumerada, con COM (`windows`).
+//! Windows Recycle Bin: send paths to it, list its contents, and purge an enumerated list through COM (`windows`).
 //!
-//! `IFileOperation` trabaja por RUTAS y no se puede atar a un handle. El diseño (sin lápidas) es:
-//! 1. quien llama abre el elemento en exclusiva, captura su identidad y detecta "en uso", y CIERRA el handle;
-//! 2. este módulo envía la RUTA ORIGINAL a la Papelera con un `IFileOperationProgressSink` propio ([`Recorder`]) que
-//!    registra, por elemento, `hrDelete` y la ruta real del elemento ya en la Papelera (`psiNewlyCreated`);
-//! 3. quien llama abre ESA ruta (`$R…`) y compara su identidad con la aprobada.
+//! `IFileOperation` works by PATH and cannot be bound to a handle. The design (without tombstones) is:
+//! 1. The caller opens the item exclusively, captures its identity, detects "in use", then CLOSES the handle;
+//! 2. This module sends the ORIGINAL PATH to the Recycle Bin with a custom `IFileOperationProgressSink` ([`Recorder`]) that
+//!    records `hrDelete` and the actual path of the item in the Recycle Bin (`psiNewlyCreated`) for each item;
+//! 3. The caller opens THAT path (`$R…`) and compares its identity with the approved identity.
 //!
-//! Entre la comprobación del paso 1 y que la shell abra el elemento hay una ventana. El handle de GUARDA
-//! (`DELETE | READ_ATTRIBUTES`, compartiéndolo todo) que quien llama conserva abierto hasta después del paso 3 impide
-//! renombrar los ANCESTROS del elemento (el padre y el abuelo: error 5), así que no se puede cambiar un ancestro por un
-//! junction hacia otra carpeta (medido por la auditoría; cubierto por las pruebas) y la shell recicla igual. La guarda NO
-//! impide renombrar el propio elemento (el handle comparte `DELETE`, que la shell necesita para moverlo a `$Recycle.Bin`) ni
-//! poner otro objeto con ese nombre. Eso lo vigila el receptor de eventos (ver más abajo): `PreDeleteItem` comprueba la
-//! IDENTIDAD de lo que hay en la ruta justo antes de que la shell actúe.
+//! There is a race window between the check in step 1 and the shell opening the item. The GUARD handle
+
+//! (`DELETE | READ_ATTRIBUTES`, sharing all access) that the caller keeps open through step 3 prevents
+//! renaming the item's ANCESTORS (parent and grandparent: error 5), so an ancestor cannot be replaced with a
+//! junction to another folder (measured in the audit and covered by tests); the shell still recycles the item. The guard does NOT
+//! prevent renaming the item itself (the handle shares `DELETE`, which the shell needs to move it into `$Recycle.Bin`) or
+//! replacing it with another object of the same name. The event sink handles this (see below): `PreDeleteItem` checks the
+//! IDENTITY of the object at the path immediately before the shell acts.
 //!
-//! La garantía real es, pues: (a) la comprobación de ruta y protección es previa y se mantiene con el handle de guarda;
-//! (b) `PreDeleteItem` veta lo que no es el objeto aprobado, con una ventana RESIDUAL entre esa comprobación y el
-//! movimiento real de la shell (la shell abre y mueve por ruta: no hay forma de atarla a un handle); (c) lo que llega a la
-//! Papelera se comprueba por IDENTIDAD, y además `Recycled` exige que el nombre aprobado ya no exista y que el objeto de
-//! la guarda esté ahora dentro de una Papelera (otro nombre del mismo objeto, p. ej. un enlace duro, no cuenta); (d)
-//! lo que NO es el objeto aprobado y llega a la Papelera con su ruta conocida se informa como `RecycledOther` (está en la
-//! Papelera: se puede restaurar). Esto NO es una garantía de que un sustituto acabe ahí: ver el residual de más abajo.
+//! The actual guarantee is: (a) the path and protection check happens first and is maintained by the guard handle;
+//! (b) `PreDeleteItem` vetoes anything other than the approved object, with a RESIDUAL window between that check and the
+//! shell's actual move (the shell opens and moves by path, so it cannot be bound to a handle); (c) anything that reaches the
+//! Recycle Bin is checked by IDENTITY; `Recycled` also requires that the approved name no longer exists and that the guarded object
+//! is now inside a Recycle Bin (another name for the same object, such as a hard link, does not count); (d)
+//! anything other than the approved object that reaches the Recycle Bin with a known path is reported as `RecycledOther` (it is there and
+//! can be restored). This does NOT guarantee that a replacement will end up there; see the residual risk below.
 //!
 //! Banderas (decididas por las pruebas, ver `tests::wantnukewarning_*`):
 //! * enviar: `FOF_NO_UI | FOF_ALLOWUNDO | FOFX_RECYCLEONDELETE | FOF_NO_CONNECTED_ELEMENTS`;
@@ -92,7 +93,7 @@ use windows::Win32::UI::Shell::{
 };
 use windows::core::{HRESULT, Interface, PCWSTR, PWSTR, Ref, implement};
 
-/// Error de la shell o de COM (código `HRESULT` y descripción técnica; la interfaz lo traduce a su manera).
+/// Shell or COM error (`HRESULT` code and technical description; the interface translates it for display).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ShellError {
     pub hresult: i32,
@@ -122,8 +123,8 @@ impl From<windows::core::Error> for ShellError {
 
 type Result<T> = std::result::Result<T, ShellError>;
 
-/// COM inicializado en el hilo actual (apartamento de un solo hilo, como pide la shell). Se desinicializa al soltarlo,
-/// salvo que el hilo ya estuviera en otro modelo (`RPC_E_CHANGED_MODE`): entonces se usa tal cual.
+/// COM initialized on the current thread (single-threaded apartment, as required by the shell). Uninitialize on drop,
+/// unless the thread was already initialized in another mode (`RPC_E_CHANGED_MODE`), in which case keep using it as is.
 pub struct Com {
     uninit: bool,
 }
@@ -239,9 +240,9 @@ fn meta_sibling(data: &Path) -> Option<PathBuf> {
         .then(|| data.with_file_name(format!("$I{}", &name[2..])))
 }
 
-/// ¿Sigue siendo el elemento aprobado? Re-lee la identidad del `$R` y del `$I` y la compara con la capturada al enumerar.
-/// Sin identidad capturada o con otra distinta (alguien vació y volvió a llenar la Papelera, o sustituyó los archivos),
-/// no: el elemento se salta ("cambió desde la confirmación").
+/// Is this still the approved item? Reread the `$R` and `$I` identities and compare them with those captured during enumeration.
+/// If no identity was captured or either one differs (someone emptied and refilled the Recycle Bin, or replaced the files),
+/// skip the item ("changed since confirmation").
 fn bin_item_unchanged(item: &BinItem) -> bool {
     let data = PathBuf::from(&item.id);
     let (Some(want_data), Some(want_meta)) = (item.data_id, item.meta_id) else {
@@ -258,16 +259,16 @@ impl BinItem {
     }
 }
 
-/// Texto de un `PWSTR` de la shell, liberándolo con `CoTaskMemFree`.
+/// Copy a shell `PWSTR` to a string and free it with `CoTaskMemFree`.
 ///
 /// # Safety
-/// `p` debe ser una cadena UTF-16 terminada en NUL reservada con `CoTaskMemAlloc` (como las que devuelve
-/// `IShellItem::GetDisplayName`), y no se vuelve a usar.
+/// `p` must be a NUL-terminated UTF-16 string allocated with `CoTaskMemAlloc` (such as those returned by
+/// `IShellItem::GetDisplayName`), and must not be used again.
 unsafe fn take_pwstr(p: PWSTR) -> OsString {
-    // SAFETY: lo garantiza quien llama: `p` es una cadena terminada en NUL, válida hasta que se libere.
+    // SAFETY: the caller guarantees `p` is a valid NUL-terminated string until it is freed.
     let s = unsafe { p.as_wide() };
     let out = OsString::from_wide(s);
-    // SAFETY: la cadena se reservó con el asignador de COM y se libera una sola vez, tras copiarla.
+    // SAFETY: the string was allocated by COM and is freed exactly once, after copying it.
     unsafe { CoTaskMemFree(Some(p.0 as *const c_void)) };
     out
 }
@@ -278,12 +279,12 @@ fn filetime_to_unix(ft: FILETIME) -> i64 {
     (t.saturating_sub(EPOCH_AS_FILETIME) / 10_000_000) as i64
 }
 
-/// Lista TODOS los elementos de la Papelera del usuario (todas las unidades). Es lineal en el tamaño de la Papelera
-/// (decenas de segundos con 100 000 elementos, PLAN.md §3.6): quien llama la ejecuta en un hilo de trabajo.
+/// List ALL items in the user's Recycle Bin (all drives). Runtime is linear in the size of the Recycle Bin
+/// (tens of seconds for 100,000 items, PLAN.md §3.6): callers should run this on a worker thread.
 ///
-/// GM-S1: un elemento cuyos metadatos (`$I`) están corruptos (ruta original, fecha o nombre ilegibles) se SALTA y consta que no
-/// se listó; antes un solo `$I` roto abortaba la lista entera y con ella toda la limpieza de la Papelera. Lo que no se lista no
-/// se vacía (se queda donde está). Solo un fallo de la propia enumeración aborta.
+/// GM-S1: skip an item with corrupt metadata (`$I`) (unreadable original path, date, or name) and record that it was not
+/// listed; previously, one corrupt `$I` aborted the entire listing and all Recycle Bin cleanup. An unlisted item is never
+/// emptied (it stays in place). Only an enumeration failure aborts the operation.
 pub fn list_bin() -> Result<Vec<BinItem>> {
     list_bin_counted().map(|(items, _)| items)
 }
@@ -362,7 +363,7 @@ unsafe fn read_bin_item(item: &IShellItem) -> Result<BinItem> {
     }
 }
 
-/// Cuántos elementos y cuántos bytes hay en la Papelera del usuario (todas las unidades), según la shell.
+/// Number of items and bytes in the user's Recycle Bin (all drives), as reported by the shell.
 pub fn bin_totals() -> Result<(u64, u64)> {
     let mut info = SHQUERYRBINFO {
         cbSize: size_of::<SHQUERYRBINFO>() as u32,
@@ -373,7 +374,7 @@ pub fn bin_totals() -> Result<(u64, u64)> {
     Ok((info.i64NumItems.max(0) as u64, info.i64Size.max(0) as u64))
 }
 
-/// Qué le pasó a un elemento, según la propia shell (`IFileOperationProgressSink::PostDeleteItem`).
+/// What happened to an item, according to the shell (`IFileOperationProgressSink::PostDeleteItem`).
 ///
 /// Semántica (documentación de Microsoft, `PostDeleteItem`, learn.microsoft.com/en-us/windows/win32/api/shobjidl_core/
 /// nf-shobjidl_core-ifileoperationprogresssink-postdeleteitem): `hrDelete` es el resultado de la eliminación real (no el

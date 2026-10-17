@@ -1,7 +1,7 @@
-//! Llamadas a la API de Windows para listar directorios y consultar volúmenes. SOLO LECTURA.
+//! Windows API calls for listing directories and querying volumes. READ-ONLY.
 //!
-//! Todo el `unsafe` del enumerador está en este módulo, en funciones pequeñas con su `// SAFETY:`. Los tests de abajo
-//! (y los de integración del escáner) pasan por cada una de ellas. Nada abre archivos con acceso de escritura.
+//! All enumerator `unsafe` code is in this module, in small functions with their own `// SAFETY:` notes. The tests below
+//! (and scanner integration tests) exercise every function. Nothing opens files with write access.
 #![allow(unsafe_code)]
 
 use std::ffi::c_void;
@@ -32,10 +32,10 @@ use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
 
 pub use windows_sys::Win32::Storage::FileSystem::{FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES};
 
-/// Tamaño (en bytes) del búfer de enumeración por hilo.
+/// Enumeration buffer size per thread, in bytes.
 pub const BUF_BYTES: usize = 64 * 1024;
 
-/// Convierte una ruta en UTF-16 sin NUL final.
+/// Convert a path to UTF-16 without a trailing NUL.
 pub fn wide(path: &Path) -> Vec<u16> {
     path.as_os_str().encode_wide().collect()
 }
@@ -47,24 +47,23 @@ fn with_nul(path: &[u16]) -> Vec<u16> {
     v
 }
 
-/// Handle de directorio que se cierra al soltarlo.
+/// Directory handle, closed when dropped.
 pub struct DirHandle(HANDLE);
 
-// SAFETY: un HANDLE de archivo del kernel se puede usar y cerrar desde cualquier hilo; aquí además cada `DirHandle`
-// pertenece a un solo hilo a la vez.
+// SAFETY: a kernel file HANDLE can be used and closed from any thread; each `DirHandle` here is also owned by one thread at a time.
 unsafe impl Send for DirHandle {}
 
 impl Drop for DirHandle {
     fn drop(&mut self) {
-        // SAFETY: `self.0` es un handle válido que abrió `open_dir` y que solo se cierra aquí, una vez.
+        // SAFETY: `self.0` is a valid handle opened by `open_dir` and is closed only here, exactly once.
         unsafe { CloseHandle(self.0) };
     }
 }
 
-/// Abre un directorio (o un volumen raíz) en SOLO LECTURA: `access` es `FILE_LIST_DIRECTORY` o
-/// `FILE_READ_ATTRIBUTES`; se comparte con todos (lectura, escritura y borrado) para no estorbar a nadie, y se abre el
-/// propio reparse point en vez de seguirlo (salvo con `follow_reparse`, solo para carpetas de la nube). Devuelve el
-/// código de error de Windows si falla.
+/// Open a directory (or volume root) READ-ONLY: `access` is `FILE_LIST_DIRECTORY` or
+/// `FILE_READ_ATTRIBUTES`; share read, write, and delete access so no one is blocked, and open the
+/// reparse point itself instead of following it (unless `follow_reparse` is set, only for cloud folders). Return the
+/// Windows error code on failure.
 pub fn open_dir(path: &[u16], access: u32, follow_reparse: bool) -> Result<DirHandle, u32> {
     let p = with_nul(path);
     // Un reparse point normal se abre a si mismo (no se sigue). Solo las carpetas de la nube (OneDrive...) se abren
@@ -94,11 +93,11 @@ pub fn open_dir(path: &[u16], access: u32, follow_reparse: bool) -> Result<DirHa
     Ok(DirHandle(h))
 }
 
-/// Metadatos de un directorio abierto con `FILE_READ_ATTRIBUTES`.
+/// Metadata for a directory opened with `FILE_READ_ATTRIBUTES`.
 ///
-/// Se separan los metadatos IMPRESCINDIBLES (atributos, mtime, tamaños: `FileBasicInfo` y `FileStandardInfo`, que
-/// soporta cualquier sistema de archivos) de los OPCIONALES (`file_id` y `reparse_tag`): que el sistema no soporte
-/// la consulta de identidad no impide escanear, se sigue con `FindFirstFileExW`.
+/// REQUIRED metadata (attributes, mtime, sizes: `FileBasicInfo` and `FileStandardInfo`, supported by
+/// any file system) is separated from OPTIONAL metadata (`file_id` and `reparse_tag`): if the system does not support
+/// identity queries, scanning continues with `FindFirstFileExW`.
 #[derive(Clone, Copy, Debug)]
 pub struct DirMeta {
     /// Identificador de archivo de 128 bits, OPCIONAL: `None` si el sistema de archivos no soporta `FileIdInfo`
@@ -114,7 +113,7 @@ pub struct DirMeta {
     pub logical: u64,
 }
 
-/// Consulta de una clase de información del handle con `GetFileInformationByHandleEx`.
+/// Query a handle information class with `GetFileInformationByHandleEx`.
 fn query_info<T>(h: &DirHandle, class: i32) -> Result<T, u32> {
     // SAFETY: `T` es una de las estructuras POD de la API (enteros y arrays de bytes), para las que todo-ceros es
     // un valor válido.
@@ -215,20 +214,20 @@ fn final_path_with(h: &DirHandle, volume_name: u32) -> Result<PathBuf, u32> {
     }
 }
 
-/// Una ruta abierta sin seguir el reparse point final, con sus metadatos y su ruta canónica.
+/// An opened path that did not follow its final reparse point, with its metadata and canonical path.
 pub struct Opened {
     pub handle: DirHandle,
     pub meta: DirMeta,
     pub path: PathBuf,
 }
 
-/// [`open_no_follow`] con `FILE_READ_ATTRIBUTES` + [`dir_meta`] + la ruta final del handle (`final_path_with`). El llamante mira `meta` (¿es un
-/// directorio?, ¿un reparse point?) ANTES de usar `path` para recorrer nada.
+/// [`open_no_follow`] with `FILE_READ_ATTRIBUTES` + [`dir_meta`] + the handle's final path (`final_path_with`). The caller checks `meta` (is this a
+/// directory? a reparse point?) BEFORE using `path` for traversal.
 ///
-/// La ruta es la de DOS (`\\?\C:\...`), salvo en la raíz de un volumen abierto por `\\?\Volume{GUID}\` que NO tiene
-/// letra: su nombre DOS es la carpeta donde está montado, y recorrerla reabriría el directorio de reparse (vacío) del
-/// volumen padre. Ahí se conserva la ruta `\\?\Volume{GUID}\` (ver `paths::choose_root_path`). Si el volumen no tiene
-/// ningún nombre DOS, se usa también la de GUID.
+/// The path uses the DOS form (`\\?\C:\...`), except for a volume root opened through `\\?\Volume{GUID}\` that has NO
+/// drive letter: its DOS name is the mount folder, and traversing it would reopen the (empty) reparse directory on the
+/// parent volume. In that case, keep the `\\?\Volume{GUID}\` path (see `paths::choose_root_path`). If the volume has no
+/// DOS name, use the GUID path as well.
 pub fn open_resolved(path: &Path) -> Result<Opened, u32> {
     let handle = open_no_follow(path, FILE_READ_ATTRIBUTES)?;
     let meta = dir_meta(&handle)?;
@@ -245,10 +244,10 @@ pub fn open_resolved(path: &Path) -> Result<Opened, u32> {
     Ok(Opened { handle, meta, path })
 }
 
-/// Forma LARGA (sin nombres 8.3) de `path` (`GetLongPathNameW`), sin abrir ninguna ruta para recorrerla: solo expande
-/// los alias cortos (`PROGRA~1`) de lo que existe. Sirve para que una ruta tomada de una variable de entorno
-/// (`%TEMP%` suele estar en 8.3) se pueda comparar con los nombres del listado. NO sustituye a la validación
-/// componente a componente de `priority`: no resuelve enlaces. Devuelve el código de error de Windows (la ruta no existe...).
+/// Expand `path` to its LONG form (without 8.3 names) using `GetLongPathNameW`, without opening it for traversal: only expand
+/// existing short aliases (`PROGRA~1`). This lets a path from an environment variable
+/// (`%TEMP%` is often in 8.3 form) be compared with listed names. This does NOT replace
+/// `priority`'s component-by-component validation: this does not resolve links. Returns a Windows error code on failure.
 pub fn long_path(path: &Path) -> Result<PathBuf, u32> {
     let p = with_nul(&wide(path));
     let mut buf = vec![0u16; 512];
@@ -268,7 +267,7 @@ pub fn long_path(path: &Path) -> Result<PathBuf, u32> {
     }
 }
 
-/// Datos de una entrada de directorio tal como los da el listado de su padre.
+/// Directory entry data as reported by the parent's listing.
 #[derive(Clone, Copy, Debug)]
 pub struct EntryInfo {
     pub attrs: u32,
@@ -279,10 +278,10 @@ pub struct EntryInfo {
     pub mtime_filetime: i64,
 }
 
-/// Busca `name` (sin distinguir mayúsculas) en el listado de `parent` y devuelve los datos que el listado da de esa
-/// entrada. Se usa para precrear los ancestros de las rutas prioritarias con EXACTAMENTE los mismos valores que les
-/// daría el recorrido general: el tamaño propio de un directorio que da el listado de su padre puede diferir del que
-/// da `FileStandardInfo` sobre el directorio abierto, y sus `FileId` son los que se comparan al adoptar.
+/// Find `name` (case-insensitive) in `parent`'s listing and return the data reported for that
+/// entry. Used to precreate priority-path ancestors with EXACTLY the same values as
+/// general traversal: a directory's size from its parent's listing may differ from the size
+/// reported by `FileStandardInfo` on the open directory; its `FileId` is used for adoption comparisons.
 #[cfg(test)]
 pub fn find_entry(parent: &[u16], name: &[u16]) -> Result<Option<EntryInfo>, u32> {
     Ok(find_entry_named(parent, name)?.map(|(_, info)| info))

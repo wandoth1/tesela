@@ -1,16 +1,16 @@
-//! La aprobación (PLAN.md §3.7.1): de la cesta a un [`Plan`] con IDENTIDADES.
+//! Approval (PLAN.md §3.7.1): turn the basket into a [`Plan`] with IDENTITIES.
 //!
-//! Al confirmar, el `cleaner` reabre cada elemento por handle (`FILE_FLAG_OPEN_REPARSE_POINT | BACKUP_SEMANTICS`) y guarda
-//! `(número de serie del volumen, FileId de 128 bits)` y `NumberOfLinks`. Las rutas solo sirven para volver a encontrar
-//! los objetos: al ejecutar, lo que se abra tiene que tener ESA identidad.
+//! When the user confirms, `cleaner` reopens each item by handle (`FILE_FLAG_OPEN_REPARSE_POINT | BACKUP_SEMANTICS`) and records
+//! `(volume serial number, 128-bit FileId)` and `NumberOfLinks`. Paths only help find the objects again;
+//! the object opened during execution must have THAT identity.
 //!
-//! La aprobación además:
-//! * re-valida la protección sobre la ruta resuelta por el handle (no sobre la cadena que llegó);
-//! * expande una carpeta que contiene algo protegido en sus partes permitidas ("se omitirán N elementos protegidos");
-//! * mide cada elemento con el mismo recorrido que borrará (modo `Measure`): tamaño en disco SIN contar los enlaces
-//!   duros compartidos, tamaño lógico, archivos, entradas protegidas / recientes / enlaces que se respetarán;
-//! * decide si cada elemento con destino Papelera CABE en ella ([`Fit`]), con el límite real del volumen;
-//! * captura la lista de la Papelera si se pidió vaciarla (alcance enumerado).
+//! Approval also:
+//! * revalidates protection against the path resolved by the handle (not the input string);
+//! * expands a folder containing protected items into its allowed parts ("N protected items will be skipped");
+//! * measures each item with the same traversal used for deletion (`Measure` mode): disk size WITHOUT shared hard
+//!   links, logical size, files, and protected/recent entries and links that will be skipped;
+//! * decides whether each item targeting the Recycle Bin FITS ([`Fit`]), using the volume's actual limit;
+//! * captures the Recycle Bin listing if emptying it was requested (enumerated scope).
 
 use crate::basket::{Basket, Source};
 use crate::engine::{self, Env, Mode, StatsSnapshot, Unit, UnitSpec};
@@ -28,43 +28,43 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::time::Duration;
 
-/// Por qué un elemento NO cabe en la Papelera (se mostraría en el grupo ámbar de la confirmación).
+/// Why an item does NOT fit in the Recycle Bin (shown in the amber confirmation group).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum UnfitReason {
-    /// La unidad no tiene Papelera (red, extraíble).
+    /// The drive has no Recycle Bin (network or removable).
     NoBin,
-    /// El usuario desactivó la Papelera de ese volumen ("no mover los archivos a la Papelera").
+    /// The user disabled the Recycle Bin for this volume ("don't move files to the Recycle Bin").
     NukeOnDelete,
-    /// Supera (con margen) el tamaño máximo de la Papelera del volumen.
+    /// Exceeds the volume's maximum Recycle Bin size (including the safety margin).
     TooBig,
-    /// La ruta no cabe en los 260 caracteres que admite la Papelera.
+    /// The path exceeds the Recycle Bin's 260-character limit.
     PathTooLong,
-    /// Una directiva del sistema ("No mover los archivos eliminados a la Papelera") hace que la shell elimine de verdad.
+    /// A system policy ("Don't move deleted files to the Recycle Bin") makes the shell permanently delete items.
     Policy,
-    /// No se pudo averiguar si cabe (volumen o límite indeterminados): se trata como "no cabe".
+    /// Could not determine whether it fits (unknown volume or limit); treat it as not fitting.
     Unknown,
-    /// La Papelera de ese volumen NO tiene un tamaño máximo configurado (`MaxCapacity` ausente en el registro): la shell
-    /// usa un porcentaje por defecto que no está documentado, así que no hay garantía de que quepa (B2: falla cerrado).
+    /// The volume's Recycle Bin has NO configured maximum size (`MaxCapacity` is absent from the registry): the shell
+    /// uses an undocumented default percentage, so there is no guarantee it fits (B2: fail closed).
     CapacityUnknown,
 }
 
-/// Si un elemento con destino Papelera cabe en ella.
+/// Whether an item targeting the Recycle Bin fits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Fit {
     Fits,
     Unfit(UnfitReason),
 }
 
-/// Por qué una entrada de la cesta no llegó al plan.
+/// Why a basket entry was not included in the plan.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RejectReason {
-    /// Ya no existe.
+    /// No longer exists.
     Missing,
-    /// Windows no deja abrirla (permisos).
+    /// Windows denied access (permissions).
     AccessDenied,
-    /// El sistema de archivos no da identidad (FAT, exFAT...): no se aprueba lo que no se puede verificar.
+    /// The file system does not provide identity (FAT, exFAT, etc.); unverifiable items are not approved.
     NoIdentity,
-    /// Es un enlace (junction, symlink, punto de montaje): no se sigue ni se borra.
+    /// It is a link (junction, symlink, or mount point); links are neither followed nor deleted.
     Reparse,
     /// La raíz de una categoría tiene un enlace (junction, symlink, punto de montaje) en su cadena de ancestros, o la
     /// ruta que se comprobó dejó de ser la misma: no se ofrece como categoría (un enlace por encima de `User Data` o de
@@ -77,7 +77,7 @@ pub enum RejectReason {
     /// administrativa, o una unidad de red): el `cleaner` solo limpia unidades locales, porque la protección se define
     /// sobre rutas de unidad.
     NotLocal,
-    /// Protegida: denegada, intocable o carpeta conocida.
+    /// Protected: denied, untouchable, or a known folder.
     Protected(Verdict),
     /// Se iba a la Papelera pero la medida de la carpeta no se pudo hacer ENTERA (subcarpetas sin permiso o en uso, entradas
     /// que cambiaron durante el recorrido...): con el tamaño real desconocido no se puede repartir ni comprobar que cabe, y
@@ -86,7 +86,7 @@ pub enum RejectReason {
     /// Una categoría con antigüedad mínima (informes de errores, volcados): el elemento, o algo de su interior, se modificó
     /// hace menos que esa antigüedad (7 días). No se ofrece; consta en el plan y en el registro, no desaparece en silencio.
     Young,
-    /// Cualquier otro error del sistema.
+    /// Any other system error.
     Other(u32),
 }
 

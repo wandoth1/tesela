@@ -1,5 +1,5 @@
-//! Informes de errores de Windows (WER) y volcados de bloqueo de aplicaciones del usuario actual: las únicas carpetas de
-//! diagnóstico que Tesela conoce. SOLO LECTURA (la limpieza vive en el `cleaner`, que las vuelve a verificar por handle).
+//! Windows Error Reporting (WER) reports and current-user application crash dumps: the only diagnostic folders
+//! Tesela knows. READ-ONLY (`cleaner` performs cleanup and verifies each path again by handle).
 //!
 //! Fuentes (Microsoft Learn, revisadas el 2026-10-17):
 //! * `win32/wer/collecting-user-mode-dumps` y `win32/wer/wer-settings`: la carpeta por defecto de los volcados locales de
@@ -20,15 +20,15 @@ use std::path::PathBuf;
 /// solo levanta esa denegación para [`WER_REPORT_DIRS`].
 pub const WER_ZONE_REL: &str = r"Microsoft\Windows\WER";
 
-/// Las únicas carpetas de informes dentro de [`WER_ZONE_REL`].
+/// The only report folders under [`WER_ZONE_REL`].
 pub const WER_REPORT_DIRS: [&str; 2] = ["ReportArchive", "ReportQueue"];
 
 /// Volcados locales de bloqueo, relativa a `%LOCALAPPDATA%`.
 pub const CRASH_DUMPS_REL: &str = "CrashDumps";
 
-/// Las carpetas candidatas (existan o no), con su clase: `ReportArchive` y `ReportQueue` como [`KnownKind::WerReports`] y
-/// `CrashDumps` como [`KnownKind::CrashDumps`]. Sin `%LOCALAPPDATA%` conocida, ninguna. Las usa el `cleaner`, que comprueba
-/// cada raíz DESPUÉS por handle (componente a componente) y enseña el motivo si la descarta.
+/// Candidate folders (whether or not they exist) and their kind: `ReportArchive` and `ReportQueue` as [`KnownKind::WerReports`], and
+/// `CrashDumps` as [`KnownKind::CrashDumps`]. Returns none if `%LOCALAPPDATA%` is unknown. `cleaner` uses these paths and verifies
+/// each root by handle (component by component), and shows why a path was rejected.
 pub fn diagnostic_dirs(roots: &BrowserRoots) -> Vec<(KnownKind, PathBuf)> {
     let Some(local) = roots.local_appdata.as_deref() else {
         return Vec::new();
@@ -42,8 +42,8 @@ pub fn diagnostic_dirs(roots: &BrowserRoots) -> Vec<(KnownKind, PathBuf)> {
     v
 }
 
-/// Solo las que existen ahora mismo como directorio real y cuyos ancestros por debajo de `%LOCALAPPDATA%` también lo son (un
-/// enlace en el camino desviaría todo lo de debajo): lo que el escáner recorre primero.
+/// Only folders that currently exist as real directories and whose ancestors below `%LOCALAPPDATA%` are also real directories (a
+/// link in the path would redirect everything beneath it): paths the scanner visits first.
 pub fn diagnostic_dirs_verified(roots: &BrowserRoots) -> Vec<(KnownKind, PathBuf)> {
     let Some(local) = roots.local_appdata.as_deref() else {
         return Vec::new();

@@ -1,17 +1,17 @@
-//! Escáner paralelo de volúmenes NTFS/ReFS para Windows (PLAN.md §3.3). SOLO LECTURA: nunca escribe ni borra nada.
+//! Parallel NTFS/ReFS volume scanner for Windows (PLAN.md §3.3). READ-ONLY: it never writes or deletes anything.
 //!
-//! * Enumeración con `GetFileInformationByHandleEx(FileIdExtdDirectoryInfo)` (tamaño lógico, `AllocationSize` y
-//!   `FileId` por lotes), con `FindFirstFileExW` de respaldo (alloc estimado, sin deduplicación de enlaces duros y sin
-//!   cola prioritaria porque no hay `FileId` para adoptar).
-//! * Work-stealing con `crossbeam-deque`, una tarea por directorio; un `Batch` por directorio hacia un hilo colector
-//!   que alimenta el `TreeBuilder` de `tesela-model`.
-//! * Cola prioritaria con las rutas conocidas (temporales, cachés, Papelera del usuario, Descargas) y adopción por
-//!   `FileId` de la cadena de ancestros.
-//! * Los reparse points no se siguen. Tampoco la raíz: un junction, un symlink de carpeta o un punto de montaje dado
-//!   como raíz se rechaza con un error (se abre sin seguirlo y se clasifica ANTES de resolver su destino), y una ruta
-//!   prioritaria que lo sea se descarta sin abrir su destino. Los placeholders de la nube llevan el flag `CLOUD`;
-//!   rutas `\\?\`.
-//! * Cancelación ("Parar y ver"): se construye el árbol con lo recibido y los directorios no recorridos quedan
+//! * Enumeration with `GetFileInformationByHandleEx(FileIdExtdDirectoryInfo)` (logical size, `AllocationSize`, and
+//!   batched `FileId`s), with `FindFirstFileExW` as a fallback (estimated allocation, no hard-link deduplication, and no
+//!   priority queue because there are no `FileId`s to adopt).
+//! * Work stealing with `crossbeam-deque`, one task per directory; send one `Batch` per directory to a collector
+//!   thread that feeds the `TreeBuilder` in `tesela-model`.
+//! * Priority queue for known paths (temporary files, caches, the user's Recycle Bin, Downloads), with adoption by
+//!   `FileId` along the ancestor chain.
+//! * Reparse points are not followed. The root is not followed either: if the root is a junction, directory symlink, or mount point,
+//!   reject it with an error (open it without following and classify it BEFORE resolving its target); also discard a priority path
+//!   of this kind without opening its target. Cloud placeholders carry the `CLOUD` flag;
+//!   paths use the `\\?\` prefix.
+//! * Cancellation ("Stop and view"): build the tree from the entries received, and mark untraversed directories
 //!   `INCOMPLETE`.
 //!
 //! ```no_run
@@ -55,46 +55,46 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tesela_model::{Batch, BuildError, EntryData, FinishOptions, Tree, TreeBuilder};
 use walker::{NO_PRIO, Shared, Task, WorkerOut, WorkerState};
 
-/// Tope de hilos por defecto: en las mediciones de la fase 0 la mejora se satura entre 8 y 16 hilos
+/// Default thread limit: phase 0 measurements showed gains level off between 8 and 16 threads
 /// (docs/fase-0-conclusiones.md).
 pub const MAX_DEFAULT_THREADS: usize = 16;
 
-/// Hilos por defecto: `min(16, 2 × núcleos lógicos disponibles)`.
+/// Default thread count: `min(16, 2 × available logical cores)`.
 pub fn default_threads() -> usize {
     let cores = std::thread::available_parallelism().map_or(2, std::num::NonZero::get);
     MAX_DEFAULT_THREADS.min(2 * cores)
 }
 
-/// Opciones de un escaneo.
+/// Scan options.
 #[derive(Clone, Debug)]
 pub struct ScanOptions {
-    /// Carpeta o volumen a escanear.
+    /// Folder or volume to scan.
     pub root: PathBuf,
-    /// Hilos de escaneo (por defecto [`default_threads`]).
+    /// Scanner thread count (defaults to [`default_threads`]).
     pub threads: usize,
-    /// Usar la cola prioritaria con las rutas conocidas (por defecto sí). Solo afecta a las que cuelgan de `root`.
+    /// Use the priority queue for known paths (enabled by default). Only applies to paths under `root`.
     pub known_paths: bool,
-    /// Sustituye por completo la lista de rutas prioritarias (ignora `known_paths`). Para tests y herramientas.
+    /// Replace the entire priority path list (ignores `known_paths`). For tests and tools.
     pub priority_paths: Option<Vec<PathBuf>>,
-    /// Forzar `FindFirstFileExW` en todo el escaneo (para probar el respaldo).
+    /// Force `FindFirstFileExW` for the entire scan (to test the fallback).
     pub force_find: bool,
-    /// Deduplicar enlaces duros por `FileId` (por defecto sí; con `FindFirstFileExW` nunca hay `FileId`).
+    /// Deduplicate hard links by `FileId` (enabled by default; `FindFirstFileExW` never provides `FileId`).
     pub dedup_hard_links: bool,
-    /// Calcular el "espacio no explicado" en un escaneo terminado de un volumen completo (por defecto sí).
+    /// Calculate "unexplained space" for a completed scan of a full volume (enabled by default).
     pub volume_gap: bool,
-    /// "Ahora" en segundos Unix para los tramos de antigüedad (por defecto, el reloj del sistema).
+    /// "Now" in Unix seconds for age ranges (defaults to the system clock).
     pub now_unix: Option<u32>,
-    /// Bandera de cancelación externa (por ejemplo, la de un manejador de Ctrl+C, o la que crea la interfaz ANTES de
-    /// lanzar el hilo de arranque). Se consulta entre las fases del arranque (resolver las rutas conocidas) y en los hilos
-    /// de escaneo. Si ya está activada al empezar, solo se lista la raíz. [`ScanHandle::cancel`] activa la misma bandera.
+    /// External cancellation flag (for example, one from a Ctrl+C handler or one the interface creates BEFORE
+    /// starting the startup thread). Checked between startup phases (resolving known paths) and by worker
+    /// threads. If already set at startup, only the root is listed. [`ScanHandle::cancel`] sets the same flag.
     pub cancel: Option<Arc<AtomicBool>>,
-    /// Solo para tests y herramientas: sustituye el espacio del volumen y trata la ruta como un volumen completo,
-    /// lo que permite probar de punta a punta el cálculo del "espacio no explicado" sobre un árbol sintético.
+    /// For tests and tools only: substitute the volume space and treat the path as a full volume,
+    /// allowing end-to-end tests of "unexplained space" calculations on a synthetic tree.
     pub volume_override: Option<VolumeSpace>,
 }
 
 impl ScanOptions {
-    /// Opciones por defecto para escanear `root`.
+    /// Default options for scanning `root`.
     pub fn new(root: impl Into<PathBuf>) -> ScanOptions {
         ScanOptions {
             root: root.into(),
@@ -111,18 +111,18 @@ impl ScanOptions {
     }
 }
 
-/// Errores de un escaneo. TIPADOS: no llevan frases para el usuario (quien los muestra los traduce); `Display` es un
-/// texto técnico neutro para registros y herramientas, y el detalle del sistema va en el `io::Error`.
+/// Scan errors are TYPED and contain no user-facing text (the caller translates them); `Display` is a
+/// neutral technical string for logs and tools, while system details are in the `io::Error`.
 #[derive(Debug)]
 pub enum ScanError {
-    /// La raíz no existe o no se puede abrir.
+    /// The root does not exist or cannot be opened.
     Root(std::io::Error),
-    /// La raíz no es un directorio.
+    /// The root is not a directory.
     NotADirectory(PathBuf),
     /// La raíz es un enlace (junction, symlink de carpeta o punto de montaje) y los enlaces no se siguen: hay que elegir la
     /// carpeta de destino. Lleva la ruta del propio enlace.
     RootIsLink(PathBuf),
-    /// Algún hilo entró en pánico (es un error del programa).
+    /// A thread panicked (a program error).
     Panicked,
 }
 
@@ -149,14 +149,14 @@ impl std::error::Error for ScanError {
     }
 }
 
-/// API de enumeración usada.
+/// Enumeration API used.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ApiUsed {
-    /// `FileIdExtdDirectoryInfo` en todos los directorios.
+    /// `FileIdExtdDirectoryInfo` for every directory.
     Extended,
-    /// `FindFirstFileExW` en todo el escaneo (alloc estimado, sin deduplicación ni cola prioritaria).
+    /// `FindFirstFileExW` for the entire scan (estimated allocation, no deduplication or priority queue).
     FindFallback,
-    /// La extendida, salvo en algún directorio donde falló por no estar soportada.
+    /// The extended API, except for directories where it was unsupported.
     Mixed,
 }
 
@@ -279,7 +279,7 @@ pub struct ScanResult {
     pub summary: ScanSummary,
 }
 
-/// Escaneo en marcha.
+/// A scan in progress.
 pub struct ScanHandle {
     progress: Arc<Progress>,
     cancel: Arc<AtomicBool>,
@@ -308,7 +308,7 @@ impl ScanHandle {
     }
 }
 
-/// Escanea y espera al resultado.
+/// Scan and wait for the result.
 pub fn scan(opts: ScanOptions) -> Result<ScanResult, ScanError> {
     start(opts)?.wait()
 }
@@ -317,8 +317,9 @@ fn io_err(code: u32) -> std::io::Error {
     std::io::Error::from_raw_os_error(code as i32)
 }
 
-/// Arranca un escaneo. La preparación (abrir y listar la raíz, resolver las rutas prioritarias) es síncrona, así que
-/// los errores de la raíz se devuelven aquí; el resto corre en hilos y se sigue con [`ScanHandle`].
+/// Start a scan. Preparation (opening and listing the root, resolving priority paths) is synchronous, so
+
+/// root errors are returned here; the rest runs on worker threads and is accessed through [`ScanHandle`].
 ///
 /// La ruta que da el usuario se abre SIN seguir su reparse point final y se clasifica con `classify::root_plan` ANTES de
 /// resolver nada: una raíz que es un junction, un symlink de carpeta o un punto de montaje se RECHAZA (`ScanError::RootIsLink`) en vez de recorrer su destino, igual que los enlaces que cuelgan de la raíz no se
