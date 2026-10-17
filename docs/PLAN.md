@@ -217,7 +217,7 @@ MFT ────┘   (Batch per dir)       └─ sorts children by size ─►
   - It sends the `Batch { base_id, entries, names }` to a collector thread that only does `push`.
   - No `unsafe` and no shared arena. It is one message per directory (~0.3 M per million files).
 - **Priority queue:** an `Injector` that the workers check before stealing work. It holds `%TEMP%`, `Windows\Temp`, **specific browser cache directories (never the profile)**, `$Recycle.Bin\<SID>` and Downloads. The exact, conservative classification lives in `classify_browser_path` (`scanner/src/known.rs`) and the `cleaner` will reuse it; the cache names must be verified against the official Chromium and Firefox source code before anything is deleted.
-  - Their ids are reserved in advance, **together with the chain of ancestors** (e.g. `C:\Users\<usuario>\AppData\Local`), created as `INCOMPLETE` nodes. That way "Stop and view" never shows orphans.
+  - Their ids are reserved in advance, **together with the chain of ancestors** (e.g. `C:\Users\<user>\AppData\Local`), created as `INCOMPLETE` nodes. That way "Stop and view" never shows orphans.
   - When the general traversal reaches one of those directories, it **adopts** the existing id instead of scanning it again. The comparison is made **by the directory's `FileId`** and not by the lowercased path, because NTFS allows case-sensitive folders.
 - **Threads:** by default `min(16, 2 × cores)`; idle ones wait with increasing backoff. They are tuned by measuring real throughput; `IncursSeekPenalty` is only a hint. Phase 0 observation (a single test machine, one run per value): the improvement saturates early and is several times better than with 1 thread. HDD, USB and network are still unmeasured.
 - **Reparse points:** they are not followed (size 0 and a flag).
@@ -384,7 +384,7 @@ Pending (the first three are done by the user):
 - [ ] Registered trademarks for the name "Tesela" not reviewed.
 
 ## 7. Next step
-With **v0.1.4** published (fourth round of fixes and change monitoring in the Recycle Bin sending), start the **3-month validation phase** of [ROADMAP.md](ROADMAP.md) §5: public security evidence, complete walkthroughs based on real cases and a pilot without the author's help. The rest of the roadmap depends on its decision metric. After the first stable version, the whole repository moves to English (the application stays in Spanish and English).
+With **v0.1.4** published (fourth round of fixes and change monitoring for Recycle Bin operations), start the **3-month validation phase** of [ROADMAP.md](ROADMAP.md) §5: public security evidence, complete walkthroughs based on real cases, and a pilot without the author's help. The rest of the roadmap depends on its decision metric. Repository documentation and code comments are maintained in English; the application continues to support Spanish and English.
 
 ## 8. Out of scope (explicit)
 Registry cleaner, "optimize" or defragment, uninstalling programs, network or cloud analysis in v1, accounts, telemetry or ads, sunburst or 3D, shredding or recovery, a full file editor or manager, automatic rules without user intervention.

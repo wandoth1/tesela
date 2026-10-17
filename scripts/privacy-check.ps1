@@ -1,82 +1,84 @@
 <#
 .SYNOPSIS
-  Falla si el repositorio contiene datos que identifiquen la maquina o al usuario que desarrolla.
+  Fails if the repository contains data identifying the developer's machine or account.
 
 .DESCRIPTION
-  El repositorio es PUBLICO y no puede contener informacion de ningun PC: hardware, sistema, usuario, discos,
-  rutas de unidades personales, SID, etc. Compatible con PowerShell 7 (pwsh) y con Windows PowerShell 5.1; el hook
-  git exige pwsh. El script es solo ASCII a proposito (5.1 lee los .ps1 sin BOM como ANSI).
+  The repository is PUBLIC and must not contain information from any PC: hardware, OS, accounts, disks,
+  personal drive paths, SIDs, etc. Compatible with PowerShell 7 (pwsh) and Windows PowerShell 5.1; the git hook
+  requires pwsh. This script is ASCII-only by design (5.1 reads .ps1 files without a BOM as ANSI).
 
-  Modos:
-    * (por defecto)  archivos EN STAGING (`git diff --cached`), contenido del indice. Para el hook `pre-commit`.
-    * -All           todos los archivos versionados y los no ignorados (CI y revisiones completas).
-    * -MessageFile   un mensaje de commit (hook `commit-msg`); se revisa el mensaje ENTERO, sin excepcion: tambien las
-                     lineas que empiezan por `#` y lo que sigue a la linea de tijera (`# ---- >8 ----`, el diff de
-                     `git commit --verbose`). Git solo recorta ahi con `--cleanup=scissors`; con `-m`, `-F`,
-                     `--cleanup=verbatim` o `--cleanup=whitespace` lo conserva. Si el diff de --verbose lleva datos
-                     privados, el commit se bloquea (es lo esperado).
-    * -To [-From]    un rango de commits (CI: lo que introduce un push o un pull request): el mensaje de cada commit y
-                     TODOS los blobs que introduce, tambien los que un commit posterior borra. `-From` es el SHA anterior
-                     (`github.event.before` o la base del PR); si falta, es todo ceros o no existe en el clon, se revisa
-                     TODA la historia hasta `-To`.
+  Modes:
+    * (default)      staged files (`git diff --cached`), using index contents. Used by the `pre-commit` hook.
+    * -All            all tracked and non-ignored files (CI and full reviews).
+    * -MessageFile    a commit message (`commit-msg` hook); checks the ENTIRE message without exceptions, including lines
+                      beginning with `#` and content after the scissors line (`# ---- >8 ----`, the diff from
+                      `git commit --verbose`). Git trims there only with `--cleanup=scissors`; with `-m`, `-F`,
+                      `--cleanup=verbatim`, or `--cleanup=whitespace`, it keeps the content. If a verbose diff contains
+                      private data, the commit is blocked (as intended).
+    * -To [-From]     a commit range (CI: changes introduced by a push or pull request): every commit message and ALL blobs
+                      it introduces, including blobs deleted by a later commit. `-From` is the previous SHA
+                      (`github.event.before` or the PR base); if missing, all zeros, or absent from the clone, the full
+                      history through `-To` is checked.
 
-  Que se comprueba:
-    1. Patrones GENERICOS (siempre): SID (cuentas locales y AzureAD), rutas de perfil reales (Windows, `/c/Users/<usuario>`,
-       `/mnt/c/Users/<usuario>`), unidades D: a Z:, rutas UNC (`\\<servidor>\<recurso>`, con `\` o `/` en cualquier mezcla, tambien escapadas y `\\?\UNC\...`),
-       fabricantes y modelos de CPU/GPU/disco, antivirus, builds de Windows, versiones de driver. Falsos positivos
-       razonables de la regla UNC: documentacion o ejemplos con una ruta de red y una URL SIN protocolo (`//<host>/<ruta>`,
-       que con barras normales es indistinguible de una ruta de red; `https://host/ruta` y los comentarios `// texto` no
-       cuentan); escribe un marcador `<servidor>` en vez de un nombre (los marcadores con `<` no cuentan), anade el
-       protocolo a la URL o construye el dato en hexadecimal.
-    2. Valores LOCALES (solo en la maquina del desarrollador; nunca con -GenericOnly ni en CI): el nombre de usuario,
-       el nombre del equipo, el dominio y la ruta del perfil, leidos EN TIEMPO DE EJECUCION de las variables de entorno, y una lista
-       negra local NO versionada: `<git-common-dir>/privacy-denylist` (un termino por linea, sin distinguir
-       mayusculas, coincidencia literal; las lineas vacias y las que empiezan por `#` se ignoran).
-    3. Los NOMBRES de los archivos pasan por las mismas reglas.
-    4. Cualquier texto se decodifica antes de revisarlo (UTF-8, UTF-8 con BOM, UTF-16 con o sin BOM y, si los bytes no son
-       UTF-8 valido, tambien como Latin-1/ANSI, cada decodificacion por separado con sus propios numeros de linea: un
-       valor local con acentos guardado asi se vera). Los binarios se revisan buscando cadenas de texto (solo ASCII y,
-       ademas, ASCII con letras de cualquier alfabeto) en Latin-1 y UTF-16, ambas alineaciones (los de mas de 8 MiB se rechazan); las imagenes se rechazan SALVO `docs/img/<nombre>.png` generadas con --demo (ver la excepcion mas abajo).
-       Los formatos OPACOS o comprimidos (ZIP y derivados docx/xlsx/jar/apk, gzip, 7z, rar, xz, bz2, zstd, lz4, lzip,
-       compress, cab, OLE/msi, pdf, sqlite) se rechazan por su FIRMA con cualquier extension (el ZIP tambien por su
-       registro de fin en los ultimos 64 KiB): su contenido no se puede revisar, y un SID dentro de un ZIP pasaria.
-       No hay lista blanca (`$opaqueAllow`, vacia a proposito).
-       LIMITES inherentes que ninguna firma detecta: zlib crudo, lzma-alone (`.lzma`), datos cifrados u ofuscados y texto
-       codificado en base64 u otra transformacion. Lo unico que los frena es que el repositorio no admite binarios
-       desconocidos y que quien audita el cambio los vea.
-    5. `docs/spike-results.md` NO puede existir (se rehace por separado) y `spike/` se revisa con TODAS las reglas, las de
-       rutas incluidas. Unica excepcion: dos archivos de la fase 0 con rutas sinteticas desde su primer commit, que saltan
-       SOLO las reglas de rutas y solo con el contenido exacto revisado (lista `$spikePathAllow`, por SHA-256).
+  What is checked:
+    1. GENERIC patterns (always): SID (local and AzureAD accounts), real profile paths (Windows, `/c/Users/<user>`,
+       `/mnt/c/Users/<user>`; legacy `<usuario>` placeholders are accepted too), drives D: through Z:, UNC paths (`\\<server>\<share>`, with any mix of `\` or `/`, including escaped forms and `\\?\UNC\...`),
+       CPU/GPU/disk manufacturers and models, antivirus, Windows builds, and driver versions. Reasonable UNC false positives:
+       documentation or examples with a network path and a URL WITHOUT a protocol (`//<host>/<path>`,
+       which is indistinguishable from a network path when using normal slashes; `https://host/path` and `// comments` do
+       not count); use a `<server>` placeholder instead of a name (angle-bracket placeholders are ignored), add the URL
+       protocol, or construct the value in hexadecimal.
+    2. LOCAL values (only on the developer's machine; never with -GenericOnly or in CI): the username, computer name,
+       domain, and profile path, read at runtime from environment variables, plus an untracked local denylist at
+       `<git-common-dir>/privacy-denylist` (one term per line, case-insensitive literal matching; blank lines and lines
+       beginning with `#` are ignored).
+    3. File NAMES use the same rules.
+    4. All text is decoded before scanning (UTF-8, UTF-8 with BOM, UTF-16 with or without BOM and, if the bytes are not
+       valid UTF-8, Latin-1/ANSI too; each decoding is scanned separately with its own line numbers, so a local value with
+       accents is detected). Binaries are scanned for text strings (ASCII and ASCII surrounded by letters from any alphabet)
+       in Latin-1 and UTF-16, both alignments (files over 8 MiB are rejected); images are rejected EXCEPT `docs/img/<name>.png`
+       generated with --demo (see the exception below).
+       OPAQUE or compressed formats (ZIP and derivatives such as docx/xlsx/jar/apk, gzip, 7z, rar, xz, bz2, zstd, lz4,
+       lzip, compress, cab, OLE/msi, PDF, sqlite) are rejected by SIGNATURE regardless of extension (ZIP is also detected
+       by its end record in the last 64 KiB): their contents cannot be scanned, and an SID inside a ZIP would pass.
+       There is no allowlist (`$opaqueAllow` is intentionally empty).
+       INHERENT LIMITS that no signature check detects: raw zlib, lzma-alone (`.lzma`), encrypted or obfuscated data, and
+       base64 or otherwise transformed text. The only safeguards are that the repository rejects unknown binaries and that
+       reviewers inspect changes.
+    5. `docs/spike-results.md` MUST NOT exist (results are regenerated separately), and `spike/` is checked with ALL rules,
+       including path rules. The only exception is two phase-0 files with synthetic paths since their first commit: only
+       their path rules are skipped, and only while their content exactly matches the reviewed version (the closed
+       `$spikePathAllow` list, keyed by SHA-256).
 
-  Los patrones estan escritos con corchetes (p. ej. `Ge[F]orce`) para que este script no se detecte a si mismo y se
-  pueda revisar como cualquier otro archivo.
+  Patterns use bracketed characters (e.g. `Ge[F]orce`) so this script does not match itself and can be checked like any
+  other file.
 
 .PARAMETER All
-  Revisa todo el arbol versionado/no ignorado en vez de solo lo que esta en staging.
+  Check all tracked and non-ignored files instead of only staged files.
 
 .PARAMETER GenericOnly
-  No usa los valores locales ni la lista negra. Es el modo de CI; tambien se activa si existe la variable CI.
+  Do not use local values or the denylist. This is CI mode; it is also enabled whenever the CI variable is set.
 
 .PARAMETER Local
-  Usa SIEMPRE los valores locales y la lista negra aunque exista la variable CI. Lo pasan los hooks.
+  Always use local values and the denylist, even when the CI variable is set. Used by the hooks.
 
 .PARAMETER MessageFile
-  Revisa este archivo como mensaje de commit en vez de los archivos.
+  Check this file as a commit message instead of checking files.
 
 .PARAMETER To
-  SHA completo del ultimo commit de un rango a revisar (mensajes y blobs de lo que introduce).
+  Full SHA of the final commit in the range to check (messages and blobs it introduces).
 
 .PARAMETER LegacyImageSha256
-  Solo para las pruebas: SHA-256 adicionales que el modo -To acepta como capturas historicas (ademas de la lista cerrada
-  `$legacyDemoImages` del script).
+  Tests only: additional SHA-256 values accepted by -To as historical screenshots (in addition to the script's closed
+  `$legacyDemoImages` list).
 
 .PARAMETER From
-  SHA completo anterior al rango (se revisa `From..To`). Si falta, es todo ceros o no esta en el clon, se revisa toda
-  la historia hasta `To`.
+  Full SHA before the range (`From..To` is checked). If missing, all zeros, or absent from the clone, check the full history
+  through `To`.
 
 .EXAMPLE
-  pwsh -File scripts/privacy-check.ps1                 # staging (hook pre-commit)
-  pwsh -File scripts/privacy-check.ps1 -All            # todo el arbol
+  pwsh -File scripts/privacy-check.ps1                 # staged files (pre-commit hook)
+  pwsh -File scripts/privacy-check.ps1 -All            # entire tree
   pwsh -File scripts/privacy-check.ps1 -MessageFile .git/COMMIT_EDITMSG
 #>
 [CmdletBinding()]
@@ -108,7 +110,7 @@ function Invoke-GitBytes {
     $ms = New-Object System.IO.MemoryStream
     $p.StandardOutput.BaseStream.CopyTo($ms)
     $p.WaitForExit()
-    if ($p.ExitCode -ne 0) { throw "git $GitArgs fallo ($($p.ExitCode)): $($errTask.Result)" }
+    if ($p.ExitCode -ne 0) { throw "git $GitArgs failed ($($p.ExitCode)): $($errTask.Result)" }
     return ,$ms.ToArray()
 }
 
@@ -126,7 +128,7 @@ if (-not [System.IO.Path]::IsPathRooted($commonDir)) { $commonDir = Join-Path $r
 # pasan para que un CI definido en el perfil de un desarrollador no desactive en silencio los valores locales.
 if ($env:CI -and -not $Local) { $GenericOnly = $true }
 if ($Local -and $GenericOnly) {
-    Write-Host 'privacy-check: -Local y -GenericOnly son incompatibles' -ForegroundColor Red
+    Write-Host 'privacy-check: -Local and -GenericOnly cannot be used together' -ForegroundColor Red
     exit 2
 }
 
@@ -134,26 +136,26 @@ if ($Local -and $GenericOnly) {
 # Path = $true: regla ligada a rutas. Se aplica en TODO el repositorio, spike/ incluido; la unica excepcion es la lista CERRADA
 # `$spikePathAllow` (mas abajo). Los corchetes evitan que el script se detecte a si mismo.
 $generic = @(
-    @{ Name = 'SID de Windows'; Path = $false; Pattern = '(?i)S-1-5-21-\d' },
-    @{ Name = 'SID de cuenta AzureAD'; Path = $false; Pattern = '(?i)S-1-12-1-\d' },
-    @{ Name = 'Ruta de perfil real (use <usuario>)'; Path = $true; Pattern = '(?i)(?<![A-Za-z0-9_])[A-Z]:[\\/]{1,2}Users[\\/]{1,2}(?!<usuario>|%|\{|\$|Public\b|Default\b|\*)[^\\/\s''"`]+' },
-    @{ Name = 'Ruta de perfil real estilo Unix o WSL'; Path = $true; Pattern = '(?i)(?<![A-Za-z0-9_.])/(mnt/)?[a-z]/Users/(?!<usuario>|Public\b|Default\b)[^/\s''"`]+' },
-    @{ Name = 'Ruta absoluta de unidad D: a Z:'; Path = $true; Pattern = '(?i)(?<![A-Za-z0-9_])[D-Z]:[\\/]' },
-    @{ Name = 'Ruta WSL de unidad D a Z'; Path = $true; Pattern = '(?i)(?<![A-Za-z0-9_])/mnt/[d-z](/|$)' },
+    @{ Name = 'Windows SID'; Path = $false; Pattern = '(?i)S-1-5-21-\d' },
+    @{ Name = 'AzureAD account SID'; Path = $false; Pattern = '(?i)S-1-12-1-\d' },
+    @{ Name = 'Real profile path (use <user>)'; Path = $true; Pattern = '(?i)(?<![A-Za-z0-9_])[A-Z]:[\\/]{1,2}Users[\\/]{1,2}(?!<user>|<usuario>|%|\{|\$|Public\b|Default\b|\*)[^\\/\s''"`]+' },
+    @{ Name = 'Real Unix or WSL profile path'; Path = $true; Pattern = '(?i)(?<![A-Za-z0-9_.])/(mnt/)?[a-z]/Users/(?!<user>|<usuario>|Public\b|Default\b)[^/\s''"`]+' },
+    @{ Name = 'Absolute drive path D: through Z:'; Path = $true; Pattern = '(?i)(?<![A-Za-z0-9_])[D-Z]:[\\/]' },
+    @{ Name = 'WSL drive path D: through Z:'; Path = $true; Pattern = '(?i)(?<![A-Za-z0-9_])/mnt/[d-z](/|$)' },
     # UNC: las barras valen en cualquier mezcla (`\` y `/`). Las tres reglas piden la forma ANCLADA: dos barras seguidas, que
     # no vengan precedidas de otra barra, de `:` (una URL `https://...`), de `.` ni de una letra (`a//b`), y un servidor que
     # empiece por letra, digito o `_` (se excluyen `?`, `.` y `<`: `\\?\C:`, `\\.\pipe` y el marcador `<servidor>`).
-    @{ Name = 'Ruta UNC de red'; Path = $false; Pattern = '(?<![A-Za-z0-9_\\.:/])[\\/]{2}(?![?.<])[A-Za-z0-9_][A-Za-z0-9_.-]*[\\/][A-Za-z0-9_$]' },
+    @{ Name = 'UNC network path'; Path = $false; Pattern = '(?<![A-Za-z0-9_\\.:/])[\\/]{2}(?![?.<])[A-Za-z0-9_][A-Za-z0-9_.-]*[\\/][A-Za-z0-9_$]' },
     # Escapada (un literal de Rust, JSON...): cada barra invertida va duplicada, la barra normal no. Hace falta al menos UNA barra
     # invertida duplicada (con solo barras normales ya vale la regla de arriba): dos barras normales al principio con una barra invertida duplicada despues del servidor tambien cuentan.
-    @{ Name = 'Ruta UNC de red escapada'; Path = $false; Pattern = '(?<![A-Za-z0-9_\\.:/])(?:(?:\\\\\\\\|\\\\/|/\\\\|//)(?![?.<])[A-Za-z0-9_][A-Za-z0-9_.-]*\\\\|(?:\\\\\\\\|\\\\/|/\\\\)(?![?.<])[A-Za-z0-9_][A-Za-z0-9_.-]*(?:\\\\|[\\/]))[A-Za-z0-9_$]' },
+    @{ Name = 'Escaped UNC network path'; Path = $false; Pattern = '(?<![A-Za-z0-9_\\.:/])(?:(?:\\\\\\\\|\\\\/|/\\\\|//)(?![?.<])[A-Za-z0-9_][A-Za-z0-9_.-]*\\\\|(?:\\\\\\\\|\\\\/|/\\\\)(?![?.<])[A-Za-z0-9_][A-Za-z0-9_.-]*(?:\\\\|[\\/]))[A-Za-z0-9_$]' },
     # `\\?\UNC\` (verbatim) y `\\.\UNC\` (espacio de nombres de dispositivos): las dos formas.
-    @{ Name = 'Ruta UNC verbatim'; Path = $false; Pattern = '(?i)(?:\\\\|[\\/]){2}[?.](?:\\\\|[\\/])UNC(?:\\\\|[\\/])[A-Za-z0-9_]' },
+    @{ Name = 'Verbatim UNC path'; Path = $false; Pattern = '(?i)(?:\\\\|[\\/]){2}[?.](?:\\\\|[\\/])UNC(?:\\\\|[\\/])[A-Za-z0-9_]' },
     @{ Name = 'Fabricante o modelo de GPU/CPU/disco'; Path = $false; Pattern = '(?i)\b(N[V]IDIA|Ge[F]orce|R[T]X\s?\d{3,4}\w*|G[T]X\s?\d{3,4}\w*|Rade[o]n|Ry[z]en|Threadrip[p]er|EP[Y]C|X[e]on|Inte[l]\s+Core|Inte[l]\(R\)\s*Core|Core\s+i[3579][ -]|Apple\s+M[1-9]|Sam[s]ung|WD_BL[A]CK|WD\s+Bl[a]ck|Western\s+Dig[i]tal|Sea[g]ate|Kings[t]on|Cruc[i]al|Cors[a]ir|SN8\d\d\w*|H[y]nix|Mic[r]on|Tos[h]iba|SanD[i]sk)\b' },
     @{ Name = 'Antivirus'; Path = $false; Pattern = '(?i)\b(Bitdef[e]nder|Kaspers[k]y|Nor[t]on|McA[f]ee|Av[a]st|AVG\s+Anti\w*|ES[E]T|Malwareby[t]es|Soph[o]s|CrowdStr[i]ke|Sentinel[O]ne|Trend\s*Mi[c]ro|Symant[e]c|F-Se[c]ure|Webr[o]ot|Cylan[c]e|Carbon\s*Bl[a]ck)\b' },
-    @{ Name = 'Build de Windows'; Path = $false; Pattern = '(?i)\bbuild\s+(19|2\d)\d{3}\b' },
-    @{ Name = 'Version de Windows con build'; Path = $false; Pattern = '\b10\.0\.[12]\d{4}\b' },
-    @{ Name = 'Version de driver'; Path = $false; Pattern = '(?i)\bdriver\s+(version\s+)?v?\d+(\.\d+)+' }
+    @{ Name = 'Windows build'; Path = $false; Pattern = '(?i)\bbuild\s+(19|2\d)\d{3}\b' },
+    @{ Name = 'Windows version with build'; Path = $false; Pattern = '\b10\.0\.[12]\d{4}\b' },
+    @{ Name = 'Driver version'; Path = $false; Pattern = '(?i)\bdriver\s+(version\s+)?v?\d+(\.\d+)+' }
 )
 
 # --- Valores locales y lista negra ----------------------------------------------------------------------------------
@@ -174,7 +176,7 @@ if (-not $GenericOnly) {
                 # una letra cirilica, griega o CJK SI cuenta como coincidencia.
                 $pattern = "(?i)(?<![0-9A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u024F])$esc(?![0-9A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u024F])"
             }
-            $localRules += @{ Name = "Valor local de `$env:$($pair[0])"; Path = $false; Pattern = $pattern }
+            $localRules += @{ Name = "Local value of `$env:$($pair[0])"; Path = $false; Pattern = $pattern }
         }
     }
     $deny = Join-Path $commonDir 'privacy-denylist'
@@ -183,7 +185,7 @@ if (-not $GenericOnly) {
         foreach ($line in ([System.Text.Encoding]::UTF8.GetString($raw) -split "`n")) {
             $t = $line.Trim()
             if ($t.Length -ge 2 -and -not $t.StartsWith('#')) {
-                $localRules += @{ Name = 'Termino de la lista negra local'; Path = $false; Pattern = '(?i)' + [regex]::Escape($t) }
+                $localRules += @{ Name = 'Local denylist term'; Path = $false; Pattern = '(?i)' + [regex]::Escape($t) }
             }
         }
     }
@@ -324,11 +326,11 @@ if ($MessageFile) {
     # Si el diff de --verbose lleva datos privados, bloquear es lo correcto.
     foreach ($hit in (Test-Rules $text $rules)) { $problems.Add("mensaje de commit:$($hit[1]): $($hit[0])") }
     if ($problems.Count -gt 0) {
-        Write-Host "privacy-check: el mensaje de commit contiene datos privados:" -ForegroundColor Red
+        Write-Host "privacy-check: commit message contains private data:" -ForegroundColor Red
         $problems | ForEach-Object { Write-Host "  $_" }
         exit 1
     }
-    Write-Host 'privacy-check: OK (mensaje de commit)'
+    Write-Host 'privacy-check: OK (commit message)'
     exit 0
 }
 
@@ -421,7 +423,7 @@ function Test-DemoPng {
     $sawIdat = $false
     $colorType = -1
     while ($pos -lt $Bytes.Length) {
-        if ($sawEnd) { return 'hay datos despues del fragmento IEND' }
+        if ($sawEnd) { return 'data appears after the IEND chunk' }
         if ($pos + 12 -gt $Bytes.Length) { return 'PNG truncado' }
         $len = ([int]$Bytes[$pos] -shl 24) -bor ([int]$Bytes[$pos + 1] -shl 16) -bor ([int]$Bytes[$pos + 2] -shl 8) -bor [int]$Bytes[$pos + 3]
         if ($len -lt 0 -or ($pos + 12 + [long]$len) -gt $Bytes.Length) { return 'PNG con un fragmento fuera de rango' }
@@ -434,7 +436,7 @@ function Test-DemoPng {
         } elseif ($type -ceq 'IDAT') {
             $sawIdat = $true
         } elseif ($type -ceq 'IEND') {
-            if ($len -ne 0) { return 'IEND con datos' }
+            if ($len -ne 0) { return 'IEND contains data' }
             $sawEnd = $true
         } elseif ($pngFixedChunks.ContainsKey($type)) {
             if ($len -ne $pngFixedChunks[$type]) { return "fragmento $type de $len bytes (deben ser $($pngFixedChunks[$type])): ahi cabria texto" }
@@ -445,13 +447,13 @@ function Test-DemoPng {
             if ($colorType -ne 3) { return 'tRNS en un PNG no indexado' }
             if ($len -gt 256) { return "tRNS de $len bytes (maximo 256)" }
         } else {
-            return "fragmento PNG no permitido ($type): puede llevar metadatos del equipo"
+            return "disallowed PNG chunk ($type): it may contain machine metadata"
         }
         $first = $false
         $pos += 12 + $len
     }
     if (-not $sawEnd) { return 'PNG sin fragmento IEND' }
-    if (-not $sawIdat) { return 'PNG sin datos de imagen (IDAT)' }
+    if (-not $sawIdat) { return 'PNG has no image data (IDAT)' }
     return $null
 }
 
@@ -597,11 +599,11 @@ function Test-FileBytes {
     if ($spikePathAllow.ContainsKey($F) -and (Get-Sha256Hex $Bytes) -ceq $spikePathAllow[$F]) { $ruleSet = $pathFree }
 
     if ($F -eq 'docs/spike-results.md') {
-        $problems.Add("${Where}${F}: archivo prohibido (los resultados del spike se rehacen por separado)")
+        $problems.Add("${Where}${F}: forbidden file (spike results are regenerated separately)")
         return
     }
     # El nombre del archivo tambien se revisa.
-    foreach ($hit in (Test-Rules $F $ruleSet)) { $problems.Add("${Where}${F}: NOMBRE del archivo: $($hit[0])") }
+    foreach ($hit in (Test-Rules $F $ruleSet)) { $problems.Add("${Where}${F}: file NAME: $($hit[0])") }
 
     # Imagenes: por extension Y por firma (un .png renombrado a .dat, .bin o .txt tambien es una captura).
     $magic = Get-ImageMagic $Bytes
@@ -611,7 +613,7 @@ function Test-FileBytes {
             $isDemoImg = $true
         } else {
             $kind = if ($magic) { $magic } else { 'por la extension' }
-            $problems.Add("${Where}${F}: imagen versionada ($kind); no se permiten capturas salvo docs/img/<nombre>.png generadas con --demo")
+            $problems.Add("${Where}${F}: versioned image ($kind); screenshots are not allowed except docs/img/<name>.png generated with --demo")
             return
         }
     }
@@ -620,14 +622,14 @@ function Test-FileBytes {
         if ($why) { $problems.Add("${Where}${F}: $why"); return }
         $leaf = $F.Substring($F.LastIndexOf('/') + 1)
         if (-not (Test-ImgRegistered $leaf $Bytes)) {
-            $problems.Add("${Where}${F}: falta su linea anclada en docs/img/README.md (- <nombre>.png | sha256: <hash de sus bytes> | orden con --demo)")
+            $problems.Add("${Where}${F}: missing its anchored entry in docs/img/README.md (- <name>.png | sha256: <hash of its bytes> | --demo command)")
         }
         return
     }
     # Formatos opacos o comprimidos: no se pueden revisar, se rechazan (sin lista blanca hoy).
     $opaque = Get-OpaqueFormat $Bytes
     if ($opaque -and ($opaqueAllow -notcontains $F)) {
-        $problems.Add("${Where}${F}: formato opaco o comprimido ($opaque): su contenido no se puede revisar; versiona el texto sin comprimir")
+        $problems.Add("${Where}${F}: opaque or compressed format ($opaque): its contents cannot be scanned; commit uncompressed text instead")
         return
     }
     $reject = $null
@@ -639,11 +641,11 @@ function Test-FileBytes {
 # --- Modo de rango: mensajes y blobs de lo que introduce un push o un pull request ----------------------------------
 if ($To) {
     if ($To -notmatch '^[0-9a-f]{40}$') {
-        Write-Host 'privacy-check: -To debe ser un SHA completo de 40 caracteres hexadecimales' -ForegroundColor Red
+        Write-Host 'privacy-check: -To must be a full 40-character hexadecimal SHA' -ForegroundColor Red
         exit 2
     }
     if ($From -and $From -notmatch '^[0-9a-f]{40}$') {
-        Write-Host 'privacy-check: -From debe ser un SHA completo de 40 caracteres hexadecimales' -ForegroundColor Red
+        Write-Host 'privacy-check: -From must be a full 40-character hexadecimal SHA' -ForegroundColor Red
         exit 2
     }
     $revSpec = $To
@@ -694,13 +696,13 @@ if ($To) {
         }
     }
     if ($problems.Count -gt 0) {
-        Write-Host "privacy-check: FALLO ($($problems.Count) coincidencias en $whole). Quita esos datos (tambien de la historia) antes de publicar:" -ForegroundColor Red
+        Write-Host "privacy-check: FAILED ($($problems.Count) matches in $whole). Remove this data (including from history) before publishing:" -ForegroundColor Red
         $problems | Select-Object -First 50 | ForEach-Object { Write-Host "  $_" }
-        if ($problems.Count -gt 50) { Write-Host "  ... y $($problems.Count - 50) mas" }
+        if ($problems.Count -gt 50) { Write-Host "  ... and $($problems.Count - 50) more" }
         exit 1
     }
-    $scope = if ($GenericOnly) { 'patrones genericos' } else { 'patrones genericos + valores locales' }
-    Write-Host "privacy-check: OK ($($commits.Count) commits y $blobCount blobs en $whole, $scope)"
+    $scope = if ($GenericOnly) { 'generic patterns' } else { 'generic patterns + local values' }
+    Write-Host "privacy-check: OK ($($commits.Count) commits and $blobCount blobs in $whole, $scope)"
     exit 0
 }
 
@@ -726,13 +728,13 @@ foreach ($name in $names) {
 }
 
 if ($problems.Count -gt 0) {
-    Write-Host "privacy-check: FALLO ($($problems.Count) coincidencias). Quita esos datos antes de commitear:" -ForegroundColor Red
+    Write-Host "privacy-check: FAILED ($($problems.Count) matches). Remove this data before committing:" -ForegroundColor Red
     $problems | Select-Object -First 50 | ForEach-Object { Write-Host "  $_" }
-    if ($problems.Count -gt 50) { Write-Host "  ... y $($problems.Count - 50) mas" }
+    if ($problems.Count -gt 50) { Write-Host "  ... and $($problems.Count - 50) more" }
     exit 1
 }
 
-$mode = if ($All) { 'todo el arbol' } else { 'staging' }
-$scope = if ($GenericOnly) { 'patrones genericos' } else { 'patrones genericos + valores locales' }
-Write-Host "privacy-check: OK ($($names.Count) archivos, $mode, $scope)"
+$mode = if ($All) { 'entire tree' } else { 'staged files' }
+$scope = if ($GenericOnly) { 'generic patterns' } else { 'generic patterns + local values' }
+Write-Host "privacy-check: OK ($($names.Count) files, $mode, $scope)"
 exit 0

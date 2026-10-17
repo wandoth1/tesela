@@ -87,7 +87,7 @@ what follows, which belongs to the repository, not to the code, and **must be co
 5. Immutable releases (a published release cannot be modified or replaced).
 6. MFA on all accounts with access (above).
 
-The same list appears in `installer/README.md`, section "Antes de la primera release" (before the first release).
+The same list appears in `installer/README.md`, section "Before the first release".
 
 ## Privacy policy
 

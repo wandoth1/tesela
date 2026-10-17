@@ -163,7 +163,7 @@ function Expect([string]$Case, [bool]$ShouldFail, [string[]]$CheckArgs = @()) {
     $r = Run-Check $CheckArgs
     $failed = ($r.Code -ne 0)
     if ($failed -ne $ShouldFail) {
-        $want = if ($ShouldFail) { 'FALLO' } else { 'OK' }
+        $want = if ($ShouldFail) { 'FAILED' } else { 'OK' }
         $script:failures.Add("$Case (esperado: $want, codigo $($r.Code)) $($r.Out)")
     }
 }
@@ -477,10 +477,13 @@ try {
         Stage-All
         Expect "spike/: $k falla" $true
     }
-    Reset-Repo
-    Put 'spike/notas.txt' ("ruta C:\Users\<usuario>\x y C:\Windows\Temp y %USERPROFILE%\x y https://ejemplo.invalid/x`n")
-    Stage-All
-    Expect 'spike/: el marcador <usuario> y las rutas de sistema pasan' $false
+    foreach ($placeholder in '<user>', '<usuario>') {
+        Reset-Repo
+        $unixPath = '/mnt/c/' + 'Users/' + $placeholder + '/x'
+        Put 'spike/notas.txt' ("paths C:\Users\$placeholder\x and $unixPath; system paths C:\Windows\Temp and %USERPROFILE%\x; https://example.invalid/x`n")
+        Stage-All
+        Expect "spike/: placeholder $placeholder and system paths pass" $false
+    }
     # Lista CERRADA de dos archivos de la fase 0 con rutas sinteticas: pasan SOLO con el contenido exacto revisado.
     foreach ($rel in 'spike/scripts/redact.py', 'spike/trash-bench/src/main.rs') {
         $real = Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) $rel
