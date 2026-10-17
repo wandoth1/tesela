@@ -83,6 +83,13 @@ mod tests {
     /// copia de una DLL legítima del sistema con otro nombre (no ejecuta nada propio); la carpeta se borra al acabar.
     #[test]
     fn la_busqueda_de_dll_se_limita_a_system32() {
+        // Lanza un proceso hijo (copia del ejecutable de pruebas): solo con TESELA_PROCESS_TESTS=1 (el CI la define).
+        if !std::env::var("TESELA_PROCESS_TESTS").is_ok_and(|v| v == "1") {
+            eprintln!(
+                "pruebas con procesos hijo desactivadas: defina TESELA_PROCESS_TESTS=1 para ejecutar esta prueba"
+            );
+            return;
+        }
         let sys = std::env::var_os("SystemRoot").map(std::path::PathBuf::from);
         let src = sys.map(|s| s.join("System32").join("msimg32.dll"));
         let Some(src) = src.filter(|p| p.exists()) else {

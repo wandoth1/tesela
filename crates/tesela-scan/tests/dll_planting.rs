@@ -5,6 +5,8 @@
 //! predeterminado, que mira la carpeta del `.exe` ANTES que `System32`: un `dxgi.dll` vacío al lado hace que el proceso ni
 //! arranque (código de salida distinto de 0 antes de llegar a `main`). Con la bandera arranca y sale con 0.
 
+mod common;
+
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -33,6 +35,9 @@ impl Drop for Tmp {
 
 #[test]
 fn archivos_con_nombre_de_dll_junto_al_exe_no_impiden_arrancar() {
+    if !common::process_tests_enabled() {
+        return;
+    }
     let dir = std::env::temp_dir().join(format!("tesela-test-{}", uuid::Uuid::new_v4()));
     std::fs::create_dir(&dir).unwrap();
     let tmp = Tmp(dir);

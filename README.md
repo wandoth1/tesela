@@ -154,13 +154,13 @@ Estado del MVP v0.1: hechos el modelo (`tesela-model`), el escáner de solo lect
 `tesela-scan`, el layout del treemap (`tesela-layout`), la limpieza (`tesela-cleaner`: reglas, protecciones, borrado por
 handle y Papelera), la interfaz (`tesela-ui`) y el ejecutable (`tesela-app`, binario `tesela`).
 
-Requisitos: Rust (el toolchain de `rust-toolchain.toml`, MSVC), el **Windows SDK** (`rc.exe`: `winresource` incrusta el icono y los datos de versión en los `.exe`), Python 3 (`build-release.ps1` lo usa para leer los imports PE), **PowerShell 7** (`pwsh`) y, para el instalador, **WiX 5.0.2** como `dotnet tool` (`pwsh -File scripts/install-wix.ps1 -Version 5.0.2`; ver [installer/README.md](installer/README.md)). Para la suite de pruebas **completa**, define `TESELA_REAL_RECYCLE_TESTS=1` (pruebas con la Papelera real, abajo).
+Requisitos: Rust (el toolchain de `rust-toolchain.toml`, MSVC), el **Windows SDK** (`rc.exe`: `winresource` incrusta el icono y los datos de versión en los `.exe`), Python 3 (`build-release.ps1` lo usa para leer los imports PE), **PowerShell 7** (`pwsh`) y, para el instalador, **WiX 5.0.2** como `dotnet tool` (`pwsh -File scripts/install-wix.ps1 -Version 5.0.2`; ver [installer/README.md](installer/README.md)). Para la suite de pruebas **completa**, define `TESELA_REAL_RECYCLE_TESTS=1` (pruebas con la Papelera real) y `TESELA_PROCESS_TESTS=1` (pruebas que lanzan procesos hijo); ver abajo.
 
 ```powershell
 cargo fmt --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace            # los tests solo tocan carpetas de prueba en %TEMP%\tesela-test-<uuid> (y, para la Papelera, solo elementos propios)
-$env:TESELA_REAL_RECYCLE_TESTS = '1'; cargo test --workspace   # la suite COMPLETA: añade las pruebas con la Papelera REAL (ver abajo)
+$env:TESELA_REAL_RECYCLE_TESTS = '1'; $env:TESELA_PROCESS_TESTS = '1'; cargo test --workspace   # la suite COMPLETA: añade las pruebas con la Papelera REAL y con procesos hijo (ver abajo)
 cargo deny check
 cargo run --release -p tesela-scan -- <ruta> --top 20   # solo lectura; opciones en la cabecera de crates/tesela-scan/src/main.rs
 cargo run -p tesela-app -- --demo                        # la interfaz con datos sintéticos
@@ -180,6 +180,13 @@ Windows los entrega con su identidad) solo corren con `TESELA_REAL_RECYCLE_TESTS
 GitHub (un Windows Server sin sesión interactiva) no tiene una Papelera de usuario fiable y fallaban allí por el entorno, no por
 el código. Lanza la suite completa con la variable en tu equipo antes de tocar `crates/cleaner`. Solo usan elementos propios
 (filtrados por el uuid de la prueba) y no vacían la Papelera.
+
+**Pruebas con procesos hijo.** Las pruebas que lanzan copias de `tesela.exe` / `tesela-scan.exe` (con archivos vacíos con nombre
+de DLL al lado, para comprobar que no se cargan), abren y cierran la ventana de `--demo` o ejecutan la CLI `tesela-scan` solo
+corren con `TESELA_PROCESS_TESTS=1`; sin ella se saltan con un mensaje (las aserciones no se han debilitado). Un antivirus de
+escritorio puede bloquear ese patrón (ejecutables copiados junto a DLL falsas, ventanas que se abren y se cierran); por eso en local no se activan por defecto. El CI las define siempre
+(`.github/workflows/ci.yml`, job `build`), así que ahí corren en cada push a `main` y en cada pull request. Las pruebas
+unitarias de `dll_hardening` que no lanzan procesos y la lectura del PE (`DependentLoadFlags`, manifiesto) no dependen de la variable.
 
 El release enlaza el runtime de C de forma estática (`.cargo/config.toml`, repetido en `build-release.ps1` porque
 `CARGO_ENCODED_RUSTFLAGS` tiene prioridad sobre el config): el `.exe` no importa `VCRUNTIME*.dll`, `MSVCP*.dll` ni
