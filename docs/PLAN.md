@@ -387,131 +387,131 @@ With **v0.1.4** published (fourth round of fixes and change monitoring in the Re
 ## 8. Out of scope (explicit)
 Registry cleaner, "optimize" or defragment, uninstalling programs, network or cloud analysis in v1, accounts, telemetry or ads, sunburst or 3D, shredding or recovery, a full file editor or manager, automatic rules without user intervention.
 
-## 9. Registro de revisión del diseño
-**Ronda 1** (revisión del plan unificado; 19 puntos más 14 que añadieron los agentes):
+## 9. Design review log
+**Round 1** (review of the unified plan; 19 points plus 14 added by the agents):
 
-| Problema | Resolución |
+| Problem | Resolution |
 |---|---|
-| "Siempre a la Papelera" contradecía "liberar espacio" | Riesgo y destino pasan a ser ejes separados; definitivo solo para lo regenerable por regla |
-| CSR "ordenado sin ordenar después" era imposible | Se ordena una vez en el TreeBuilder y luego se asignan los ids |
-| Escritura concurrente en el arena | Batches por directorio + `fetch_add` de `base_id` + colector |
-| MFT y walker construían el modelo por caminos distintos | Registros planos → un único TreeBuilder |
-| Hard links sobrecontados en el walker (WinSxS) | Dedup por FileId en el builder |
-| La suma escaneada ≠ el espacio usado | Bloque "Windows y otros datos del sistema" |
-| Árbol inmutable frente a limpieza | Overlay con bitset + deltas |
-| Veredicto en 5 s frente a escaneo de 30 s | Cola prioritaria + "al menos X GB" |
-| Fuentes e iconos de Microsoft no redistribuibles / solo Win11 | Fuentes del sistema en tiempo de ejecución + Fluent UI System Icons |
-| Faltaba proteger dentro del propio perfil | Intocables como destino + "Contenido de …" |
-| Color de las carpetas por tipo y antigüedad sin definir | Histogramas de 12 B por directorio, con umbrales del 50 % y el 80 % |
-| Alcance incoherente (Excluir, Deshacer, historial) | Reordenado por versión (§4) |
-| Navegador abierto | Cifras honestas y "Volver a comprobar" |
-| Selecciones solapadas en la cesta | Normalización por ancestros |
-| `glow` en RDP | `wgpu` por defecto (hipótesis) |
-| Slint en el spike | Eliminado |
-| `activeCodePage UTF-8` | Eliminado |
-| Principio 6 frente a las categorías "Revisar" | "No se preselecciona" |
-| OneDrive sincronizado | Aviso + no seleccionable si solo está en la nube |
+| "Always to the Recycle Bin" contradicted "free up space" | Risk and destination become separate axes; permanent only for what is regenerable by rule |
+| CSR "sorted without sorting afterwards" was impossible | It is sorted once in the TreeBuilder and then the ids are assigned |
+| Concurrent writes into the arena | Batches per directory + `fetch_add` of `base_id` + collector |
+| MFT and walker built the model through different paths | Flat records → a single TreeBuilder |
+| Hard links over-counted in the walker (WinSxS) | Dedup by FileId in the builder |
+| The scanned sum ≠ the used space | "Windows and other system data" block |
+| Immutable tree versus cleaning | Overlay with bitset + deltas |
+| Verdict in 5 s versus a 30 s scan | Priority queue + "at least X GB" |
+| Microsoft fonts and icons not redistributable / Win11 only | System fonts at runtime + Fluent UI System Icons |
+| Protection was missing inside the profile itself | Untouchable as a target + "Contents of …" |
+| Folder color by type and age undefined | 12 B histograms per directory, with 50 % and 80 % thresholds |
+| Incoherent scope (Exclude, Undo, history) | Reordered by version (§4) |
+| Browser open | Honest figures and "Check again" |
+| Overlapping selections in the basket | Normalization by ancestors |
+| `glow` on RDP | `wgpu` by default (hypothesis) |
+| Slint in the spike | Removed |
+| `activeCodePage UTF-8` | Removed |
+| Principle 6 versus the "Review" categories | "Not preselected" |
+| Synced OneDrive | Warning + not selectable if it is only in the cloud |
 
-**Ronda 3** (validación del asesor, Fable) — diseño validado con estas correcciones aplicadas:
-1. Caché de un navegador abierto: no se preselecciona y se pide "Cierra Chrome para liberar hasta X GB". El borrado POSIX con `FILE_SHARE_DELETE` daba falsos "liberados" y corrompía el índice de la caché.
-2. `%TEMP%` solo borra lo de más de 7 días (`min_age`).
-3. "Vaciar Papelera" se ejecuta antes de mover elementos a la Papelera.
-4. Hard links: el que conserva el tamaño es el de ruta menor en orden lexicográfico (determinista), no el de id menor.
-5. Menores:
-   - Histogramas para todos los nodos (12 B).
-   - Cadena de ancestros `INCOMPLETE` en la cola prioritaria y adopción por `FileId`.
-   - `$Recycle.Bin`, `Default` y `Public` denegadas.
-   - El titular suma solo lo Seguro.
-   - El MVP borra con `remove_file` y deja POSIX para la v0.2.
+**Round 3** (validation by the advisor, Fable) — design validated with these corrections applied:
+1. Cache of an open browser: it is not preselected and "Close Chrome to free up to X GB" is requested. POSIX deletion with `FILE_SHARE_DELETE` gave false "freed" figures and corrupted the cache index.
+2. `%TEMP%` only deletes what is more than 7 days old (`min_age`).
+3. "Empty the Recycle Bin" runs before moving items to the Recycle Bin.
+4. Hard links: the one that keeps the size is the one with the smallest path in lexicographic order (deterministic), not the one with the smallest id.
+5. Minor:
+   - Histograms for all nodes (12 B).
+   - `INCOMPLETE` ancestor chain in the priority queue and adoption by `FileId`.
+   - `$Recycle.Bin`, `Default` and `Public` denied.
+   - The headline adds up only what is Safe.
+   - The MVP deletes with `remove_file` and leaves POSIX for v0.2.
 
-**Ronda 13** (auditorías externas de Astra y Gemini sobre `v0.1.3`, verificadas por el coordinador; dos construcciones Sonnet en paralelo con alcances disjuntos —limpieza y resto—, auditorías Sonnet independientes con corrección de sus hallazgos, revisión con el asesor). Correcciones de la v0.1.4:
-- **Envío a la Papelera (cuarta ronda de la misma familia de concurrencia):** vigilancia de cambios desde antes del recorrido hasta `PreDeleteItem`, huella idéntica (también encoger vuelve a la confirmación), ocupación leída dos veces y cargo con los reparse points de dentro (§3.7.4). Se corrige la afirmación de que el margen del 90 % absorbía los cambios de ocupación.
-- **Aprobación:** un ancestro enlazado se rechaza (`ReparseAncestor`, también bajo un volumen montado en una carpeta); OneDrive se tolera como ancestro (la primera versión lo rechazaba y la auditoría lo detectó). Hijos abiertos relativos al directorio listado. `C:` sin barra deja de ser raíz de unidad (clave inválida, denegada).
-- **Vaciar la Papelera:** un `$R` con enlaces dentro, o que no se pudo comprobar entero, se excluye antes de entregarlo ("no purgado", registro `linked`) sin cortar el lote; el veto del receptor queda como última defensa. Un `$I` ilegible se salta, consta (`bin-unlisted`) y no entra en lo prometido. Eventos y vetos se casan por nombre exacto antes que por `PathKey` (directorios sensibles a mayúsculas). Volúmenes montados en carpetas reconocidos en la protección, la Papelera y el tipo de unidad.
-- **Escáner:** la cola prioritaria valida cada candidata componente a componente desde la raíz (sin seguir enlaces, solo `DirAction::Walk`, nombres 8.3 expandidos, `..` descartado); raíz `\\?\Volume{GUID}\` sin letra como volumen completo; `reparse_tag` solo con `REPARSE_POINT`; sin lote con los ids agotados; cachés de navegador verificadas para el escáner y candidatas para el `cleaner`. Efecto aceptado: una carpeta conocida bajo una carpeta de nube poblada deja de ser prioritaria.
-- **Modelo y UI:** `Overlay::add_up` resta a los ancestros lo realmente restado; sumas saturadas; WTF-8 rechaza los 3 bytes sobrelargos; medidas obsoletas descartadas tras limpiar durante el escaneo. Sesión aislada (`--idle-memory`, `--bench-hover`, con o sin `--demo`) sin historial ni raíces de limpieza reales, y siempre simulación si no es la demo (M4 solo se cubre con pruebas unitarias: `SHGetKnownFolderPath` ignora las variables de entorno).
-- **Pedido en las pruebas del usuario:** las unidades de la barra lateral se ven pulsables (fondo, cursor, tooltip; la actual no se anuncia como botón) y hay botón **Inicio** con `Alt+Inicio` en la barra superior, deshabilitado durante una limpieza. "Analizar una carpeta…" en la barra lateral se descartó: rompía la leyenda a 1280×800; se llega por Inicio.
-- **Herramientas e instalador:** `privacy-check` (límite de tamaño primero, BOM acumulados, UTF-8 sin NUL, cadenas de 2+, autor y committer con su etiqueta; al regenerar una captura, el hash de la anterior va a `$legacyDemoImages`); `check-pe.py` exige `DependentLoadFlags` 0x800 y REPRO; GUID fijo del acceso directo; validaciones nuevas del MSI. `INSTALLFOLDER` **no** es propiedad segura: el MSI no tiene interfaz y es por usuario; marcarla segura solo valdría en una instalación elevada, donde dejaría al usuario dirigir dónde escribe el servidor. CODEOWNERS ampliado y `cargo deny --locked` con `all-features`. Para quien active SignPath: firmar los `.exe` **antes** de empaquetar el MSI y el zip.
-- **Incidente y regla:** el antivirus del equipo volvió a retirar `cargo.exe` mientras otro auditor ejecutaba las pruebas que lanzan copias del programa con archivos con nombre de DLL al lado. Esas pruebas solo corren con `TESELA_PROCESS_TESTS=1`, que define el CI; en CI faltar la variable es un fallo, no un salto. En local se trabaja con la toolchain anterior hasta que el usuario restaure la actual; el CI confirma con la fijada.
-- **Pendiente:** repetir `medicion_a_m3_*` (las cifras del registro son de la v0.1.3, antes de que `over_cap` tomase el cerrojo del escritor); spike de `FOF_WANTNUKEWARNING` con ventana propietaria (v0.2).
-- **Pasada real única** (Papelera real, solo elementos propios, una vez y en serie, en el árbol fusionado): las 279 pruebas del `cleaner` en verde, incluidas las tres nuevas con la shell real (una carpeta de tres niveles queda `Recycled`, lo que confirma que la shell no toca el árbol antes de `PreDeleteItem`; un cambio justo antes de `PreDeleteItem` se veta; un `$R` propio con un junction dentro se excluye y el resto se purga). Papelera del usuario intacta.
+**Round 13** (external audits by Astra and Gemini on `v0.1.3`, verified by the coordinator; two Sonnet builds in parallel with disjoint scopes —cleaning and the rest—, independent Sonnet audits with correction of their findings, review with the advisor). Fixes in v0.1.4:
+- **Sending to the Recycle Bin (fourth round of the same concurrency family):** change monitoring from before the walk until `PreDeleteItem`, identical fingerprint (shrinking also goes back to confirmation), occupancy read twice and charge including the reparse points inside (§3.7.4). The claim that the 90 % margin absorbed occupancy changes is corrected.
+- **Approval:** a linked ancestor is rejected (`ReparseAncestor`, also under a volume mounted on a folder); OneDrive is tolerated as an ancestor (the first version rejected it and the audit caught it). Children opened relative to the listed directory. `C:` without a slash stops being a drive root (invalid key, denied).
+- **Emptying the Recycle Bin:** a `$R` with links inside, or one that could not be fully checked, is excluded before being handed over ("not purged", `linked` log entry) without cutting the batch; the sink's veto remains as the last defense. An unreadable `$I` is skipped, recorded (`bin-unlisted`) and not included in what was promised. Events and vetoes are matched by exact name before `PathKey` (case-sensitive directories). Volumes mounted on folders are recognized in protection, the Recycle Bin and the drive type.
+- **Scanner:** the priority queue validates each candidate component by component from the root (without following links, only `DirAction::Walk`, 8.3 names expanded, `..` discarded); a `\\?\Volume{GUID}\` root without a letter as a whole volume; `reparse_tag` only with `REPARSE_POINT`; no batch once the ids are exhausted; browser caches verified for the scanner and candidates for the `cleaner`. Accepted effect: a known folder under a populated cloud folder stops being a priority.
+- **Model and UI:** `Overlay::add_up` subtracts from the ancestors what was really subtracted; saturating sums; WTF-8 rejects the 3-byte overlong encodings; stale measurements discarded after cleaning during a scan. Isolated session (`--idle-memory`, `--bench-hover`, with or without `--demo`) with no history and no real cleanup roots, and always a simulation if it is not the demo (M4 is only covered with unit tests: `SHGetKnownFolderPath` ignores environment variables).
+- **Requested in the user's tests:** the sidebar drives look clickable (background, cursor, tooltip; the current one is not announced as a button) and there is a **Home** button with `Alt+Home` in the top bar, disabled during a cleanup. "Analyze a folder…" in the sidebar was dropped: it broke the legend at 1280×800; it is reached through Home.
+- **Tools and installer:** `privacy-check` (size limit first, accumulated BOMs, UTF-8 without NUL, strings of 2+, author and committer with their label; when regenerating a screenshot, the previous one's hash goes into `$legacyDemoImages`); `check-pe.py` requires `DependentLoadFlags` 0x800 and REPRO; fixed shortcut GUID; new MSI validations. `INSTALLFOLDER` is **not** a secure property: the MSI has no interface and is per-user; marking it secure would only matter in an elevated installation, where it would let the user steer where the server writes. CODEOWNERS extended and `cargo deny --locked` with `all-features`. For whoever enables SignPath: sign the `.exe` files **before** packaging the MSI and the zip.
+- **Incident and rule:** the machine's antivirus removed `cargo.exe` again while another auditor ran the tests that launch copies of the program with files named like DLLs next to them. Those tests only run with `TESELA_PROCESS_TESTS=1`, which CI defines; in CI a missing variable is a failure, not a skip. Locally, work continues with the previous toolchain until the user restores the current one; CI confirms with the pinned one.
+- **Pending:** repeat `medicion_a_m3_*` (the log's figures are from v0.1.3, before `over_cap` took the writer's lock); `FOF_WANTNUKEWARNING` spike with an owner window (v0.2).
+- **Single real pass** (real Recycle Bin, own items only, once and in series, on the merged tree): all 279 `cleaner` tests green, including the three new ones with the real shell (a three-level folder ends up `Recycled`, which confirms that the shell does not touch the tree before `PreDeleteItem`; a change right before `PreDeleteItem` is vetoed; an own `$R` with a junction inside is excluded and the rest is purged). The user's Recycle Bin intact.
 
-**Ronda 12** (tercera auditoría externa de Astra sobre `v0.1.2`, verificada por el coordinador; construcción Sonnet, auditoría Sonnet con re-verificación, revisión con el asesor). Correcciones de la v0.1.3:
-- **A2-B1:** dentro de una misma operación el presupuesto podía quedar obsoleto (una carpeta ya medida crecía mientras se medía otra). Ahora un directorio va siempre solo y los archivos del lote se vuelven a medir por su guarda en `PreDeleteItem` (§3.7.4).
-- **A2-M1:** un fallo de la shell tras una pérdida parcial dejaba seguir el resto del lote; ahora un resultado de fallo corta el lote.
-- **A2-M2:** la poda de un escritor podía borrar el registro abierto de otro; ahora el registro abierto no admite borrado compartido (§3.7.13).
-- **A2-m1:** una comprobación imposible se presentaba como pérdida; ahora hay tres estados (intacto, cambiado, desconocido).
-- La auditoría interna añadió pruebas negativas para el presupuesto de un directorio al entregarlo y para la comprobación de tamaño sin tolerancia, y textos que afirman la diferencia y no un borrado seguro.
-- **Incidente:** una campaña de mutantes del auditor ejecutó el binario de pruebas del borrado en bucle y el antivirus del equipo lo marcó como malware (bloqueó 19 aplicaciones, retiró `cargo.exe` y reinició el equipo). Regla nueva: en la máquina del desarrollador no se ejecutan mutantes en bucle ni pruebas con la Papelera real repetidas; eso va al CI o a una VM desechable. Riesgo de producto asociado: un antivirus podría desconfiar de `tesela.exe` al limpiar (ROADMAP).
+**Round 12** (third external audit by Astra on `v0.1.2`, verified by the coordinator; Sonnet build, Sonnet audit with re-verification, review with the advisor). Fixes in v0.1.3:
+- **A2-B1:** within a single operation the budget could become stale (an already measured folder grew while another was being measured). Now a directory always goes alone and the files of the batch are measured again through their guard in `PreDeleteItem` (§3.7.4).
+- **A2-M1:** a shell failure after a partial loss let the rest of the batch continue; now a failure result cuts the batch.
+- **A2-M2:** one writer's pruning could delete another's open log; now the open log does not allow shared deletion (§3.7.13).
+- **A2-m1:** an impossible check was presented as a loss; now there are three states (intact, changed, unknown).
+- The internal audit added negative tests for a directory's budget at handover and for the size check without tolerance, and texts that state the difference and not a certain deletion.
+- **Incident:** a mutant campaign by the auditor ran the deletion test binary in a loop and the machine's antivirus flagged it as malware (it blocked 19 applications, removed `cargo.exe` and restarted the machine). New rule: on the developer's machine no mutants are run in a loop and no repeated tests with the real Recycle Bin; that goes to CI or a disposable VM. Associated product risk: an antivirus could distrust `tesela.exe` when cleaning (ROADMAP).
 
-**Ronda 11** (auditorías externas de Astra —borrado— y Grok —resto— sobre `v0.1.1`, verificadas por el coordinador; dos construcciones Sonnet en paralelo con alcances disjuntos, auditorías Sonnet con re-auditoría de cada corrección, revisión con el asesor). Correcciones de la v0.1.2:
-- **Borrado (Astra):** A-B1 los archivos se vuelven a medir por su guarda justo antes de cada operación y se recomprueba el presupuesto; A-B2 una medida de directorio solo vale si es completa; A-M1 los fallos de la shell y "sin aviso" se juzgan como un posible borrado, con huella del contenido; A-M4 vaciar la Papelera lleva guardas por `$R` y un receptor que veta sustitutos; A-M2 la retención no puede borrar el registro recién abierto; A-M3 cada resultado se vuelca y comprueba; A-m1 los callbacks COM se prueban directamente. Además: no se limpia elevado (E1), textos que no prometen cifras ni ausencia de riesgo (T1), temporales a 7 días (E2), nota de `hiberfil` honesta (E3), las funciones que borran son `pub(crate)` y la red de seguridad de las pruebas reales solo toca elementos con forma `tesela-test-<uuid>`.
-- **Resto (Grok):** G-m1 la raíz y las rutas prioritarias del escáner no siguen un reparse point (raíz-enlace → `ScanError::RootIsLink`); G-m2 `privacy-check` detecta rutas UNC con `/`; G-m3 las reglas de ruta rigen en `spike/` (dos archivos históricos con rutas sintéticas permitidos por SHA-256 exacto); G-S1 valores partidos por NUL; G-S2 `install-wix.ps1` comprueba el SHA-512 **antes** de instalar; G-S3 documentado (no hay forma robusta de limitar `INSTALLFOLDER` sin acción personalizada).
-- **Endurecimiento de DLL** (hallado al investigar G-S3): `dxcompiler.dll` se sondeaba por nombre y varias importaciones estáticas se buscaban primero en la carpeta del exe (§3.9).
-- Incidente de proceso: un auditor creó junctions a la raíz de una unidad y lanzó `rm -rf` sobre su carpeta (no borró nada; comprobado). Regla nueva para todos los agentes: nunca borrado recursivo sobre carpetas con enlaces, quitar los enlaces como enlaces y no crear enlaces a raíces de unidad.
-- Producto: estudio de diferenciación y dos revisiones externas → [ROADMAP.md](ROADMAP.md).
+**Round 11** (external audits by Astra —deletion— and Grok —the rest— on `v0.1.1`, verified by the coordinator; two Sonnet builds in parallel with disjoint scopes, Sonnet audits with re-audit of each fix, review with the advisor). Fixes in v0.1.2:
+- **Deletion (Astra):** A-B1 files are measured again through their guard right before each operation and the budget is rechecked; A-B2 a directory measurement is only valid if it is complete; A-M1 shell failures and "no notice" are judged as a possible deletion, with a content fingerprint; A-M4 emptying the Recycle Bin carries guards per `$R` and a sink that vetoes substitutes; A-M2 retention cannot delete the log just opened; A-M3 each result is flushed and checked; A-m1 the COM callbacks are tested directly. Also: no cleaning while elevated (E1), texts that promise neither figures nor absence of risk (T1), temporary files at 7 days (E2), honest `hiberfil` note (E3), the functions that delete are `pub(crate)` and the safety net of the real tests only touches items of the form `tesela-test-<uuid>`.
+- **The rest (Grok):** G-m1 the scanner's root and priority paths do not follow a reparse point (link root → `ScanError::RootIsLink`); G-m2 `privacy-check` detects UNC paths with `/`; G-m3 the path rules apply in `spike/` (two historical files with synthetic paths allowed by exact SHA-256); G-S1 values split by NUL; G-S2 `install-wix.ps1` checks the SHA-512 **before** installing; G-S3 documented (there is no robust way to limit `INSTALLFOLDER` without a custom action).
+- **DLL hardening** (found while investigating G-S3): `dxcompiler.dll` was probed by name and several static imports were searched first in the exe's folder (§3.9).
+- Process incident: an auditor created junctions to a drive root and ran `rm -rf` on their folder (it deleted nothing; checked). New rule for all agents: never recursive deletion on folders with links, remove the links as links and do not create links to drive roots.
+- Product: differentiation study and two external reviews → [ROADMAP.md](ROADMAP.md).
 
-**Ronda 10** (auditoría externa de Astra sobre `v0.1.0`, verificada por el coordinador; construcción Sonnet, auditorías Sonnet independientes con re-auditoría de cada corrección, revisión con el asesor). Correcciones de la v0.1.1:
-- **B1:** un reparse point por encima de una raíz de categoría (`User Data`, `%TEMP%`) volvía borrable contenido protegido, porque la raíz canónica se convertía en exención y levantaba cualquier denegación por encima. Ahora la cadena se recorre por componentes sin reparse points, la aprobación exige la misma identidad que vio la cadena y cada exención levanta solo su zona declarada (§3.7.3, §3.7.12). Una categoría descartada se muestra como "no disponible" con su motivo.
-- **B2:** el reparto de la Papelera falla cerrado (sin capacidad u ocupación, `NoRoom`); se elimina el 5 % asumido; los directorios se miden justo antes de su operación.
-- **M1, M2, S1:** `PreDeleteItem` veta sustitutos; `PostDeleteItem` corta el lote en el primer borrado definitivo o sin ruta; `FOF_NO_CONNECTED_ELEMENTS`. Se corrige la afirmación de que la guarda impedía renombrar el propio elemento.
-- **M3:** vaciar la Papelera comprueba la identidad de `$R` y `$I`; el `$I` huérfano solo se borra con pruebas completas.
-- **M4, m2:** sin registro no hay limpieza; intención antes de cada operación; la simulación no poda registros reales.
-- **m1:** `NumberOfLinks` exacto. **m3:** `leak-scan` y `privacy-check` detectan valores locales no ASCII (UTF-8, Latin-1, UTF-16 sin BOM) sin perder la detección UTF-16. **S2:** `msi-validate` fija el árbol de carpetas, las filas de Upgrade, el orden `FindRelatedProducts` < `LaunchConditions` y compara distinguiendo mayúsculas.
-- Las auditorías internas añadieron: la aprobación de una raíz compara la identidad con la de la cadena; el juicio de "eliminado" pasa a ser por objeto y por contenido (una primera versión por nombre ocultaba borrados reales con la guarda abierta, reproducido con la shell real); pruebas sin COM del receptor; retención de registros por clase; nombres con `:` rechazados.
-- **M5** (protecciones del repositorio: rulesets, protección de `main`, environment de release, releases inmutables) es configuración del mantenedor y queda en su lista.
-- Comportamiento visible nuevo: en un volumen sin tamaño máximo de Papelera configurado, lo que iría a la Papelera pide borrado definitivo expreso.
+**Round 10** (external audit by Astra on `v0.1.0`, verified by the coordinator; Sonnet build, independent Sonnet audits with re-audit of each fix, review with the advisor). Fixes in v0.1.1:
+- **B1:** a reparse point above a category root (`User Data`, `%TEMP%`) made protected content deletable, because the canonical root became an exemption and lifted any denial above it. Now the chain is walked by components without reparse points, the approval requires the same identity the chain saw and each exemption lifts only its declared zone (§3.7.3, §3.7.12). A discarded category is shown as "not available" with its reason.
+- **B2:** the Recycle Bin split fails closed (without capacity or occupancy, `NoRoom`); the assumed 5 % is removed; directories are measured right before their operation.
+- **M1, M2, S1:** `PreDeleteItem` vetoes substitutes; `PostDeleteItem` cuts the batch at the first permanent deletion or one without a path; `FOF_NO_CONNECTED_ELEMENTS`. The claim that the guard prevented renaming the item itself is corrected.
+- **M3:** emptying the Recycle Bin checks the identity of `$R` and `$I`; the orphaned `$I` is only deleted with complete evidence.
+- **M4, m2:** without a log there is no cleanup; intent before each operation; the simulation does not prune real logs.
+- **m1:** exact `NumberOfLinks`. **m3:** `leak-scan` and `privacy-check` detect non-ASCII local values (UTF-8, Latin-1, UTF-16 without BOM) without losing UTF-16 detection. **S2:** `msi-validate` pins the folder tree, the Upgrade rows, the `FindRelatedProducts` < `LaunchConditions` order and compares case-sensitively.
+- The internal audits added: the approval of a root compares the identity with the chain's; the judgment of "deleted" becomes by object and by content (a first version by name hid real deletions with the guard open, reproduced with the real shell); sink tests without COM; log retention by class; names with `:` rejected.
+- **M5** (repository protections: rulesets, `main` protection, release environment, immutable releases) is maintainer configuration and stays on their list.
+- New visible behavior: on a volume with no configured maximum Recycle Bin size, what would go to the Recycle Bin asks for explicit permanent deletion.
 
-**Ronda 9** (incremento 4, instalador y release: construcción Sonnet, 2 auditorías Sonnet, revisión con el asesor):
-- WiX 5.0.2 (no 6/7, para no aceptar el acuerdo OSMF en nombre del usuario), por usuario, sin acciones personalizadas; `INSTALLFOLDER` persistido en HKCU para que actualizar y desinstalar respeten una carpeta personalizada.
-- Icono dibujado por `build.rs` (el repo no versiona imágenes fuera de `docs/img/`) e incrustado con `winresource`, con VERSIONINFO.
-- Cadena de suministro: acciones por SHA, permisos mínimos por job, attestation en un job aislado, verificación antes del borrador, `--locked`, WiX con `nuget.config` limpio y SHA-512 comprobado, binarios reproducibles.
-- Los tests con la Papelera real van detrás de `TESELA_REAL_RECYCLE_TESTS=1` (los runners de GitHub no tienen Papelera de escritorio); en local se lanzan con la variable.
-- La seguridad real de la publicación hoy es el borrador que verifica una persona: la configuración del repo (rulesets, protección de `main`, environment) queda para el mantenedor.
+**Round 9** (increment 4, installer and release: Sonnet build, 2 Sonnet audits, review with the advisor):
+- WiX 5.0.2 (not 6/7, so as not to accept the OSMF agreement on the user's behalf), per-user, no custom actions; `INSTALLFOLDER` persisted in HKCU so that updating and uninstalling respect a custom folder.
+- Icon drawn by `build.rs` (the repo does not version images outside `docs/img/`) and embedded with `winresource`, with VERSIONINFO.
+- Supply chain: actions by SHA, minimum permissions per job, attestation in an isolated job, verification before the draft, `--locked`, WiX with a clean `nuget.config` and checked SHA-512, reproducible binaries.
+- Tests with the real Recycle Bin sit behind `TESELA_REAL_RECYCLE_TESTS=1` (GitHub runners have no desktop Recycle Bin); locally they are launched with the variable.
+- The real security of publishing today is the draft that a person verifies: the repo configuration (rulesets, `main` protection, environment) is left to the maintainer.
 
-**Ronda 8** (incremento 3, el borrado: construcción Sonnet, 3 auditorías Sonnet con sondas de ataque, revisión con el asesor):
-- El diseño "verificar y actuar sobre el mismo handle" resistió todas las carreras probadas (sustitución ×300, junctions en hijo/ancestro/raíz, hard links, renombrados, cancelación, matar el proceso).
-- Bloqueantes corregidos: verificación de la Papelera por identidad (no por nombre; fallaba con `.lnk`/`.url` y con extensiones ocultas), solo unidades locales (el recurso administrativo UNC de la propia máquina esquivaba la protección), `TEMP` y exenciones (podían borrar datos protegidos).
-- Cambio de diseño: se retira la lápida (§3.7.4); Papelera por ruta original con sink de eventos y handle de guarda; reparto por operaciones con presupuesto y corte de seguridad (una operación con un elemento que no cabía eliminaba definitivamente todo el lote).
-- Pendiente de prueba manual antes/después de la v0.1: `HideFileExt=1` (por construcción no afecta), volumen sin `MaxCapacity`, directiva `NoRecycleFiles`, symlinks de directorio, unidades de red mapeadas. Diferido a la v0.2: coste cuadrático con árboles de miles de niveles y protección de carpetas de sistema en otras unidades.
+**Round 8** (increment 3, deletion: Sonnet build, 3 Sonnet audits with attack probes, review with the advisor):
+- The "verify and act on the same handle" design withstood all the races tried (substitution ×300, junctions in child/ancestor/root, hard links, renames, cancellation, killing the process).
+- Blockers fixed: Recycle Bin verification by identity (not by name; it failed with `.lnk`/`.url` and with hidden extensions), local drives only (the machine's own UNC administrative share bypassed the protection), `TEMP` and exemptions (they could delete protected data).
+- Design change: the tombstone is withdrawn (§3.7.4); Recycle Bin by original path with an event sink and guard handle; split into operations with a budget and safety cutoff (an operation with one item that did not fit permanently deleted the whole batch).
+- Pending manual test before/after v0.1: `HideFileExt=1` (by construction it does not affect), a volume without `MaxCapacity`, the `NoRecycleFiles` policy, directory symlinks, mapped network drives. Deferred to v0.2: quadratic cost with trees thousands of levels deep and protection of system folders on other drives.
 
-**Ronda 7** (auditoría externa de Astra/ChatGPT sobre 6781a03, triada con el asesor):
-- **B1 (diseño):** el borrado se rediseña como "identidad aprobada + actuar sobre el mismo handle" (§3.7): apertura exclusiva, FileId+volumen, recursión relativa a handles (patrón CVE-2022-21658), Papelera vía lápida renombrada por handle y verificación por elemento, Vaciar con alcance enumerado, hard links detectados por `NumberOfLinks`, "liberado" = diferencia medida del espacio libre.
-- **M2:** las cachés de navegador son solo directorios concretos de caché; el perfil nunca lo es (§2.6).
-- **M1:** `--json` y `--screenshot` no sobrescriben sin `--overwrite`. **M3:** los atajos respetan el control enfocado. **M5/M6:** `privacy-check` revisa el mensaje completo, rechaza formatos opacos y el CI revisa todos los commits del push/PR. **m1–m11 y N1:** en el ciclo de endurecimiento.
-- **M4:** se generalizan las menciones al equipo de medición en la documentación (versión del SO y tipo de disco). No se reescribe el historial: no identifican el equipo.
-- **N2:** el bloque de espacio no explicado se ordena por tamaño; no hay fuentes de reserva de egui.
-- **Incremento 4:** CRT estático (`+crt-static`) y requisitos de MSI/SignPath añadidos a §6.
-- **Ciclo de endurecimiento** (13 commits, construcción Sonnet + auditoría Sonnet + revisión con el asesor): M1–M6, m1–m11 y N1 corregidos; exe ≈ 11,0 MiB con el CRT estático. Por decisión del usuario NO se añaden patrones genéricos de versión de Windows ni de capacidad de disco: lo que importa es la información personal (nombres de carpetas y archivos, usuario, rutas del perfil, capturas reales).
-- **Distribución:** decisión del usuario: **solo MSI** (no MSIX ni Microsoft Store). Firma con SignPath Foundation (gratis para open source) cuando el usuario la solicite; la v0.1 sale sin firmar con el aviso de SmartScreen explicado.
+**Round 7** (external audit by Astra/ChatGPT on 6781a03, triaged with the advisor):
+- **B1 (design):** deletion is redesigned as "approved identity + act on the same handle" (§3.7): exclusive open, FileId+volume, handle-relative recursion (CVE-2022-21658 pattern), Recycle Bin via a tombstone renamed by handle and per-item verification, Empty with enumerated scope, hard links detected by `NumberOfLinks`, "freed" = measured difference of free space.
+- **M2:** browser caches are only specific cache directories; the profile never is (§2.6).
+- **M1:** `--json` and `--screenshot` do not overwrite without `--overwrite`. **M3:** shortcuts respect the focused control. **M5/M6:** `privacy-check` reviews the whole message, rejects opaque formats and CI reviews all the commits of the push/PR. **m1–m11 and N1:** in the hardening cycle.
+- **M4:** mentions of the measurement machine in the documentation are generalized (OS version and disk type). History is not rewritten: they do not identify the machine.
+- **N2:** the unexplained space block is sorted by size; there are no egui fallback fonts.
+- **Increment 4:** static CRT (`+crt-static`) and MSI/SignPath requirements added to §6.
+- **Hardening cycle** (13 commits, Sonnet build + Sonnet audit + review with the advisor): M1–M6, m1–m11 and N1 fixed; exe ≈ 11.0 MiB with the static CRT. By user decision NO generic patterns for Windows version or disk capacity are added: what matters is personal information (folder and file names, user, profile paths, real screenshots).
+- **Distribution:** user decision: **MSI only** (no MSIX or Microsoft Store). Signing with SignPath Foundation (free for open source) when the user requests it; v0.1 ships unsigned with the SmartScreen warning explained.
 
-**Ronda 6** (incremento 2 del MVP: construcción Sonnet, 2 auditorías Sonnet, verificación propia y asesor):
-- Memoria: el objetivo pasa a ~85 B por entrada en régimen (≈ 155 MiB con 1 M); **decisión del usuario**, no se recorta. En reposo con el mapa: ~68 MiB.
-- Fuentes: sin `default_fonts` de egui (no se redistribuyen fuentes OFL/UFL); reservas DEL SISTEMA por escritura (CJK, tailandés, índicas, árabe, hebreo, símbolos), con kana y han siempre juntos. Las pruebas de fuentes se saltan lo que el equipo no tiene (CI en Windows Server).
-- Avisos de terceros: `THIRD-PARTY-NOTICES.md` generado con `cargo about` (no se edita a mano), incrustado en el `.exe` y visible en Ajustes › Acerca de.
-- "Otros": paginado cuando ningún hijo cabe, de modo que abrirlo siempre avanza. Esquinas de 4 px solo en celdas ≥ 16 px. Relayout de 20k celdas ≈ 1 ms (hito de la v0.2 ya cumplido).
-- Capturas: `--screenshot` **exige `--demo`** (en código); `docs/img/` solo admite PNG registrados con su SHA-256 en `docs/img/README.md`, con fragmentos y longitudes acotados.
-- Hooks sin `-ExecutionPolicy Bypass` (heurística del antivirus).
-- egui 0.36.2 se mantiene (0.37 existe; subir es tarea de la v0.2). Mientras no haya riesgo (inc. 3), la cabecera del escaneo dice "X GB en sitios conocidos". Tabla de rutas conocidas con `KnownKind`.
-- Pendiente para la v0.2: profundidad de "Otros" anidados en colas muy pesadas (R4) y validar el zlib de `IDAT` y los data URI en `privacy-check` (R6). Las herramientas de medición (`--bench-hover`, `--idle-memory`) pueden fallar si la ventana queda tapada: es del entorno, no de la app.
+**Round 6** (increment 2 of the MVP: Sonnet build, 2 Sonnet audits, own verification and advisor):
+- Memory: the target becomes ~85 B per entry in steady state (≈ 155 MiB with 1 M); **user decision**, it is not trimmed. Idle with the map: ~68 MiB.
+- Fonts: without egui `default_fonts` (no OFL/UFL fonts are redistributed); SYSTEM fallbacks per script (CJK, Thai, Indic, Arabic, Hebrew, symbols), with kana and han always together. The font tests skip what the machine does not have (CI on Windows Server).
+- Third-party notices: `THIRD-PARTY-NOTICES.md` generated with `cargo about` (not edited by hand), embedded in the `.exe` and visible in Settings › About.
+- "Others": paginated when no child fits, so that opening it always advances. 4 px corners only on cells ≥ 16 px. Relayout of 20k cells ≈ 1 ms (a v0.2 milestone already met).
+- Screenshots: `--screenshot` **requires `--demo`** (in code); `docs/img/` only admits PNGs registered with their SHA-256 in `docs/img/README.md`, with bounded fragments and lengths.
+- Hooks without `-ExecutionPolicy Bypass` (antivirus heuristic).
+- egui 0.36.2 is kept (0.37 exists; upgrading is a v0.2 task). While there is no risk (inc. 3), the scan header says "X GB in known places". Table of known paths with `KnownKind`.
+- Pending for v0.2: depth of nested "Others" in very heavy tails (R4) and validating the `IDAT` zlib and the data URIs in `privacy-check` (R6). The measurement tools (`--bench-hover`, `--idle-memory`) may fail if the window is covered: that is the environment, not the app.
 
-**Ronda 5** (incremento 1 del MVP: construcción Sonnet, 2 auditorías Sonnet, revisión con el asesor):
-- `Hist` de 14 B con `dominant_type` / `dominant_age`; regla del 80 % precisada; `mtime` 0 fuera de la antigüedad.
-- Memoria: régimen ~78 B por entrada; pico ≈ 2× el régimen.
-- `Record` de 32 B con el `FileId` aparte; dedup tras el BFS y también con `logical = 0`.
-- Respaldo `FindFirstFileExW`: sin dedup ni cola prioritaria, escaneo "aproximado".
-- `INCOMPLETE_BELOW`; sin bloque de espacio no explicado si hay directorios incompletos.
-- Carpetas de la nube: pobladas se recorren, no pobladas se cuentan sin entrar.
-- Hilos `min(16, 2 × núcleos)`; `cargo test` en vez de nextest; binarios publicados solo con `build-release.ps1`.
-- Privacidad: `privacy-check.ps1` con hooks `pre-commit` y `commit-msg`, lista negra local en `<git-common-dir>/privacy-denylist`, pruebas propias y job de CI.
+**Round 5** (increment 1 of the MVP: Sonnet build, 2 Sonnet audits, review with the advisor):
+- 14 B `Hist` with `dominant_type` / `dominant_age`; 80 % rule clarified; `mtime` 0 excluded from age.
+- Memory: steady state ~78 B per entry; peak ≈ 2× the steady state.
+- 32 B `Record` with the `FileId` separate; dedup after the BFS and also with `logical = 0`.
+- `FindFirstFileExW` fallback: no dedup or priority queue, "approximate" scan.
+- `INCOMPLETE_BELOW`; no unexplained space block if there are incomplete directories.
+- Cloud folders: populated ones are walked, unpopulated ones are counted without entering.
+- Threads `min(16, 2 × cores)`; `cargo test` instead of nextest; published binaries only with `build-release.ps1`.
+- Privacy: `privacy-check.ps1` with `pre-commit` and `commit-msg` hooks, local blacklist in `<git-common-dir>/privacy-denylist`, own tests and a CI job.
 
-**Ronda 4** (resultados de la fase 0: construcción Sonnet, auditoría Sonnet, revisión final con el asesor):
-- **UI:** wgpu solo DX12, treemap como `Mesh` cacheado (objetivo p99 < 8 ms), fondo sólido (sin Mica).
-- **Métricas:** memoria = private working set (≤ 75 MiB en reposo con el mapa); exe ≲ 16 MB.
-- **Borrado:** POSIX propio descartado; la nota de `FILE_SHARE_DELETE` se amplía a `remove_file`/`DeleteFileW`; junctions medidos.
-- **Carpetas de desarrollo:** destino diferido a la v0.2, con "renombrar primero".
-- **Hilos:** se sigue ajustando midiendo (la mejora se satura pronto).
-- **Deshacer:** verificar archivo a archivo.
-- **Entregable:** MSI por usuario desde la v0.1 (decisión del usuario).
+**Round 4** (phase 0 results: Sonnet build, Sonnet audit, final review with the advisor):
+- **UI:** wgpu DX12 only, treemap as a cached `Mesh` (target p99 < 8 ms), solid background (no Mica).
+- **Metrics:** memory = private working set (≤ 75 MiB idle with the map); exe ≲ 16 MB.
+- **Deletion:** own POSIX ruled out; the `FILE_SHARE_DELETE` note is extended to `remove_file`/`DeleteFileW`; junctions measured.
+- **Development folders:** destination deferred to v0.2, with "rename first".
+- **Threads:** tuning by measurement continues (the improvement saturates early).
+- **Undo:** verify file by file.
+- **Deliverable:** per-user MSI from v0.1 (user decision).
 
-**Ronda 2** (cierre de las decisiones cruzadas): carpetas de desarrollo a la Papelera por defecto (la medición de la fase 0 puede cambiarlo), histogramas, pagefile/hiberfil como nodos "solo informar", `wgpu` por defecto y cesta persistida al elevar. Ni diseño ni arquitectura tienen objeciones bloqueantes.
+**Round 2** (closing the cross decisions): development folders to the Recycle Bin by default (the phase 0 measurement may change it), histograms, pagefile/hiberfil as "info only" nodes, `wgpu` by default and basket persisted on elevation. Neither design nor architecture has blocking objections.
