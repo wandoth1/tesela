@@ -354,6 +354,11 @@ impl Explore {
     // --- Navegación ---------------------------------------------------------------------------------------------
 
     /// ¿Se puede subir un nivel?
+    /// ¿Se puede volver a la pantalla de inicio? No mientras se ejecuta una limpieza (como el cierre de la ventana).
+    pub(crate) fn can_go_home(&self) -> bool {
+        !self.flow.is_running()
+    }
+
     pub fn can_up(&self) -> bool {
         self.root.is_group() || self.root.node != 0
     }
@@ -696,6 +701,11 @@ impl Explore {
         if ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F5)) {
             env.actions.push(Action::Rescan);
         }
+        // Alt+Inicio: a la pantalla de inicio (no choca con Inicio a secas, que va a la primera fila de la lista: aquí el
+        // atajo exige Alt). Con una limpieza en curso no hace nada, igual que el botón.
+        if ctx.input_mut(|i| i.consume_key(Modifiers::ALT, Key::Home)) && self.can_go_home() {
+            env.actions.push(Action::GoHome);
+        }
         if self.search_focused {
             return;
         }
@@ -730,6 +740,12 @@ impl Explore {
     fn toolbar(&mut self, ui: &mut Ui, env: &mut Env) {
         let pal = env.pal;
         ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
+            // Inicio: la pantalla "¿Qué disco quieres revisar?" (con "Analizar una carpeta…"). A la izquierda de "Subir".
+            let home_label = env.tr.t("go-home");
+            if widgets::icon_button(ui, env, Icon::Home, &home_label, self.can_go_home()).clicked()
+            {
+                env.actions.push(Action::GoHome);
+            }
             let up_label = env.tr.t("up-level");
             if widgets::icon_button(ui, env, Icon::ArrowUp, &up_label, self.can_up()).clicked() {
                 self.up();

@@ -117,7 +117,7 @@ El modo `--demo` es el único con el que se hacen capturas y pruebas: todo lo qu
 - **Mapa:** un bloque por carpeta o archivo, proporcional a lo que ocupa **en disco**, coloreado por tipo (paleta apta para daltonismo). Se insinúa el nivel siguiente dentro de cada bloque. Los bloques demasiado pequeños se agrupan en **"Otros (N elementos, X)"**, que se abre con doble clic. Las carpetas que el análisis no llegó a recorrer entera llevan rayas diagonales y un "≥".
 - **Grises con significado:** el bloque "Windows y otros datos del sistema" (lo que ocupa el disco pero tu usuario no puede ver), `pagefile.sys` y `hiberfil.sys` ("solo informar") y "Mixto" (carpetas sin un tipo dominante).
 - **Lista:** las mismas carpetas con cifras exactas; es la vista accesible (lector de pantalla) y comparte la selección con el mapa.
-- **Teclado:** doble clic o `Intro` entra en una carpeta; `Retroceso` sube; las flechas mueven la selección; `Ctrl+F` busca; `F5` reescanea. Clic derecho: abrir en el Explorador, copiar la ruta y Propiedades.
+- **Teclado:** doble clic o `Intro` entra en una carpeta; `Retroceso` sube; las flechas mueven la selección; `Ctrl+F` busca; `F5` reescanea; `Alt+Inicio` vuelve a la pantalla de inicio. Clic derecho: abrir en el Explorador, copiar la ruta y Propiedades.
 - **Ajustes (⚙):** tema (sistema, claro u oscuro), idioma (sistema, español o English) y borrar el historial de limpiezas.
 
 ### Limpieza

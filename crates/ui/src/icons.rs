@@ -33,6 +33,7 @@ pub enum Icon {
     Folder,
     FolderOpen,
     HardDrive,
+    Home,
     Info,
     LocalLanguage,
     LockClosed,
@@ -53,7 +54,7 @@ macro_rules! svg {
 
 impl Icon {
     /// Todos los iconos.
-    pub const ALL: [Icon; 30] = [
+    pub const ALL: [Icon; 31] = [
         Icon::ArrowClockwise,
         Icon::ArrowUp,
         Icon::BinRecycle,
@@ -74,6 +75,7 @@ impl Icon {
         Icon::Folder,
         Icon::FolderOpen,
         Icon::HardDrive,
+        Icon::Home,
         Icon::Info,
         Icon::LocalLanguage,
         Icon::LockClosed,
@@ -109,6 +111,7 @@ impl Icon {
             Icon::Folder => svg!("folder"),
             Icon::FolderOpen => svg!("folder_open"),
             Icon::HardDrive => svg!("hard_drive"),
+            Icon::Home => svg!("home"),
             Icon::Info => svg!("info"),
             Icon::LocalLanguage => svg!("local_language"),
             Icon::LockClosed => svg!("lock_closed"),
