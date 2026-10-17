@@ -1,6 +1,6 @@
 # Product roadmap
 
-Date: 2026-10-16. Replaces the phase table in `PLAN.md` §4 for everything that comes after v0.1. The technical design
+Date: 2026-10-16, updated 2026-10-17 with the owner's decisions (see §10). Replaces the phase table in `PLAN.md` §4 for everything that comes after v0.1. The technical design
 remains in `PLAN.md`.
 
 Origin: a differentiation study with sources and two independent external reviews of the plan. The claims
@@ -24,14 +24,18 @@ Short tagline: *"Understand your disk before you delete."*
 Never "risk-free", "fearless" or "proven safe". A file's identity proves which object was opened, not
 that deleting it is harmless.
 
-## 2. Initial segment (hypothesis to validate)
+## 2. Segments (hypotheses to validate)
 
-- **Who adopts it:** the person who regularly helps relatives or acquaintances with space problems on home
+- **Who adopts it first:** the person who regularly helps relatives or acquaintances with space problems on home
   Windows machines, when Settings and Explorer do not make it clear. They compare, install, repeat and recommend.
+  The validation phase (§5) is measured with them.
+- **Also served (widened on 2026-10-17):**
+  - people who open a cleaner only to remove junk (temporary files and caches) and do not want to explore the disk:
+    they get **Quick clean** (§5b);
+  - developers whose tools leave large caches behind: the caches that are safe and documented are cleaned; the rest
+    are explained with their official command (§5b).
 - **Who benefits:** whoever has a full C: drive, often on a laptop with a small SSD.
-- **Out for now:**
-  - managed corporate machines (policies, permissions and support);
-  - the developer segment, which is secondary and is left for after validation.
+- **Out for now:** managed corporate machines (policies, permissions and support).
 
 ## 3. Product rules
 
@@ -39,6 +43,8 @@ that deleting it is harmless.
    explanation. They never preselect anything nor lift a protection.
 2. **Tesela does not run elevated commands or third-party tools for the user.** It explains, opens the exact Settings
    page (`ms-settings:`) or shows and copies the official command with its effects and its administrator warning.
+   *Under review (2026-10-17):* whether Tesela may launch Windows' own tools for the user. Until it is decided, the
+   rule stands.
 3. **Three visible states:** *unknown*, *known but not recommended* and *candidate with conditions*. The unknown
    never gets an invented explanation.
 4. **Two distinct outcomes:**
@@ -52,8 +58,11 @@ that deleting it is harmless.
    - go to Installed apps;
    - use Windows' official methods.
 6. **No telemetry**, not even "anonymous".
-7. **Never clean elevated.** An elevated read, if it comes, goes in a separate helper, optional and read-only, with
-   minimal capabilities.
+7. **The application never cleans elevated.** It keeps refusing to clean when it runs as administrator. The only
+   exception, decided on 2026-10-17, is the **limited administrator helper** (§5b, v0.2): a separate binary that is
+   only installed with the all-users install, cleans a fixed list of Windows areas, accepts no paths from the user,
+   checks owner and permissions before deleting anything, and is audited externally before it ships. An elevated
+   read-only helper, if it comes, follows the same constraints.
 
 ## 4. Knowledge catalog
 
@@ -85,7 +94,7 @@ Before expanding features we must show that Tesela solves space problems better 
 
 ### Month 1: safety perimeter and public evidence
 
-- **Publish v0.1.2.** It carries the audit fixes and honest texts.
+- **Publish the current release** (v0.1.4 or later): it carries the audit fixes and honest texts.
 - **Public safety battery** in a disposable virtual machine, published with each release:
   - sentinel files in the protected zones;
   - races, junctions and substitutions;
@@ -129,6 +138,18 @@ Before expanding features we must show that Tesela solves space problems better 
 
 Thirty cases are a pilot to guide the project, not a statistical certification.
 
+## 5b. Short-term releases (decided 2026-10-17)
+
+These releases run alongside the validation phase. They do not add risky deletion paths; anything that deletes
+goes through the same safe engine (`PLAN.md` §3.7) and its audits.
+
+| Version | Content |
+|---|---|
+| v0.1.5 (beta) | Installer with a setup UI: only for me or for all users, install folder, optional desktop shortcut (the taskbar cannot be pinned by an installer). Select several items before the basket. *Review* categories for Windows error reports and crash dumps (Recycle Bin only, never permanent). Released as a beta after the owner's local test and an external audit |
+| v0.1.6 | New home screen with three entries: **Quick clean**, **Optimize**, **Explore the disk**. Quick clean measures only the catalog locations (no full scan), shows categories with sizes and checkboxes (*Safe* preselected) and reuses the basket, confirmation and engine. Developer caches: *Safe* when documented and regenerable (npm, pip, NuGet HTTP/plugin caches, Electron caches of closed apps); *Info only* with the official command for the rest (uv, pnpm, Cargo, Gradle, Go, Maven, Docker, WSL). Claude Code and Codex history is the user's data: shown with its size and how to prune it, never deleted |
+| v0.1.7 | **Optimize, honest version:** read-only. Memory explained in plain words, the programs using the most (with "Go to window"; Tesela never kills processes), startup apps (`ms-settings:startupapps`), pending restart. No "free RAM" button: emptying working sets or the standby list usually makes the system slower, and the screen says why |
+| v0.2 | Everything in §6 that validation supports, plus the **limited administrator helper**: Windows error reports of the machine, `Minidump`, `MEMORY.DMP`, `LiveKernelReports`, old CBS logs, and `C:\Windows\Temp` only for entries owned by SYSTEM, Administrators or TrustedInstaller that non-administrators cannot modify. Out of scope: `SoftwareDistribution`, Delivery Optimization and `Windows.old` (Tesela opens the Settings page), and `WinSxS`, `C:\Windows\Installer`, `hiberfil.sys` and restore points (never) |
+
 ## 6. After validation (only if the metric comes out well)
 
 - **v0.2, "Understand before deleting":**
@@ -145,7 +166,7 @@ Thirty cases are a pilot to guide the project, not a statistical certification.
   - what was done by Windows, OneDrive or other tools is out of scope and it says so.
 - **Seeing the inaccessible:** an elevated read-only helper that names what the user cannot read, without offering to
   delete it. It comes sooner or later depending on what is measured in month 2.
-- **Technical segment** (later): development caches through their official command, with its exact scope (for
+- **Technical segment** (partly brought forward to v0.1.6, §5b): development caches through their official command, with its exact scope (for
   example, `docker builder prune` instead of `docker system prune` if only the build cache is wanted; `uv cache
   clean` or `prune` as appropriate) and project folders with abstention conditions (uncommitted changes,
   links, no lockfile).
@@ -154,7 +175,8 @@ Thirty cases are a pilot to guide the project, not a statistical certification.
 ## 7. Anti-goals
 
 - Competing on scan speed or chart types.
-- Registry cleaner, "optimize", PC health score, uninstaller.
+- Registry cleaner, PC health score, uninstaller, "RAM booster" optimizers that empty memory to show a smaller
+  number. An honest **Optimize** screen (§5b) is allowed: read-only information, and the user decides.
 - Automatic or scheduled cleaning.
 - Running DISM, powercfg, docker, uv or other tools on the user's behalf.
 - AI-generated explanations without a source, or rules imported from third-party catalogs.
@@ -198,3 +220,15 @@ Thirty cases are a pilot to guide the project, not a statistical certification.
   something is still true.
 - **The "low space" threshold:** the percentage is combined with the absolute space and the context. The "I need
   space" walkthrough is always accessible and never turns into a "health" alarm.
+
+## 10. Decision log
+
+- **2026-10-17:**
+  - Segments widened to people who only want to remove junk and to developers (§2).
+  - Quick clean, an honest Optimize screen and a three-entry home screen (§5b).
+  - Limited administrator helper for v0.2, with an external audit before it ships; rule 7 updated.
+  - Rule 2 (launching Windows tools for the user) under review; running DISM or `sfc` stays out for now and may come
+    back as a "check system consistency" feature.
+  - The Disk Cleanup tool is not offered.
+  - The elevated read-only helper waits for the month 2 measurement.
+  - User error reports and crash dumps enter the catalog as *Review*, Recycle Bin only.
