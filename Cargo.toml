@@ -6,6 +6,7 @@ members = [
     "crates/scanner",
     "crates/layout",
     "crates/cleaner",
+    "crates/update",
     "crates/ui",
     "crates/app",
     "crates/tesela-scan",
@@ -57,6 +58,7 @@ tesela-model = { version = "0.1.4", path = "crates/model" }
 tesela-scanner = { version = "0.1.4", path = "crates/scanner" }
 tesela-layout = { version = "0.1.4", path = "crates/layout" }
 tesela-cleaner = { version = "0.1.4", path = "crates/cleaner" }
+tesela-update = { version = "0.1.4", path = "crates/update" }
 tesela-ui = { version = "0.1.4", path = "crates/ui" }
 
 [workspace.lints.rust]

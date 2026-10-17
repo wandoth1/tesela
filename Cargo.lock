@@ -2787,6 +2787,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tesela-update"
+version = "0.1.4"
+dependencies = [
+ "serde",
+ "serde_json",
+ "windows",
+]
+
+[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
