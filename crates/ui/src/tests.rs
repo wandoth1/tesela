@@ -47,6 +47,7 @@ fn opts(start: StartScreen) -> Options {
         start,
         dry_run: false,
         backend: Some(crate::app::BackendRef(test_backend())),
+        isolated: false,
     }
 }
 

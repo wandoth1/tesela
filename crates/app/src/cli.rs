@@ -78,6 +78,19 @@ pub struct Cli {
     pub version: bool,
 }
 
+impl Cli {
+    /// ¿Es una herramienta de medición o de captura (`--bench-hover`, `--screenshot`, `--idle-memory`)?
+    pub fn tool_mode(&self) -> bool {
+        self.bench_hover.is_some() || self.screenshot.is_some() || self.idle_memory.is_some()
+    }
+
+    /// ¿Sesión aislada? La demostración y TODAS las herramientas de medición, con o sin `--demo`: no leen ni guardan la
+    /// configuración, no leen el historial de limpiezas y no inicializan las raíces reales de la limpieza.
+    pub fn isolated(&self) -> bool {
+        self.demo || self.tool_mode()
+    }
+}
+
 /// Interpreta los argumentos (sin el nombre del programa).
 pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
     let mut cli = Cli::default();
@@ -181,6 +194,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
         }
     }
     if (cli.stopped
+        || cli.stress
         || cli.screen != Screen::Home
         || cli.progress.is_some()
         || !cli.open.is_empty()
@@ -205,7 +219,8 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> Result<Cli, String> {
     if cli.bench_hover.is_some() && cli.scan.is_none() && !cli.demo {
         return Err("--bench-hover necesita --demo o --scan: mide el mapa, que la pantalla de inicio no tiene".into());
     }
-    if cli.bench_hover.is_some() && cli.demo && cli.screen == Screen::Scan {
+    if cli.bench_hover.is_some() && !matches!(cli.screen, Screen::Home | Screen::Map | Screen::List)
+    {
         return Err("--bench-hover mide el mapa o la lista: usa --screen map o --screen list (o nada: con --demo abre el mapa)".into());
     }
     Ok(cli)
@@ -254,6 +269,24 @@ mod tests {
                 .contains("--demo o --scan")
         );
         assert!(p("--demo --screen scan --bench-hover 5").is_err());
+        // GM-m8: tampoco las pantallas de la limpieza (recs, confirm, summary): no hay mapa que medir.
+        for s in ["recs", "confirm", "summary"] {
+            assert!(
+                p(&format!("--demo --screen {s} --bench-hover 5"))
+                    .unwrap_err()
+                    .contains("mide el mapa"),
+                "{s}"
+            );
+        }
+        for s in ["map", "list"] {
+            assert!(
+                p(&format!("--demo --screen {s} --bench-hover 5")).is_ok(),
+                "{s}"
+            );
+        }
+        // GM-m8: `--stress` solo tiene sentido con `--demo`.
+        assert!(p("--stress").unwrap_err().contains("--demo"));
+        assert!(p("--demo --stress").unwrap().stress);
         assert!(p("--demo --bench-hover 5").is_ok());
         assert!(p("--scan X --bench-hover 5").is_ok());
         assert!(p("--idle-memory 0").is_err());
@@ -306,6 +339,26 @@ mod tests {
         let c = p("--scan X --dry-run").unwrap();
         assert!(c.dry_run && c.scan == Some(PathBuf::from("X")));
         assert!(p("--demo --screen confirm --dry-run").unwrap().dry_run);
+    }
+
+    #[test]
+    fn la_sesion_aislada_es_la_demo_y_todas_las_herramientas_de_medicion() {
+        // GM-M4: `--idle-memory` y `--bench-hover` SIN `--demo` también están aisladas (sin historial ni raíces reales).
+        assert!(!p("").unwrap().isolated());
+        assert!(!p("--scan X").unwrap().isolated());
+        assert!(!p("--dry-run").unwrap().isolated());
+        for a in [
+            "--demo",
+            "--idle-memory 5",
+            "--bench-hover 5 --scan X",
+            "--demo --bench-hover 5",
+            "--demo --screenshot x.png",
+        ] {
+            assert!(p(a).unwrap().isolated(), "{a}");
+        }
+        // Las herramientas de medición lo son aunque no haya demostración; la demostración no es una herramienta.
+        assert!(p("--idle-memory 5").unwrap().tool_mode());
+        assert!(!p("--demo").unwrap().tool_mode());
     }
 
     #[test]
