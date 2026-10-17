@@ -375,7 +375,7 @@ try {
     $path = New-Mutant 'shortcut-args' @("UPDATE ``Shortcut`` SET ``Arguments``='--demo'")
     Check 'shortcut with arguments' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*shortcut*has arguments*--demo*')
     $path = New-Mutant 'shortcut-args-desktop' @("UPDATE ``Shortcut`` SET ``Arguments``='--demo' WHERE ``Shortcut``='DesktopShortcut'")
-    Check 'desktop shortcut with arguments' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*DesktopShortcut lleva argumentos*--demo*')
+    Check 'desktop shortcut with arguments' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*DesktopShortcut has arguments*--demo*')
     $path = New-Mutant 'shortcut-wkdir' @("UPDATE ``Shortcut`` SET ``WkDir``='ProgramMenuFolder'")
     Check 'shortcut with a different working directory' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*WkDir*ProgramMenuFolder*INSTALLFOLDER*')
     $path = New-Mutant 'shortcut-nowkdir' @("UPDATE ``Shortcut`` SET ``WkDir``=''")
