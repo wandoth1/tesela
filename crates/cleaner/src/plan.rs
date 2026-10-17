@@ -66,32 +66,32 @@ pub enum RejectReason {
     NoIdentity,
     /// It is a link (junction, symlink, or mount point); links are neither followed nor deleted.
     Reparse,
-    /// La raíz de una categoría tiene un enlace (junction, symlink, punto de montaje) en su cadena de ancestros, o la
-    /// ruta que se comprobó dejó de ser la misma: no se ofrece como categoría (un enlace por encima de `User Data` o de
-    /// `%TEMP%` podría llevarla a una carpeta protegida).
+    /// A category root has a link (junction, symlink, or mount point) in its ancestor chain, or the
+    /// checked path changed: do not offer it as a category (a link above `User Data` or
+    /// `%TEMP%` could redirect it to a protected folder).
     ReparseAncestor,
-    /// La carpeta temporal del usuario está redirigida fuera de `%LOCALAPPDATA%` (no es `Local\Temp` ni cuelga de ella): no
-    /// se ofrece como categoría. No es un enlace en su ruta (R5).
+    /// The user's temporary folder is redirected outside `%LOCALAPPDATA%` (it is not `Local\Temp` or a descendant): do not
+    /// offer it as a category. This is not a link in its path (R5).
     OutsideLocalAppData,
-    /// La ruta resuelta no es de una unidad local con letra (UNC, también hacia un disco local por su compartición
-    /// administrativa, o una unidad de red): el `cleaner` solo limpia unidades locales, porque la protección se define
-    /// sobre rutas de unidad.
+    /// The resolved path is not on a local drive letter (UNC, including a local disk reached through an administrative
+    /// share, or a network drive): `cleaner` only cleans local drives because protection is defined
+    /// over drive paths.
     NotLocal,
     /// Protected: denied, untouchable, or a known folder.
     Protected(Verdict),
-    /// Se iba a la Papelera pero la medida de la carpeta no se pudo hacer ENTERA (subcarpetas sin permiso o en uso, entradas
-    /// que cambiaron durante el recorrido...): con el tamaño real desconocido no se puede repartir ni comprobar que cabe, y
-    /// al ejecutar fallaría siempre. Lleva cuántas entradas no se pudieron leer. No se ofrece.
+    /// The item was going to the Recycle Bin, but the folder could not be measured COMPLETELY (subfolders without access or in use, entries
+    /// that changed during traversal, etc.): without the actual size, allocation and fit cannot be checked, and
+    /// execution would always fail. Includes the number of unreadable entries. Not offered.
     Incomplete(u64),
-    /// Una categoría con antigüedad mínima (informes de errores, volcados): el elemento, o algo de su interior, se modificó
-    /// hace menos que esa antigüedad (7 días). No se ofrece; consta en el plan y en el registro, no desaparece en silencio.
+    /// A category with a minimum age (error reports, dumps): the item or something inside it was modified
+    /// more recently than the required age (7 days). Do not offer it; record it in the plan and log instead of silently hiding it.
     Young,
     /// Any other system error.
     Other(u32),
 }
 
 impl RejectReason {
-    /// El texto con el que consta en el registro.
+    /// Text recorded in the log.
     pub fn log_text(&self) -> String {
         match self {
             RejectReason::Young => "Young (modified less than the minimum age ago)".to_string(),
@@ -100,40 +100,40 @@ impl RejectReason {
     }
 }
 
-/// Una entrada de la cesta que no pasó la aprobación.
+/// A basket entry that did not pass approval.
 #[derive(Clone, Debug)]
 pub struct Rejected {
     pub path: PathBuf,
     pub reason: RejectReason,
 }
 
-/// Un elemento aprobado.
+/// An approved item.
 #[derive(Clone, Debug)]
 pub struct PlanItem {
     pub id: usize,
-    /// La categoría con regla de la que sale (`None` = "Tu archivo").
+    /// Rule-based category this came from (`None` = "Your file").
     pub category: Option<CategoryId>,
-    /// La ruta aprobada (la raíz de la categoría, o el elemento).
+    /// Approved path (the category root or the item).
     pub path: PathBuf,
     pub risk: Risk,
-    /// Destino aprobado.
+    /// Approved destination.
     pub destination: Destination,
-    /// Si cabe en la Papelera (solo con destino `Recycle`; con `Permanent` es siempre `Fits`).
+    /// Whether it fits in the Recycle Bin (only for `Recycle`; `Permanent` always means `Fits`).
     pub fit: Fit,
-    /// Qué y con qué identidad se aprobó.
+    /// What was approved and with which identity.
     pub spec: UnitSpec,
-    /// Antigüedad mínima de la regla.
+    /// Rule's minimum age.
     pub min_age: Duration,
-    /// Medida al aprobar.
+    /// Measurement taken during approval.
     pub estimate: StatsSnapshot,
-    /// Es un archivo sincronizado con la nube (o lo contiene): borrarlo también lo quita de la nube.
+    /// This is a cloud-synced file (or contains one): deleting it also removes it from the cloud.
     pub cloud_synced: bool,
-    /// Es un archivo con más de un enlace: no liberará espacio.
+    /// This file has multiple hard links and will not free disk space.
     pub hard_linked: bool,
-    /// Volumen (raíz) en el que está.
+    /// Volume root containing this item.
     pub volume: Option<PathBuf>,
-    /// Cuelga de una raíz de diagnóstico (`ReportArchive`, `ReportQueue` o `CrashDumps`), aunque se añadiera a mano como "Tu
-    /// archivo": nunca se borra definitivamente por su RUTA, no solo por su categoría (ver [`PlanItem::never_permanent`]).
+    /// Under a diagnostic root (`ReportArchive`, `ReportQueue`, or `CrashDumps`), even if manually added as "Your
+    /// file": never permanently delete based on its PATH, regardless of category (see [`PlanItem::never_permanent`]).
     pub diagnostic_path: bool,
 }
 
@@ -144,52 +144,53 @@ impl PlanItem {
             UnitSpec::Entry { is_dir, .. } => *is_dir,
         }
     }
-    /// ¿Va a la Papelera pero no cabe? (El grupo ámbar de la confirmación.)
+    /// Is it going to the Recycle Bin but does not fit? (The amber confirmation group.)
     pub fn is_unfit(&self) -> bool {
         self.destination == Destination::Recycle && matches!(self.fit, Fit::Unfit(_))
     }
-    /// ¿Se le prohíbe el borrado DEFINITIVO en cualquier caso (también con la casilla de "no cabe en la Papelera")?
+    /// Is PERMANENT deletion prohibited in all cases (including when "does not fit in the Recycle Bin" is checked)?
     ///
-    /// * Los informes de errores y los volcados de bloqueo (categorías de diagnóstico) nunca se borran definitivamente, ni
-    ///   por categoría ni por ruta (`diagnostic_path`: algo que cuelga de sus raíces y se añadió a mano).
-    /// * Una unidad `Entry` con antigüedad mínima: el recorrido definitivo no vuelve a comprobar la antigüedad de cada hijo
-    ///   ni exige la huella de la carpeta (dejaría un informe partido: lo antiguo borrado y lo reciente en su sitio), así
-    ///   que falla cerrado. Hoy solo las crean las categorías de diagnóstico; esto impide que otra regla lo estrene sin
-    ///   revisar esa comparación.
+    /// * Error reports and crash dumps (diagnostic categories) are never permanently deleted, either
+    ///   by category or by path (`diagnostic_path`: an item under one of these roots that was manually added).
+    /// * An `Entry` unit with a minimum age: permanent traversal does not recheck each child's age
+
+    ///   or require the folder fingerprint (that could split a report, deleting old items while leaving recent ones), so
+    ///   it fails closed. Only diagnostic categories create these today; this prevents another rule from using them without
+    ///   reviewing this comparison.
     pub fn never_permanent(&self) -> bool {
         self.category.is_some_and(CategoryId::is_diagnostic)
             || self.diagnostic_path
             || (matches!(self.spec, UnitSpec::Entry { .. }) && !self.min_age.is_zero())
     }
-    /// Bytes que liberará (sin los enlaces duros compartidos).
+    /// Bytes that will be freed (excluding shared hard links).
     pub fn bytes(&self) -> u64 {
         self.estimate.bytes
     }
 }
 
-/// A partir de cuántos informes o volcados la confirmación avisa de que puede tardar varios minutos: la Papelera recibe una
-/// operación por carpeta (≈ 0,15 s cada una según PLAN §3.7.4).
+/// Number of reports or dumps above which confirmation warns that cleanup may take several minutes: the Recycle Bin receives one
+/// operation per folder (about 0.15 seconds each according to PLAN §3.7.4).
 pub const MANY_DIAGNOSTIC_ITEMS: usize = 200;
 
-/// La Papelera capturada al confirmar (alcance enumerado).
+/// Recycle Bin listing captured at confirmation (enumerated scope).
 #[derive(Clone, Debug)]
 pub struct BinPlan {
-    /// La lista de elementos, tal como estaba al confirmar. Solo se purga ESTA lista.
+    /// Item list as it was at confirmation. Only THIS list is purged.
     pub items: Vec<BinItem>,
-    /// Tamaño aproximado de la Papelera (de lo que sabía quien llamó; 0 si no se sabe).
+    /// Approximate Recycle Bin size (as known by the caller; 0 if unknown).
     pub bytes_hint: u64,
 }
 
-/// Lo aprobado.
+/// The approved plan.
 #[derive(Clone, Debug, Default)]
 pub struct Plan {
     pub items: Vec<PlanItem>,
     pub bin: Option<BinPlan>,
     pub rejected: Vec<Rejected>,
-    /// Hijos de carpetas expandidas que se omiten por estar protegidos: (entradas, bytes del listado).
+    /// Protected children skipped when expanding folders: (entries, bytes from the listing).
     pub omitted_protected: (u64, u64),
-    /// Elementos de la Papelera que NO se listaron porque sus metadatos (`$I`) están ilegibles (m1): no se vacían y su tamaño no
-    /// entra en lo que se promete vaciar.
+    /// Recycle Bin items NOT listed because their metadata (`$I`) is unreadable (m1): they are not emptied, and their size does not
+    /// count toward the promised emptying total.
     pub bin_unlisted: u64,
     /// Outlook was running during approval (informational, never a deletion guard).
     pub outlook_open: bool,
@@ -200,38 +201,38 @@ impl Plan {
         self.items.is_empty() && self.bin.as_ref().is_none_or(|b| b.items.is_empty())
     }
 
-    /// Elementos que se borran definitivamente (regla), sin los que van a la Papelera.
+    /// Items permanently deleted by rule, excluding those sent to the Recycle Bin.
     pub fn permanent_items(&self) -> impl Iterator<Item = &PlanItem> {
         self.items
             .iter()
             .filter(|i| i.destination == Destination::Permanent)
     }
 
-    /// Elementos que van a la Papelera y caben.
+    /// Items sent to the Recycle Bin that fit.
     pub fn recycle_items(&self) -> impl Iterator<Item = &PlanItem> {
         self.items
             .iter()
             .filter(|i| i.destination == Destination::Recycle && !i.is_unfit())
     }
 
-    /// Elementos que irían a la Papelera pero no caben Y pueden borrarse definitivamente si el usuario lo confirma (grupo
-    /// ámbar: "se eliminará definitivamente"). No incluye los que [`PlanItem::never_permanent`] prohíbe.
+    /// Items that would go to the Recycle Bin but do not fit AND may be permanently deleted if the user confirms (amber
+    /// group: "will be permanently deleted"). Excludes items prohibited by [`PlanItem::never_permanent`].
     pub fn unfit_items(&self) -> impl Iterator<Item = &PlanItem> {
         self.items
             .iter()
             .filter(|i| i.is_unfit() && !i.never_permanent())
     }
 
-    /// Elementos que no caben en la Papelera y NUNCA se borran definitivamente (informes de errores, volcados): se dejan donde
-    /// están y la confirmación lo dice, sin casilla.
+    /// Items that do not fit and are NEVER permanently deleted (error reports, dumps): leave them where
+    /// they are, and state this in confirmation without offering a checkbox.
     pub fn kept_unfit_items(&self) -> impl Iterator<Item = &PlanItem> {
         self.items
             .iter()
             .filter(|i| i.is_unfit() && i.never_permanent())
     }
 
-    /// Cuántos elementos de diagnóstico (informes de errores, volcados) van a la Papelera, si son muchos (más de
-    /// [`MANY_DIAGNOSTIC_ITEMS`]): la confirmación avisa de que puede tardar varios minutos.
+    /// Number of diagnostic items (error reports, dumps) sent to the Recycle Bin when there are many (more than
+    /// [`MANY_DIAGNOSTIC_ITEMS`]); confirmation warns cleanup may take several minutes.
     pub fn many_diagnostic_items(&self) -> Option<usize> {
         let n = self
             .items

@@ -23,48 +23,48 @@
 //! anything other than the approved object that reaches the Recycle Bin with a known path is reported as `RecycledOther` (it is there and
 //! can be restored). This does NOT guarantee that a replacement will end up there; see the residual risk below.
 //!
-//! Banderas (decididas por las pruebas, ver `tests::wantnukewarning_*`):
+//! Flags (determined by tests, see `tests::wantnukewarning_*`):
 //! * enviar: `FOF_NO_UI | FOF_ALLOWUNDO | FOFX_RECYCLEONDELETE | FOF_NO_CONNECTED_ELEMENTS`;
-//! * purgar elementos de la Papelera: `FOF_NO_UI | FOF_NO_CONNECTED_ELEMENTS`.
+//! * purge Recycle Bin items: `FOF_NO_UI | FOF_NO_CONNECTED_ELEMENTS`.
 //!
-//! `FOF_NO_CONNECTED_ELEMENTS` (S1): sin ella, aprobar `pagina.html` puede arrastrar `pagina_files\`, que nadie aprobó.
+//! `FOF_NO_CONNECTED_ELEMENTS` (S1): without it, approving `page.html` can also include `page_files\`, which was not approved.
 //!
-//! # El receptor de eventos vigila (M1 y M2)
-//! * `PreDeleteItem` (M1) abre cada elemento por su ruta, sin seguir enlaces, y compara su IDENTIDAD con la aprobada; si no
-//!   coincide (o no se puede abrir, o no es lo aprobado), registra un [`Veto`] y devuelve `E_ABORT`: la shell cancela lo
-//!   pendiente y NO envía el sustituto (falla cerrado). RESIDUAL, dicho con precisión: entre esa comprobación y el
-//!   movimiento real la shell actúa por ruta y un sustituto puesto exactamente ahí SÍ llega a la shell. Si cabe en la
-//!   Papelera y la shell da su ruta, el paso 3 lo detecta como `RecycledOther` (recuperable). Si no (el reparto y la
-//!   capacidad se calcularon para el objeto APROBADO, no para el sustituto; o la shell no da ruta, o el movimiento falla), se
-//!   informa como `DeletedUnexpectedly` o `Unverified` y un borrado definitivo del sustituto NO se puede deshacer.
-//! * `PreDeleteItem` (A2-B1) vuelve además a medir, POR EL HANDLE DE GUARDA (sin reabrir la ruta), cada ARCHIVO que viaja en
-//!   un lote con otros: si ocupa más de lo que se contó para el presupuesto de la operación, veta con `E_ABORT` (`Grew`). Un
-//!   directorio nunca viaja con otros: va solo y se mide justo antes de entregarlo. RESIDUAL: lo que crece mientras la propia
-//!   operación de la shell está en marcha (entre ese `PreDeleteItem` y el movimiento real).
-//! * `PostDeleteItem` (M2) registra el evento PRIMERO y, si la shell eliminó definitivamente (`psiNewlyCreated` nulo) o no
-//!   dijo dónde quedó, devuelve `E_ABORT`: el primer borrado inesperado ya no arrastra al resto del lote. (A2-M1) Un
-//!   resultado de FALLO (`hrDelete < 0`) corta igual: puede haber una pérdida parcial detrás y no se puede garantizar que lo
-//!   siguiente no sufra lo mismo. Solo al ENVIAR; al purgar la Papelera el borrado definitivo es lo esperado, cada elemento
-//!   es independiente y un fallo no corta (no se cambió: la purga no tiene "pérdida parcial" que evitar).
+//! # The event sink guards operations (M1 and M2)
+//! * `PreDeleteItem` (M1) opens each item by path without following links and compares its IDENTITY with the approved one; if they do not
+//!   match (or the item cannot be opened, or is not the approved item), it records a [`Veto`] and returns `E_ABORT`: the shell cancels
+//!   pending operations and does NOT send the replacement (fail closed). Precisely stated RESIDUAL RISK: between this check and the
+//!   actual move, the shell acts by path and a replacement placed exactly there DOES reach the shell. If it fits in the
+//!   Recycle Bin and the shell provides its path, step 3 detects it as `RecycledOther` (recoverable). Otherwise (the allocation and
+//!   capacity were calculated for the APPROVED object, not the replacement; or the shell provides no path; or the move fails), report it as
+//!   `DeletedUnexpectedly` or `Unverified`; a permanent deletion of the replacement CANNOT be undone.
+//! * `PreDeleteItem` (A2-B1) also remeasures, THROUGH THE GUARD HANDLE (without reopening the path), every FILE in
+//!   a batch with other items: if it exceeds its accounted size in the operation budget, veto it with `E_ABORT` (`Grew`). A
+//!   directory is never batched: it travels alone and is measured immediately before submission. RESIDUAL RISK: growth while the
+//!   shell operation is underway (between `PreDeleteItem` and the actual move).
+//! * `PostDeleteItem` (M2) records the event FIRST and, if the shell permanently deleted the item (`psiNewlyCreated` is null) or did not
+//!   say where it went, returns `E_ABORT`: the first unexpected deletion does not affect the rest of the batch. (A2-M1) A
+//!   FAILURE result (`hrDelete < 0`) also stops the batch: partial data loss may have occurred, and the next item may be at risk.
+//!   This applies only when SENDING items; permanent deletion is expected when emptying the Recycle Bin, each item
+//!   is independent, and a failure does not stop the operation (purging has no partial-loss risk to avoid).
 //!
-//! # La purga de la Papelera (A-M4)
-//! Los elementos de la lista se verifican por identidad (`$R` y `$I`) al enumerar y la shell actúa después. Para cerrar esa
-//! ventana, cada trozo de hasta 500 elementos:
-//! * abre un handle de GUARDA por `$R` (`DELETE | READ_ATTRIBUTES`, compartiéndolo todo) justo antes de la operación y exige que
-//!   sea el objeto capturado: mientras vive, nadie renombra los ancestros del `$R` (la carpeta del usuario en `$Recycle.Bin`);
-//!   medido con la shell real: la purga funciona igual con las guardas abiertas;
-//! * entrega la operación con un receptor cuyo `PreDeleteItem` vuelve a comprobar por ruta (sin seguir enlaces) la identidad del
-//!   `$R` y del `$I`, y veta con `E_ABORT` lo que ya no es lo capturado. Una carpeta de la Papelera llega a `PreDeleteItem`
-//!   hijo a hijo (medido): lo que cuelga de un `$R` aprobado se comprueba por la identidad de ese `$R`;
-//! * al terminar, y antes de soltar las guardas, comprueba que todo lo que la shell dio por purgado era el objeto aprobado
-//!   (`delete_pending`); si no, consta como "sustituido" (`replaced_bin`).
+//! # Emptying the Recycle Bin (A-M4)
+//! Items in the list are verified by identity (`$R` and `$I`) during enumeration, and the shell acts later. To close this
+//! window, process items in batches of up to 500:
+//! * Open a GUARD handle for each `$R` (`DELETE | READ_ATTRIBUTES`, sharing all access) immediately before the operation and require it to
+//!   be the captured object: while it is open, no one can rename `$R`'s ancestors (the user's folder under `$Recycle.Bin`);
+//!   verified with the real shell: purging works with the guard handles open;
+//! * Submit the operation with a sink whose `PreDeleteItem` rechecks by path (without following links) the identity of
+//!   `$R` and `$I`, and vetoes with `E_ABORT` anything that no longer matches the captured items. A Recycle Bin folder reaches `PreDeleteItem`
+//!   one child at a time (verified): items under an approved `$R` are checked against that `$R`'s identity;
+//! * Afterward, and before releasing the guards, verify that every item the shell reported as purged was the approved object
+//!   (`delete_pending`); otherwise record it as "replaced" (`replaced_bin`).
 //!
-//! Medido con la shell real tras un veto en una purga: la shell avisa del vetado con `E_ABORT` (`0x80004004`, "Operación
-//! anulada"), purga los anteriores del lote y NO procesa los siguientes (siguen en la Papelera). Se corta el resto de trozos.
+//! Verified with the real shell after a purge veto: the shell reports the veto as `E_ABORT` (`0x80004004`, "Operation
+//! aborted"), purges earlier items in the batch, and does NOT process later items (they remain in the Recycle Bin). Stop remaining batches.
 //!
-//! Ventana que SIGUE abierta: entre la comprobación de `PreDeleteItem` (por ruta) y el borrado real de la shell. No hay forma
-//! de atar la shell a un handle. Un sustituto puesto exactamente ahí SÍ se borra (la purga es definitiva y no se puede
-//! deshacer); se detecta justo después (guarda no pendiente de borrar) y consta como sustituido, pero no se evita.
+//! REMAINING race window: between the `PreDeleteItem` check (by path) and the shell's actual deletion. The shell cannot be
+//! bound to a handle. A replacement placed exactly there IS deleted (purging is permanent and cannot be
+//! undone); it is detected immediately afterward (the guard is not pending deletion) and recorded as replaced, but is not prevented.
 #![allow(unsafe_code)]
 
 use crate::paths::PathKey;
@@ -131,7 +131,7 @@ pub struct Com {
 
 impl Com {
     pub fn init() -> Result<Com> {
-        // SAFETY: `CoInitializeEx` no tiene precondiciones; el puntero reservado es nulo, como exige la API.
+        // SAFETY: `CoInitializeEx` has no preconditions; the reserved pointer is null, as required by the API.
         let hr = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) };
         if hr.is_ok() {
             // S_OK y S_FALSE ("ya inicializado en este hilo") se equilibran cada uno con su `CoUninitialize`.
@@ -150,7 +150,7 @@ impl Com {
 impl Drop for Com {
     fn drop(&mut self) {
         if self.uninit {
-            // SAFETY: equilibra el `CoInitializeEx` correcto de `init` en este mismo hilo.
+            // SAFETY: balances the successful `CoInitializeEx` call from `init` on this same thread.
             unsafe { CoUninitialize() };
         }
     }
@@ -293,8 +293,8 @@ pub fn list_bin() -> Result<Vec<BinItem>> {
 /// llama lo anota en el plan, en el registro y en el informe, y no cuenta su tamaño en lo que promete vaciar.
 pub fn list_bin_counted() -> Result<(Vec<BinItem>, u64)> {
     let _com = Com::init()?;
-    // SAFETY: COM está inicializado en este hilo; todas las interfaces y cadenas que se obtienen aquí son propias de
-    // esta función y se liberan con el RAII de `windows` o con `take_pwstr`.
+    // SAFETY: COM is initialized on this thread; all interfaces and strings obtained here belong to this function and
+    // are released by `windows` RAII or `take_pwstr`.
     unsafe {
         let bin: IShellItem =
             SHGetKnownFolderItem(&FOLDERID_RecycleBinFolder, KF_FLAG_DEFAULT, None)?;
@@ -309,7 +309,7 @@ pub fn list_bin_counted() -> Result<(Vec<BinItem>, u64)> {
                 break;
             }
             let Some(item) = &arr[0] else { break };
-            // SAFETY (llamada): `item` es una interfaz viva de esta enumeración.
+            // SAFETY (call): `item` is a live interface from this enumeration.
             if !push_readable(&mut out, read_bin_item(item)) {
                 skipped += 1;
             }
@@ -334,7 +334,7 @@ fn push_readable(out: &mut Vec<BinItem>, item: Result<BinItem>) -> bool {
 /// # Safety
 /// `item` debe ser una interfaz viva, y COM debe estar inicializado en el hilo que llama.
 unsafe fn read_bin_item(item: &IShellItem) -> Result<BinItem> {
-    // SAFETY: lo garantiza quien llama; las cadenas se liberan con `take_pwstr` y el resto es RAII de `windows`.
+    // SAFETY: the caller guarantees this; strings are freed with `take_pwstr` and the rest uses `windows` RAII.
     unsafe {
         let id = take_pwstr(item.GetDisplayName(SIGDN_DESKTOPABSOLUTEPARSING)?);
         let name = take_pwstr(item.GetDisplayName(SIGDN_PARENTRELATIVE)?);
@@ -369,7 +369,7 @@ pub fn bin_totals() -> Result<(u64, u64)> {
         cbSize: size_of::<SHQUERYRBINFO>() as u32,
         ..SHQUERYRBINFO::default()
     };
-    // SAFETY: `info` es escribible y trae su `cbSize`; una ruta nula consulta todas las unidades.
+    // SAFETY: `info` is writable and has its `cbSize` set; a null path queries all volumes.
     unsafe { SHQueryRecycleBinW(PCWSTR::null(), &mut info)? };
     Ok((info.i64NumItems.max(0) as u64, info.i64Size.max(0) as u64))
 }
@@ -413,7 +413,7 @@ pub fn bin_size_on(root: &Path) -> Result<u64> {
         ..SHQUERYRBINFO::default()
     };
     let w = parsing_name(root);
-    // SAFETY: `w` termina en NUL y vive durante la llamada; `info` es escribible y trae su `cbSize`.
+    // SAFETY: `w` is NUL-terminated and remains alive for the call; `info` is writable and has its `cbSize` set.
     unsafe { SHQueryRecycleBinW(PCWSTR(w.as_ptr()), &mut info)? };
     Ok(info.i64Size.max(0) as u64)
 }
@@ -569,7 +569,7 @@ type Events = Arc<Mutex<Vec<DeleteEvent>>>;
 
 /// Nombre de análisis o ruta de un elemento de la shell, si se puede.
 fn display(item: &IShellItem, sigdn: SIGDN) -> Option<OsString> {
-    // SAFETY: `item` es una interfaz viva; la cadena que devuelve es de COM y `take_pwstr` la libera una sola vez.
+    // SAFETY: `item` is a live interface; the returned string is owned by COM and `take_pwstr` frees it exactly once.
     unsafe { item.GetDisplayName(sigdn).ok().map(|p| take_pwstr(p)) }
 }
 
@@ -1035,7 +1035,7 @@ impl Operation {
             },
         }
         .into();
-        // SAFETY: COM está inicializado en este hilo (lo garantiza quien llama); `sink` es una interfaz viva que `Advise`
+        // SAFETY: COM is initialized on this thread (the caller guarantees this); `sink` is a live interface that `Advise`
         // retiene (AddRef) hasta `Unadvise`.
         unsafe {
             let op: IFileOperation = CoCreateInstance(&FileOperation, None, CLSCTX_ALL)?;
@@ -1052,7 +1052,7 @@ impl Operation {
 
     /// Ejecuta lo encolado y devuelve lo que la shell notificó.
     fn perform(self) -> BatchOutcome {
-        // SAFETY: COM está inicializado en este hilo; `self.op` es una interfaz viva y `cookie` el de su `Advise`.
+        // SAFETY: COM is initialized on this thread; `self.op` is a live interface and `cookie` is from its `Advise` call.
         let (error, aborted) = unsafe {
             let error = self.op.PerformOperations().err().map(ShellError::from);
             let aborted = self
@@ -1124,13 +1124,13 @@ pub(crate) fn recycle_paths(items: &[SendItem], mode: RecycleMode) -> Result<Bat
         let name = parsing_name(&it.path);
         // Una ruta que la shell no entiende (demasiado larga...) no aborta el lote: ese elemento no genera evento y
         // quien llama lo verá (sigue existiendo).
-        // SAFETY: `name` termina en NUL y vive durante la llamada.
+        // SAFETY: `name` is NUL-terminated and remains alive for the call.
         let Ok(item) = (unsafe {
             SHCreateItemFromParsingName::<_, _, IShellItem>(PCWSTR(name.as_ptr()), None)
         }) else {
             continue;
         };
-        // SAFETY: `op.op` es una interfaz viva e `item` también.
+        // SAFETY: `op.op` and `item` are live interfaces.
         if unsafe { op.op.DeleteItem(&item, None) }.is_ok() {
             added += 1;
         }
@@ -1202,8 +1202,8 @@ fn purge_items_flags(
     // GM-m5: los `id` ya casados con la lista. Si la enumeración de la shell repitiera un elemento, se entregaría dos veces a la
     // operación y el recuento de los que faltan por casar (`found + changed + unverifiable == by_id.len()`) se adelantaría.
     let mut matched: std::collections::HashSet<OsString> = std::collections::HashSet::new();
-    // SAFETY: COM está inicializado en este hilo; todas las interfaces y cadenas son propias de esta función y se
-    // liberan con el RAII de `windows` o con `take_pwstr`.
+    // SAFETY: COM is initialized on this thread; all interfaces and strings belong to this function and are
+    // released by `windows` RAII or `take_pwstr`.
     unsafe {
         let bin: IShellItem =
             SHGetKnownFolderItem(&FOLDERID_RecycleBinFolder, KF_FLAG_DEFAULT, None)?;
@@ -1305,7 +1305,7 @@ fn purge_items_flags(
         let op = Operation::new(flags, Guard::purge(&chunk_items))?;
         let mut added = 0usize;
         for (it, _, _) in &staged {
-            // SAFETY: `op.op` y `it` son interfaces vivas.
+            // SAFETY: `op.op` and `it` are live interfaces.
             if unsafe { op.op.DeleteItem(*it, None) }.is_ok() {
                 added += 1;
             }

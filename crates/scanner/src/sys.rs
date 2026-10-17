@@ -66,15 +66,15 @@ impl Drop for DirHandle {
 /// Windows error code on failure.
 pub fn open_dir(path: &[u16], access: u32, follow_reparse: bool) -> Result<DirHandle, u32> {
     let p = with_nul(path);
-    // Un reparse point normal se abre a si mismo (no se sigue). Solo las carpetas de la nube (OneDrive...) se abren
-    // dejando actuar a su filtro, que es lo que permite listarlas.
+    // A normal reparse point is opened itself (not followed). Only cloud folders (OneDrive...) are opened
+    // through their filter, which allows them to be listed.
     let flags = if follow_reparse {
         FILE_FLAG_BACKUP_SEMANTICS
     } else {
         FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT
     };
-    // SAFETY: `p` es una cadena UTF-16 terminada en NUL que vive durante la llamada; los demás argumentos son
-    // constantes o punteros nulos permitidos por la API (sin atributos de seguridad ni plantilla).
+    // SAFETY: `p` is a NUL-terminated UTF-16 string that remains alive for the call; the other arguments are
+    // constants or null pointers allowed by the API (no security attributes or template).
     let h = unsafe {
         CreateFileW(
             p.as_ptr(),
@@ -87,7 +87,7 @@ pub fn open_dir(path: &[u16], access: u32, follow_reparse: bool) -> Result<DirHa
         )
     };
     if h == INVALID_HANDLE_VALUE {
-        // SAFETY: `GetLastError` no tiene precondiciones.
+        // SAFETY: `GetLastError` has no preconditions.
         return Err(unsafe { GetLastError() });
     }
     Ok(DirHandle(h))
@@ -115,10 +115,10 @@ pub struct DirMeta {
 
 /// Query a handle information class with `GetFileInformationByHandleEx`.
 fn query_info<T>(h: &DirHandle, class: i32) -> Result<T, u32> {
-    // SAFETY: `T` es una de las estructuras POD de la API (enteros y arrays de bytes), para las que todo-ceros es
-    // un valor válido.
+    // SAFETY: `T` is one of the API's POD structures (integers and byte arrays), for which an all-zero value is
+    // valid.
     let mut v: T = unsafe { std::mem::zeroed() };
-    // SAFETY: `h.0` es un handle válido; el puntero apunta a `v` y se pasa su tamaño exacto.
+    // SAFETY: `h.0` is a valid handle; the pointer refers to `v` and its exact size is passed.
     let ok = unsafe {
         GetFileInformationByHandleEx(
             h.0,
@@ -128,15 +128,15 @@ fn query_info<T>(h: &DirHandle, class: i32) -> Result<T, u32> {
         )
     };
     if ok == 0 {
-        // SAFETY: `GetLastError` no tiene precondiciones.
+        // SAFETY: `GetLastError` has no preconditions.
         return Err(unsafe { GetLastError() });
     }
     Ok(v)
 }
 
-/// Lee los metadatos del directorio. `FILE_BASIC_INFO` y `FILE_STANDARD_INFO` son imprescindibles (un error se
-/// devuelve); `FILE_ID_INFO` y `FILE_ATTRIBUTE_TAG_INFO` son opcionales: si fallan (típicamente 50 o 87, "no
-/// soportado"), el identificador queda en `None` y la etiqueta en 0.
+/// Read directory metadata. `FILE_BASIC_INFO` and `FILE_STANDARD_INFO` are required (errors are
+/// returned); `FILE_ID_INFO` and `FILE_ATTRIBUTE_TAG_INFO` are optional: if they fail (usually 50 or 87, "not
+/// supported"), the identifier is set to `None` and the tag to 0.
 pub fn dir_meta(h: &DirHandle) -> Result<DirMeta, u32> {
     dir_meta_with(
         h,
@@ -157,7 +157,7 @@ fn dir_meta_with(
     let basic: FILE_BASIC_INFO = query_info(h, FileBasicInfo)?;
     let standard: FILE_STANDARD_INFO = query_info(h, FileStandardInfo)?;
     let attrs = basic.FileAttributes;
-    // Una etiqueta solo vale con el atributo de reparse point.
+    // A tag is valid only when the reparse-point attribute is set.
     let reparse_tag = if attrs & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
         tag_query(h).unwrap_or(0)
     } else {
@@ -173,11 +173,11 @@ fn dir_meta_with(
     })
 }
 
-/// Abre la ruta que el usuario dio SIN seguir el reparse point del último componente (junction, symlink, punto de
-/// montaje): el handle es el del propio enlace, no el de su destino, y por eso su destino no se abre. Solo pide
-/// `access` (lo normal es `FILE_READ_ATTRIBUTES`). Lo hace la biblioteca estándar (`OpenOptions`), que además antepone
-/// `\\?\` a las rutas largas. Los componentes INTERMEDIOS que sean enlaces los resuelve el sistema como siempre (no
-/// se pueden evitar al abrir una ruta). Devuelve el código de error de Windows si falla.
+/// Open the user-provided path WITHOUT following the final component's reparse point (junction, symlink, or
+/// mount point): the handle refers to the link itself, not its target, so the target is not opened. Request only
+/// `access` (usually `FILE_READ_ATTRIBUTES`). The standard library (`OpenOptions`) does this and also adds
+/// `\\?\` to long paths. The system still resolves INTERMEDIATE link components as usual (they
+/// cannot be avoided when opening a path). Return the Windows error code on failure.
 pub fn open_no_follow(path: &Path, access: u32) -> Result<DirHandle, u32> {
     let file = std::fs::OpenOptions::new()
         .access_mode(access)
@@ -188,21 +188,21 @@ pub fn open_no_follow(path: &Path, access: u32) -> Result<DirHandle, u32> {
     Ok(DirHandle(file.into_raw_handle() as HANDLE))
 }
 
-/// Ruta final canónica del handle (`\\?\C:\...`, letras de las carpetas tal como están en el disco y nombres largos),
-/// calculada SOBRE EL HANDLE ya abierto: con un handle de [`open_no_follow`] sobre un enlace da la ruta del propio
-/// enlace, no la de su destino.
+/// Canonical final path for the handle (`\\?\C:\...`, with on-disk folder casing and long names),
+/// calculated THROUGH THE ALREADY OPEN handle: for a link opened with [`open_no_follow`], this returns the link's path,
+/// not its target's.
 ///
-/// `volume_name` es `VOLUME_NAME_DOS` (letras de unidad y carpetas de montaje) o `VOLUME_NAME_GUID` (`Volume{GUID}`).
+/// `volume_name` is `VOLUME_NAME_DOS` (drive letters and mount folders) or `VOLUME_NAME_GUID` (`Volume{GUID}`).
 fn final_path_with(h: &DirHandle, volume_name: u32) -> Result<PathBuf, u32> {
     let mut buf = vec![0u16; 512];
     loop {
-        // SAFETY: `h.0` es un handle válido; `buf` es escribible y se pasa su longitud exacta en unidades UTF-16. Los
-        // flags son `FILE_NAME_NORMALIZED` (0) más la forma de volumen pedida.
+        // SAFETY: `h.0` is a valid handle; `buf` is writable and its exact length in UTF-16 units is passed. The
+        // flags are `FILE_NAME_NORMALIZED` (0) plus the requested volume format.
         let n = unsafe {
             GetFinalPathNameByHandleW(h.0, buf.as_mut_ptr(), buf.len() as u32, volume_name)
         };
         if n == 0 {
-            // SAFETY: `GetLastError` no tiene precondiciones.
+            // SAFETY: `GetLastError` has no preconditions.
             return Err(unsafe { GetLastError() });
         }
         let n = n as usize;
@@ -252,10 +252,10 @@ pub fn long_path(path: &Path) -> Result<PathBuf, u32> {
     let p = with_nul(&wide(path));
     let mut buf = vec![0u16; 512];
     loop {
-        // SAFETY: `p` termina en NUL y vive durante la llamada; `buf` es escribible y se pasa su longitud exacta.
+        // SAFETY: `p` is NUL-terminated and remains alive for the call; `buf` is writable and its exact length is passed.
         let n = unsafe { GetLongPathNameW(p.as_ptr(), buf.as_mut_ptr(), buf.len() as u32) };
         if n == 0 {
-            // SAFETY: `GetLastError` no tiene precondiciones.
+            // SAFETY: `GetLastError` has no preconditions.
             return Err(unsafe { GetLastError() });
         }
         let n = n as usize;
@@ -388,7 +388,7 @@ pub fn enum_dir_extd(
     let buf_len = std::mem::size_of_val(buf);
     let mut name: Vec<u16> = Vec::with_capacity(260);
     loop {
-        // SAFETY: `h.0` es un handle de directorio válido; `buf` es memoria escribible de `buf_len` bytes y está
+        // SAFETY: `h.0` is a valid directory handle; `buf` is writable memory of `buf_len` bytes and is
         // alineada a 8 (es un `[u64]`), como exige la API.
         let ok = unsafe {
             GetFileInformationByHandleEx(
@@ -399,7 +399,7 @@ pub fn enum_dir_extd(
             )
         };
         if ok == 0 {
-            // SAFETY: `GetLastError` no tiene precondiciones.
+            // SAFETY: `GetLastError` has no preconditions.
             let e = unsafe { GetLastError() };
             return if e == ERROR_NO_MORE_FILES {
                 Ok(())
@@ -407,8 +407,8 @@ pub fn enum_dir_extd(
                 Err(e)
             };
         }
-        // SAFETY: `buf` es memoria inicializada de `buf_len` bytes (un `[u64]` entero) y no se modifica mientras
-        // viva esta vista (la siguiente llamada a la API solo ocurre después de soltarla).
+        // SAFETY: `buf` is initialized memory of `buf_len` bytes (a whole `[u64]` array) and is not modified while
+        // this view is alive (the next API call occurs only after it is dropped).
         let bytes: &[u8] =
             unsafe { std::slice::from_raw_parts(buf.as_ptr() as *const u8, buf_len) };
         let mut off = 0usize;
@@ -456,7 +456,7 @@ struct FindHandle(HANDLE);
 
 impl Drop for FindHandle {
     fn drop(&mut self) {
-        // SAFETY: `self.0` es el handle de búsqueda válido que devolvió `FindFirstFileExW`; solo se cierra aquí.
+        // SAFETY: `self.0` is the valid search handle returned by `FindFirstFileExW`; it is closed only here.
         unsafe { FindClose(self.0) };
     }
 }
@@ -470,10 +470,10 @@ pub fn enum_dir_find(path: &[u16], emit: &mut dyn FnMut(&RawEntry)) -> Result<()
     }
     pat.push(b'*' as u16);
     pat.push(0);
-    // SAFETY: WIN32_FIND_DATAW es un POD (enteros y arrays de u16): todo-ceros es válido.
+    // SAFETY: `WIN32_FIND_DATAW` is POD (integers and `u16` arrays); an all-zero value is valid.
     let mut fd: WIN32_FIND_DATAW = unsafe { std::mem::zeroed() };
-    // SAFETY: `pat` termina en NUL; `fd` es escribible y del tipo que espera `FindExInfoBasic`; los demás
-    // argumentos son los valores documentados para una búsqueda sin filtros.
+    // SAFETY: `pat` is NUL-terminated; `fd` is writable and has the type expected by `FindExInfoBasic`; the other
+    // arguments are the documented values for an unfiltered search.
     let h = unsafe {
         FindFirstFileExW(
             pat.as_ptr(),
@@ -485,7 +485,7 @@ pub fn enum_dir_find(path: &[u16], emit: &mut dyn FnMut(&RawEntry)) -> Result<()
         )
     };
     if h == INVALID_HANDLE_VALUE {
-        // SAFETY: `GetLastError` no tiene precondiciones.
+        // SAFETY: `GetLastError` has no preconditions.
         return Err(unsafe { GetLastError() });
     }
     let h = FindHandle(h);
@@ -509,9 +509,9 @@ pub fn enum_dir_find(path: &[u16], emit: &mut dyn FnMut(&RawEntry)) -> Result<()
                     | fd.ftLastWriteTime.dwLowDateTime as i64,
             });
         }
-        // SAFETY: `h.0` es el handle de búsqueda válido que devolvió `FindFirstFileExW`; `fd` es escribible.
+        // SAFETY: `h.0` is the valid search handle returned by `FindFirstFileExW`; `fd` is writable.
         if unsafe { FindNextFileW(h.0, &mut fd) } == 0 {
-            // SAFETY: `GetLastError` no tiene precondiciones.
+            // SAFETY: `GetLastError` has no preconditions.
             let e = unsafe { GetLastError() };
             return if e == ERROR_NO_MORE_FILES {
                 Ok(())
@@ -639,10 +639,10 @@ impl FsFullSizeEx {
 
 /// `NtQueryVolumeInformationFile` de la clase `class` sobre el handle, escribiendo en `info`. Devuelve el NTSTATUS si falla.
 fn nt_query<T>(h: &DirHandle, info: &mut T, class: i32) -> Result<(), i32> {
-    // SAFETY: `IO_STATUS_BLOCK` es un POD (un puntero/entero y un usize): todo-ceros es válido.
+    // SAFETY: `IO_STATUS_BLOCK` is POD (a pointer/integer and a `usize`); an all-zero value is valid.
     let mut iosb: IO_STATUS_BLOCK = unsafe { std::mem::zeroed() };
-    // SAFETY: `h.0` es un handle de archivo válido; `iosb` e `info` son escribibles y a la API se le pasa el tamaño EXACTO
-    // de `T`, una estructura `repr(C)` con el diseño del SDK (comprobado por los `const assert` de arriba).
+    // SAFETY: `h.0` is a valid file handle; `iosb` and `info` are writable, and the API receives the EXACT size
+    // of `T`, a `repr(C)` structure matching the SDK layout (verified by the `const assert`s above).
     let status = unsafe {
         NtQueryVolumeInformationFile(
             h.0,
@@ -673,10 +673,10 @@ fn nt_full_size(h: &DirHandle) -> Result<VolumeSizes, i32> {
 fn ex_space(path: &[u16]) -> Result<(u64, u64, u64), u32> {
     let p = with_nul(path);
     let (mut avail, mut total, mut free) = (0u64, 0u64, 0u64);
-    // SAFETY: `p` termina en NUL y los tres punteros apuntan a variables locales escritables.
+    // SAFETY: `p` is NUL-terminated and the three pointers refer to writable local variables.
     let ok = unsafe { GetDiskFreeSpaceExW(p.as_ptr(), &mut avail, &mut total, &mut free) };
     if ok == 0 {
-        // SAFETY: `GetLastError` no tiene precondiciones.
+        // SAFETY: `GetLastError` has no preconditions.
         return Err(unsafe { GetLastError() });
     }
     Ok((avail, total, free))
@@ -740,7 +740,7 @@ fn volume_space_with(
 pub fn cluster_bytes(path: &[u16]) -> Option<u64> {
     let p = with_nul(path);
     let (mut spc, mut bps, mut free, mut total) = (0u32, 0u32, 0u32, 0u32);
-    // SAFETY: `p` termina en NUL y los cuatro punteros apuntan a variables locales escribibles.
+    // SAFETY: `p` is NUL-terminated and the four pointers refer to writable local variables.
     let ok = unsafe { GetDiskFreeSpaceW(p.as_ptr(), &mut spc, &mut bps, &mut free, &mut total) };
     (ok != 0 && spc != 0 && bps != 0).then(|| spc as u64 * bps as u64)
 }
@@ -748,7 +748,7 @@ pub fn cluster_bytes(path: &[u16]) -> Option<u64> {
 /// Nombre del sistema de archivos del volumen del handle (p. ej. `NTFS`, `ReFS`, `FAT32`).
 pub fn fs_name(h: &DirHandle) -> Result<String, u32> {
     let mut name = [0u16; 64];
-    // SAFETY: `h.0` es un handle válido; `name` es escribible y se pasa su longitud en unidades UTF-16; los punteros
+    // SAFETY: `h.0` is a valid handle; `name` is writable and its length in UTF-16 units is passed; the pointers
     // que no se piden son nulos, como permite la API.
     let ok = unsafe {
         GetVolumeInformationByHandleW(
@@ -763,7 +763,7 @@ pub fn fs_name(h: &DirHandle) -> Result<String, u32> {
         )
     };
     if ok == 0 {
-        // SAFETY: `GetLastError` no tiene precondiciones.
+        // SAFETY: `GetLastError` has no preconditions.
         return Err(unsafe { GetLastError() });
     }
     let len = name.iter().position(|&c| c == 0).unwrap_or(name.len());
