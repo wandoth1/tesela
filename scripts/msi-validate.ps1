@@ -607,19 +607,19 @@ function Test-MsiPackage {
             if ($seq[$t].ContainsKey('FindRelatedProducts') -and $seq[$t].ContainsKey('LaunchConditions')) {
                 $frp = [int]$seq[$t]['FindRelatedProducts'][2]
                 $lcs = [int]$seq[$t]['LaunchConditions'][2]
-                if ($frp -ge $lcs) { $problems.Add("FindRelatedProducts (secuencia $frp) tiene que ir antes de LaunchConditions (secuencia $lcs) en ${t}: si no, el bloqueo de versiones posteriores no surte efecto") }
+                if ($frp -ge $lcs) { $problems.Add("FindRelatedProducts (sequence $frp) must run before LaunchConditions (sequence $lcs) in ${t}; otherwise the newer-version block has no effect") }
             }
         }
         $ies = $seq['InstallExecuteSequence']
         if (-not $ies.ContainsKey('RemoveExistingProducts')) {
-            $problems.Add('falta RemoveExistingProducts en InstallExecuteSequence (MajorUpgrade no desinstalaria la version anterior)')
+            $problems.Add('RemoveExistingProducts is missing from InstallExecuteSequence (MajorUpgrade would not uninstall the previous version)')
         } else {
             $rep = $ies['RemoveExistingProducts']
-            if ($rep[1] -cne '') { $problems.Add("RemoveExistingProducts lleva la condicion '$($rep[1])' (tiene que ser incondicional)") }
+            if ($rep[1] -cne '') { $problems.Add("RemoveExistingProducts has condition '$($rep[1])' (it must be unconditional)") }
             $lo = if ($ies.ContainsKey('InstallValidate')) { [int]$ies['InstallValidate'][2] } else { $null }
             $hi = if ($ies.ContainsKey('InstallInitialize')) { [int]$ies['InstallInitialize'][2] } else { $null }
             if ($null -ceq $lo -or $null -ceq $hi -or [int]$rep[2] -le $lo -or [int]$rep[2] -ge $hi) {
-                $problems.Add("RemoveExistingProducts (secuencia $($rep[2])) tiene que ir entre InstallValidate e InstallInitialize")
+                $problems.Add("RemoveExistingProducts (sequence $($rep[2])) must run between InstallValidate and InstallInitialize")
             }
         }
         # SECURE PROPERTIES: exactly the expected set. The two Upgrade table properties (WIX_*) must survive the UI-to-server
@@ -628,10 +628,10 @@ function Test-MsiPackage {
         # v0.1.4 R-S3 decision. See installer/Tesela.wxs, which also explains the AlwaysInstallElevated risk).
         $secure = @(($props['SecureCustomProperties'] -split ';') | Where-Object { $_ })
         foreach ($a in $MsiExpectedSecure) {
-            if ($secure -cnotcontains $a) { $problems.Add("SecureCustomProperties no incluye $a (tiene: '$($props['SecureCustomProperties'])')") }
+            if ($secure -cnotcontains $a) { $problems.Add("SecureCustomProperties does not include $a (contains: '$($props['SecureCustomProperties'])')") }
         }
         foreach ($a in $secure) {
-            if ($MsiExpectedSecure -cnotcontains $a) { $problems.Add("SecureCustomProperties incluye $a, que no es una propiedad segura esperada (tiene: '$($props['SecureCustomProperties'])')") }
+            if ($MsiExpectedSecure -cnotcontains $a) { $problems.Add("SecureCustomProperties includes $a, which is not an expected secure property (contains: '$($props['SecureCustomProperties'])')") }
         }
 
         # RemoveFile: ONE row only (remove INSTALLFOLDER if empty), with no file name: a FileName value (e.g.
@@ -640,37 +640,37 @@ function Test-MsiPackage {
         $rm = @(Get-MsiRows $msi 'SELECT `FileKey`, `Component_`, `FileName`, `DirProperty`, `InstallMode` FROM `RemoveFile`' 5)
         foreach ($r in $rm) {
             if ($r[2] -cne '' -or $r[3] -cne 'INSTALLFOLDER' -or $r[4] -cne '2') {
-                $problems.Add("fila de RemoveFile no esperada: '$($r[0])' FileName='$($r[2])' DirProperty='$($r[3])' InstallMode='$($r[4])'")
+                $problems.Add("unexpected RemoveFile row: '$($r[0])' FileName='$($r[2])' DirProperty='$($r[3])' InstallMode='$($r[4])'")
             }
         }
-        if ($rm.Count -cne 1) { $problems.Add("RemoveFile tiene que tener exactamente 1 fila (INSTALLFOLDER, solo si queda vacia); hay $($rm.Count)") }
+        if ($rm.Count -cne 1) { $problems.Add("RemoveFile must have exactly 1 row (INSTALLFOLDER, only if empty); found $($rm.Count)") }
 
         # Previous installs: FOUR registry searches (HKCU and HKLM, InstallFolder and DesktopShortcut; no custom action)
         # into TESELA_PREV_*. They support scope-change blocking, upgrade directory selection, and the remembered desktop shortcut.
         # BOTH roots are searched because AppSearch runs before the UI
         # selects a scope.
         $loc = @(Get-MsiRows $msi 'SELECT `Signature_`, `Root`, `Key`, `Name`, `Type` FROM `RegLocator`' 5)
-        if ($loc.Count -cne $MsiExpectedRegLocators.Count) { $problems.Add("RegLocator tiene $($loc.Count) busquedas de registro, se esperaban $($MsiExpectedRegLocators.Count)") }
+        if ($loc.Count -cne $MsiExpectedRegLocators.Count) { $problems.Add("RegLocator has $($loc.Count) registry searches; expected $($MsiExpectedRegLocators.Count)") }
         $app = @(Get-MsiRows $msi 'SELECT `Property`, `Signature_` FROM `AppSearch`' 2)
-        if ($app.Count -cne $MsiExpectedRegLocators.Count) { $problems.Add("AppSearch tiene $($app.Count) filas, se esperaban $($MsiExpectedRegLocators.Count)") }
+        if ($app.Count -cne $MsiExpectedRegLocators.Count) { $problems.Add("AppSearch has $($app.Count) rows; expected $($MsiExpectedRegLocators.Count)") }
         foreach ($e in $MsiExpectedRegLocators) {
             $l = @($loc | Where-Object { $_[0] -ceq $e.Id })
             # Type 18 = 2 (raw value) + 16 (64-bit view: the package is x64); 16 = directory (containing tesela.exe) in the 64-bit view.
             if ($l.Count -cne 1 -or $l[0][1] -cne $e.Root -or $l[0][2] -cne $MsiExpectedRegistryKey -or $l[0][3] -cne $e.Name -or $l[0][4] -cne $e.Type) {
-                $problems.Add("se esperaba UNA busqueda de registro $($e.Id): raiz $($e.Root), Software" + [char]92 + "Tesela, valor $($e.Name), tipo $($e.Type)")
+                $problems.Add("expected ONE registry search $($e.Id): root $($e.Root), Software" + [char]92 + "Tesela, value $($e.Name), type $($e.Type)")
             }
             $a = @($app | Where-Object { $_[1] -ceq $e.Id })
-            if ($a.Count -cne 1 -or $a[0][0] -cne $e.Property) { $problems.Add("AppSearch tiene que asignar $($e.Property) con la busqueda $($e.Id)") }
+            if ($a.Count -cne 1 -or $a[0][0] -cne $e.Property) { $problems.Add("AppSearch must assign $($e.Property) using search $($e.Id)") }
         }
         # AppSearch (the action that runs the search) must be unconditional and run BEFORE CostFinalize in both install
         # sequences; otherwise the remembered directory is not restored during upgrade, repair, or uninstall, leaving
         # files in a custom directory orphaned.
         foreach ($t in 'InstallExecuteSequence', 'InstallUISequence') {
-            if (-not $seq[$t].ContainsKey('AppSearch')) { $problems.Add("falta AppSearch en $t"); continue }
-            if ($seq[$t]['AppSearch'][1] -cne '') { $problems.Add("AppSearch en ${t} lleva la condicion '$($seq[$t]['AppSearch'][1])' (tiene que ser incondicional)") }
-            if (-not $seq[$t].ContainsKey('CostFinalize')) { $problems.Add("falta CostFinalize en $t"); continue }
+            if (-not $seq[$t].ContainsKey('AppSearch')) { $problems.Add("missing AppSearch in $t"); continue }
+            if ($seq[$t]['AppSearch'][1] -cne '') { $problems.Add("AppSearch in ${t} has condition '$($seq[$t]['AppSearch'][1])' (it must be unconditional)") }
+            if (-not $seq[$t].ContainsKey('CostFinalize')) { $problems.Add("missing CostFinalize in $t"); continue }
             if ([int]$seq[$t]['AppSearch'][2] -ge [int]$seq[$t]['CostFinalize'][2]) {
-                $problems.Add("AppSearch (secuencia $($seq[$t]['AppSearch'][2])) tiene que ir antes de CostFinalize (secuencia $($seq[$t]['CostFinalize'][2])) en ${t}")
+                $problems.Add("AppSearch (sequence $($seq[$t]['AppSearch'][2])) must run before CostFinalize (sequence $($seq[$t]['CostFinalize'][2])) in ${t}")
             }
         }
         # The Signature table contains only the two tesela.exe check rows (PrevUserExe and PrevMachineExe); no additional file
