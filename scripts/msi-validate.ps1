@@ -279,7 +279,7 @@ function Get-MsiRows {
     param($Msi, [string]$Sql, [int]$Columns, [switch]$NoTableCheck)
     if (-not $NoTableCheck) {
         $m = [regex]::Match($Sql, 'FROM\s+`([^`]+)`')
-        if (-not $m.Success) { throw "consulta sin tabla: $Sql" }
+        if (-not $m.Success) { throw "query has no table: $Sql" }
         if ($Msi.Tables -notcontains $m.Groups[1].Value) { return @() }
     }
     $rows = New-Object System.Collections.Generic.List[object]
@@ -320,15 +320,15 @@ function Test-MsiUserInterface {
     param($Msi, $Props, $Seq, $Problems)
     $dlgRows = @(Get-MsiRows $Msi 'SELECT `Dialog`, `Attributes`, `Title` FROM `Dialog`' 3)
     $dlgIds = @($dlgRows | ForEach-Object { $_[0] })
-    foreach ($d in $MsiExpectedDialogs) { if ($dlgIds -cnotcontains $d) { $Problems.Add("falta la ventana $d") } }
-    foreach ($d in $dlgIds) { if ($MsiExpectedDialogs -cnotcontains $d) { $Problems.Add("ventana no esperada: $d") } }
-    if ($Props['ErrorDialog'] -cne 'ErrorDlg') { $Problems.Add("la propiedad ErrorDialog es '$($Props['ErrorDialog'])', se esperaba 'ErrorDlg'") }
+    foreach ($d in $MsiExpectedDialogs) { if ($dlgIds -cnotcontains $d) { $Problems.Add("missing dialog $d") } }
+    foreach ($d in $dlgIds) { if ($MsiExpectedDialogs -cnotcontains $d) { $Problems.Add("unexpected dialog: $d") } }
+    if ($Props['ErrorDialog'] -cne 'ErrorDlg') { $Problems.Add("ErrorDialog property is '$($Props['ErrorDialog'])'; expected 'ErrorDlg'") }
 
     # Controls: types without images only. Referenced strings: `[Tx...]`.
     $ctl = @(Get-MsiRows $Msi 'SELECT `Dialog_`, `Control`, `Type`, `Property`, `Text`, `Attributes` FROM `Control`' 6)
     $referenced = New-Object System.Collections.Generic.HashSet[string] ([System.StringComparer]::Ordinal)
     foreach ($c in $ctl) {
-        if ($MsiAllowedControlTypes -cnotcontains $c[2]) { $Problems.Add("control no permitido: $($c[0]).$($c[1]) es de tipo $($c[2]) (solo controles sin imagen)") }
+        if ($MsiAllowedControlTypes -cnotcontains $c[2]) { $Problems.Add("control not allowed: $($c[0]).$($c[1]) has type $($c[2]) (only controls without images)") }
         foreach ($m in [regex]::Matches($c[4], '\[([A-Za-z0-9_]+)\]')) {
             $n = $m.Groups[1].Value
             if ($n -clike 'Tx*') { [void]$referenced.Add($n) }
@@ -343,19 +343,19 @@ function Test-MsiUserInterface {
     }
     # The per-machine Install button has the UAC shield (ElevationShield, 0x00800000): Windows prompts for admin when continuing.
     $shield = @($ctl | Where-Object { $_[0] -ceq 'VerifyReadyDlg' -and $_[1] -ceq 'InstallElevated' })
-    if ($shield.Count -cne 1 -or (([int]$shield[0][5]) -band 8388608) -eq 0) { $Problems.Add('VerifyReadyDlg.InstallElevated (el boton Instalar de "para todos") tiene que llevar el escudo de UAC (ElevationShield)') }
+    if ($shield.Count -cne 1 -or (([int]$shield[0][5]) -band 8388608) -eq 0) { $Problems.Add('VerifyReadyDlg.InstallElevated (the "for everyone" Install button) must have the UAC shield (ElevationShield)') }
     # Desktop checkbox: property DESKTOPSHORTCUT with value 1.
     $cb = @(Get-MsiRows $Msi 'SELECT `Property`, `Value` FROM `CheckBox`' 2)
     if ($cb.Count -cne 1 -or $cb[0][0] -cne 'DESKTOPSHORTCUT' -or $cb[0][1] -cne '1') {
-        $Problems.Add('la tabla CheckBox tiene que tener exactamente una casilla: DESKTOPSHORTCUT = 1')
+        $Problems.Add('the CheckBox table must contain exactly one checkbox: DESKTOPSHORTCUT = 1')
     }
     $fold = @($ctl | Where-Object { $_[0] -ceq 'FolderDlg' -and $_[1] -ceq 'FolderEdit' })
-    if ($fold.Count -cne 1 -or $fold[0][2] -cne 'PathEdit' -or $fold[0][3] -cne 'INSTALLFOLDER') { $Problems.Add('FolderDlg.FolderEdit tiene que ser un PathEdit sobre INSTALLFOLDER') }
+    if ($fold.Count -cne 1 -or $fold[0][2] -cne 'PathEdit' -or $fold[0][3] -cne 'INSTALLFOLDER') { $Problems.Add('FolderDlg.FolderEdit must be a PathEdit on INSTALLFOLDER') }
     $scope = @($ctl | Where-Object { $_[0] -ceq 'ScopeDlg' -and $_[1] -ceq 'ScopeGroup' })
-    if ($scope.Count -cne 1 -or $scope[0][2] -cne 'RadioButtonGroup' -or $scope[0][3] -cne 'TESELA_SCOPE') { $Problems.Add('ScopeDlg.ScopeGroup tiene que ser un grupo de opciones sobre TESELA_SCOPE') }
+    if ($scope.Count -cne 1 -or $scope[0][2] -cne 'RadioButtonGroup' -or $scope[0][3] -cne 'TESELA_SCOPE') { $Problems.Add('ScopeDlg.ScopeGroup must be a radio button group bound to TESELA_SCOPE') }
     $scopeValues = @($rb | Where-Object { $_[0] -ceq 'TESELA_SCOPE' } | ForEach-Object { $_[1] } | Sort-Object)
-    if (($scopeValues -join ',') -cne 'machine,user') { $Problems.Add("el grupo de ambito tiene que tener las opciones 'user' y 'machine'; tiene: $($scopeValues -join ',')") }
-    if ($Props['TESELA_SCOPE'] -cne 'user') { $Problems.Add("TESELA_SCOPE por defecto = '$($Props['TESELA_SCOPE'])', se esperaba 'user' (por usuario como predeterminado)") }
+    if (($scopeValues -join ',') -cne 'machine,user') { $Problems.Add("the scope group must have the 'user' and 'machine' options; found: $($scopeValues -join ',')") }
+    if ($Props['TESELA_SCOPE'] -cne 'user') { $Problems.Add("TESELA_SCOPE default = '$($Props['TESELA_SCOPE'])'; expected 'user' (per-user by default)") }
 
     # Control events: native events only, and every target dialog exists.
     $ev = @(Get-MsiRows $Msi 'SELECT `Dialog_`, `Control_`, `Event`, `Argument`, `Condition`, `Ordering` FROM `ControlEvent`' 6)

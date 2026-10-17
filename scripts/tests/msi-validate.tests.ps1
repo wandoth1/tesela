@@ -369,7 +369,7 @@ try {
     $path = New-Mutant 'default-desktop' @('INSERT INTO `Property` (`Property`, `Value`) VALUES (''DESKTOPSHORTCUT'', ''1'')')
     Check 'DESKTOPSHORTCUT marcada por defecto' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*DESKTOPSHORTCUT tiene un valor por defecto*')
     $path = New-Mutant 'default-scope' @('UPDATE `Property` SET `Value`=''machine'' WHERE `Property`=''TESELA_SCOPE''')
-    Check 'el ambito de la ventana parte en "para todos"' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*TESELA_SCOPE por defecto*user*')
+    Check 'el ambito de la ventana parte en "para todos"' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*TESELA_SCOPE default*user*')
 
     # --- Shortcuts: no arguments and the install directory as working directory -----------------------------------------
     $path = New-Mutant 'shortcut-args' @("UPDATE ``Shortcut`` SET ``Arguments``='--demo'")
@@ -450,13 +450,13 @@ try {
 
     # --- UI: dialogs, controls without images, and native events only ---------------------------------------------------
     $path = New-Mutant 'ui-extra-dialog' @('INSERT INTO `Dialog` (`Dialog`, `HCentering`, `VCentering`, `Width`, `Height`, `Attributes`, `Title`, `Control_First`) VALUES (''EvilDlg'', 50, 50, 100, 100, 3, ''x'', ''Ok'')')
-    Check 'una ventana de mas' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*ventana no esperada*EvilDlg*')
+    Check 'una ventana de mas' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*unexpected dialog*EvilDlg*')
     $path = New-Mutant 'ui-missing-dialog' @('DELETE FROM `Dialog` WHERE `Dialog`=''InvalidDirDlg''')
-    Check 'falta una ventana' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*falta la ventana InvalidDirDlg*')
+    Check 'falta una ventana' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*missing dialog InvalidDirDlg*')
     $path = New-Mutant 'ui-bitmap' @('UPDATE `Control` SET `Type`=''Bitmap'' WHERE `Dialog_`=''WelcomeDlg'' AND `Control`=''Body''')
-    Check 'un control de imagen (necesita Binary)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*control no permitido*WelcomeDlg.Body*Bitmap*')
+    Check 'un control de imagen (necesita Binary)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*control not allowed*WelcomeDlg.Body*Bitmap*')
     $path = New-Mutant 'ui-icon' @('UPDATE `Control` SET `Type`=''Icon'' WHERE `Dialog_`=''WelcomeDlg'' AND `Control`=''Body''')
-    Check 'un control de icono' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*control no permitido*WelcomeDlg.Body*Icon*')
+    Check 'un control de icono' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*control not allowed*WelcomeDlg.Body*Icon*')
     $evCols = '`Dialog_`, `Control_`, `Event`, `Argument`, `Condition`, `Ordering`'
     $path = New-Mutant 'ui-doaction' @("INSERT INTO ``ControlEvent`` ($evCols) VALUES ('WelcomeDlg', 'Next', 'DoAction', 'TeselaFolderPrevUser', '1', 5)")
     Check 'un evento DoAction (llamaria a una accion personalizada)' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*evento de control no permitido*WelcomeDlg.Next*DoAction*')
@@ -484,13 +484,13 @@ try {
     $path = New-Mutant 'ui-browse-prop' @('UPDATE `Control` SET `Property`=''INSTALLFOLDER'' WHERE `Dialog_`=''BrowseDlg'' AND `Control`=''DirectoryList''')
     Check 'el dialogo de examinar trabaja sobre otra propiedad' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*BrowseDlg.DirectoryList*_BrowseProperty*')
     $path = New-Mutant 'ui-folderedit' @('UPDATE `Control` SET `Property`=''ALLUSERS'' WHERE `Dialog_`=''FolderDlg'' AND `Control`=''FolderEdit''')
-    Check 'el campo de carpeta no es sobre INSTALLFOLDER' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*FolderDlg.FolderEdit tiene que ser un PathEdit sobre INSTALLFOLDER*')
+    Check 'el campo de carpeta no es sobre INSTALLFOLDER' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*FolderDlg.FolderEdit must be a PathEdit on INSTALLFOLDER*')
     $path = New-Mutant 'ui-checkbox' @('UPDATE `CheckBox` SET `Value`=''2'' WHERE `Property`=''DESKTOPSHORTCUT''')
     Check 'la casilla del escritorio con otro valor' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*CheckBox*DESKTOPSHORTCUT*')
     $path = New-Mutant 'ui-errordialog' @('UPDATE `Property` SET `Value`=''WelcomeDlg'' WHERE `Property`=''ErrorDialog''')
     Check 'la propiedad ErrorDialog apunta a otra ventana' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*ErrorDialog*ErrorDlg*')
     $path = New-Mutant 'ui-radio-extra' @('INSERT INTO `RadioButton` (`Property`, `Order`, `Value`, `X`, `Y`, `Width`, `Height`, `Text`) VALUES (''TESELA_SCOPE'', 3, ''otro'', 0, 80, 100, 16, ''x'')')
-    Check 'una tercera opcion de ambito' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*opciones ''user'' y ''machine''*')
+    Check 'una tercera opcion de ambito' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*scope group must have the ''user'' and ''machine'' options*')
     $path = New-Mutant 'ui-eventmapping' @('INSERT INTO `EventMapping` (`Dialog_`, `Control_`, `Event`, `Attribute`) VALUES (''WelcomeDlg'', ''Body'', ''ActionText'', ''Text'')')
     Check 'una suscripcion de evento de mas' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*suscripcion de evento no esperada*WelcomeDlg*')
     $path = New-Mutant 'ui-actiontext' @('INSERT INTO `ActionText` (`Action`, `Description`) VALUES (''EvilAction'', ''x'')')
@@ -539,7 +539,7 @@ try {
 
     # --- B1/escudo: el boton Instalar de "para todos" lleva el escudo de UAC (ElevationShield) --------------------------------------
     $path = New-Mutant 'noshield' @('UPDATE `Control` SET `Attributes`=2 WHERE `Dialog_`=''VerifyReadyDlg'' AND `Control`=''InstallElevated''')
-    Check 'el boton Instalar de "para todos" sin el escudo de UAC' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*InstallElevated*escudo*')
+    Check 'el boton Instalar de "para todos" sin el escudo de UAC' (Has-Problem (Test-MsiPackage -Path $path -ExpectedVersion $version) '*InstallElevated*UAC shield*')
 
     # --- An API error is not an empty table -----------------------------------------------------------------------------
     $m = Open-MsiDatabase $Msi
