@@ -267,7 +267,7 @@ function Invoke-StdPhase([string]$Phase, [string]$MsiPath) {
     try {
         $outFile = Join-Path $stdShared "std-$Phase.out.txt"
         $errFile = Join-Path $stdShared "std-$Phase.err.txt"
-        $p = Start-Process -FilePath $pwshExe -ArgumentList ($stdArgs -join ' ') -Credential $script:stdUser.Cred -LoadUserProfile -WorkingDirectory $stdShared -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile
+        $p = Start-Process -FilePath $pwshExe -ArgumentList ($stdArgs -join ' ') -Credential $script:stdUser.Cred -LoadUserProfile -WorkingDirectory $stdShared -UseNewEnvironment -PassThru -RedirectStandardOutput $outFile -RedirectStandardError $errFile
     } catch {
         Check "se puede lanzar un proceso como el usuario estandar (fase $Phase)" $false "Start-Process -Credential fallo: $($_.Exception.Message)"
         return
@@ -296,6 +296,26 @@ function Invoke-StdPhase([string]$Phase, [string]$MsiPath) {
         }
     }
     Check "la fase $Phase del usuario estandar hizo comprobaciones" ($count -gt 0)
+    if (@($lines | Where-Object { $_ -like 'FAIL|*' }).Count -gt 0) { Show-StdLogs $Phase }
+}
+function Show-StdLogs([string]$Phase) {
+    # Si una fase falla: lo mas relevante de los registros de msiexec del usuario estandar (errores, directivas, ambito, elevacion).
+    foreach ($log in Get-ChildItem -LiteralPath $stdShared -Filter "std-$Phase-*.log" -ErrorAction SilentlyContinue) {
+        $text = [System.Text.Encoding]::Latin1.GetString(@([System.IO.File]::ReadAllBytes($log.FullName) | Where-Object { $_ -ne 0 }))
+        Write-Host "  [estandar] $($log.Name): lineas relevantes"
+        ($text -split "`r?`n") | Where-Object { $_ -match 'Error|error|1625|1925|policy|Policy|DisableMSI|DisableUserInstalls|MSI_LUA|dual mode|Return value|Elevat|privilege|not allowed|forbidden|rejected|Product:|Note:' } | Select-Object -First 40 | ForEach-Object { Write-Host "    | $($_.Trim())" }
+    }
+}
+function Show-PolicyDiagnostics {
+    # Directivas del runner que pueden decidir si un usuario estandar puede instalar (solo lectura): sale en el registro del job.
+    foreach ($k in 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Installer', 'HKCU:\SOFTWARE\Policies\Microsoft\Windows\Installer', 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Safer\CodeIdentifiers', 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System', 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\SrpV2') {
+        if (Test-Path -LiteralPath $k) {
+            Write-Host "  [directiva] $k"
+            (Get-ItemProperty -LiteralPath $k | Get-Member -MemberType NoteProperty | Where-Object { $_.Name -notlike 'PS*' } | ForEach-Object { "$($_.Name)=$((Get-ItemProperty -LiteralPath $k).($_.Name))" }) -join '; ' | ForEach-Object { Write-Host "    $_" }
+        } else { Write-Host "  [directiva] $k : no existe" }
+    }
+    $svc = Get-Service -Name seclogon -ErrorAction SilentlyContinue
+    Write-Host "  [servicio] seclogon (inicio de sesion secundario): $($svc.Status) / $($svc.StartType)"
 }
 function Get-LuaEvidence {
     # Lineas del registro de msiexec que dicen como decidio el motor el ambito y la elevacion (MSI_LUA, dual mode, 1925...).
@@ -533,6 +553,7 @@ try {
     # Usuario local desechable, sin administrador, con contrasena aleatoria que no se imprime. Todo lo que hace el lo cuenta el mismo
     # (su HKCU y su perfil no son los del administrador del runner).
     New-Item -ItemType Directory -Force -Path $stdShared | Out-Null
+    Show-PolicyDiagnostics
     New-StandardUser
     & icacls.exe $stdShared '/grant' "${stdName}:(OI)(CI)M" | Out-Null
     Set-Content -LiteralPath (Join-Path $stdShared '.tesela-ci-marker') -Value 'created by msi-install.tests.ps1 in a GitHub-hosted runner' -Encoding ASCII
