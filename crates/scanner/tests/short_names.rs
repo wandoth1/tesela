@@ -1,7 +1,7 @@
-//! Escaneos lanzados desde la forma CORTA 8.3 de una carpeta (en algunos runners `%TEMP%` la usa: un componente largo
-//! del perfil aparece abreviado como `NOMBRE~1`). El escáner debe reconstruir las rutas en forma larga y la cola
-//! prioritaria debe adoptar igual aunque la ruta prioritaria se dé en forma corta. Si el volumen no tiene nombres 8.3
-//! activos, los tests se saltan con un mensaje.
+//! Scans started from a folder's SHORT 8.3 form (some runners use it for `%TEMP%`: a long profile component
+//! appears abbreviated as `NAME~1`). The scanner must reconstruct long-form paths, and the priority queue must adopt them
+//! even when the priority path is given in short form. If the volume does not have active 8.3 names,
+//! the tests are skipped with a message.
 
 mod common;
 
@@ -17,7 +17,7 @@ fn opts(root: &std::path::Path) -> ScanOptions {
     o
 }
 
-/// Crea el árbol de prueba y devuelve la forma corta de la raíz y de la carpeta profunda, o `None` si no hay 8.3.
+/// Creates the test tree and returns the short forms of the root and deep folder, or `None` if 8.3 names are unavailable.
 fn setup(t: &TempTree) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
     t.write(&format!("{LARGA_A}/{LARGA_B}/archivo-uno.bin"), 30_000);
     t.write(
@@ -39,7 +39,7 @@ fn setup(t: &TempTree) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
     Some((short_root, short_deep))
 }
 
-/// Asienta el `mtime` de los directorios (NTFS lo refresca de forma diferida) para poder comparar dos escaneos.
+/// Settles the directories' `mtime` (NTFS refreshes it lazily) so two scans can be compared.
 fn settle(root: &std::path::Path) {
     let mut o = opts(root);
     o.priority_paths = Some(vec![]);
@@ -92,7 +92,7 @@ fn la_cola_prioritaria_adopta_igual_con_rutas_en_forma_corta() {
     base.priority_paths = Some(vec![]);
     let reference = scan(base).unwrap().tree;
 
-    // Raíz corta + ruta prioritaria corta; raíz larga + prioritaria corta; raíz corta + prioritaria larga.
+    // Short root + short priority path; long root + short priority path; short root + long priority path.
     let cases = [
         (short_root.clone(), short_deep.clone()),
         (t.long_root(), short_deep.clone()),

@@ -699,7 +699,7 @@ mod tests {
             cloud: false,
         };
         let mut st = WorkerState::new();
-        // Con ids de sobra entrega su lote.
+        // With IDs available, it returns its batch.
         assert!(process_dir(&sh, &tx, &task, true, &mut st).is_ok());
         assert!(rx.try_recv().is_ok());
         // At the counter limit: error, exhaustion flag, cancellation, and no batch.

@@ -212,8 +212,7 @@ mod tests {
     #[test]
     fn las_rutas_conocidas_reales_de_navegador_son_cachés_concretas() {
         use crate::browser::{BrowserPath, classify_browser_path};
-        // Con las carpetas reales del sistema: toda ruta de navegador es una caché concreta, y ninguna otra ruta
-        // conocida cae en una.
+        // With real system folders, every browser path is a specific cache, and no other known path is classified as one.
         let roots = BrowserRoots::from_system();
         for (kind, p) in known_paths_labeled(Some(Path::new(r"C:\"))) {
             match kind {
@@ -236,17 +235,17 @@ mod tests {
     fn cada_ruta_conocida_lleva_su_clase() {
         use crate::browser::{BrowserPath, classify_browser_path};
         let labeled = known_paths_labeled(Some(Path::new(r"C:\")));
-        // Mismo contenido y orden que `known_paths`.
+        // Same contents and order as `known_paths`.
         let plain: Vec<PathBuf> = labeled.iter().map(|(_, p)| p.clone()).collect();
         assert_eq!(plain, known_paths(Some(Path::new(r"C:\"))));
         assert!(labeled.iter().any(|(k, _)| *k == KnownKind::Downloads));
         assert!(labeled.iter().any(|(k, _)| *k == KnownKind::RecycleBin));
         assert!(labeled.iter().any(|(k, _)| *k == KnownKind::UserTemp));
         assert!(labeled.iter().any(|(k, _)| *k == KnownKind::WindowsTemp));
-        // Con un entorno sintético, la lista de rutas conocidas lleva SOLO cachés concretas de navegador.
+        // In a synthetic environment, the known-path list contains ONLY specific browser caches.
         let base = dunce::canonicalize(std::env::temp_dir()).unwrap();
         let root = base.join(format!("tesela-test-{}", uuid::Uuid::new_v4()));
-        // Guarda: se borra al soltarla, también si la prueba entra en pánico (solo bajo `%TEMP%`, nombre `tesela-test-*`).
+        // Guard: removed on drop, including if the test panics (only under `%TEMP%`, with a `tesela-test-*` name).
         struct Guard(PathBuf);
         impl Drop for Guard {
             fn drop(&mut self) {
@@ -286,7 +285,7 @@ mod tests {
                 )
             })
             .collect();
-        // Informes de errores y volcados: solo `ReportArchive` (existe) y `CrashDumps`; nunca `ERC` ni la carpeta `WER`.
+        // Error reports and dumps: only `ReportArchive` (which exists) and `CrashDumps`; never `ERC` or the `WER` folder.
         let diag: Vec<&(KnownKind, PathBuf)> = v
             .iter()
             .filter(|(k, _)| matches!(k, KnownKind::WerReports | KnownKind::CrashDumps))
@@ -297,7 +296,7 @@ mod tests {
             root.join("Local/Microsoft/Windows/WER/ReportArchive")
         )));
         assert!(diag.contains(&&(KnownKind::CrashDumps, root.join("Local/CrashDumps"))));
-        // Solo `Default\Cache` de Chrome y `cache2` de Firefox LOCAL.
+        // Only Chrome's `Default\Cache` and Firefox's LOCAL `cache2`.
         assert_eq!(browsers.len(), 2, "{browsers:?}");
         for (k, p) in browsers {
             assert_eq!(classify_browser_path(&roots, p), BrowserPath::Cache(*k));

@@ -60,7 +60,7 @@ mod tests {
     use super::*;
     use std::path::Path;
 
-    /// Carpeta temporal propia (`%TEMP%\tesela-test-<uuid>`) que se borra al soltarla, también si la prueba entra en pánico.
+    /// Test-owned temporary folder (`%TEMP%\tesela-test-<uuid>`) removed on drop, including if the test panics.
     struct Guard(PathBuf);
     impl Guard {
         fn new() -> Guard {
@@ -110,7 +110,7 @@ mod tests {
                 (KnownKind::CrashDumps, local.join("CrashDumps")),
             ]
         );
-        // Sin `%LOCALAPPDATA%`, nada.
+        // Without `%LOCALAPPDATA%`, there are no paths.
         assert!(diagnostic_dirs(&BrowserRoots::default()).is_empty());
         assert!(diagnostic_dirs_verified(&BrowserRoots::default()).is_empty());
     }
@@ -124,7 +124,7 @@ mod tests {
         g.dir("Local/CrashDumps");
         let local = g.0.join("Local");
         let v = diagnostic_dirs_verified(&roots_of(&local));
-        // `ReportQueue` no existe: no sale. `ERC`, `Temp` y la propia `WER` no salen nunca.
+        // `ReportQueue` does not exist, so it is absent. `ERC`, `Temp`, and `WER` itself are never included.
         assert_eq!(
             v,
             vec![
@@ -135,7 +135,7 @@ mod tests {
                 (KnownKind::CrashDumps, local.join("CrashDumps")),
             ]
         );
-        // Un archivo con el nombre de la carpeta no vale.
+        // A file with the folder's name does not qualify.
         std::fs::remove_dir_all(local.join("CrashDumps")).unwrap();
         std::fs::write(local.join("CrashDumps"), b"x").unwrap();
         let v = diagnostic_dirs_verified(&roots_of(&local));

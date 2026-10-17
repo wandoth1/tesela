@@ -1,8 +1,8 @@
-//! Utilidades de los tests de integración: un árbol temporal `%TEMP%\tesela-test-<uuid>` con guarda RAII.
+//! Integration test utilities: a temporary `%TEMP%\tesela-test-<uuid>` tree with an RAII guard.
 //!
-//! SEGURIDAD: los tests solo escriben y borran dentro de esa carpeta, creada por el propio test. La guarda comprueba,
-//! antes de borrar nada, que la ruta es hija directa de `%TEMP%` y que su nombre empieza por `tesela-test-`. Los
-//! junctions se eliminan antes como enlaces (nunca se entra en ellos) y los destinos están dentro del mismo árbol.
+//! SAFETY: tests write and delete only inside this folder, which each test creates. Before deleting anything, the guard
+//! checks that the path is a direct child of `%TEMP%` and that its name starts with `tesela-test-`. Junctions are removed
+//! first as links (they are never entered), and their targets are inside the same tree.
 #![allow(dead_code, unsafe_code)]
 
 use std::ffi::c_void;
@@ -15,8 +15,8 @@ use windows_sys::Win32::Storage::FileSystem::{
     FILE_STANDARD_INFO, FileStandardInfo, GetFileInformationByHandleEx, GetShortPathNameW,
 };
 
-/// `AllocationSize` de un archivo según `FileStandardInfo` sobre su propio handle (oráculo independiente del
-/// listado de directorio que usa el escáner).
+/// A file's `AllocationSize` from `FileStandardInfo` queried on its own handle (an independent oracle from the directory
+/// listing used by the scanner).
 pub fn allocation_size(path: &Path) -> u64 {
     use std::os::windows::fs::OpenOptionsExt;
     use std::os::windows::io::AsRawHandle;
@@ -26,9 +26,9 @@ pub fn allocation_size(path: &Path) -> u64 {
         .custom_flags(0x0200_0000) // FILE_FLAG_BACKUP_SEMANTICS
         .open(path)
         .expect("abre el archivo para leer atributos");
-    // SAFETY: FILE_STANDARD_INFO es una estructura POD (enteros): todo-ceros es un valor válido.
+    // SAFETY: FILE_STANDARD_INFO is a POD structure (integers): an all-zero value is valid.
     let mut info: FILE_STANDARD_INFO = unsafe { std::mem::zeroed() };
-    // SAFETY: el handle pertenece a `f`, que sigue vivo; el puntero apunta a `info` y se pasa su tamaño exacto.
+    // SAFETY: the handle belongs to `f`, which is still alive; the pointer refers to `info` and its exact size is passed.
     let ok = unsafe {
         GetFileInformationByHandleEx(
             f.as_raw_handle() as HANDLE,
@@ -41,18 +41,18 @@ pub fn allocation_size(path: &Path) -> u64 {
     info.AllocationSize.max(0) as u64
 }
 
-/// Forma corta 8.3 de una ruta EXISTENTE (`GetShortPathNameW`). Si el volumen no tiene nombres 8.3 activos devuelve
-/// la ruta sin cambios.
+/// Short 8.3 form of an EXISTING path (`GetShortPathNameW`). If the volume has no active 8.3 names, returns the path
+/// unchanged.
 pub fn short_path(path: &Path) -> PathBuf {
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
     let wide: Vec<u16> = path.as_os_str().encode_wide().chain(Some(0)).collect();
-    // SAFETY: `wide` termina en NUL; con búfer nulo y longitud 0 la API devuelve el tamaño necesario.
+    // SAFETY: `wide` is NUL-terminated; with a null buffer and length 0, the API returns the required size.
     let needed = unsafe { GetShortPathNameW(wide.as_ptr(), std::ptr::null_mut(), 0) };
     if needed == 0 {
         return path.to_path_buf();
     }
     let mut buf = vec![0u16; needed as usize];
-    // SAFETY: `wide` termina en NUL y `buf` es escribible con `needed` unidades UTF-16.
+    // SAFETY: `wide` is NUL-terminated and `buf` is writable for `needed` UTF-16 units.
     let n = unsafe { GetShortPathNameW(wide.as_ptr(), buf.as_mut_ptr(), needed) };
     if n == 0 || n as usize >= buf.len() {
         return path.to_path_buf();
@@ -77,19 +77,19 @@ impl TempTree {
         }
     }
 
-    /// Raíz tal como se creó (`temp_dir()`; en algunos runners, con componentes en forma corta 8.3). La guarda de
-    /// borrado trabaja con ESTA forma y no se relaja nunca.
+    /// Root as created (`temp_dir()`; some runners use short 8.3 components). The deletion guard uses THIS form and is
+    /// never relaxed.
     pub fn root(&self) -> &Path {
         &self.root
     }
 
-    /// Raíz en forma LARGA canónica (la que reconstruye el escáner: sin 8.3 y sin `\\?\` si no hace falta). Úsala
-    /// para comparar con rutas que salen del escáner.
+    /// Canonical LONG-form root (the form reconstructed by the scanner: no 8.3 names and no `\\?\` when unnecessary).
+    /// Use it to compare paths returned by the scanner.
     pub fn long_root(&self) -> PathBuf {
         dunce::canonicalize(&self.root).expect("canonicaliza la raíz")
     }
 
-    /// `rel` bajo la raíz larga.
+    /// `rel` beneath the long-form root.
     pub fn long_path(&self, rel: &str) -> PathBuf {
         self.long_root().join(rel)
     }
@@ -104,7 +104,7 @@ impl TempTree {
         p
     }
 
-    /// Crea un archivo de `size` bytes con contenido no nulo (para que no sea disperso ni residente si es grande).
+    /// Creates a `size`-byte file with nonzero content (so it is not sparse or resident when large).
     pub fn write(&self, rel: &str, size: usize) -> PathBuf {
         let p = self.path(rel);
         fs::create_dir_all(p.parent().unwrap()).expect("mkdir padre");
@@ -126,7 +126,7 @@ impl TempTree {
         fs::hard_link(self.path(from_rel), to).expect("hard_link");
     }
 
-    /// `mklink /J` (no necesita administrador). El destino debe estar dentro de este mismo árbol.
+    /// `mklink /J` (does not require an administrator). The target must be inside this same tree.
     pub fn junction(&mut self, link_rel: &str, target_rel: &str) {
         let (link, target) = (self.path(link_rel), self.path(target_rel));
         assert!(
@@ -147,8 +147,8 @@ impl TempTree {
         self.junctions.push(link);
     }
 
-    /// `mklink /J` hacia un destino que puede estar FUERA de este árbol (por ejemplo, en otro `TempTree`). El enlace se
-    /// quita al soltar el árbol sin tocar el destino (`remove_dir` sobre un junction borra solo el enlace).
+    /// `mklink /J` to a target that may be OUTSIDE this tree (for example, in another `TempTree`). The link is removed
+    /// when the tree is dropped without touching the target (`remove_dir` on a junction removes only the link).
     pub fn junction_to(&mut self, link_rel: &str, target: &Path) {
         let link = self.path(link_rel);
         let out = Command::new("cmd")
@@ -165,8 +165,8 @@ impl TempTree {
         self.junctions.push(link);
     }
 
-    /// Activa la distinción de mayúsculas en `rel` con `fsutil` (no necesita administrador; el directorio debe estar
-    /// vacío). Devuelve `false` si el sistema no lo admite: el test debe saltarse.
+    /// Enables case sensitivity on `rel` with `fsutil` (does not require an administrator; the directory must be empty).
+    /// Returns `false` if the system does not support it, so the test must be skipped.
     pub fn case_sensitive(&self, rel: &str) -> bool {
         let dir = if rel.is_empty() {
             self.root.clone()
@@ -182,7 +182,7 @@ impl TempTree {
         if !ok {
             return false;
         }
-        // Comprobación real: `X` y `x` deben poder coexistir.
+        // Actual check: `X` and `x` must be able to coexist.
         let (a, b) = (dir.join("CsProbe"), dir.join("csprobe"));
         let both = fs::create_dir(&a).is_ok() && fs::create_dir(&b).is_ok();
         let _ = fs::remove_dir(&a);
@@ -190,7 +190,7 @@ impl TempTree {
         both
     }
 
-    /// Deniega a todos listar el contenido de `rel` (para provocar ERROR_ACCESS_DENIED). Se restaura al soltar.
+    /// Denies everyone permission to list the contents of `rel` (to trigger ERROR_ACCESS_DENIED). Restored on drop.
     pub fn deny_list(&mut self, rel: &str) -> bool {
         let dir = self.path(rel);
         let out = Command::new("icacls")
@@ -199,7 +199,7 @@ impl TempTree {
             .output()
             .expect("lanza icacls");
         self.acl_dirs.push(dir.clone());
-        // Si el entorno se salta la denegación (privilegios de copia de seguridad), el test no puede comprobar nada.
+        // If the environment bypasses the denial (backup privileges), the test cannot verify anything.
         out.status.success() && fs::read_dir(&dir).is_err()
     }
 }
@@ -223,7 +223,7 @@ impl Drop for TempTree {
             let _ = Command::new("icacls").arg(d).arg("/reset").output();
         }
         for j in &self.junctions {
-            // `remove_dir` sobre un junction borra el enlace y deja el destino intacto.
+            // `remove_dir` on a junction removes the link and leaves the target intact.
             let _ = fs::remove_dir(j);
         }
         let _ = fs::remove_dir_all(&self.root);
