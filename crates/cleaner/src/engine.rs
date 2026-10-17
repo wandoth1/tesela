@@ -86,6 +86,11 @@ pub struct Stats {
     /// `logical`, que son lo que liberaría borrar: el borrado salta los reparse points.
     pub reparse_bytes: AtomicU64,
     pub reparse_logical: AtomicU64,
+    /// Informational Outlook data, counted by extension independently of deletion.
+    pub mail_local_files: AtomicU64,
+    pub mail_local_bytes: AtomicU64,
+    pub mail_cache_files: AtomicU64,
+    pub mail_cache_bytes: AtomicU64,
 }
 
 impl Stats {
@@ -127,7 +132,36 @@ impl Stats {
             max_path: Self::get(&self.max_path),
             reparse_bytes: Self::get(&self.reparse_bytes),
             reparse_logical: Self::get(&self.reparse_logical),
+            mail_local_files: Self::get(&self.mail_local_files),
+            mail_local_bytes: Self::get(&self.mail_local_bytes),
+            mail_cache_files: Self::get(&self.mail_cache_files),
+            mail_cache_bytes: Self::get(&self.mail_cache_bytes),
         }
+    }
+}
+
+/// Count mail names before opening children, including locked files. No path is followed.
+fn count_mail(stats: &Stats, name: &[u16], bytes: u64) {
+    let Some(dot) = name.iter().rposition(|&c| c == u16::from(b'.')) else {
+        return;
+    };
+    let extension = &name[dot + 1..];
+    let matches = |ascii: &[u8; 3]| {
+        extension.len() == 3
+            && extension
+                .iter()
+                .zip(ascii)
+                .all(|(&c, &a)| c == u16::from(a) || c == u16::from(a.to_ascii_uppercase()))
+    };
+    let local = matches(b"pst");
+    let cache = matches(b"ost") || matches(b"nst");
+    if local {
+        Stats::add(&stats.mail_local_files, 1);
+        Stats::add(&stats.mail_local_bytes, bytes);
+    }
+    if cache {
+        Stats::add(&stats.mail_cache_files, 1);
+        Stats::add(&stats.mail_cache_bytes, bytes);
     }
 }
 
@@ -194,6 +228,10 @@ pub struct StatsSnapshot {
     /// Bytes en disco y tamaño lógico de los reparse points de dentro (ver [`Stats::reparse_bytes`]).
     pub reparse_bytes: u64,
     pub reparse_logical: u64,
+    pub mail_local_files: u64,
+    pub mail_local_bytes: u64,
+    pub mail_cache_files: u64,
+    pub mail_cache_bytes: u64,
 }
 
 impl StatsSnapshot {
@@ -250,6 +288,10 @@ impl StatsSnapshot {
         self.max_path = self.max_path.max(o.max_path);
         self.reparse_bytes += o.reparse_bytes;
         self.reparse_logical += o.reparse_logical;
+        self.mail_local_files += o.mail_local_files;
+        self.mail_local_bytes += o.mail_local_bytes;
+        self.mail_cache_files += o.mail_cache_files;
+        self.mail_cache_bytes += o.mail_cache_bytes;
     }
 }
 
@@ -980,6 +1022,17 @@ fn entry_file(
         );
         return;
     }
+    if env.mode == Mode::Measure {
+        count_mail(
+            &unit.stats,
+            &path
+                .file_name()
+                .unwrap_or_default()
+                .encode_wide()
+                .collect::<Vec<_>>(),
+            m.alloc,
+        );
+    }
     let final_path = match sys::final_path(&h) {
         Ok(p) => p,
         Err(c) => return root_open_error(unit, c),
@@ -1101,6 +1154,9 @@ fn process_child(
     }
     env.progress.fetch_add(1, Ordering::Relaxed);
     let name = &entry.name;
+    if env.mode == Mode::Measure && !entry.is_dir() {
+        count_mail(&unit.stats, name, entry.alloc);
+    }
     let ckey = parent.key.join(&lossy(name));
     let child_path = join_name(&parent.path, name);
     #[cfg(test)]
@@ -1492,3 +1548,31 @@ pub(crate) mod test_hooks {
 #[cfg(test)]
 #[path = "engine_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod mail_tests {
+    use super::*;
+    #[test]
+    fn mail_extensions_are_case_insensitive_and_not_content_fingerprints() {
+        let stats = Stats::default();
+        for (name, bytes) in [
+            ("a.PST", 12),
+            ("b.ost", 20),
+            ("c.NsT", 30),
+            ("x.pst.bak", 99),
+            ("pst", 99),
+        ] {
+            count_mail(&stats, &name.encode_utf16().collect::<Vec<_>>(), bytes);
+        }
+        let snap = stats.snapshot();
+        assert_eq!((snap.mail_local_files, snap.mail_local_bytes), (1, 12));
+        assert_eq!((snap.mail_cache_files, snap.mail_cache_bytes), (2, 50));
+        assert_eq!(
+            (snap.fp_sum, snap.fp_xor, snap.bytes, snap.recycle_charge()),
+            (0, 0, 0, 0)
+        );
+        let mut merged = StatsSnapshot::default();
+        merged.merge(&snap);
+        assert_eq!(merged, snap);
+    }
+}

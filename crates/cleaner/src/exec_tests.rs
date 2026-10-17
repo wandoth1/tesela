@@ -538,6 +538,7 @@ fn vaciar_la_papelera_purga_solo_la_lista_capturada() {
     let plan = c.approve(
         &v,
         &ApproveOptions {
+            progress: None,
             bin_bytes_hint: 4_000,
         },
         &cancel(),
@@ -6594,4 +6595,58 @@ fn con_la_shell_real_el_flujo_funciona_con_el_endurecimiento_de_dlls_activo() {
     let st = status.expect("el hijo no terminó en 90 s (se colgó)");
     assert!(st.success(), "el hijo falló ({st:?}):\n{err}\n{out}");
     assert_eq!(ids(), before, "la Papelera del usuario es la de antes");
+}
+
+/// Synthetic mail data is measured through the real traversal, with a fake shell and a dry run only.
+#[test]
+fn mail_measurement_counts_files_without_changing_recycle_fingerprint() {
+    let sb = Sandbox::new();
+    sb.write("Mail/a.PST", 1234);
+    sb.write("Mail/b.ost", 2345);
+    sb.write("Mail/sub/c.NST", 3456);
+    sb.write("Mail/sub/not.pst.bak", 10);
+    let fake = FakeShell::new(&sb, Some(1_000_000_000), 0, "never");
+    let c = cleaner_for(&sb).with_shell(fake.clone());
+    let mut basket = Basket::new();
+    basket.add_path(sb.long("Mail"), c.protection());
+    let progress = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let plan = c.approve(
+        &basket,
+        &ApproveOptions {
+            progress: Some(progress.clone()),
+            ..ApproveOptions::default()
+        },
+        &cancel(),
+    );
+    assert_eq!(plan.items.len(), 1);
+    let e = plan.items[0].estimate;
+    assert_eq!((e.mail_local_files, e.mail_cache_files), (1, 2));
+    let alloc = |rel: &str| {
+        sys::meta(&sys::open_for_query(&sb.long(rel)).unwrap())
+            .unwrap()
+            .alloc
+    };
+    assert_eq!(
+        plan.mail_totals(),
+        (
+            (1, alloc("Mail/a.PST")),
+            (2, alloc("Mail/b.ost") + alloc("Mail/sub/c.NST"))
+        )
+    );
+    assert!(progress.load(std::sync::atomic::Ordering::Relaxed) >= 4);
+    let without_mail = StatsSnapshot {
+        mail_local_files: 0,
+        mail_local_bytes: 0,
+        mail_cache_files: 0,
+        mail_cache_bytes: 0,
+        ..e
+    };
+    assert_eq!(snap_of(&e), snap_of(&without_mail));
+    exec(&c, &plan, true, false, None).unwrap();
+    assert!(sb.path("Mail/a.PST").exists());
+    assert!(fake.names().is_empty());
+    let mut single = Basket::new();
+    single.add_path(sb.long("Mail/a.PST"), c.protection());
+    let single = approve(&c, &single);
+    assert_eq!(single.mail_totals(), ((1, alloc("Mail/a.PST")), (0, 0)));
 }

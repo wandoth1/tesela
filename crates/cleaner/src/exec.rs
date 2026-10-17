@@ -408,6 +408,10 @@ impl Cleaner {
         // Un error de escritura del registro activa la cancelación: la limpieza se detiene en el siguiente punto seguro.
         if let Some(l) = &opts.log {
             l.cancel_on_error(progress.cancel.clone());
+            let ((local_n, local_b), (cache_n, cache_b)) = plan.mail_totals();
+            if local_n + cache_n > 0 {
+                l.write_note("mail", &format!("pst_files={local_n} pst_bytes={local_b} ost_nst_files={cache_n} ost_nst_bytes={cache_b}"));
+            }
             // Lo que no llegó al plan consta en el registro con su motivo (una raíz descartada por un enlace, p. ej.).
             // Con tope: un plan con miles de rechazados no puede inflar el registro (R4).
             // Los "demasiado recientes" van los últimos: pueden ser muchos y no deben tapar un rechazo de seguridad.
@@ -1638,7 +1642,7 @@ enum DirCheck {
 /// Resultado de volver a medir un directorio justo antes de enviarlo.
 enum Remeasure {
     /// La medida de un recorrido COMPLETO (ver [`StatsSnapshot::is_complete`]).
-    Now(StatsSnapshot),
+    Now(Box<StatsSnapshot>),
     Cancelled,
     /// El recorrido terminó pero NO vio todo (una subcarpeta sin listar, una entrada que cambió o desapareció...): su resultado
     /// no vale. Se trata como "cambió desde la confirmación" al enviar y como "NO intacto" al juzgar (R6).
@@ -1669,7 +1673,7 @@ impl Cleaner {
             Some(RootStatus::Done) => {
                 let s = unit.stats.snapshot();
                 if s.is_complete() {
-                    Remeasure::Now(s)
+                    Remeasure::Now(Box::new(s))
                 } else {
                     Remeasure::Incomplete
                 }

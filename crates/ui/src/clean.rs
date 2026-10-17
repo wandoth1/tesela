@@ -13,7 +13,7 @@ use crate::widgets::{self, ButtonStyle};
 use crossbeam_channel::{Receiver, TryRecvError};
 use egui::{Align, CornerRadius, Layout, Margin, RichText, Stroke, Ui, vec2};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use tesela_cleaner::log::{HistoryEntry, history_append};
 use tesela_cleaner::{
@@ -42,6 +42,7 @@ struct Confirm {
     plan: Arc<Plan>,
     /// La casilla del grupo ámbar ("se eliminará definitivamente porque no cabe").
     allow_unfit: bool,
+    allow_mail_permanent: bool,
     /// "Ver la lista completa".
     show_all: bool,
     /// Se vuelve a confirmar porque algo cambió.
@@ -51,15 +52,49 @@ struct Confirm {
 
 struct Running {
     progress: Arc<Progress>,
-    rx: Receiver<Result<Report, ExecError>>,
+    rx: Receiver<Result<Completion, ExecError>>,
     dry: bool,
-    allow_unfit: bool,
     cancelled: bool,
     started: Instant,
-    /// Espacio usado del volumen al empezar (para el historial).
-    used_before: Option<u64>,
+    /// Detect lack of progress only within the current execution phase.
+    last_entries: u64,
+    last_phase: Phase,
+    last_advance: Instant,
     /// El usuario intentó cerrar la ventana mientras se ejecutaba: se le dice que espere o cancele.
     close_blocked: bool,
+}
+
+struct Completion {
+    report: Report,
+    blocked: Vec<(Browser, u64)>,
+}
+
+/// Filesystem and process work runs only on execution workers. Applying this result is pure UI work.
+fn complete(
+    backend: &Arc<dyn Backend>,
+    report: Report,
+    dry: bool,
+    vol: VolumeCtx,
+    used_before: Option<u64>,
+    hints: &[(Browser, u64)],
+) -> Completion {
+    if !dry && let Some(dir) = backend.data_dir() {
+        let e = HistoryEntry {
+            unix: unix_now(),
+            drive: vol.drive.map_or(0, |c| c as u8),
+            used: used_before.unwrap_or(0),
+            freed_now: report.freed_now.unwrap_or(0).max(0) as u64,
+            to_bin: report.recycled_bytes,
+        };
+        let _ = history_append(&dir, &e);
+    }
+    let open = backend.running_browsers();
+    let blocked = hints
+        .iter()
+        .filter(|(b, bytes)| open.contains(b) && *bytes > 0)
+        .copied()
+        .collect();
+    Completion { report, blocked }
 }
 
 struct Summary {
@@ -75,6 +110,7 @@ enum Stage {
         rx: Receiver<Plan>,
         cancel: Arc<AtomicBool>,
         reconfirm: bool,
+        progress: Arc<AtomicU64>,
     },
     Confirm(Box<Confirm>),
     Running(Box<Running>),
@@ -172,7 +208,10 @@ pub(crate) fn free_bytes(plan: &Plan, allow_unfit: bool) -> u64 {
 impl CleanFlow {
     /// ¿Hay una ventana modal abierta (confirmación o ejecución)? Las teclas de la exploración no actúan.
     pub fn modal_open(&self) -> bool {
-        matches!(self.stage, Stage::Confirm(_) | Stage::Running(_))
+        matches!(
+            self.stage,
+            Stage::Approving { .. } | Stage::Confirm(_) | Stage::Running(_)
+        )
     }
 
     /// ¿Se está mostrando el resumen (ocupa toda la ventana)?
@@ -220,6 +259,7 @@ impl CleanFlow {
         self.stage = Stage::Confirm(Box::new(Confirm {
             plan: Arc::new(plan),
             allow_unfit: false,
+            allow_mail_permanent: false,
             show_all: false,
             reconfirm: false,
             focused: true,
@@ -240,12 +280,17 @@ impl CleanFlow {
             log: None,
         };
         match backend.execute(&plan, &opts, &Progress::new()) {
-            Ok(report) => self.finish(
-                backend,
-                report,
-                dry,
-                vol.volume.map(|(t, f)| t.saturating_sub(f)),
-            ),
+            Ok(report) => {
+                let completion = complete(
+                    backend,
+                    report,
+                    dry,
+                    vol,
+                    vol.volume.map(|(t, f)| t.saturating_sub(f)),
+                    &self.blocked_hint,
+                );
+                self.finish(completion, dry);
+            }
             // El error no se traga: se enseña con el mismo aviso que en el flujo normal (H6.7).
             Err(ExecError::LogRequired) => self.note = Some(Note::NoLog),
             Err(ExecError::NeedsReconfirm(_)) => self.note = Some(Note::Reconfirm),
@@ -273,8 +318,14 @@ impl CleanFlow {
             cancel.clone(),
             ctx.clone(),
         );
+        let progress = Arc::new(AtomicU64::new(0));
+        let count = progress.clone();
         std::thread::spawn(move || {
-            let plan = b.approve(&basket, &ApproveOptions::default(), &c);
+            let opts = ApproveOptions {
+                progress: Some(count),
+                ..ApproveOptions::default()
+            };
+            let plan = b.approve(&basket, &opts, &c);
             let _ = tx.send(plan);
             ctx2.request_repaint();
         });
@@ -282,22 +333,31 @@ impl CleanFlow {
             rx,
             cancel,
             reconfirm,
+            progress,
         };
     }
 
     /// Avanza el flujo (recoge resultados de los hilos). Devuelve el aviso a enseñar, si lo hay.
     pub fn poll(&mut self, ctx: &egui::Context, backend: &Arc<dyn Backend>, dry: bool) {
         match &mut self.stage {
-            Stage::Approving { rx, reconfirm, .. } => match rx.try_recv() {
+            Stage::Approving {
+                rx,
+                reconfirm,
+                cancel,
+                ..
+            } => match rx.try_recv() {
                 Ok(plan) => {
                     let reconfirm = *reconfirm;
-                    if let Some(note) = empty_plan_note(&plan) {
+                    if cancel.load(Ordering::Relaxed) {
+                        self.stage = Stage::Idle;
+                    } else if let Some(note) = empty_plan_note(&plan) {
                         self.note = Some(note);
                         self.stage = Stage::Idle;
                     } else {
                         self.stage = Stage::Confirm(Box::new(Confirm {
                             plan: Arc::new(plan),
                             allow_unfit: false,
+                            allow_mail_permanent: false,
                             show_all: false,
                             reconfirm,
                             focused: false,
@@ -310,11 +370,10 @@ impl CleanFlow {
                 }
             },
             Stage::Running(run) => match run.rx.try_recv() {
-                Ok(Ok(report)) => {
-                    let (dry_run, allow_unfit) = (run.dry, run.allow_unfit);
-                    let used_before = run.used_before;
-                    let _ = (allow_unfit, dry);
-                    self.finish(backend, report, dry_run, used_before);
+                Ok(Ok(completion)) => {
+                    let dry_run = run.dry;
+                    let _ = dry;
+                    self.finish(completion, dry_run);
                 }
                 Ok(Err(ExecError::LogRequired)) => {
                     // El ejecutor exige un registro utilizable: no se ha tocado nada.
@@ -341,13 +400,8 @@ impl CleanFlow {
         }
     }
 
-    fn finish(
-        &mut self,
-        backend: &Arc<dyn Backend>,
-        report: Report,
-        dry: bool,
-        used_before: Option<u64>,
-    ) {
+    fn finish(&mut self, completion: Completion, dry: bool) {
+        let Completion { report, blocked } = completion;
         if !dry {
             let removed: Vec<Removed> = report
                 .items
@@ -357,32 +411,49 @@ impl CleanFlow {
             if !removed.is_empty() {
                 self.events.push(FlowEvent::Removed(removed));
             }
-            if let Some(dir) = backend.data_dir() {
-                let e = HistoryEntry {
-                    unix: unix_now(),
-                    drive: self.vol.drive.map_or(0, |c| c as u8),
-                    used: used_before.unwrap_or(0),
-                    freed_now: report.freed_now.unwrap_or(0).max(0) as u64,
-                    to_bin: report.recycled_bytes,
-                };
-                let _ = history_append(&dir, &e);
-            }
-            // Todo lo que estaba en la cesta se intentó: la cesta queda vacía (lo que falló se puede volver a añadir).
             self.basket.clear();
         }
-        // Un navegador abierto: lo que quedó sin limpiar de su caché ("Cierra X para liberar hasta N más").
-        let open = backend.running_browsers();
-        let blocked: Vec<(Browser, u64)> = self
-            .blocked_hint
-            .iter()
-            .filter(|(b, bytes)| open.contains(b) && *bytes > 0)
-            .copied()
-            .collect();
         self.stage = Stage::Summary(Box::new(Summary {
             report,
             vol: self.vol,
             blocked,
         }));
+    }
+
+    /// Set Running immediately; preparation (including mandatory durable log creation) happens on the worker.
+    fn begin_execution<F>(
+        &mut self,
+        ctx: &egui::Context,
+        backend: Arc<dyn Backend>,
+        plan: Arc<Plan>,
+        dry: bool,
+        used_before: Option<u64>,
+        prepare: F,
+    ) where
+        F: FnOnce() -> Result<ExecOptions, ExecError> + Send + 'static,
+    {
+        let progress = Progress::new();
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        self.stage = Stage::Running(Box::new(Running {
+            progress: progress.clone(),
+            rx,
+            dry,
+            cancelled: false,
+            started: Instant::now(),
+            last_entries: 0,
+            last_phase: Phase::Preparing,
+            last_advance: Instant::now(),
+            close_blocked: false,
+        }));
+        let (ctx2, vol, hints) = (ctx.clone(), self.vol, self.blocked_hint.clone());
+        std::thread::spawn(move || {
+            let result = prepare()
+                .and_then(|opts| backend.execute(&plan, &opts, &progress))
+                .map(|report| complete(&backend, report, dry, vol, used_before, &hints));
+            let _ = tx.send(result);
+            ctx2.request_repaint();
+        });
+        ctx.request_repaint();
     }
 
     // ---------------------------------------------------------------------------------------------------------------
@@ -401,7 +472,16 @@ impl CleanFlow {
         let mut go: Option<(bool, bool)> = None; // (dry, allow_unfit)
         let mut cancel_confirm = false;
         let mut cancel_run = false;
+        let mut cancel_approval = false;
         match &mut self.stage {
+            Stage::Approving {
+                cancel, progress, ..
+            } => {
+                approving_ui(ctx, env, progress, &mut cancel_approval);
+                if cancel_approval {
+                    cancel.store(true, Ordering::SeqCst);
+                }
+            }
             Stage::Confirm(c) => confirm_ui(ctx, env, c, &mut go, &mut cancel_confirm),
             Stage::Running(r) => running_ui(ctx, env, r, &mut cancel_run),
             _ => {}
@@ -448,41 +528,25 @@ impl CleanFlow {
                 ctx.request_repaint();
                 return;
             }
-            // SIN REGISTRO NO HAY ACCIÓN DESTRUCTIVA (M4): si el registro local no se puede crear, no se ejecuta nada y se
-            // dice por qué. La simulación (y la demostración, que nunca toca el disco) puede seguir sin él.
-            let log = backend
-                .data_dir()
-                .and_then(|d| LogWriter::create(&d, dry).ok())
-                .map(Arc::new);
-            if abort_without_log(log.is_some(), dry, backend.is_demo()) {
-                self.note = Some(Note::NoLog);
-                ctx.request_repaint();
-                return;
-            }
             self.vol = vol;
-            let progress = Progress::new();
-            let (tx, rx) = crossbeam_channel::bounded(1);
-            let opts = ExecOptions {
-                dry_run: dry,
-                allow_unfit_permanent: allow_unfit,
-                log,
-            };
-            let (b, p, pr, ctx2) = (backend.clone(), plan.clone(), progress.clone(), ctx.clone());
-            std::thread::spawn(move || {
-                let r = b.execute(&p, &opts, &pr);
-                let _ = tx.send(r);
-                ctx2.request_repaint();
+            let b = backend.clone();
+            self.begin_execution(ctx, backend, plan, dry, used_before, move || {
+                let log = if b.is_demo() {
+                    None
+                } else {
+                    b.data_dir()
+                        .and_then(|d| LogWriter::create(&d, dry).ok())
+                        .map(Arc::new)
+                };
+                if abort_without_log(log.is_some(), dry, b.is_demo()) {
+                    return Err(ExecError::LogRequired);
+                }
+                Ok(ExecOptions {
+                    dry_run: dry,
+                    allow_unfit_permanent: allow_unfit,
+                    log,
+                })
             });
-            self.stage = Stage::Running(Box::new(Running {
-                progress,
-                rx,
-                dry,
-                allow_unfit,
-                cancelled: false,
-                started: Instant::now(),
-                used_before,
-                close_blocked: false,
-            }));
         }
     }
 }
@@ -618,6 +682,14 @@ fn note_line(ui: &mut Ui, pal: &Palette, text: &str, warn: bool) {
     );
 }
 
+fn can_execute(plan: &Plan, allow_unfit: bool, allow_mail_permanent: bool) -> bool {
+    let actionable = plan.permanent_items().next().is_some()
+        || plan.recycle_items().next().is_some()
+        || plan.bin.as_ref().is_some_and(|b| !b.items.is_empty())
+        || (allow_unfit && plan.unfit_items().next().is_some());
+    actionable && (plan.permanent_mail_files(allow_unfit) == 0 || allow_mail_permanent)
+}
+
 /// Etiqueta del botón principal según lo que haya.
 fn go_label(env: &Env, plan: &Plan, allow_unfit: bool, dry: bool) -> String {
     let free = free_bytes(plan, allow_unfit);
@@ -668,7 +740,7 @@ fn confirm_ui(
                 let kept = plan.kept_unfit_items().count();
                 let actionable = actionable_count(plan.items.len(), kept, plan.bin.is_some());
                 let n_items = actionable as u64;
-                let total = free_bytes(&plan, c.allow_unfit) + plan.recycle_bytes();
+                let total = free_bytes(&plan, true) + plan.recycle_bytes();
                 ui.label(
                     RichText::new(env.tr.ta(
                         "confirm-subtitle",
@@ -676,10 +748,13 @@ fn confirm_ui(
                     ))
                     .color(pal.text_muted),
                 );
-                // Solo hay lo que se queda donde está: el botón está desactivado y aquí se dice por qué.
+                // When only never-permanent diagnostics remain, explain why no cleanup is available.
                 if actionable == 0 && kept > 0 {
                     ui.add_space(6.0);
                     note_line(ui, &pal, &env.tr.t("confirm-only-kept"), true);
+                }
+                if !c.allow_unfit && plan.unfit_items().next().is_some() {
+                    note_line(ui, &pal, &env.tr.t("confirm-unfit-pending"), true);
                 }
                 if dry {
                     ui.add_space(6.0);
@@ -706,13 +781,8 @@ fn confirm_ui(
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let unfit = plan.unfit_items().count() > 0;
-                        let nothing = actionable_count(
-                            plan.items.len(),
-                            plan.kept_unfit_items().count(),
-                            plan.bin.is_some(),
-                        ) == 0;
                         let label = go_label(env, &plan, c.allow_unfit, dry);
-                        let enabled = !nothing;
+                        let enabled = can_execute(&plan, c.allow_unfit, c.allow_mail_permanent);
                         let r = widgets::button(ui, env, ButtonStyle::Primary, Some(Icon::ShieldCheckmark), &label, enabled);
                         if r.clicked() {
                             *go = Some((dry, c.allow_unfit && unfit));
@@ -949,7 +1019,38 @@ fn confirm_groups(ui: &mut Ui, env: &mut Env, c: &mut Confirm, plan: &Plan) {
         note_line(ui, &pal, &env.tr.t("confirm-kept-note"), true);
         ui.add_space(16.0);
     }
-    // 5. Avisos: enlaces duros, nube, protegidos, rechazados.
+    // 5. Mail warnings do not block owner-selected files; permanent PST deletion needs a second explicit consent.
+    let ((local_n, local_b), (cache_n, cache_b)) = plan.mail_totals();
+    if cache_n > 0 {
+        note_line(
+            ui,
+            &pal,
+            &env.tr.ta(
+                "confirm-mail-cache",
+                args!["count" => env.tr.int(cache_n), "size" => env.tr.size(cache_b)],
+            ),
+            true,
+        );
+    }
+    if local_n > 0 {
+        ui.add(
+            egui::Label::new(
+                RichText::new(env.tr.ta(
+                    "confirm-mail-local",
+                    args!["count" => env.tr.int(local_n), "size" => env.tr.size(local_b)],
+                ))
+                .color(pal.danger),
+            )
+            .wrap(),
+        );
+    }
+    if local_n + cache_n > 0 && plan.outlook_open {
+        note_line(ui, &pal, &env.tr.t("confirm-outlook-open"), true);
+    }
+    if plan.permanent_mail_files(c.allow_unfit) > 0 {
+        ui.checkbox(&mut c.allow_mail_permanent, env.tr.t("confirm-mail-check"));
+    }
+    // Other warnings: hard links, cloud, protected and rejected entries.
     let (shared_n, shared_b) = plan.shared_total();
     if shared_n > 0 {
         note_line(
@@ -1090,6 +1191,33 @@ fn folder_hint(env: &Env, it: &PlanItem) -> (Option<String>, Option<String>) {
     )
 }
 
+fn approving_ui(ctx: &egui::Context, env: &mut Env, progress: &AtomicU64, cancel: &mut bool) {
+    egui::Modal::new(egui::Id::new("tesela-approving")).show(ctx, |ui| {
+        ui.set_width(420.0);
+        ui.horizontal(|ui| {
+            widgets::busy(ui, env.animate, 18.0, env.pal.accent);
+            ui.label(env.tr.t("approve-title"));
+        });
+        let n = progress.load(Ordering::Relaxed);
+        ui.label(
+            env.tr
+                .ta("approve-progress", args!["count" => env.tr.int(n)]),
+        );
+        if widgets::button(
+            ui,
+            env,
+            ButtonStyle::Secondary,
+            None,
+            &env.tr.t("cancel"),
+            true,
+        )
+        .clicked()
+        {
+            *cancel = true;
+        }
+    });
+}
+
 fn running_ui(ctx: &egui::Context, env: &mut Env, r: &mut Running, cancel: &mut bool) {
     let pal = env.pal;
     let frame = egui::Frame::new()
@@ -1117,6 +1245,13 @@ fn running_ui(ctx: &egui::Context, env: &mut Env, r: &mut Running, cancel: &mut 
         let total = r.progress.items_total.load(Ordering::Relaxed).max(1);
         let done = r.progress.items_done.load(Ordering::Relaxed).min(total);
         let entries = r.progress.entries.load(Ordering::Relaxed);
+        let current_phase = r.progress.phase();
+        if entries != r.last_entries || current_phase != r.last_phase {
+            r.last_entries = entries; r.last_phase = current_phase; r.last_advance = Instant::now();
+        }
+        if !r.dry && current_phase == Phase::Deleting && r.last_advance.elapsed().as_secs() >= 3 {
+            note_line(ui, &pal, &env.tr.t("run-file-wait"), true);
+        }
         widgets::progress_bar(ui, &pal, done as f32 / total as f32, pal.accent, 8.0, false, None);
         ui.add_space(4.0);
         ui.label(
@@ -1861,5 +1996,182 @@ mod summary_tests {
             assert!(!has(&v, &text(&tr, "sum-bin-with-links", 1)), "{v:?}");
             assert!(!has(&v, &text(&tr, "sum-bin-unlisted", 1)), "{v:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod responsiveness_tests {
+    use super::*;
+    use std::time::Duration;
+    use tesela_cleaner::engine::UnitSpec;
+    use tesela_cleaner::{Destination, Risk, StatsSnapshot};
+
+    fn mail_item(destination: Destination, fit: Fit) -> PlanItem {
+        PlanItem {
+            id: 0,
+            category: None,
+            path: "synthetic-mail/mail.pst".into(),
+            risk: Risk::Review,
+            destination,
+            fit,
+            spec: UnitSpec::Contents {
+                path: "synthetic-mail".into(),
+                approved: tesela_cleaner::sys::FileIdentity {
+                    volume_serial: 1,
+                    file_id: 1,
+                },
+            },
+            min_age: Duration::ZERO,
+            estimate: StatsSnapshot {
+                bytes: 1024,
+                mail_local_files: 1,
+                mail_local_bytes: 1024,
+                ..StatsSnapshot::default()
+            },
+            cloud_synced: false,
+            hard_linked: false,
+            volume: None,
+        }
+    }
+
+    #[test]
+    fn amber_only_and_permanent_mail_require_their_own_consent() {
+        let mut plan = Plan::default();
+        plan.items.push(mail_item(
+            Destination::Recycle,
+            Fit::Unfit(UnfitReason::TooBig),
+        ));
+        assert!(!can_execute(&plan, false, false));
+        assert!(!can_execute(&plan, true, false));
+        assert!(can_execute(&plan, true, true));
+        plan.items[0].fit = Fit::Fits;
+        assert!(
+            can_execute(&plan, false, false),
+            "recoverable PST needs no extra consent"
+        );
+        plan.items[0].destination = Destination::Permanent;
+        assert!(!can_execute(&plan, false, false));
+        assert!(can_execute(&plan, false, true));
+        assert_eq!(plan.mail_totals(), ((1, 1024), (0, 0)));
+    }
+
+    #[test]
+    fn cancelling_approval_discards_its_partial_plan() {
+        let backend: Arc<dyn Backend> =
+            Arc::new(crate::demo_backend::DemoBackend::new(Duration::ZERO));
+        let (tx, rx) = crossbeam_channel::bounded(1);
+        let mut plan = Plan::default();
+        plan.items
+            .push(mail_item(Destination::Permanent, Fit::Fits));
+        tx.send(plan).unwrap();
+        let mut flow = CleanFlow {
+            stage: Stage::Approving {
+                rx,
+                cancel: Arc::new(AtomicBool::new(true)),
+                reconfirm: false,
+                progress: Arc::new(AtomicU64::new(0)),
+            },
+            basket: Basket::new(),
+            events: Vec::new(),
+            note: None,
+            vol: VolumeCtx::default(),
+            recheck: false,
+            blocked_hint: Vec::new(),
+        };
+        flow.poll(&egui::Context::default(), &backend, false);
+        assert!(!flow.busy());
+        assert!(!flow.modal_open());
+    }
+
+    #[test]
+    fn simulated_open_outlook_shows_warning_in_both_languages() {
+        use crate::app::{Action, Settings};
+        use crate::i18n::{Lang, Tr};
+        use crate::icons::IconCache;
+        use egui_kittest::Harness;
+        use egui_kittest::kittest::Queryable;
+        for lang in [Lang::Es, Lang::En] {
+            let tr = Tr::new(lang);
+            let warning = tr.t("confirm-outlook-open");
+            let mut icons = IconCache::default();
+            let backend: Arc<dyn Backend> =
+                Arc::new(crate::demo_backend::DemoBackend::new(Duration::ZERO));
+            let mut plan = Plan {
+                outlook_open: true,
+                ..Plan::default()
+            };
+            plan.items
+                .push(mail_item(Destination::Permanent, Fit::Fits));
+            let mut confirm = Confirm {
+                plan: Arc::new(plan),
+                allow_unfit: false,
+                allow_mail_permanent: false,
+                show_all: false,
+                reconfirm: false,
+                focused: true,
+            };
+            let mut initialized = false;
+            let mut h = Harness::builder()
+                .with_size(vec2(900.0, 900.0))
+                .build_ui(move |ui| {
+                    if !initialized {
+                        crate::fonts::install(ui.ctx(), crate::fonts::Scripts::NONE);
+                        initialized = true;
+                        return;
+                    }
+                    let mut actions: Vec<Action> = Vec::new();
+                    let mut env = Env {
+                        tr: &tr,
+                        pal: Palette::of(false),
+                        icons: &mut icons,
+                        demo: true,
+                        animate: false,
+                        drives: &[],
+                        drives_loading: false,
+                        settings: Settings::default(),
+                        backend: &backend,
+                        dry_run: false,
+                        history: &[],
+                        modal_open: true,
+                        actions: &mut actions,
+                    };
+                    let plan = confirm.plan.clone();
+                    confirm_groups(ui, &mut env, &mut confirm, &plan);
+                });
+            h.run_steps(2);
+            assert!(h.query_all_by_label(&warning).next().is_some());
+        }
+    }
+
+    #[test]
+    fn blocked_log_preparation_leaves_running_ui_responsive() {
+        let backend: Arc<dyn Backend> =
+            Arc::new(crate::demo_backend::DemoBackend::new(Duration::ZERO));
+        let mut flow = CleanFlow::default();
+        let ctx = egui::Context::default();
+        let (release_tx, release_rx) = crossbeam_channel::bounded(1);
+        let (entered_tx, entered_rx) = crossbeam_channel::bounded(1);
+        let before = Instant::now();
+        flow.begin_execution(
+            &ctx,
+            backend.clone(),
+            Arc::new(Plan::default()),
+            true,
+            None,
+            move || {
+                entered_tx.send(()).unwrap();
+                release_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+                Err(ExecError::LogRequired)
+            },
+        );
+        assert!(before.elapsed() < Duration::from_millis(50));
+        assert!(flow.is_running());
+        entered_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        flow.poll(&ctx, &backend, true);
+        assert!(
+            flow.is_running(),
+            "worker preparation is blocked, not the UI"
+        );
+        release_tx.send(()).unwrap();
     }
 }

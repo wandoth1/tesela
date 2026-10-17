@@ -582,3 +582,13 @@ ago-days =
     }
 settings-clear-history = Delete the cleanup history and logs
 home-last-clean = Last cleanup: { $ago } · measured change in free space: { $size }
+
+# Approval and mail data confirmation
+approve-title = Checking…
+approve-progress = { $count } entries checked
+confirm-unfit-pending = Items above that do not fit in the Recycle Bin will remain untouched unless you select their confirmation box.
+confirm-mail-cache = Includes { $count } Outlook cache files (.ost/.nst, { $size }). Outlook downloads them again from the server, which may take time. Unsynced drafts or outgoing mail can be lost. Close Outlook first: files in use are skipped.
+confirm-mail-local = Includes { $count } Outlook data files (.pst, { $size }). These may be mail stored only on this computer. Permanent deletion is irreversible. Make a backup first if unsure.
+confirm-mail-check = I understand that permanently deleted .pst files (local mail) cannot be recovered.
+confirm-outlook-open = Outlook is running. Close it first; otherwise files in use may be skipped and the folder only partly cleaned.
+run-file-wait = Deleting a large file may take time. An operation already in progress cannot be interrupted; cancellation takes effect between entries.
