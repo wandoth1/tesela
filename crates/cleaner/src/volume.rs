@@ -5,8 +5,10 @@
 use std::ffi::OsString;
 use std::os::windows::ffi::{OsStrExt, OsStringExt};
 use std::path::{Path, PathBuf};
+use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
 use windows_sys::Win32::Storage::FileSystem::{
-    GetDriveTypeW, GetTempPathW, GetVolumeNameForVolumeMountPointW, GetVolumePathNameW,
+    FindFirstVolumeW, FindNextVolumeW, FindVolumeClose, GetDriveTypeW, GetTempPathW,
+    GetVolumeNameForVolumeMountPointW, GetVolumePathNameW, GetVolumePathNamesForVolumeNameW,
 };
 use windows_sys::Win32::System::Registry::{
     HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, RRF_RT_REG_DWORD, RegGetValueW,
@@ -65,22 +67,96 @@ pub fn drive_kind(root: &Path) -> DriveKind {
     }
 }
 
-/// ¿Es `path` (la ruta FINAL resuelta por un handle, con o sin `\\?\`) un archivo de una unidad LOCAL con letra, fija o
-/// extraíble según `GetDriveTypeW`? Todo lo demás (UNC, también hacia un disco local con `localhost` o `127.0.0.1`,
-/// comparticiones administrativas, unidades de red, volúmenes sin letra, discos ópticos) NO es local: el `cleaner` lo
-/// rechaza porque la protección se escribe sobre rutas de unidad y una ruta de red al mismo sitio la esquivaría. El escáner
-/// sí puede leerlas.
+/// ¿Es `path` (la ruta FINAL resuelta por un handle, con o sin `\?\`) un archivo de un volumen LOCAL, fijo o extraíble según
+/// `GetDriveTypeW`? Todo lo demás (UNC, también hacia un disco local con `localhost` o `127.0.0.1`, comparticiones
+/// administrativas, unidades de red, volúmenes sin letra, discos ópticos) NO es local: el `cleaner` lo rechaza porque la
+/// protección se escribe sobre rutas de unidad y una ruta de red al mismo sitio la esquivaría. El escáner sí puede leerlas.
+///
+/// GM-M6: el tipo es el del VOLUMEN que contiene la ruta (`GetVolumePathNameW`), no el de la letra con la que empieza: una
+/// carpeta de `C:` puede ser el punto de montaje de otro volumen (extraíble, óptico) y se juzga por ese.
 pub fn is_local_path(path: &Path) -> bool {
+    is_local_with(path, volume_root, drive_kind)
+}
+
+/// [`is_local_path`] con la raíz del volumen y su tipo inyectados (así se prueba sin montar nada). Falla cerrado: sin raíz de
+/// volumen conocida no es local.
+pub(crate) fn is_local_with(
+    path: &Path,
+    root_of: impl Fn(&Path) -> Option<PathBuf>,
+    kind_of: impl Fn(&Path) -> DriveKind,
+) -> bool {
     let p = crate::sys::strip_verbatim(path.to_path_buf());
     let w: Vec<u16> = p.as_os_str().encode_wide().collect();
     if w.len() < 3 || w[1] != u16::from(b':') || w[2] != u16::from(b'\\') {
         return false;
     }
-    let Some(letter) = u8::try_from(w[0]).ok().filter(u8::is_ascii_alphabetic) else {
+    if u8::try_from(w[0])
+        .ok()
+        .filter(u8::is_ascii_alphabetic)
+        .is_none()
+    {
+        return false;
+    }
+    let Some(root) = root_of(&p) else {
         return false;
     };
-    let root = PathBuf::from(format!("{}:\\", letter as char));
-    matches!(drive_kind(&root), DriveKind::Fixed | DriveKind::Removable)
+    matches!(kind_of(&root), DriveKind::Fixed | DriveKind::Removable)
+}
+
+/// Los volúmenes montados en CARPETAS (no en una letra): raíces como `C:\montajes\datos\`. Dentro de ellos `$Recycle.Bin`,
+/// `System Volume Information`, `$MFT` y `pagefile.sys` cuelgan de la raíz del volumen, que no es la de una unidad con letra
+/// (GM-M6). Lista vacía si no se puede enumerar (entonces solo se conocen las raíces con letra).
+pub fn mounted_roots() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    let mut vol = vec![0u16; 64];
+    // SAFETY: `vol` es escribible con `vol.len()` unidades UTF-16.
+    let h = unsafe { FindFirstVolumeW(vol.as_mut_ptr(), vol.len() as u32) };
+    if h == INVALID_HANDLE_VALUE {
+        return out;
+    }
+    loop {
+        let mut names = vec![0u16; 1024];
+        let mut needed = 0u32;
+        // SAFETY: `vol` es el nombre de volumen (terminado en NUL) que dio la enumeración; `names` es escribible con
+        // `names.len()` unidades y `needed` también.
+        let mut ok = unsafe {
+            GetVolumePathNamesForVolumeNameW(
+                vol.as_ptr(),
+                names.as_mut_ptr(),
+                names.len() as u32,
+                &mut needed,
+            )
+        };
+        if ok == 0 && needed as usize > names.len() {
+            names = vec![0u16; needed as usize];
+            // SAFETY: igual que arriba con el búfer ampliado.
+            ok = unsafe {
+                GetVolumePathNamesForVolumeNameW(
+                    vol.as_ptr(),
+                    names.as_mut_ptr(),
+                    names.len() as u32,
+                    &mut needed,
+                )
+            };
+        }
+        if ok != 0 {
+            // Una lista de cadenas terminadas en NUL que acaba con una vacía.
+            for s in names.split(|&c| c == 0).take_while(|s| !s.is_empty()) {
+                let root = PathBuf::from(OsString::from_wide(s));
+                // Solo las que NO son una letra de unidad con su barra (tres unidades UTF-16).
+                if s.len() > 3 {
+                    out.push(root);
+                }
+            }
+        }
+        // SAFETY: `h` es el handle de la enumeración y `vol` es escribible con `vol.len()` unidades.
+        if unsafe { FindNextVolumeW(h, vol.as_mut_ptr(), vol.len() as u32) } == 0 {
+            break;
+        }
+    }
+    // SAFETY: `h` es el handle de la enumeración, que se cierra una sola vez.
+    unsafe { FindVolumeClose(h) };
+    out
 }
 
 /// GUID del volumen (`{xxxxxxxx-...}`), a partir de su raíz.
@@ -236,5 +312,53 @@ mod tests {
         assert_eq!(drive_kind(Path::new("ZZ:\\")), DriveKind::Unknown);
         // Lo que no se puede averiguar NUNCA se da por bueno.
         assert_eq!(bin_limit(Path::new("ZZ:\\")), BinLimit::Indeterminate);
+    }
+
+    /// GM-M6: el tipo de unidad es el del VOLUMEN que contiene la ruta, no el de su letra: una carpeta de `C:` que es el punto
+    /// de montaje de un disco óptico o de red no es local aunque `C:` sí lo sea. Sin raíz de volumen conocida, no es local.
+    #[test]
+    fn el_tipo_de_unidad_es_el_del_volumen_que_contiene_la_ruta() {
+        let root_of = |p: &Path| -> Option<PathBuf> {
+            let s = p.to_string_lossy().to_lowercase();
+            if s.starts_with(r"c:\montajes\optico") {
+                Some(PathBuf::from(r"C:\montajes\optico\"))
+            } else if s.starts_with(r"c:\montajes\ext") {
+                Some(PathBuf::from(r"C:\montajes\ext\"))
+            } else if s.starts_with(r"c:\") {
+                Some(PathBuf::from(r"C:\"))
+            } else {
+                None
+            }
+        };
+        let kind_of = |r: &Path| -> DriveKind {
+            match r.to_string_lossy().to_lowercase().as_str() {
+                r"c:\" => DriveKind::Fixed,
+                r"c:\montajes\ext\" => DriveKind::Removable,
+                r"c:\montajes\optico\" => DriveKind::CdRom,
+                _ => DriveKind::Unknown,
+            }
+        };
+        let local = |p: &str| is_local_with(Path::new(p), root_of, kind_of);
+        assert!(local(r"C:\datos\a.txt"));
+        assert!(local(r"C:\montajes\ext\a.txt"), "extraíble montado: local");
+        assert!(
+            !local(r"C:\montajes\optico\a.txt"),
+            "óptico montado en una carpeta de C:"
+        );
+        // Sin raíz de volumen conocida (o con letra desconocida) falla cerrado.
+        assert!(!local(r"ZZ:.txt"));
+        // Lo que no tiene forma de unidad con letra no es local, sepa lo que se sepa del volumen.
+        assert!(!local(r"relativa\a.txt"));
+        assert!(!local(r"\servidor\recurso\a.txt"));
+    }
+
+    /// GM-M6: la enumeración de volúmenes montados en carpetas no falla y solo devuelve raíces que no son una letra de unidad.
+    #[test]
+    fn los_montajes_en_carpetas_no_incluyen_letras_de_unidad() {
+        for r in mounted_roots() {
+            let s = r.to_string_lossy().into_owned();
+            assert!(s.len() > 3, "{s}");
+            assert!(s.ends_with('\\'), "{s}");
+        }
     }
 }

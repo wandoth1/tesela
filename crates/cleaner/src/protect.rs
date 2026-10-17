@@ -90,6 +90,9 @@ pub struct Protection {
     anc_denied: HashSet<PathKey>,
     /// Ancestros propios de las raíces intocables y de contenido (se recorren al borrar un contenedor, no se borran).
     anc_retain: HashSet<PathKey>,
+    /// Raíces de volúmenes montados en CARPETAS (GM-M6): como la raíz de una unidad con letra, de ellas cuelgan las entradas
+    /// de sistema (`$Recycle.Bin`, `System Volume Information`...) y ellas mismas no se tocan.
+    mount_roots: HashSet<PathKey>,
 }
 
 fn keys(v: &[PathBuf]) -> HashSet<PathKey> {
@@ -124,7 +127,15 @@ impl Protection {
             exempt,
             anc_denied,
             anc_retain,
+            mount_roots: HashSet::new(),
         }
+    }
+
+    /// Añade las raíces de los volúmenes montados en CARPETAS (GM-M6): como la raíz de una unidad con letra, sus entradas de
+    /// sistema se deniegan y ellas mismas son intocables.
+    pub fn with_mount_roots(mut self, roots: &[PathBuf]) -> Protection {
+        self.mount_roots = keys(roots);
+        self
     }
 
     /// ¿Levanta alguna excepción la denegación que está en `zone` (un ancestro de `key` o él mismo)? Solo si `key` cuelga
@@ -140,17 +151,19 @@ impl Protection {
 
     /// ¿Es una entrada de sistema de la raíz de un volumen (`$Recycle.Bin`, `$MFT`, `System Volume Information`,
     /// `pagefile.sys`...)?
-    fn is_system_entry(key: &PathKey) -> bool {
-        key.parent().is_some_and(|p| p.is_drive_root()) && {
-            let n = key.file_name();
-            n.starts_with('$') || SYSTEM_ROOT_NAMES.contains(&n)
-        }
+    fn is_system_entry(&self, key: &PathKey) -> bool {
+        key.parent()
+            .is_some_and(|p| p.is_drive_root() || self.mount_roots.contains(&p))
+            && {
+                let n = key.file_name();
+                n.starts_with('$') || SYSTEM_ROOT_NAMES.contains(&n)
+            }
     }
 
     /// ¿Está `key` o algún ancestro suyo denegado, sin que una excepción lo levante (ver [`Protection::lifts`])?
     fn is_denied(&self, key: &PathKey) -> bool {
         let hit = |k: &PathKey| {
-            (self.denied.contains(k) || Self::is_system_entry(k)) && !self.lifts(key, k)
+            (self.denied.contains(k) || self.is_system_entry(k)) && !self.lifts(key, k)
         };
         hit(key) || key.ancestors().iter().any(hit)
     }
@@ -160,7 +173,11 @@ impl Protection {
         if self.is_denied(key) {
             return Verdict::Denied;
         }
-        if key.is_drive_root() || self.untouchable.contains(key) || self.anc_denied.contains(key) {
+        if key.is_drive_root()
+            || self.mount_roots.contains(key)
+            || self.untouchable.contains(key)
+            || self.anc_denied.contains(key)
+        {
             return Verdict::Untouchable;
         }
         if self.content_roots.contains(key) {
@@ -517,5 +534,50 @@ mod tests {
             "solo en la raíz del volumen"
         );
         assert_eq!(p.target_verdict(&k(r"C:\datos")), Verdict::Allowed);
+    }
+
+    /// GM-M6: un volumen montado en una CARPETA tiene su propia raíz de volumen: `$Recycle.Bin`, `System Volume Information`,
+    /// `$MFT` y `pagefile.sys` que cuelgan de ELLA son entradas de sistema (como las de `C:\`) y la propia raíz del montaje es
+    /// intocable. Sin conocer el montaje, nada de eso se reconocía (solo contaban las raíces con letra). Prueba pura sobre rutas.
+    #[test]
+    fn un_volumen_montado_en_una_carpeta_tiene_sus_propias_entradas_de_sistema() {
+        let mount = PathBuf::from(r"C:\montajes\datos");
+        let con = Protection::new(&ProtectionRoots::default()).with_mount_roots(&[mount]);
+        let sin = Protection::new(&ProtectionRoots::default());
+        for rel in [
+            r"$Recycle.Bin",
+            r"$Recycle.Bin\<sid>\$R123.txt",
+            r"System Volume Information",
+            r"System Volume Information\algo",
+            r"$MFT",
+            r"pagefile.sys",
+        ] {
+            let p = k(&format!(r"C:\montajes\datos\{rel}"));
+            assert_eq!(con.target_verdict(&p), Verdict::Denied, "{rel}");
+            assert_eq!(con.child_action(&p), ChildAction::Skip, "{rel}");
+            // Antes (sin saber del montaje) se podía añadir a la cesta.
+            assert_eq!(sin.target_verdict(&p), Verdict::Allowed, "{rel}");
+        }
+        // La raíz del montaje es intocable como la de una unidad; lo normal de dentro, no.
+        assert_eq!(
+            con.target_verdict(&k(r"C:\montajes\datos")),
+            Verdict::Untouchable
+        );
+        assert_eq!(
+            con.target_verdict(&k(r"C:\montajes\datos\mis cosas\a.txt")),
+            Verdict::Allowed
+        );
+        // Solo en la raíz del volumen: `pagefile.sys` dentro de una subcarpeta del montaje es un archivo cualquiera.
+        assert_eq!(
+            con.target_verdict(&k(r"C:\montajes\datos\sub\pagefile.sys")),
+            Verdict::Allowed
+        );
+        // Y lo que no es el montaje no se contagia.
+        assert_eq!(
+            con.target_verdict(&k(r"C:\montajes\otro\$Recycle.Bin")),
+            Verdict::Allowed
+        );
+        // Las raíces con letra siguen igual.
+        assert_eq!(con.target_verdict(&k(r"C:\$Recycle.Bin")), Verdict::Denied);
     }
 }

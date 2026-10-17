@@ -381,13 +381,23 @@ pub fn bin_size_on(root: &Path) -> Result<u64> {
     Ok(info.i64Size.max(0) as u64)
 }
 
-/// ¿Está `p` dentro de una Papelera (`<unidad>:\$Recycle.Bin\...`)? Mira la forma de la ruta (carpeta de primer nivel
-/// de la raíz de una unidad llamada `$Recycle.Bin`), sin consultar al sistema.
+/// ¿Está `p` dentro de una Papelera (`<raíz del volumen>\$Recycle.Bin\...`)? La raíz del volumen es la de una unidad con letra o
+/// la de un volumen montado en una carpeta (GM-M6: `C:\montajes\datos\$Recycle.Bin\...`); se consulta a Windows
+/// (`GetVolumePathNameW`) por la raíz de `p`.
 pub fn is_recycle_bin_path(p: &Path) -> bool {
+    is_recycle_bin_path_on(p, crate::volume::volume_root(p).as_deref())
+}
+
+/// [`is_recycle_bin_path`] con la raíz del volumen de `p` ya conocida (`None` = no se sabe: solo valen las raíces de unidad
+/// con letra). Mira la forma de la ruta, sin consultar al sistema.
+pub(crate) fn is_recycle_bin_path_on(p: &Path, volume_root: Option<&Path>) -> bool {
     use crate::paths::PathKey;
     let key = PathKey::new(p);
+    let root = volume_root.map(PathKey::new);
     let is_bin = |k: &PathKey| {
-        k.file_name() == "$recycle.bin" && k.parent().is_some_and(|q| q.is_drive_root())
+        k.file_name() == "$recycle.bin"
+            && k.parent()
+                .is_some_and(|q| q.is_drive_root() || root.as_ref() == Some(&q))
     };
     is_bin(&key) || key.ancestors().iter().any(is_bin)
 }
@@ -2908,6 +2918,42 @@ mod tests {
             solo.find(&OsString::from(r"c:\X\A.BIN")),
             Some((_, Approved::Object { identity, .. })) if *identity == id(1)
         ));
+    }
+
+    /// GM-M6: un elemento reciclado en un volumen montado en una CARPETA se reconoce como "dentro de una Papelera" (su
+    /// `$Recycle.Bin` cuelga de la raíz de ese volumen, no de la de una letra). Prueba pura sobre rutas con la raíz inyectada.
+    #[test]
+    fn la_papelera_de_un_volumen_montado_en_una_carpeta_se_reconoce() {
+        let mount = Path::new(r"C:\montajes\datos\");
+        let bin = r"C:\montajes\datos\$Recycle.Bin\<sid>\$R123.txt";
+        assert!(is_recycle_bin_path_on(Path::new(bin), Some(mount)));
+        assert!(is_recycle_bin_path_on(
+            Path::new(r"C:\montajes\datos\$Recycle.Bin"),
+            Some(mount)
+        ));
+        // Sin conocer la raíz del volumen, solo valen las unidades con letra (el comportamiento anterior).
+        assert!(!is_recycle_bin_path_on(Path::new(bin), None));
+        // Solo en la raíz del volumen: una subcarpeta con ese nombre no es una Papelera.
+        assert!(!is_recycle_bin_path_on(
+            Path::new(r"C:\montajes\datos\sub\$Recycle.Bin\x"),
+            Some(mount)
+        ));
+        // Otra raíz de montaje no se contagia.
+        assert!(!is_recycle_bin_path_on(
+            Path::new(r"C:\montajes\otro\$Recycle.Bin\x"),
+            Some(mount)
+        ));
+        // Las unidades con letra siguen igual, con o sin raíz conocida.
+        for root in [None, Some(Path::new(r"C:\"))] {
+            assert!(is_recycle_bin_path_on(
+                Path::new(r"C:\$Recycle.Bin\S-1-5\$Rabc"),
+                root
+            ));
+            assert!(!is_recycle_bin_path_on(
+                Path::new(r"C:SERS<USUARIO>.TXT"),
+                root
+            ));
+        }
     }
 
     /// H3 (sin COM): la comprobación de `PreDeleteItem` por ruta. Misma identidad pasa; otra identidad, un archivo que ya no
