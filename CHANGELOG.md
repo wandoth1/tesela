@@ -4,6 +4,43 @@ Format based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versio
 (`major.minor.patch`, no suffixes: an MSI does not allow `-rc1`). `release.yml` copies the section of the tag's version to the
 notes of the GitHub Release, so each version needs its section here.
 
+## [0.1.5] - 2026-10-17
+
+Beta release with a setup interface, multiple selection and clearer cleanup decisions. **Cleaning still changes files**: review
+the confirmation, especially any permanent-deletion warning. The binaries remain unsigned, so Windows SmartScreen may warn.
+
+### Added
+
+- The MSI now offers installation only for the current user or for all users, a folder chooser, and an optional desktop
+  shortcut, with Spanish and English setup text. A personal install needs no administrator permission; an all-users install
+  requests it when installation begins. This does not elevate Tesela when it cleans.
+- Select several visible files or folders before adding them to the basket: Ctrl+click, Shift+click or arrows, Space, Ctrl+A,
+  and Invert selection. A selection bar shows the count, size and why an item cannot be added. The basket and its view stay
+  responsive with large selections.
+- Two optional **Review** categories: per-user Windows error reports and application crash dumps. Only items older than
+  seven days are offered; they are sent to the Recycle Bin, never deleted permanently, and are never preselected.
+- An optional update check in Settings, off by default. At most once per day it asks GitHub for the latest published release
+  and offers to open its page; it never downloads or installs anything. It sends the fixed `User-Agent: Tesela`, while GitHub
+  sees the request's IP address. See the README's Privacy and network section.
+
+### Changed
+
+- Cleanup preparation and completion no longer perform log creation, history writes or process enumeration on the UI thread.
+  Approval shows progress, and a long file deletion explains why cancellation waits for that file. The confirmation no longer
+  offers an active cleanup button when every item awaits permanent-deletion consent.
+- The confirmation distinguishes Outlook cache files (`.ost`/`.nst`) from local mail data (`.pst`), warns if Outlook is open,
+  and requires a second explicit acknowledgment before permanently deleting a `.pst`.
+- Diagnostics that are too recent or cannot fit in the Recycle Bin stay in place with a recorded reason; a basket containing
+  only these skipped items does not offer a no-op cleanup.
+
+### Fixed
+
+- The MSI's dual-scope metadata allows a standard user's personal installation without elevation and rejects an all-users
+  installation when credentials cannot be requested. It also handles a personal installation in the presence of an all-users
+  copy without silently changing scope.
+- Confirmation now shows the size of items awaiting permanent-deletion consent instead of suggesting that the basket holds
+  zero bytes.
+
 ## [0.1.4] - 2026-10-17
 
 Fourth round of fixes, after two external audits of 0.1.3, and two usability improvements requested during testing.

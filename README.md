@@ -5,7 +5,7 @@ A visual disk space analyzer for Windows, written in Rust: fast, light and clear
 
 [Installation](#installation) · [Code signing policy](CODE_SIGNING.md) · [Security](SECURITY.md) · [Changelog](CHANGELOG.md)
 
-> 🚧 **Status: MVP v0.1 published (v0.1.4).** Done: the model, the scanner, the interface (map, list, details, scan with real progress, Spanish/English, light/dark) and **the cleaner**: Recommendations, basket, confirmation and summary, with safe handle-based deletion and sending to the Recycle Bin. **This version really deletes** (only what you approve in the confirmation): try it first with `--dry-run` or `--demo`. Per-user MSI installer in [Releases](https://github.com/wandoth1/tesela/releases) (see [Installation](#installation)); use **v0.1.4** or later: earlier versions had bugs in the cleaner. Phase 0 findings are in [docs/phase-0-findings.md](docs/phase-0-findings.md); the full plan is in [docs/PLAN.md](docs/PLAN.md).
+> 🚧 **Status: MVP v0.1.5 beta in preparation.** Done: the model, the scanner, the interface (map, list, details, scan with real progress, Spanish/English, light/dark) and **the cleaner**: Recommendations, basket, confirmation and summary, with safe handle-based deletion and sending to the Recycle Bin. **This version really deletes** (only what you approve in the confirmation): try it first with `--dry-run` or `--demo`. The MSI installer is in [Releases](https://github.com/wandoth1/tesela/releases) (see [Installation](#installation)). Phase 0 findings are in [docs/phase-0-findings.md](docs/phase-0-findings.md); the full plan is in [docs/PLAN.md](docs/PLAN.md).
 
 ## What Tesela is
 
@@ -18,21 +18,25 @@ A visual disk space analyzer for Windows, written in Rust: fast, light and clear
 
 ## Installation
 
-Windows 10 22H2 or Windows 11, x64. **No administrator needed.** Download the files of the latest release from
-[github.com/wandoth1/tesela/releases](https://github.com/wandoth1/tesela/releases) (while none is published, the
-installer can only be built from the source: `pwsh -File scripts/build-msi.ps1`).
+Windows 10 22H2 or Windows 11, x64. **No administrator needed for a personal installation.** Download the files from
+[github.com/wandoth1/tesela/releases](https://github.com/wandoth1/tesela/releases). The v0.1.5 beta remains a prerelease;
+the latest stable listing may still point to v0.1.4.
 
 **Code signing policy:** v0.1 is not signed yet; the [Code signing policy](CODE_SIGNING.md) describes what will be signed, who approves each release and how it is built.
 
 ### MSI installer (recommended)
 
 1. Download `tesela-<version>-x64.msi`.
-2. Double-click it. It installs **for your user only** in `%LOCALAPPDATA%\Programs\Tesela`, without asking for administrator
-   rights, with a **Tesela** shortcut in the Start menu and an entry in *Settings > Apps > Installed apps*. (Silently:
-   `msiexec /i tesela-<version>-x64.msi /qn`.)
-   **Install folder:** with `INSTALLFOLDER=` the MSI installs wherever you tell it, **without checking who can write there**; choose a
-   folder that only you (and administrators) can write to. If other users can write to it, they could leave a DLL next to
-   `tesela.exe` that would be loaded when it starts (suspected risk, not demonstrated; the program already looks for its DLLs only in `System32`, but it is better not to depend on that; details in [installer/README.md](installer/README.md)).
+2. Double-click it. The setup asks whether to install **only for you** (recommended; `%LOCALAPPDATA%\Programs\Tesela`, no
+   administrator permission) or **for all users** (`C:\Program Files\Tesela`, with a Windows administrator prompt when
+   installation begins). You can choose a folder and optionally create a desktop shortcut. A **Tesela** shortcut appears in
+   the appropriate Start menu, and the installation appears in *Settings > Apps > Installed apps*. Installing for all users
+   gives Tesela **no extra cleaning privileges**; the app refuses to clean when run elevated.
+   For an unattended personal installation use `msiexec /i tesela-<version>-x64.msi /qn`; use `ALLUSERS=1` for an unattended
+   all-users installation (it requires administrator rights, and `/qn` cannot prompt a standard user for credentials).
+   `INSTALLFOLDER="<absolute drive path>\"` chooses a folder and `DESKTOPSHORTCUT=1` adds the desktop shortcut. Choose a
+   folder only you (and administrators) can write to; the MSI does not validate its access controls. See
+   [installer/README.md](installer/README.md) for scope changes, custom-folder caveats and recovery instructions.
 3. **Update:** install the new version's MSI over it; it replaces the previous one without leaving duplicates. Installing an
    **older** version than the installed one is blocked with a message (uninstall the new one first if you really want to go back).
 4. **Repair:** *Installed apps* does not offer "Modify" (there is nothing to choose); to repair, run
@@ -117,13 +121,14 @@ tesela --help
 - **Map:** one block per folder or file, proportional to the space it takes **on disk**, colored by type (a color-blind-friendly palette). The next level is hinted inside each block. Blocks that are too small are grouped into **"Others (N items, X)"**, which opens with a double-click. Folders the scan did not manage to walk in full carry diagonal stripes and a "≥".
 - **Grays with meaning:** the "Windows and other system data" block (what takes up the disk but your user cannot see), `pagefile.sys` and `hiberfil.sys` ("Info only") and "Mixed" (folders with no dominant type).
 - **List:** the same folders with exact figures; it is the accessible view (screen reader) and shares the selection with the map.
-- **Keyboard:** double-click or `Enter` enters a folder; `Backspace` goes up; the arrow keys move the selection; `Ctrl+F` searches; `F5` rescans; `Alt+Home` goes back to the home screen. Right-click: open in Explorer, copy the path and Properties.
+- **Keyboard:** double-click or `Enter` enters a folder; `Backspace` goes up; the arrow keys move the active item; `Ctrl+F` searches; `F5` rescans; `Alt+Home` goes back to the home screen. Ctrl+click or the Select toggle marks several visible items, Shift+click/arrows extends a range, Space toggles a mark, Ctrl+A marks all visible items and Invert selection flips the visible marks before adding them to the basket. Right-click: open in Explorer, copy the path and Properties.
 - **Settings (⚙):** theme (same as system, light or dark), language (same as system, Español or English), the optional update check (off by default) and delete the cleanup history.
 
 ### Cleaning
 
-- **Recommendations:** temporary files of the user and of Windows (only what has not been modified in the last 7 days), Edge, Chrome and Firefox caches (with the browser closed), and, as **Review**, Downloads and the Recycle Bin. `pagefile.sys`, `hiberfil.sys` and `swapfile.sys` are only explained. "Up to X in low-risk candidates" adds up **only** what is Safe, and it is an estimate, not a guaranteed minimum: the real figure is the one the cleanup measures.
+- **Recommendations:** temporary files of the user and of Windows (only what has not been modified in the last 7 days), Edge, Chrome and Firefox caches (with the browser closed), and, as **Review**, Downloads, the Recycle Bin, per-user Windows error reports and application crash dumps. Reports and dumps are never preselected, and only children older than 7 days are offered; they only go to the Recycle Bin, so an item that does not fit is left in place. `pagefile.sys`, `hiberfil.sys` and `swapfile.sys` are only explained. "Up to X in low-risk candidates" adds up **only** what is Safe, and it is an estimate, not a guaranteed minimum: the real figure is the one the cleanup measures.
 - **Everything goes through the basket and a confirmation** that groups by destination: what can be regenerated is **deleted** (it is recreated on its own) and your own files go to the **Recycle Bin**. What does not fit in the Recycle Bin (or goes to a disk with no maximum Recycle Bin size configured: it is set in the Recycle Bin properties) is shown separately, in amber, and is only deleted if you explicitly check it. Your five biggest own files are always named.
+- **Outlook data:** `.ost` and `.nst` are cache files that may be downloaded again, but unsynchronized changes can be lost. A `.pst` can be mail stored only on this computer. Tesela warns about each kind, asks for a second explicit acknowledgment before permanently deleting a `.pst`, and warns when Outlook is running; close it before cleaning. A file in use is skipped, so cleaning a folder can be partial.
 - **Protected:** Windows, Program Files, the whole of `AppData`, the key folders of the profile (only their contents are cleaned), Tesela itself (even if it is inside the temporary folder) and whatever cannot be checked. Only **local drives** are cleaned: a network path, even one that points to a disk of your own computer (through `localhost` and its administrative share), is rejected. It is shown with a padlock and a dotted border and cannot be added.
 - **Safe deletion:** the identity of each item (volume, file ID and links) is checked right before touching it, it is opened exclusively and deleted by handle, never entering reparse points (junctions, symbolic links); a hard link does not count as freed. What is in use is **skipped**, not forced. What goes to the Recycle Bin is checked the same way and handed to Windows **by its original path** (without renaming it first), with a guard handle open that prevents its folders from being swapped for a link in the meantime, and right before Windows acts it is checked once more that it is the approved object (if not, it is not sent). Windows reports what happened with each item and Tesela compares the **identity** of what reached the Recycle Bin with the approved one (and that the approved name no longer exists). If someone replaced it right in the middle, what arrives is usually a different object: you are told, and it can be restored from the Recycle Bin; but if that object does not fit, Windows deletes it, and that minimal window cannot be fully closed. Items are split into operations according to the space left in the Recycle Bin (folders are measured right before), and what does not fit or cannot be guaranteed is not sent; if Windows ever deleted something permanently, sending stops at that moment and nothing else is touched. Without a local cleanup log nothing is deleted. While it runs, closing the window is blocked ("Wait for it to finish or cancel"). If Tesela runs as administrator, real cleaning and emptying the Recycle Bin do not work (for safety); scanning and simulation do. With User Account Control (UAC) turned off, or with the built-in Administrator account, every process counts as elevated and Tesela will refuse to clean: use a standard user account (or with UAC on) and open it with a normal double-click, not "Run as administrator".
 - **"Measured change in free space"** is what actually changed in the drive's free space during the cleanup (other programs writing at the same time also move it); what was deleted and what was sent to the Recycle Bin are counted separately, because what is sent does not free space until the Recycle Bin is emptied.
@@ -146,7 +151,7 @@ Tesela does not connect to anything by default: no telemetry, no accounts, no ad
 |---|---|---|
 | Phase 0 | ✅ Done | Measurement tests: graphical interface, folder-reading API, Recycle Bin ([findings](docs/phase-0-findings.md)) |
 | v0.1.0 – v0.1.4 | ✅ Released | Scan, map + list, basket, cleaning of temporary files, caches and the Recycle Bin, per-user MSI installer. Four rounds of fixes after independent security audits; v0.1.4 adds the Home button and change monitoring when sending folders to the Recycle Bin |
-| v0.1.5 | 🧪 Beta in progress | Installer with a setup UI: only for me or for all users, install folder, optional desktop shortcut. Select several items before adding them to the basket. New *Review* categories: Windows error reports and crash dumps |
+| v0.1.5 | 🧪 Beta in progress | Dual-scope installer with a setup UI, folder and optional desktop shortcut; multiple selection; *Review* error reports and crash dumps; optional update check; clearer cleanup progress and Outlook warnings |
 | v0.1.6 | Planned | New home screen with three entries: **Quick clean** (temporary files and caches without scanning the whole disk, including developer tool caches), **Optimize** and **Explore the disk** |
 | v0.1.7 | Planned | **Optimize**, honest version: memory explained, the programs using the most, startup apps. No "free RAM" button (it usually makes things slower) |
 | v0.2 | Planned | Full assistant (project folders, old downloads, large files), undo, and a limited administrator helper for some Windows areas (only in the all-users install, after an external audit) |
@@ -178,7 +183,7 @@ cargo run --release -p tesela-scan -- <path> --top 20   # read-only; options in 
 cargo run -p tesela-app -- --demo                        # the interface with synthetic data
 cargo test -p tesela-layout --release -- --ignored relayout   # layout benchmark (20k rectangles)
 pwsh -File scripts/build-release.ps1                     # release WITHOUT machine paths in the binaries (and it checks that)
-pwsh -File scripts/build-msi.ps1                         # per-user MSI + portable zip + SHA256SUMS.txt (needs WiX 5.0.2: installer/README.md)
+pwsh -File scripts/build-msi.ps1                         # dual-scope MSI + portable zip + SHA256SUMS.txt (needs WiX 5.0.2: installer/README.md)
 python -I -m unittest discover -s scripts/tests -p "test_*.py"   # tests of scripts/check-pe.py
 ```
 
