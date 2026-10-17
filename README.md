@@ -110,10 +110,11 @@ tesela --demo               # demo mode: SYNTHETIC tree and fictional drives; it
 tesela --help
 ```
 
-`--demo` is the only mode used for screenshots and tests: everything it shows (folders, sizes, drives) is made up and always the same. It accepts `--screen home|scan|map|list|recs|confirm|summary`, `--open Users/usuario`, `--select Descargas`, `--stopped` (a stopped scan, with incomplete folders), `--theme light|dark`, `--lang es|en` and `--size 1280x800`. (The names in the demo tree, such as `usuario` and `Descargas`, are in Spanish, and the screenshots below use the Spanish interface.)
+`--demo` is the only mode used for screenshots and tests: everything it shows (folders, sizes, drives) is made up and always the same. It accepts `--screen home|scan|map|list|recs|confirm|summary`, `--open Users/usuario`, `--select Descargas`, repeated `--mark <name>` to show the selection bar, `--stopped` (a stopped scan, with incomplete folders), `--theme light|dark`, `--lang es|en` and `--size 1280x800`. (The names in the demo tree, such as `usuario` and `Descargas`, are in Spanish, and the screenshots below use the Spanish interface.)
 
 ![Map of a user folder in demo mode, light theme](docs/img/mapa-claro.png)
 ![Map of a drive in demo mode, dark theme](docs/img/mapa-oscuro.png)
+![Two folders marked for the basket in demo mode](docs/img/seleccion.png)
 ![Recommendations in demo mode: the safe items already checked, what is worth reviewing and what is only explained](docs/img/recomendaciones.png)
 ![Confirmation before cleaning, with what gets deleted and what goes to the Recycle Bin](docs/img/confirmacion.png)
 ![Summary of a cleanup: the measured change in free space, what was deleted and what was moved to the Recycle Bin](docs/img/resumen.png)
