@@ -147,7 +147,7 @@ mod tests {
             archive = []
             program = []
         "#;
-        assert!(parse_table(src).unwrap_err().contains("repetida"));
+        assert!(parse_table(src).unwrap_err().contains("duplicate extension"));
     }
 
     #[test]
