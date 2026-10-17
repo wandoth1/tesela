@@ -46,7 +46,8 @@ $MsiExpectedUpgradeCode = '{7E8F4B67-A7D4-415B-9F8F-2E0B88AA88BB}'
 $MsiExpectedFiles = @('tesela.exe', 'tesela-scan.exe', 'LICENSE-MIT', 'LICENSE-APACHE', 'THIRD-PARTY-NOTICES.md')
 # Arbol de carpetas EXACTO de un MSI de Tesela (Directory -> Directory_Parent), tal como lo genera installer/Tesela.wxs.
 # INSTALLFOLDER cuelga de TARGETDIR y su ruta REAL la fijan las acciones de tipo 51 segun el ambito (por usuario
-# [LocalAppDataFolder]Programs\Tesela\, para todos [ProgramFiles64Folder]Tesela\, o la de la instalacion anterior); el nombre
+# [LocalAppDataFolder]Programs\Tesela\, para todos [%ProgramW6432]\Tesela\ (variable de entorno: en el contexto por usuario Windows
+# Installer redirige [ProgramFiles64Folder] al perfil), o la de la instalacion anterior); el nombre
 # `Tesela` solo vale si nada la fija. ProgramMenuFolder y DesktopFolder dependen de ALLUSERS (el del usuario o el comun). DefaultDir
 # solo se fija donde el .wxs pone el nombre ($null = no se comprueba: son los nombres cortos que WiX da a las carpetas
 # estandar, `PMenu`, `Desktop`, `SourceDir`, y no son decision de Tesela).
@@ -151,9 +152,9 @@ $MsiAllowedTables = @(
 # (ambito, carpeta, escritorio, idioma); las de los textos son `TeselaEs_<Texto>` y se validan aparte. -------------------------
 $MsiExpectedCustomActions = @(
     @{ Action = 'TeselaSetDefaultUser'; Type = '51'; Source = 'TESELA_DEFAULT_USER'; Target = '[LocalAppDataFolder]Programs\Tesela\' },
-    @{ Action = 'TeselaSetDefaultMachine'; Type = '51'; Source = 'TESELA_DEFAULT_MACHINE'; Target = '[ProgramFiles64Folder]Tesela\' },
-    @{ Action = 'TeselaSetProtected64'; Type = '51'; Source = 'TESELA_PF64'; Target = '[ProgramFiles64Folder]' },
-    @{ Action = 'TeselaSetProtected32'; Type = '51'; Source = 'TESELA_PF32'; Target = '[ProgramFilesFolder]' },
+    @{ Action = 'TeselaSetDefaultMachine'; Type = '51'; Source = 'TESELA_DEFAULT_MACHINE'; Target = '[%ProgramW6432]\Tesela\' },
+    @{ Action = 'TeselaSetProtected64'; Type = '51'; Source = 'TESELA_PF64'; Target = '[%ProgramW6432]\' },
+    @{ Action = 'TeselaSetProtected32'; Type = '51'; Source = 'TESELA_PF32'; Target = '[%ProgramW6432] (x86)\' },
     @{ Action = 'TeselaSetProtectedWin'; Type = '51'; Source = 'TESELA_WIN'; Target = '[WindowsFolder]' },
     @{ Action = 'TeselaFolderPrevUser'; Type = '51'; Source = 'INSTALLFOLDER'; Target = '[TESELA_PREV_USER]' },
     @{ Action = 'TeselaFolderPrevMachine'; Type = '51'; Source = 'INSTALLFOLDER'; Target = '[TESELA_PREV_MACHINE]' },

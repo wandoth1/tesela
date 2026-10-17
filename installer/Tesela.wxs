@@ -121,9 +121,11 @@
     </Property>
 
     <!--
-      Arbol de carpetas. INSTALLFOLDER cuelga de TARGETDIR y su ruta REAL la fijan las acciones de tipo 35 de abajo segun el
-      ambito: [LocalAppDataFolder]Programs\Tesela\ (por usuario) o [ProgramFiles64Folder]Tesela\ (para todos), o la carpeta de
-      la instalacion anterior, o la que pida INSTALLFOLDER= / la ventana. El nombre "Tesela" solo vale si nada la fija.
+      Arbol de carpetas. INSTALLFOLDER cuelga de TARGETDIR y su ruta REAL la fijan las acciones de tipo 51 de abajo (la propiedad
+      INSTALLFOLDER, que Windows Installer usa como ruta del Directory al calcular los costes) segun el ambito:
+      [LocalAppDataFolder]Programs\Tesela\ (por usuario) o %ProgramW6432%\Tesela\ (para todos), o la carpeta de la instalacion
+      anterior, o la que pida INSTALLFOLDER= / la ventana. El nombre "Tesela" solo vale si nada la fija. (Se usa el tipo 51 y no el
+      35 porque ICE12 exige el 35 DESPUES de CostFinalize y la carpeta tiene que estar fijada ANTES.)
       ProgramMenuFolder y DesktopFolder dependen de ALLUSERS (menu y escritorio del usuario, o los comunes del equipo).
     -->
     <Directory Id="INSTALLFOLDER" Name="Tesela" />
@@ -134,10 +136,16 @@
          linea de comandos NO la cambia, igual que en la v0.1.4: hay que desinstalar e instalar de nuevo) y, si nada la fija,
          la de por defecto. Todo en las DOS secuencias (la interfaz y el servidor): al ser idempotentes, el servidor de una
          instalacion para todos repite el calculo con el valor seguro que le llega y no lo cambia. -->
+    <!-- OJO: en el contexto POR USUARIO (el de partida: MSIINSTALLPERUSER=1) Windows Installer REDIRIGE [ProgramFilesFolder] y
+         [ProgramFiles64Folder] a %LOCALAPPDATA%\Programs\ (comprobado con una sesion del propio paquete). Por eso la carpeta de
+         "para todos" y las carpetas protegidas NO salen de esas propiedades sino de las variables de entorno del sistema
+         (%ProgramW6432%; Program Files (x86) es esa misma carpeta con " (x86)": ICE03 no admite los parentesis de
+         %ProgramFiles(x86)% dentro de [%...]), que no dependen del contexto; [WindowsFolder] no se redirige. Con las propiedades,
+         la carpeta por defecto del perfil habria contado como "protegida" y se habria bloqueado la instalacion por usuario. -->
     <CustomAction Id="TeselaSetDefaultUser" Property="TESELA_DEFAULT_USER" Value="[LocalAppDataFolder]Programs\Tesela\" Execute="immediate" />
-    <CustomAction Id="TeselaSetDefaultMachine" Property="TESELA_DEFAULT_MACHINE" Value="[ProgramFiles64Folder]Tesela\" Execute="immediate" />
-    <CustomAction Id="TeselaSetProtected64" Property="TESELA_PF64" Value="[ProgramFiles64Folder]" Execute="immediate" />
-    <CustomAction Id="TeselaSetProtected32" Property="TESELA_PF32" Value="[ProgramFilesFolder]" Execute="immediate" />
+    <CustomAction Id="TeselaSetDefaultMachine" Property="TESELA_DEFAULT_MACHINE" Value="[%ProgramW6432]\Tesela\" Execute="immediate" />
+    <CustomAction Id="TeselaSetProtected64" Property="TESELA_PF64" Value="[%ProgramW6432]\" Execute="immediate" />
+    <CustomAction Id="TeselaSetProtected32" Property="TESELA_PF32" Value="[%ProgramW6432] (x86)\" Execute="immediate" />
     <CustomAction Id="TeselaSetProtectedWin" Property="TESELA_WIN" Value="[WindowsFolder]" Execute="immediate" />
     <CustomAction Id="TeselaFolderPrevUser" Property="INSTALLFOLDER" Value="[TESELA_PREV_USER]" Execute="immediate" />
     <CustomAction Id="TeselaFolderPrevMachine" Property="INSTALLFOLDER" Value="[TESELA_PREV_MACHINE]" Execute="immediate" />

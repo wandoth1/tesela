@@ -209,6 +209,10 @@ la **interfaz** (ventanas esperadas, solo controles sin imagen, solo eventos nat
 texto en inglés **y** en español), archivos byte a byte los compilados, y ni el MSI ni el zip ni sus contenidos llevan datos de la
 máquina (los identificadores se comparan distinguiendo mayúsculas). Salida en `<target de cargo>/dist`; nada se escribe en el repositorio.
 `scripts/tests/msi-validate.tests.ps1 -Msi <msi>` prueba el validador con copias manipuladas del MSI (sin instalarlas).
+`scripts/tests/msi-logic.tests.ps1 -Msi <msi>` prueba la **lógica** (condiciones de lanzamiento, carpeta, ámbito, idioma, escritorio y los
+botones Siguiente de las ventanas de ámbito y de carpeta) con una **sesión** de Windows Installer sin instalar nada (`OpenPackage` con
+propiedades sintéticas: el evaluador de condiciones es el del propio Windows Installer, y nunca lee el registro ni las carpetas reales).
+Se puede correr en local sin tocar la máquina.
 
 **Las pruebas de instalación solo corren en el CI** (`scripts/tests/msi-install.tests.ps1`, job `msi` de `ci.yml`: el runner es un
 administrador desechable, y el script se niega a correr fuera de un runner de GitHub). Bajan la v0.1.4 publicada, la verifican con

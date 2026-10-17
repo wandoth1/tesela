@@ -255,6 +255,14 @@ jobs:
           $msi = @(Get-ChildItem -LiteralPath "$env:RUNNER_TEMP/dist" -Filter '*.msi')
           if ($msi.Count -ne 1) { throw 'se esperaba exactamente un MSI' }
           ./scripts/tests/msi-validate.tests.ps1 -Msi $msi[0].FullName
+      # La LOGICA del MSI (condiciones de lanzamiento, carpeta, ambito, idioma, escritorio y los botones de las ventanas de ambito y
+      # de carpeta) con una SESION de Windows Installer sin instalar nada (OpenPackage, propiedades sinteticas).
+      - name: Pruebas de la logica del MSI (sesion sin instalar)
+        shell: pwsh
+        run: |
+          $msi = @(Get-ChildItem -LiteralPath "$env:RUNNER_TEMP/dist" -Filter '*.msi')
+          if ($msi.Count -ne 1) { throw 'se esperaba exactamente un MSI' }
+          ./scripts/tests/msi-logic.tests.ps1 -Msi $msi[0].FullName
       # PRUEBAS DE INSTALACION. Solo aqui: el runner es un administrador con la sesion elevada y desechable, y la prueba se niega a
       # correr fuera de un runner hospedado de GitHub Actions. En local no se instala nada desde un agente.
       # 1) La v0.1.4 publicada se baja de la release y se VERIFICA (procedencia con `gh attestation verify`, igual que el job
