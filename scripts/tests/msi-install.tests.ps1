@@ -82,6 +82,7 @@ $failed = New-Object System.Collections.Generic.List[string]
 # Lo que NO se ejecuto (no cuenta como pasado): se imprime aparte y el job puede exigir que no haya ninguna.
 $skipped = New-Object System.Collections.Generic.List[string]
 $script:stepsRun = 0
+$script:createdInstallerPolicy = $null
 function Check([string]$Case, [bool]$Condition, [string]$Detail = '') {
     if ($Condition) { $script:passed.Add($Case); Write-Host "  ok   $Case" }
     else { $script:failed.Add($(if ($Detail) { "$Case ($Detail)" } else { $Case })); Write-Host "  FALLA $Case $Detail" -ForegroundColor Red }
@@ -554,6 +555,18 @@ try {
     # (su HKCU y su perfil no son los del administrador del runner).
     New-Item -ItemType Directory -Force -Path $stdShared | Out-Null
     Show-PolicyDiagnostics
+    # EVIDENCIA (run 39030236010 de este PR): windows-latest es Windows SERVER, donde la directiva efectiva de Windows Installer es
+    # DisableMsi=1 ("solo para aplicaciones no administradas"): un usuario estandar NO puede instalar NINGUN MSI y msiexec termina con 1625
+    # ("This installation is forbidden by system policy") ANTES de decidir el ambito, tambien con un paquete de doble modo por usuario
+    # (el registro dice "MSI_LUA: Package is a dual mode package and is being installed in Per-User mode. No elevation is required.").
+    # No es del paquete: en Windows 10 y 11 (cliente) el valor por defecto es 0. Para comprobar lo que de verdad importa, esta maquina
+    # DESECHABLE se pone en el valor por defecto de un Windows cliente (DisableMsi=0) mientras dura el escenario, y se quita al terminar.
+    $installerPolicy = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Installer'
+    if (Test-Path -LiteralPath $installerPolicy) { throw 'ya existe la clave de directivas de Windows Installer: se aborta sin tocarla' }
+    New-Item -Path $installerPolicy -Force | Out-Null
+    New-ItemProperty -LiteralPath $installerPolicy -Name 'DisableMSI' -Value 0 -PropertyType DWord -Force | Out-Null
+    $script:createdInstallerPolicy = $installerPolicy
+    Write-Host "  [directiva] DisableMSI=0 en $installerPolicy (valor por defecto de un Windows cliente; se quita al terminar)"
     New-StandardUser
     & icacls.exe $stdShared '/grant' "${stdName}:(OI)(CI)M" | Out-Null
     Set-Content -LiteralPath (Join-Path $stdShared '.tesela-ci-marker') -Value 'created by msi-install.tests.ps1 in a GitHub-hosted runner' -Encoding ASCII
@@ -592,6 +605,7 @@ try {
     try { Reset-Machine } catch { Write-Host "limpieza: $($_.Exception.Message)" }
     # Los registros y resultados del usuario estandar se guardan junto a los demas antes de borrar la carpeta compartida.
     try { if (Test-Path -LiteralPath $stdShared) { Get-ChildItem -LiteralPath $stdShared -File | Where-Object { $_.Extension -in '.log', '.txt' } | Copy-Item -Destination $WorkDir -Force } } catch { Write-Host "copia de registros: $($_.Exception.Message)" }
+    if ($script:createdInstallerPolicy) { Remove-Item -LiteralPath $script:createdInstallerPolicy -Recurse -Force -ErrorAction SilentlyContinue }
     try { Remove-StandardUser } catch { Write-Host "limpieza del usuario estandar: $($_.Exception.Message)" }
     foreach ($k in 'HKCU:\Software\Tesela', 'HKLM:\SOFTWARE\Tesela') { Remove-Item -LiteralPath $k -Recurse -Force -ErrorAction SilentlyContinue }
     foreach ($d in (Join-Path $WorkDir 'custom-user'), $machineCustomRoot, $stdShared) {

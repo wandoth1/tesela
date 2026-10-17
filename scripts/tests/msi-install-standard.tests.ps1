@@ -115,7 +115,8 @@ switch ($Phase) {
             Out-Result 'FAIL' 'ALLUSERS=1 como usuario estandar no termino (se esperaba un error de privilegios, p. ej. 1925)' 'tiempo agotado'
         } else {
             Out-Result 'INFO' "ALLUSERS=1 como estandar termino con el codigo $($r.Code)"
-            Check "ALLUSERS=1 /qn como usuario estandar FALLA (codigo $($r.Code); se espera 1925, error de privilegios)" ($r.Code -ne 0) 'termino con 0: instalo para todos sin ser administrador'
+            Check "ALLUSERS=1 /qn como usuario estandar FALLA por falta de privilegios (codigo $($r.Code); se espera 1925; 1625 seria la directiva DisableMsi del Windows Server, no una decision del paquete)" ($r.Code -ne 0 -and $r.Code -ne 1625) "codigo $($r.Code): 0 = instalo para todos sin ser administrador; 1625 = la directiva del sistema lo impidio antes"
+            Check 'el motor trato el paquete como de doble modo y pidio privilegios para todos (registro de msiexec)' (Select-String -LiteralPath $r.Log -Pattern 'sufficient privileges|Elevation required|credentials|1925' -Quiet) 'ninguna linea del registro habla de privilegios, elevacion o credenciales'
         }
         Check 'nada en Program Files' (-not (Test-Path -LiteralPath $machineDefault))
         Check 'nada en HKLM\SOFTWARE\Tesela' ($null -eq (Get-RegValue 'HKLM:\SOFTWARE\Tesela' 'InstallFolder'))
