@@ -430,8 +430,8 @@ impl Tree {
                     }
                 }
                 prev = Some(c);
-                sum_alloc += ch.alloc;
-                sum_logical += ch.logical;
+                sum_alloc = sum_alloc.saturating_add(ch.alloc);
+                sum_logical = sum_logical.saturating_add(ch.logical);
                 files += if ch.is_dir() {
                     ch.files_below as u64
                 } else if ch.flags & flags::SYSTEM_INFO != 0 {

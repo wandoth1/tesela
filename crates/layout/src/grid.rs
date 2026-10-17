@@ -19,7 +19,7 @@ impl Grid {
     pub(crate) fn build(cells: &[Cell], width: f32, height: f32) -> Grid {
         let cols = ((width / BUCKET).ceil() as u32).max(1);
         let rows = ((height / BUCKET).ceil() as u32).max(1);
-        let n = (cols * rows) as usize;
+        let n = (cols as usize) * (rows as usize);
         let span = |r: &Rect| -> (u32, u32, u32, u32) {
             let c0 = ((r.x / BUCKET).floor().max(0.0) as u32).min(cols - 1);
             let r0 = ((r.y / BUCKET).floor().max(0.0) as u32).min(rows - 1);
@@ -35,7 +35,7 @@ impl Grid {
             let (c0, r0, c1, r1) = span(&c.rect);
             for r in r0..=r1 {
                 for col in c0..=c1 {
-                    offsets[(r * cols + col) as usize + 1] += 1;
+                    offsets[r as usize * cols as usize + col as usize + 1] += 1;
                 }
             }
         }
@@ -51,7 +51,7 @@ impl Grid {
             let (c0, r0, c1, r1) = span(&c.rect);
             for r in r0..=r1 {
                 for col in c0..=c1 {
-                    let b = (r * cols + col) as usize;
+                    let b = r as usize * cols as usize + col as usize;
                     items[fill[b] as usize] = idx as u32;
                     fill[b] += 1;
                 }
@@ -75,7 +75,7 @@ impl Grid {
         if col >= self.cols || row >= self.rows {
             return None;
         }
-        let b = (row * self.cols + col) as usize;
+        let b = row as usize * self.cols as usize + col as usize;
         let mut best: Option<u32> = None;
         for &i in &self.items[self.offsets[b] as usize..self.offsets[b + 1] as usize] {
             let c = &cells[i as usize];

@@ -578,8 +578,8 @@ fn resolve_group(
     for (_, id) in members.iter().skip(1) {
         let r = &mut recs[*id as usize];
         stats.hardlink_extra_entries += 1;
-        stats.hardlink_alloc_saved += r.alloc;
-        stats.hardlink_logical_saved += r.logical;
+        stats.hardlink_alloc_saved = stats.hardlink_alloc_saved.saturating_add(r.alloc);
+        stats.hardlink_logical_saved = stats.hardlink_logical_saved.saturating_add(r.logical);
         r.alloc = 0;
         r.logical = 0;
         r.flags |= flags::HARDLINK;
@@ -591,7 +591,7 @@ fn resolve_group(
 fn path_key(recs: &[Record], names: &[u8], id: u32) -> Vec<u8> {
     let mut parts: Vec<&[u8]> = Vec::new();
     let mut cur = id as usize;
-    while cur != 0 && cur < recs.len() && recs[cur].is_present() && parts.len() < 65_536 {
+    while cur != 0 && cur < recs.len() && recs[cur].is_present() && parts.len() <= recs.len() {
         parts.push(name_of(names, &recs[cur]));
         cur = recs[cur].parent as usize;
     }

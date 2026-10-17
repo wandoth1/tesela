@@ -173,7 +173,7 @@ impl Batch {
     pub fn push_hole(&mut self) -> u32 {
         self.records.push(Record::HOLE);
         self.file_ids.push(0);
-        self.base_id + (self.records.len() - 1) as u32
+        self.base_id.saturating_add((self.records.len() - 1) as u32)
     }
 
     fn push_record(&mut self, parent: u32, name_off: u32, name_len: u16, e: EntryData) -> u32 {
@@ -188,6 +188,6 @@ impl Batch {
             flags: e.flags,
         });
         self.file_ids.push(e.file_id);
-        self.base_id + (self.records.len() - 1) as u32
+        self.base_id.saturating_add((self.records.len() - 1) as u32)
     }
 }
