@@ -51,16 +51,25 @@ if ($isAdmin) { throw 'esta prueba tiene que correr como usuario ESTANDAR, y est
 
 $UpgradeCode = '{7E8F4B67-A7D4-415B-9F8F-2E0B88AA88BB}'
 $ExpectedFiles = @('tesela.exe', 'tesela-scan.exe', 'LICENSE-MIT', 'LICENSE-APACHE', 'THIRD-PARTY-NOTICES.md')
-# Con Start-Process -Credential las variables de entorno de usuario pueden no estar: se pregunta a Windows por las carpetas.
-$localAppData = [Environment]::GetFolderPath('LocalApplicationData')
-$userDefault = Join-Path $localAppData 'Programs\Tesela'
-$machineDefault = Join-Path ([Environment]::GetFolderPath('ProgramFiles')) 'Tesela'
-$startMenu = Join-Path ([Environment]::GetFolderPath('Programs')) 'Tesela.lnk'
-
 function Out-Result([string]$Kind, [string]$Text, [string]$Detail = '') {
     $line = if ($Detail) { "$Kind|$Text|$Detail" } else { "$Kind|$Text" }
     Add-Content -LiteralPath $ResultFile -Value $line -Encoding ASCII
 }
+# Diagnostico del entorno del proceso (sin datos personales: es un usuario desechable): con Start-Process -Credential el perfil y las
+# variables de usuario pueden faltar, y entonces hay que saberlo.
+Out-Result 'INFO' ("entorno: usuario=" + [Environment]::UserName + " USERPROFILE=[" + $env:USERPROFILE + "] LOCALAPPDATA=[" + $env:LOCALAPPDATA + "] APPDATA=[" + $env:APPDATA + "] HKCU=[" + [Microsoft.Win32.Registry]::CurrentUser.Name + "] GetFolderPath(LocalApplicationData)=[" + [Environment]::GetFolderPath('LocalApplicationData') + "]")
+function Get-UserFolder([string]$Special, [string]$Relative) {
+    # La carpeta que da Windows y, si no hay perfil cargado (devuelve una cadena vacia), la misma desde el perfil por defecto de la cuenta.
+    $f = [Environment]::GetFolderPath($Special)
+    if ($f) { return $f }
+    $root = if ($env:USERPROFILE) { $env:USERPROFILE } else { Join-Path 'C:\Users' ([Environment]::UserName) }
+    return (Join-Path $root $Relative)
+}
+$localAppData = Get-UserFolder 'LocalApplicationData' 'AppData\Local'
+$userDefault = Join-Path $localAppData 'Programs\Tesela'
+$machineDefault = Join-Path $env:ProgramFiles 'Tesela'
+$startMenu = Join-Path (Get-UserFolder 'Programs' 'AppData\Roaming\Microsoft\Windows\Start Menu\Programs') 'Tesela.lnk'
+
 function Check([string]$Text, [bool]$Condition, [string]$Detail = '') {
     if ($Condition) { Out-Result 'ok' $Text } else { Out-Result 'FAIL' $Text $Detail }
 }
