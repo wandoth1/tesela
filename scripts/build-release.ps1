@@ -96,7 +96,7 @@ if (-not $triple) {
     $hostLine = (& rustc -vV) | Where-Object { $_ -like 'host:*' } | Select-Object -First 1
     $triple = $hostLine.Substring(5).Trim()
 }
-$machine = if ($triple -like 'aarch64-*') { 'arm64' } elseif ($triple -like 'x86_64-*') { 'x64' } elseif ($triple -like 'i?86-*') { 'x86' } else { throw "destino desconocido: $triple" }
+$machine = if ($triple -like 'aarch64-*') { 'arm64' } elseif ($triple -like 'x86_64-*') { 'x64' } elseif ($triple -like 'i?86-*') { 'x86' } else { throw "unknown target: $triple" }
 
 Push-Location $repo
 try {
@@ -105,7 +105,7 @@ try {
         # Standard output is JSON (one line per message); compiler diagnostics still go to the console.
         # `--locked`: a release must not change Cargo.lock or resolve new dependencies on its own.
         $json = & cargo build --release --locked @CargoArgs --message-format=json-render-diagnostics
-        if ($LASTEXITCODE -ne 0) { throw 'cargo build --release fallo' }
+        if ($LASTEXITCODE -ne 0) { throw 'cargo build --release failed' }
         foreach ($line in $json) {
             if (-not $line -or -not $line.StartsWith('{')) { continue }
             $m = $line | ConvertFrom-Json
