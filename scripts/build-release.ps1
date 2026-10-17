@@ -102,8 +102,8 @@ Push-Location $repo
 try {
     $artifacts = @()
     if (-not $CheckOnly) {
-        # La salida estandar es JSON (una linea por mensaje); los diagnosticos del compilador siguen yendo a la consola.
-        # `--locked`: un release no puede cambiar Cargo.lock (ni resolver dependencias nuevas) por su cuenta.
+        # Standard output is JSON (one line per message); compiler diagnostics still go to the console.
+        # `--locked`: a release must not change Cargo.lock or resolve new dependencies on its own.
         $json = & cargo build --release --locked @CargoArgs --message-format=json-render-diagnostics
         if ($LASTEXITCODE -ne 0) { throw 'cargo build --release fallo' }
         foreach ($line in $json) {

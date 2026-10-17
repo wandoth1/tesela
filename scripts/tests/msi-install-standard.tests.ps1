@@ -42,8 +42,8 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-# Con Start-Process -Credential el proceso NO hereda las variables de entorno del runner (GITHUB_ACTIONS...), asi que la guardia es una
-# marca que solo crea msi-install.tests.ps1 (que SI comprueba que esta en un runner hospedado de GitHub) en la carpeta compartida.
+# With Start-Process -Credential, the process does NOT inherit runner environment variables (GITHUB_ACTIONS...), so the
+# guard is a marker that only msi-install.tests.ps1 creates in the shared directory after verifying a GitHub-hosted runner.
 if ($Shared -ne 'C:\TeselaCiStd' -or -not (Test-Path -LiteralPath (Join-Path $Shared '.tesela-ci-marker'))) {
     throw 'msi-install-standard.tests.ps1 solo corre dentro de msi-install.tests.ps1, en un runner de GitHub Actions'
 }
@@ -56,11 +56,11 @@ function Out-Result([string]$Kind, [string]$Text, [string]$Detail = '') {
     $line = if ($Detail) { "$Kind|$Text|$Detail" } else { "$Kind|$Text" }
     Add-Content -LiteralPath $ResultFile -Value $line -Encoding ASCII
 }
-# Diagnostico del entorno del proceso (sin datos personales: es un usuario desechable): con Start-Process -Credential el perfil y las
-# variables de usuario pueden faltar, y entonces hay que saberlo.
+# Process environment diagnostics (no personal data: this is a disposable user): with Start-Process -Credential, the
+# profile and user variables may be missing, so record whether that happened.
 Out-Result 'INFO' ("entorno: usuario=" + [Environment]::UserName + " USERPROFILE=[" + $env:USERPROFILE + "] LOCALAPPDATA=[" + $env:LOCALAPPDATA + "] APPDATA=[" + $env:APPDATA + "] HKCU=[" + [Microsoft.Win32.Registry]::CurrentUser.Name + "] GetFolderPath(LocalApplicationData)=[" + [Environment]::GetFolderPath('LocalApplicationData') + "]")
 function Get-UserFolder([string]$Special, [string]$Relative) {
-    # La carpeta que da Windows y, si no hay perfil cargado (devuelve una cadena vacia), la misma desde el perfil por defecto de la cuenta.
+    # The directory returned by Windows, or, if no profile is loaded (returns an empty string), the same path under the account's default profile.
     $f = [Environment]::GetFolderPath($Special)
     if ($f) { return $f }
     $root = if ($env:USERPROFILE) { $env:USERPROFILE } else { Join-Path 'C:\Users' ([Environment]::UserName) }
@@ -109,7 +109,7 @@ Out-Result 'INFO' "fase $Phase como usuario estandar ($([Environment]::UserName)
 try {
 switch ($Phase) {
     'machine-attempt' {
-        # Nada de interfaz: con credenciales que nadie puede teclear, "para todos" tiene que fallar, no instalar.
+        # No UI: with credentials no one can enter, a per-machine install must fail rather than install.
         $r = Invoke-Msi @('/i', "`"$Msi`"", 'ALLUSERS=1') 'machine' 120
         if ($r.TimedOut) {
             Out-Result 'INFO' 'ALLUSERS=1 como estandar: Windows se quedo esperando y se corto a los 120 s (no se da por pasada: queda como no concluyente)'

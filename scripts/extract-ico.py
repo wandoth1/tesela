@@ -19,7 +19,7 @@ import sys
 
 RT_ICON = 3
 RT_GROUP_ICON = 14
-# Un arbol de recursos real tiene 3 niveles (tipo, nombre, idioma): mas de 4 es un PE manipulado (o con un ciclo).
+# A normal resource tree has three levels (type, name, language): more than four indicates a malformed PE or a cycle.
 MAX_DEPTH = 4
 
 

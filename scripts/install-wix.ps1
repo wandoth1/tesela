@@ -92,7 +92,7 @@ try {
 
     $nupkg = Join-Path $toolsDir ".store/wix/$Version/wix/$Version/wix.$Version.nupkg"
     if ($installed.Count -eq 0) {
-        # --- 1. Obtener el paquete a una carpeta propia y comprobar su hash ANTES de instalar nada -----------------------
+        # --- 1. Download the package to its own directory and verify its hash BEFORE installing anything -----------------
         $work = Join-Path ([System.IO.Path]::GetTempPath()) ('tesela-wix-' + [guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $work | Out-Null
         $local = Join-Path $work "wix.$Version.nupkg"

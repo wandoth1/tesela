@@ -61,13 +61,13 @@ function Find-LocalValueLeaks {
             # and division), NOT \p{L}\p{N}. The same boundaries apply to UTF-16 binary decodings, where a neighboring
             # pair of bytes is often a Unicode letter (CJK, Hangul, etc.); using \p{L} lost almost all UTF-16 detection
             # (99.9% before versus 5.9%, measured with random neighbors).
-            # Lo que garantiza: un valor ASCII al que sigue una letra latina acentuada (p. ej. "Ren" seguido de una e acentuada) NO es una
-            # fuga falsa en las decodificaciones UTF-8 y UTF-16 NATIVAS del texto. Todo lo demas sigue siendo un falso positivo,
-            # del lado seguro (ya lo era antes): la letra acentuada ANTES del valor en Latin-1 y en UTF-8, la acentuada DESPUES
-            # del valor en Latin-1 (la decodificacion UTF-8 de ese byte suelto es U+FFFD, que no es letra), y en general
-            # cualquier valor que la decodificacion Latin-1 de un UTF-8 valido deja junto a un byte de continuacion (como el
-            # segundo byte de una e acentuada en UTF-8, que en Latin-1 es un signo). Tambien cuentan como fuga un valor pegado
-            # a una letra cirilica, griega o CJK y los vecinos que son NUL, signos o U+FFFD.
+            # Guarantee: an ASCII value followed by an accented Latin letter (e.g. "Ren" followed by an accented e) is NOT
+            # a false leak in native UTF-8 and UTF-16 text decoding. Everything else remains a safe-side false positive
+            # (as before): an accented letter BEFORE the value in Latin-1 and UTF-8, an accented letter AFTER the value
+            # in Latin-1 (the UTF-8 decoding of that stray byte is U+FFFD, which is not a letter), and generally any value
+            # that Latin-1 decoding of valid UTF-8 leaves next to a continuation byte (such as the second byte of an
+            # accented e in UTF-8, which is a symbol in Latin-1). A value adjacent to Cyrillic, Greek, or CJK letters,
+            # and neighbors that are NULs, symbols, or U+FFFD, also count as leaks.
             $pattern = if ($k -eq 'USERNAME' -or $k -eq 'COMPUTERNAME') { '(?<![0-9A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u024F])' + [regex]::Escape($form) + '(?![0-9A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u024F])' } else { [regex]::Escape($form) }
             # CultureInvariant: case-insensitive matching must not depend on the user's locale (e.g. Turkish i).
             $options = [System.Text.RegularExpressions.RegexOptions]::IgnoreCase -bor [System.Text.RegularExpressions.RegexOptions]::CultureInvariant

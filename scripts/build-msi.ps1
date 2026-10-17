@@ -58,14 +58,14 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# --- Constantes (cambiarlas es una decision deliberada) -------------------------------------------------------------------
+# --- Constants (changing these requires deliberate consideration) --------------------------------------------------------
 $WixVersion = '5.0.2'
-# Avisos de ICE que se ACEPTAN (cualquier otro es un fallo). Cada uno: patron sobre la linea y por que.
-#   * ICE61: AllowSameVersionUpgrades="yes" (reinstalar la MISMA version reemplaza a la anterior) hace que el maximo de la fila
-#     de reemplazo no sea menor que la version del producto. Es lo que se quiere.
-#   * ICE57 solo para StartMenuShortcut y DesktopShortcut: un acceso directo es dato "por usuario" y su KeyPath es un valor de
-#     HKMU (HKCU por usuario, HKLM para todos), que ICE57 no sabe resolver. Es el diseno estandar de un paquete de doble
-#     proposito (el acceso directo y su KeyPath van siempre en el mismo contexto: el del usuario o el comun del equipo).
+# ICE warnings that are ACCEPTED (any other warning is a failure). Each entry has a line pattern and rationale.
+#   * ICE61: AllowSameVersionUpgrades="yes" (reinstalling the SAME version replaces the existing one) means the replacement
+#     row's maximum version is not less than the product version. This is intentional.
+#   * ICE57 only for StartMenuShortcut and DesktopShortcut: a shortcut is per-user data and its KeyPath is an HKMU value
+#     (HKCU per-user, HKLM per-machine), which ICE57 cannot resolve. This is the standard design for a dual-purpose package
+#     (the shortcut and its KeyPath always belong to the same user or machine context).
 $AcceptedIce = @(
     @{ Pattern = ': warning WIX1076: ICE61: This product should remove only older versions of itself\. The Maximum version is not less than the current product\.' },
     @{ Pattern = ": error WIX0204: ICE57: Component '(StartMenuShortcut|DesktopShortcut)' has both per-user data and a keypath that can be either per-user or per-machine\.$" }
@@ -78,7 +78,7 @@ $ExpectedFiles = $MsiExpectedFiles
 function Write-Step([string]$Text) { Write-Host "build-msi: $Text" }
 
 function Invoke-Native {
-    # Ejecuta un programa y devuelve su salida (lineas); falla si el codigo de salida no es 0 (o el permitido).
+    # Run a program and return its output lines; fail unless its exit code is 0 or explicitly allowed.
     param([string]$Exe, [string[]]$Arguments, [int[]]$OkCodes = @(0))
     $out = & $Exe @Arguments 2>&1 | ForEach-Object { "$_" }
     if ($OkCodes -notcontains $LASTEXITCODE) {
@@ -114,7 +114,7 @@ try {
         throw "version '$msiVersion' does not fit in an MSI (numeric major.minor.build; no suffixes such as -rc1)"
     }
 
-    # WiX con la version fijada.
+    # WiX at the pinned version.
     $wix = Get-Command wix -ErrorAction SilentlyContinue | Select-Object -First 1
     if (-not $wix) {
         throw "'wix' was not found. Install it with: pwsh -File scripts/install-wix.ps1 -Version $WixVersion"
@@ -142,7 +142,7 @@ try {
     New-Item -ItemType Directory -Path $work | Out-Null
     $workCreated = $true
 
-    # --- 1. Release (el unico origen de los ejecutables) -----------------------------------------------------------------
+    # --- 1. Release (the only source of executables) --------------------------------------------------------------------
     if (-not $SkipBuild) {
         Write-Step 'scripts/build-release.ps1'
         $self = (Get-Process -Id $PID).MainModule.FileName
@@ -154,13 +154,13 @@ try {
     foreach ($e in $exes) {
         if (-not (Test-Path -LiteralPath (Join-Path $releaseDir $e) -PathType Leaf)) { throw "falta $e en la carpeta de release (corre build-release.ps1)" }
     }
-    # Los ejecutables llevan la version de Cargo.toml en su VERSIONINFO.
+    # Executables carry the Cargo.toml version in VERSIONINFO.
     foreach ($e in $exes) {
         $pv = (Get-Item -LiteralPath (Join-Path $releaseDir $e)).VersionInfo.ProductVersion
         if ($pv -ne $cargoVersion) { throw "$e lleva la version '$pv' y Cargo.toml dice '$cargoVersion' (compilacion antigua: corre build-release.ps1)" }
     }
 
-    # --- 2. Preparar el contenido (los mismos 5 archivos para el MSI y el zip) ------------------------------------------
+    # --- 2. Prepare package contents (the same five files for the MSI and zip) -----------------------------------------
     $stage = Join-Path $work 'stage'
     New-Item -ItemType Directory -Force -Path $stage | Out-Null
     foreach ($e in $exes) { Copy-Item -LiteralPath (Join-Path $releaseDir $e) -Destination $stage }
@@ -183,7 +183,7 @@ try {
         '-pdbtype', 'none', '-o', $msiPath)
     $buildOut | ForEach-Object { if ($_) { Write-Host "  $_" } }
 
-    # --- 4. Validacion del MSI -------------------------------------------------------------------------------------------
+    # --- 4. Validate the MSI ---------------------------------------------------------------------------------------------
     Write-Step 'wix msi validate (ICE)'
     $iceOut = & $wix.Source msi validate $msiPath 2>&1 | ForEach-Object { "$_" }
     $iceCode = $LASTEXITCODE
@@ -198,9 +198,9 @@ try {
             Write-Host "  (aceptado) $($line.Substring([Math]::Max(0, $line.IndexOf('warning'))))"
         } else { $bad.Add($line) }
     }
-    # Un codigo de salida distinto de 0 solo se tolera si lo explican avisos ACEPTADOS que ICE da como error (ICE57 de los accesos
-    # directos): con cualquier otra causa, o sin ninguna linea, es un fallo.
-    # ... y solo si son EXACTAMENTE los dos esperados (los componentes de los dos accesos directos).
+    # A non-zero exit code is tolerated only when explained by ACCEPTED warnings that ICE reports as errors (ICE57 for the
+    # shortcuts); any other cause, or an empty diagnostic, is a failure.
+    # ... and only when there are EXACTLY the two expected warnings (the shortcut components).
     if (($iceCode -ne 0 -and $acceptedErrors -ne 2) -or $bad.Count -gt 0) {
         $bad | ForEach-Object { Write-Host "  $_" -ForegroundColor Red }
         throw "wix msi validate: codigo $iceCode, $($bad.Count) mensajes sin aceptar"
@@ -242,7 +242,7 @@ try {
         $zip.Dispose()
     }
 
-    # --- 6. Fugas de valores locales: MSI, contenido del MSI, contenido del zip y nombres de sus entradas ------------------
+    # --- 6. Local value leaks: MSI, MSI contents, zip contents, and entry names -----------------------------------------
     Write-Step 'busqueda de valores locales (MSI, zip y sus contenidos descomprimidos)'
     $cargoHome = $env:CARGO_HOME
     if (-not $cargoHome) { $cargoHome = Join-Path $env:USERPROFILE '.cargo' }
@@ -284,7 +284,7 @@ try {
         throw 'fuga de valores locales'
     }
 
-    # --- 7. Sumas de verificacion ----------------------------------------------------------------------------------------
+    # --- 7. Checksums ----------------------------------------------------------------------------------------------------
     $sums = @($msiPath, $zipPath) | ForEach-Object { '{0}  {1}' -f (Get-FileSha256 $_), (Split-Path -Leaf $_) }
     [System.IO.File]::WriteAllText((Join-Path $OutDir 'SHA256SUMS.txt'), (($sums -join "`n") + "`n"), (New-Object System.Text.UTF8Encoding($false)))
 
