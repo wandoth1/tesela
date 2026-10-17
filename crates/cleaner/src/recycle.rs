@@ -827,6 +827,9 @@ impl SinkCore {
 
     /// `PreDeleteItem`: `true` = la shell puede seguir con este elemento; `false` = el receptor debe devolver `E_ABORT`.
     pub(crate) fn pre_delete(&self, item: OsString) -> bool {
+        // SOLO PRUEBAS: gancho de la etapa 2 (justo antes de comprobar el elemento), también con la shell real.
+        #[cfg(test)]
+        crate::engine::test_hooks::before_pre_delete(Path::new(&item));
         let guard = &self.guard;
         // Defensa: si el lote ya está cancelado, ningún elemento más se procesa aunque la shell siguiera.
         if self.state.tripped.load(Ordering::SeqCst) {

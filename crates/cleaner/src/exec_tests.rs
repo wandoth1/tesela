@@ -329,6 +329,183 @@ fn un_elemento_del_usuario_va_a_la_papelera_por_su_ruta_original_y_se_verifica()
     assert_eq!(ids(), before, "la Papelera queda exactamente como estaba");
 }
 
+/// M3a (con la shell REAL, solo con `TESELA_REAL_RECYCLE_TESTS=1`): una carpeta de TRES niveles se envía a la Papelera y queda
+/// `Recycled`. Es el caso que comprueba que la vigilancia de cambios no da un falso positivo con lo que hace la shell real
+/// entre arrancar la operación y `PreDeleteItem`. Solo elementos propios (`tesela-test-<uuid>`).
+#[test]
+fn con_la_shell_real_una_carpeta_de_tres_niveles_se_envia_y_queda_recycled() {
+    let _lock = bin_lock();
+    if !bin_usable() {
+        return;
+    }
+    let before = ids();
+    let sb = Sandbox::new();
+    let _guard = BinGuard { uuid: sb.uuid() };
+    let c = cleaner_for(&sb);
+    sb.write("Docs/tres/a.txt", 2_000);
+    sb.write("Docs/tres/n1/b.txt", 2_000);
+    sb.write("Docs/tres/n1/n2/c.txt", 2_000);
+    sb.write("Docs/tres/n1/n2/n3/d.txt", 2_000);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/tres"), c.protection());
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 1, "{:?}", plan.rejected);
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    assert_eq!(
+        rep.items[0].status,
+        ItemStatus::Recycled,
+        "{:?}",
+        rep.items[0]
+    );
+    assert!(!sb.path("Docs/tres").exists());
+    assert_eq!(
+        (
+            rep.deleted_unexpectedly,
+            rep.not_recycled,
+            rep.recycled_other,
+            rep.unverified
+        ),
+        (0, 0, 0, 0)
+    );
+    let mine: Vec<BinItem> = recycle::list_bin()
+        .unwrap()
+        .into_iter()
+        .filter(|i| is_mine(i, &sb.uuid()))
+        .collect();
+    assert_eq!(mine.len(), 1, "{mine:?}");
+    recycle::purge_items(&mine, &AtomicBool::new(false)).unwrap();
+    assert_eq!(ids(), before, "la Papelera queda exactamente como estaba");
+}
+
+/// M3b (con la shell REAL, gateada): una carpeta que cambia JUSTO ANTES de `PreDeleteItem` (gancho de pruebas en el receptor) se
+/// veta: "cambió desde la confirmación", el envío se detiene y la carpeta sigue en su sitio sin llegar a la Papelera.
+#[test]
+fn con_la_shell_real_un_cambio_justo_antes_de_pre_delete_item_veta_la_carpeta() {
+    let _lock = bin_lock();
+    if !bin_usable() {
+        return;
+    }
+    let before = ids();
+    let sb = Sandbox::new();
+    let _guard = BinGuard { uuid: sb.uuid() };
+    let c = cleaner_for(&sb);
+    sb.write("Docs/d/f.bin", 5_000);
+    let mut b = Basket::new();
+    b.add_path(sb.long("Docs/d"), c.protection());
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 1, "{:?}", plan.rejected);
+    let _hook = crate::engine::test_hooks::install_before_pre_delete(sb.long("Docs"), |p| {
+        if p.ends_with("d") {
+            fs::write(p.join("nuevo.bin"), b"x").unwrap();
+        }
+    });
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    assert_eq!(
+        rep.items[0].status,
+        ItemStatus::Root(crate::engine::RootStatus::Changed),
+        "{:?}",
+        rep.items[0]
+    );
+    assert!(rep.recycle_stopped);
+    assert_eq!(rep.stop_reason, Some(StopReason::Changed));
+    assert!(sb.path("Docs/d/f.bin").exists() && sb.path("Docs/d/nuevo.bin").exists());
+    let mine = recycle::list_bin()
+        .unwrap()
+        .into_iter()
+        .filter(|i| is_mine(i, &sb.uuid()))
+        .count();
+    assert_eq!(mine, 0, "no llegó a la Papelera");
+    assert_eq!(ids(), before);
+}
+
+/// M3c (con la shell REAL, gateada): un `$R` PROPIO con un junction dentro (hacia otra carpeta propia del sandbox en `%TEMP%`,
+/// nunca hacia una raíz) queda EXCLUIDO ("con enlaces") y el resto del lote se purga: el destino del junction no se toca. El
+/// junction se quita como enlace antes de limpiar.
+#[test]
+fn con_la_shell_real_un_r_propio_con_un_junction_dentro_se_excluye_y_el_resto_se_purga() {
+    struct RemoveLink(PathBuf);
+    impl Drop for RemoveLink {
+        fn drop(&mut self) {
+            // Solo el enlace (`remove_dir` sobre un junction no entra en él).
+            let _ = fs::remove_dir(&self.0);
+        }
+    }
+    let _lock = bin_lock();
+    if !bin_usable() {
+        return;
+    }
+    let before = ids();
+    let sb = Sandbox::new();
+    let _guard = BinGuard { uuid: sb.uuid() };
+    let c = cleaner_for(&sb);
+    sb.write("Docs/uno.txt", 2_000);
+    sb.write("Docs/dos.txt", 2_000);
+    sb.write("Docs/carpeta/x.txt", 2_000);
+    sb.write("fuera/secreto.txt", 10);
+    let mut b = Basket::new();
+    for n in ["uno.txt", "dos.txt", "carpeta"] {
+        b.add_path(sb.long(&format!("Docs/{n}")), c.protection());
+    }
+    let plan = approve(&c, &b);
+    assert_eq!(plan.items.len(), 3, "{:?}", plan.rejected);
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    assert!(
+        rep.items.iter().all(|i| i.status == ItemStatus::Recycled),
+        "{:?}",
+        rep.items
+    );
+    let mine: Vec<BinItem> = recycle::list_bin()
+        .unwrap()
+        .into_iter()
+        .filter(|i| is_mine(i, &sb.uuid()))
+        .collect();
+    assert_eq!(mine.len(), 3, "{mine:?}");
+    let carpeta = mine
+        .iter()
+        .find(|i| i.name == "carpeta")
+        .expect("la carpeta propia")
+        .clone();
+    // Un junction DENTRO del `$R` de la carpeta, hacia otra carpeta propia del sandbox.
+    let link = PathBuf::from(&carpeta.id).join("enlace");
+    let out = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(&link)
+        .arg(sb.long("fuera"))
+        .output()
+        .expect("lanza cmd");
+    assert!(out.status.success(), "mklink /J falló");
+    let _link_guard = RemoveLink(link.clone());
+    // Vaciar (solo lo propio): la carpeta con el junction se excluye, el resto se purga.
+    let mut empty = Basket::new();
+    empty.set_empty_bin(true);
+    let plan = approve(&c, &empty);
+    assert_eq!(plan.bin.as_ref().map(|b| b.items.len()), Some(3));
+    let rep = exec(&c, &plan, false, false, None).unwrap();
+    let bin = rep.bin.expect("informe de la Papelera");
+    assert_eq!(bin.with_links, 1, "{bin:?}");
+    assert_eq!(bin.purged, 2, "{bin:?}");
+    assert!(!bin.failed, "{bin:?}");
+    assert!(
+        sb.path("fuera/secreto.txt").exists(),
+        "el destino del junction no se toca"
+    );
+    assert!(
+        PathBuf::from(&carpeta.id).exists(),
+        "el excluido sigue en la Papelera"
+    );
+    // Limpieza: el enlace se quita como enlace y después se purga lo que queda.
+    fs::remove_dir(&link).unwrap();
+    assert!(fs::symlink_metadata(&link).is_err());
+    let rest: Vec<BinItem> = recycle::list_bin()
+        .unwrap()
+        .into_iter()
+        .filter(|i| is_mine(i, &sb.uuid()))
+        .collect();
+    assert_eq!(rest.len(), 1, "{rest:?}");
+    recycle::purge_items(&rest, &AtomicBool::new(false)).unwrap();
+    assert_eq!(ids(), before, "la Papelera queda exactamente como estaba");
+}
+
 #[test]
 fn vaciar_la_papelera_purga_solo_la_lista_capturada() {
     let _lock = bin_lock();
@@ -2367,8 +2544,6 @@ impl RecycleShell for FakeShell {
         for (i, p) in paths.iter().enumerate() {
             // `PreDeleteItem`: lo que hay ahora en la ruta debe ser el objeto aprobado (y un archivo no puede haber crecido);
             // si no, veto y se corta el lote.
-            // Etapa 2 de los ganchos: dentro de la operación, justo antes de que el receptor compruebe el elemento.
-            crate::engine::test_hooks::before_pre_delete(p);
             if !core.pre_delete(p.clone().into_os_string()) {
                 // Como la shell REAL (medido): del elemento vetado avisa con `PostDeleteItem(E_ABORT)` y sin elemento nuevo.
                 // El ejecutor no puede tomar ese `E_ABORT` del propio receptor por un error de Windows.
