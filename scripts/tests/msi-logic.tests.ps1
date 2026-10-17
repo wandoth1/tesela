@@ -169,7 +169,7 @@ try {
             elseif ($_.Condition -clike '*TESELA_PREV_MACHINE=""*') { 'machine->user' }
             elseif ($_.Condition -clike '*TESELA_WIN*') { 'protected' }
             elseif ($_.Condition -clike '*INSTALLFOLDER><":*') { 'format' }
-            else { 'desconocida' }
+            else { 'unrecognized' }
         })
     Check "all five launch conditions are recognized ($($lcNames -join ', '))" ((($lcNames | Sort-Object) -join ',') -ceq 'downgrade,format,machine->user,protected,user->machine')
     function Get-LcFailures($Result) {
