@@ -105,7 +105,7 @@ jobs:
       - name: Install toolchain from rust-toolchain.toml
         run: rustup toolchain install
       # The Rust version comes from rust-toolchain.toml (installed automatically on the first cargo invocation).
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Formatting
         run: cargo fmt --all --check
       - name: Clippy
@@ -199,7 +199,7 @@ jobs:
         run: rustup toolchain install
       - name: Install Rust 1.95.0
         run: rustup toolchain install 1.95.0 --profile minimal
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: cargo +1.95.0 check
         run: cargo +1.95.0 check --workspace --all-targets --locked
 
@@ -217,7 +217,7 @@ jobs:
         run: rustup toolchain install
       - name: Install ARM64 target
         run: rustup target add aarch64-pc-windows-msvc
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: cargo check (aarch64-pc-windows-msvc)
         run: cargo check --workspace --all-targets --locked --target aarch64-pc-windows-msvc
 
@@ -239,7 +239,7 @@ jobs:
       # With no arguments, installs the toolchain from rust-toolchain.toml (does not rely on cargo's first-run auto-install).
       - name: Install toolchain from rust-toolchain.toml
         run: rustup toolchain install
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # With the pinned version, use nuget.org only (installer/nuget.config) and verify the package SHA-512.
       - name: Install WiX
         shell: pwsh
