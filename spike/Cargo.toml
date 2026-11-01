@@ -12,7 +12,7 @@ publish = false
 
 [workspace.dependencies]
 # Versiones verificadas con `cargo search` el 2026-10-15 (coinciden con PLAN.md §3.10).
-eframe = { version = "0.36.2", default-features = false, features = ["accesskit", "default_fonts"] }
+eframe = { version = "0.37.0", default-features = false, features = ["accesskit", "default_fonts"] }
 egui = { version = "0.36.2", default-features = false }
 windows-sys = "0.61.2"
 crossbeam-deque = "0.8.8"
