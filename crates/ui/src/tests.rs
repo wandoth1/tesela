@@ -2173,3 +2173,60 @@ fn la_barra_de_estado_avisa_de_que_las_cifras_son_de_la_cuota_de_la_cuenta() {
 
 mod flow;
 mod select;
+
+/// M1 (egui 0.37): the search `TextEdit` takes a theme `min_size` of `interact_size.y` (32 px) and puts the text at the top;
+/// the row must stay as in 0.36: as tall as its text (not 32 px) and centered with the magnifier, which is centered in the
+/// 34 px box that holds both.
+#[test]
+fn la_barra_de_busqueda_no_crece_y_su_texto_queda_centrado_con_la_lupa() {
+    let h = harness(opts(StartScreen::Map(MapStart::default())));
+    let node = h.get_by_label("Buscar").rect();
+    assert!(
+        node.height() <= 24.0,
+        "el campo de búsqueda mide {} px de alto: debe medir lo que su texto, no el alto de un botón",
+        node.height()
+    );
+    let hint = h
+        .output()
+        .shapes
+        .iter()
+        .find_map(|cs| match &cs.shape {
+            egui::epaint::Shape::Text(ts) if ts.galley.text() == "Buscar…  Ctrl+F" => {
+                Some(ts.pos.y + ts.galley.rect.center().y)
+            }
+            _ => None,
+        })
+        .expect("el texto de ayuda del buscador se pinta");
+    assert!(
+        (hint - node.center().y).abs() <= 1.5,
+        "el texto está en y = {hint} y el campo está centrado en y = {}",
+        node.center().y
+    );
+    // The 34 px box (the magnifier is centered in it).
+    let boxes: Vec<egui::Rect> = h
+        .output()
+        .shapes
+        .iter()
+        .filter_map(|cs| match &cs.shape {
+            egui::epaint::Shape::Rect(r)
+                if (30.0..=40.0).contains(&r.rect.height())
+                    && (200.0..=280.0).contains(&r.rect.width())
+                    && r.rect.contains_rect(node) =>
+            {
+                Some(r.rect)
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !boxes.is_empty(),
+        "debe haber una caja de unos 34 px que rodea el campo"
+    );
+    for b in boxes {
+        assert!(
+            (b.center().y - hint).abs() <= 1.5,
+            "el texto (y = {hint}) no está centrado con la lupa (y = {}) en la caja {b:?}",
+            b.center().y
+        );
+    }
+}

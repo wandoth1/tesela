@@ -865,10 +865,15 @@ impl Explore {
                         ui.set_width(220.0);
                         ui.horizontal_centered(|ui| {
                             env.icons.show(ui, Icon::Search, 16.0, pal.text_muted);
+                            // egui 0.37 floors a `TextEdit` at `interact_size.y` (32 px here, from the theme) and puts its
+                            // text at the top. Dropping the floor for this row keeps the field as tall as its text (as in
+                            // 0.36); `LEFT_CENTER` keeps the text centered in whatever height it gets.
+                            ui.spacing_mut().interact_size.y = 0.0;
                             let te = egui::TextEdit::singleline(&mut self.search)
                                 .id(egui::Id::unique("tesela-search"))
                                 .hint_text(hint.clone())
                                 .frame(egui::Frame::NONE)
+                                .align(egui::Align2::LEFT_CENTER)
                                 .desired_width(f32::INFINITY);
                             let r = ui.add(te);
                             r.widget_info(|| egui::WidgetInfo {
