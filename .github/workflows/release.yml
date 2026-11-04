@@ -127,7 +127,7 @@ jobs:
       # (ideally sign the .exe files first, rebuild the MSI with them, then sign the MSI; see CODE_SIGNING.md). The steps
       # below sign the built MSI AND both .exe files in the zip (extract, sign, and repackage the zip), revalidate the
       # signed MSI with Test-MsiPackage (signing must not change its tables), and recalculate SHA256SUMS.txt AFTER signing
-      # (the `attest` job covers the signed files). When enabling this, also review action v3 (this is v2.x) and pin its SHA.
+      # (the `attest` job covers the signed files). The action is pinned to v3.0 (same inputs as v2.3; only the default connector URL changed).
       # The release-note warning that the build is unsigned disappears ONLY if the final signing step runs
       # (it sets RELEASE_SIGNED=true in the job environment); while signing is disabled, the warning is always shown.
       # This file contains no secrets.
@@ -159,7 +159,7 @@ jobs:
           if-no-files-found: error
       - name: SignPath - request signing
         if: ${{ false && vars.SIGNPATH_ENABLED == 'true' }}
-        uses: signpath/github-action-submit-signing-request@c92b958760219087e01f8d67a1669ed57afe2627 # v2.x (v3 is available)
+        uses: signpath/github-action-submit-signing-request@f6d04783b4569d051e0c80105fe66e82819d0092 # v3.0
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
           organization-id: ${{ secrets.SIGNPATH_ORGANIZATION_ID }}

@@ -32,7 +32,7 @@ The executables carry the product attributes SignPath requires: product "Tesela"
 version from `Cargo.toml` (`VERSIONINFO` resource, the same one in the MSI). **Planned order:** sign the two `.exe` files first,
 rebuild the MSI with them and then sign the MSI. Today `build-msi.ps1` packages what comes out of `build-release.ps1`;
 reordering it to sign between the two steps is pending work of the onboarding process (the step is prepared, disabled, in
-`.github/workflows/release.yml`; there it is also noted that a v3 of the SignPath action exists).
+`.github/workflows/release.yml`, using v3.0 of the SignPath action).
 
 No third-party dependency is signed separately: they are compiled into the executable and their licenses are in
 `THIRD-PARTY-NOTICES.md`.
