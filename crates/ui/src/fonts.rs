@@ -143,7 +143,8 @@ pub fn scripts_of_wtf8(bytes: &[u8]) -> Scripts {
     acc
 }
 
-/// Files that, even if they exist, egui 0.36 cannot use (they do not provide any glyphs). The tests do not have them: a team
+/// Files that, even if they exist, egui 0.36 could not use (they do not provide any glyphs). Measured with egui 0.36 and still
+/// pending re-measuring with egui 0.37 (new font engine), so the list is kept as is. The tests do not have them: a team
 /// If you only have those fonts (for example a Windows Server without MS Gothic or YaHei) you should skip the font check.
 /// writing, not failing.
 #[cfg(test)]
@@ -167,7 +168,7 @@ pub(crate) fn missing_groups(dir: &Path, s: Scripts) -> Vec<&'static str> {
 pub(crate) fn fallback_groups(s: Scripts) -> Vec<(&'static str, &'static [&'static str])> {
     let mut v: Vec<(&'static str, &'static [&'static str])> = Vec::new();
     if s.contains(Scripts::KANA) {
-        // Yu Gothic (`YuGothR.ttc`) is NOT loaded in egui 0.36 (does not give any glyph): it is used if there is no other. MS Gothic and Meiryo
+        // Yu Gothic (`YuGothR.ttc`) was NOT usable in egui 0.36 (it gave no glyph; pending re-measuring with 0.37): it is used if there is no other. MS Gothic and Meiryo
         // Yeah; Microsoft YaHei (which is in every installation) also comes with kana.
         v.push((
             "Tesela-kana",
