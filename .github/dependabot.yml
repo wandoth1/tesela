@@ -16,7 +16,14 @@ updates:
           - "egui"
           - "egui*"
           - "eframe"
+          # egui-wgpu is tied to one wgpu major version (the direct `wgpu` dependency picks the DX12-only features).
+          - "wgpu"
       windows:
         patterns:
           - "windows"
           - "windows-*"
+    ignore:
+      # `windows` and `windows-sys` have no 0.100 release yet, and `#[implement]` needs the same `windows-core` as `windows`
+      # (0.62). Remove this entry, and the group above takes over, when `windows` 0.100 is published.
+      - dependency-name: "windows-core"
+        versions: [">=0.100.0"]
