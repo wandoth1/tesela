@@ -783,7 +783,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, s: &mut ScanScreen) {
                 ui.allocate_exact_size(vec2(ui.available_width(), 8.0), egui::Sense::hover());
             bar_resp.widget_info(|| {
                 egui::WidgetInfo::labeled(
-                    egui::WidgetType::ProgressIndicator,
+                    egui::Role::ProgressIndicator,
                     true,
                     env.tr.ta(
                         "scan-progress-label",

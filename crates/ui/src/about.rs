@@ -8,6 +8,9 @@ use crate::theme::Palette;
 use egui::{FontId, Id, RichText};
 use std::sync::OnceLock;
 
+/// Salt of the id of the About window.
+const ABOUT_ID: &str = "tesela-about";
+
 /// Full text of third party notices.
 pub const NOTICES: &str = include_str!("../../../THIRD-PARTY-NOTICES.md");
 
@@ -91,7 +94,7 @@ impl About {
         let mut open = true;
         let mut show_notices = self.notices;
         egui::Window::new(tr.t("about"))
-            .id(Id::new("tesela-about"))
+            .id(Id::unique(ABOUT_ID))
             .open(&mut open)
             .collapsible(false)
             .resizable(true)
@@ -126,6 +129,7 @@ impl About {
                         });
                 }
             });
+        crate::widgets::localize_resize_handles(ctx, Id::unique(ABOUT_ID), tr);
         self.notices = show_notices;
         if !open {
             self.open = false;

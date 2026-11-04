@@ -816,9 +816,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
     }
 
     // --- Interaction ---
-    resp.widget_info(|| {
-        egui::WidgetInfo::labeled(egui::WidgetType::Other, true, map_label(ex, env))
-    });
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Unknown, true, map_label(ex, env)));
     let pointer = ctx.input(|i| i.pointer.hover_pos());
     let hovered = if resp.hovered() && !animating {
         pointer.and_then(|p| layout.hit(p.x - rect.min.x, p.y - rect.min.y))

@@ -28,10 +28,12 @@ crossbeam-channel = "0.5.17"
 crossbeam-deque = "0.8.8"
 dunce = "1.0.5"
 embed-manifest = "1.5.1"
-eframe = { version = "0.36.2", default-features = false, features = ["accesskit", "wgpu_no_default_features"] }
+# `clipboard` (arboard): since eframe 0.37 it is opt-in. Without it, Copy path and pasting into the search box only reach an
+# in-process buffer, not the OS clipboard, and nothing fails visibly. CI checks that `arboard` stays in the tree.
+eframe = { version = "0.37.0", default-features = false, features = ["accesskit", "clipboard", "wgpu_no_default_features"] }
 # Sin `default_fonts`: no se redistribuye ninguna fuente dentro del .exe (se usan las del sistema, PLAN.md §2.10).
-egui = { version = "0.36.2", default-features = false }
-egui_kittest = "0.36.2"
+egui = { version = "0.37.0", default-features = false }
+egui_kittest = "0.37.0"
 fluent-bundle = "0.16.0"
 png = "0.18.1"
 rfd = { version = "0.17.2", default-features = false }
@@ -42,7 +44,7 @@ serde_json = "1.0.154"
 sys-locale = "0.3.2"
 toml = "1.1.8"
 unic-langid = "0.9.6"
-uuid = { version = "1.28.0", features = ["v4"] }
+uuid = { version = "1.29.0", features = ["v4"] }
 # wgpu solo con DX12 (PLAN.md §1; mismas features que spike/ui-treemap, feature wgpu-dx12).
 wgpu = { version = "30.0.1", default-features = false, features = ["std", "parking_lot", "dx12", "wgsl"] }
 windows-sys = "0.61.2"

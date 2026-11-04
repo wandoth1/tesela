@@ -747,7 +747,7 @@ impl Explore {
         if let Some((msg, until)) = &self.toast {
             let now = ctx.input(|i| i.time);
             if now < *until {
-                egui::Area::new(egui::Id::new("tesela-toast"))
+                egui::Area::new(egui::Id::unique("tesela-toast"))
                     .anchor(egui::Align2::CENTER_BOTTOM, vec2(0.0, toast_lift))
                     .order(egui::Order::Tooltip)
                     .show(&ctx, |ui| {
@@ -865,10 +865,15 @@ impl Explore {
                         ui.set_width(220.0);
                         ui.horizontal_centered(|ui| {
                             env.icons.show(ui, Icon::Search, 16.0, pal.text_muted);
+                            // egui 0.37 floors a `TextEdit` at `interact_size.y` (32 px here, from the theme) and puts its
+                            // text at the top. Dropping the floor for this row keeps the field as tall as its text (as in
+                            // 0.36); `LEFT_CENTER` keeps the text centered in whatever height it gets.
+                            ui.spacing_mut().interact_size.y = 0.0;
                             let te = egui::TextEdit::singleline(&mut self.search)
-                                .id(egui::Id::new("tesela-search"))
+                                .id(egui::Id::unique("tesela-search"))
                                 .hint_text(hint.clone())
                                 .frame(egui::Frame::NONE)
+                                .align(egui::Align2::LEFT_CENTER)
                                 .desired_width(f32::INFINITY);
                             let r = ui.add(te);
                             r.widget_info(|| egui::WidgetInfo {
@@ -950,7 +955,7 @@ impl Explore {
                 );
                 r.widget_info(|| {
                     egui::WidgetInfo::labeled(
-                        egui::WidgetType::Button,
+                        egui::Role::Button,
                         true,
                         env.tr.ta("go-to-folder", args!["name" => name.clone()]),
                     )
@@ -1023,12 +1028,12 @@ impl Explore {
                 .response;
             let resp = ui.interact(
                 resp.rect,
-                ui.id().with(("unidad", d.letter)),
+                ui.scope_id().with(("unidad", d.letter)),
                 Sense::click(),
             );
             resp.widget_info(|| {
                 egui::WidgetInfo::selected(
-                    egui::WidgetType::Button,
+                    egui::Role::Button,
                     // The current unit is not clickable: the screen reader does not announce it as an enabled button.
                     drive_row_is_interactive(selected),
                     selected,
@@ -1190,7 +1195,7 @@ impl Explore {
                     .sense(Sense::click()),
                 );
                 r.widget_info(|| {
-                    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, env.tr.t("rescan"))
+                    egui::WidgetInfo::labeled(egui::Role::Button, true, env.tr.t("rescan"))
                 });
                 if r.hovered() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
@@ -1329,9 +1334,7 @@ fn sidebar_item(
             Sense::hover()
         },
     );
-    resp.widget_info(|| {
-        egui::WidgetInfo::selected(egui::WidgetType::Button, enabled, selected, label)
-    });
+    resp.widget_info(|| egui::WidgetInfo::selected(egui::Role::Button, enabled, selected, label));
     if ui.is_rect_visible(rect) {
         let fill = if selected {
             pal.surface
@@ -1439,7 +1442,7 @@ fn color_group(ui: &mut Ui, env: &mut Env) {
                     );
                     resp.widget_info(|| {
                         egui::WidgetInfo::selected(
-                            egui::WidgetType::Button,
+                            egui::Role::Button,
                             enabled,
                             selected,
                             text.clone(),

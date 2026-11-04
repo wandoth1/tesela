@@ -8,8 +8,22 @@ updates:
     directory: /
     schedule:
       interval: weekly
-  # El spike es un workspace independiente.
-  - package-ecosystem: cargo
-    directory: /spike
-    schedule:
-      interval: monthly
+    # Crates that only work together arrive in one pull request. The `spike/` workspace is historical and is not
+    # maintained, so it has no entry here.
+    groups:
+      egui:
+        patterns:
+          - "egui"
+          - "egui*"
+          - "eframe"
+          # egui-wgpu is tied to one wgpu major version (the direct `wgpu` dependency picks the DX12-only features).
+          - "wgpu"
+      windows:
+        patterns:
+          - "windows"
+          - "windows-*"
+    ignore:
+      # `windows` and `windows-sys` have no 0.100 release yet, and `#[implement]` needs the same `windows-core` as `windows`
+      # (0.62). Remove this entry, and the group above takes over, when `windows` 0.100 is published.
+      - dependency-name: "windows-core"
+        versions: [">=0.100.0"]

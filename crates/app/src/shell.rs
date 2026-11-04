@@ -90,6 +90,13 @@ pub struct Shell {
     pub shot_frames: u32,
     #[cfg_attr(not(feature = "capture"), allow(dead_code))]
     pub shot_requested: bool,
+    /// Where the screenshot callback (egui 0.37) leaves the captured image until the next frame picks it up.
+    #[cfg_attr(not(feature = "capture"), allow(dead_code))]
+    pub shot_image:
+        std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<eframe::egui::ColorImage>>>>,
+    /// When the screenshot callback stops being waited for (`SCREENSHOT_TIMEOUT` after requesting it).
+    #[cfg_attr(not(feature = "capture"), allow(dead_code))]
+    pub shot_deadline: Option<std::time::Instant>,
     pub normalize_scale: Option<(f32, f32)>,
     pub norm_frames: u32,
     /// With `--scan`: capture waits for the scan to finish and the map to appear.
@@ -240,6 +247,10 @@ impl eframe::App for Shell {
     }
 }
 
+/// Maximum wait for the screenshot callback, so `--screenshot` fails with a clear error instead of hanging.
+#[cfg(feature = "capture")]
+const SCREENSHOT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
 #[cfg(feature = "capture")]
 impl Shell {
     /// `--screenshot`: after a few stable frames, captures the WINDOW (not the screen), saves it as a PNG without metadata,
@@ -256,16 +267,34 @@ impl Shell {
         self.shot_frames += 1;
         if !self.shot_requested && self.shot_frames > 50 {
             self.shot_requested = true;
-            ctx.send_viewport_cmd(eframe::egui::ViewportCommand::Screenshot(
-                eframe::egui::UserData::default(),
-            ));
+            self.shot_deadline = Some(std::time::Instant::now() + SCREENSHOT_TIMEOUT);
+            let slot = std::sync::Arc::clone(&self.shot_image);
+            ctx.request_screenshot(move |image| {
+                if let Ok(mut guard) = slot.lock() {
+                    *guard = Some(image);
+                }
+            });
         }
-        let image = ctx.input(|i| {
-            i.events.iter().find_map(|e| match e {
-                eframe::egui::Event::Screenshot { image, .. } => Some(image.clone()),
-                _ => None,
-            })
-        });
+        let image = self
+            .shot_image
+            .lock()
+            .ok()
+            .and_then(|mut guard| guard.take());
+        if image.is_none()
+            && self
+                .shot_deadline
+                .is_some_and(|d| std::time::Instant::now() >= d)
+        {
+            // egui-wgpu drops the callback (and never calls it) if it cannot read the surface back.
+            crate::console::print(&format!(
+                "tesela: no se obtuvo la captura en {} s (la ventana no devolvió la imagen)",
+                SCREENSHOT_TIMEOUT.as_secs()
+            ));
+            self.screenshot = None;
+            crate::output::mark_failed();
+            ctx.send_viewport_cmd(eframe::egui::ViewportCommand::Close);
+            return;
+        }
         if let Some(img) = image {
             let [w, h] = img.size;
             let mut rgba = Vec::with_capacity(w * h * 4);

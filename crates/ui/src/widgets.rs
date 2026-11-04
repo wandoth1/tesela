@@ -2,12 +2,39 @@
 //! accessible tag (AccessKit) and give a hint when they are disabled.
 
 use crate::app::Env;
+use crate::i18n::Tr;
 use crate::icons::Icon;
 use crate::theme::{self, Palette};
 use egui::{
-    Align2, Color32, CornerRadius, FontId, Pos2, Rect, Response, Sense, Stroke, StrokeKind, Ui,
-    Vec2, WidgetInfo, WidgetType, pos2, vec2,
+    Align2, Color32, CornerRadius, FontId, Pos2, Rect, Response, Role, Sense, Stroke, StrokeKind,
+    Ui, Vec2, WidgetInfo, pos2, vec2,
 };
+
+/// Resize handles of a resizable `egui::Window` and the message that names each one. egui 0.37 gives the eight handles
+/// accessible names hard-coded in English ("Resize window right edge", ...); the salts are the ones egui uses.
+const RESIZE_HANDLES: [(&str, &str); 8] = [
+    ("right", "window-resize-right"),
+    ("left", "window-resize-left"),
+    ("bottom", "window-resize-bottom"),
+    ("top", "window-resize-top"),
+    ("right_bottom", "window-resize-bottom-right"),
+    ("right_top", "window-resize-top-right"),
+    ("left_bottom", "window-resize-bottom-left"),
+    ("left_top", "window-resize-top-left"),
+];
+
+/// Replaces the English accessible names of the resize handles of the resizable window `window_id` (a window created
+/// with `.id(window_id)` and the default `Order::Middle`) with the interface language. Call it right after
+/// `Window::show`, in the same pass. If egui changes how it derives the handle ids, the nodes are simply not found and
+/// the English names stay (the `ventanas_redimensionables_nombran_sus_asas_en_el_idioma` test would fail).
+pub fn localize_resize_handles(ctx: &egui::Context, window_id: egui::Id, tr: &Tr) {
+    let layer = egui::LayerId::new(egui::Order::Middle, window_id);
+    let base = egui::Id::unique(layer).with("edge_drag");
+    for (salt, key) in RESIZE_HANDLES {
+        let name = tr.t(key);
+        ctx.accesskit_node_builder(base.with(salt), |node| node.set_label(name));
+    }
+}
 
 /// Keyboard focus ring (2 px, accent color, inside `rect`): carried by all elements that are
 /// are enough with Tab.
@@ -91,7 +118,7 @@ pub fn button(
             Sense::hover()
         },
     );
-    resp.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, text));
+    resp.widget_info(|| WidgetInfo::labeled(Role::Button, enabled, text));
     if ui.is_rect_visible(rect) {
         let hovered = enabled && resp.hovered();
         let pressed = enabled && resp.is_pointer_button_down_on();
@@ -149,7 +176,7 @@ pub fn icon_button(ui: &mut Ui, env: &mut Env, icon: Icon, label: &str, enabled:
             Sense::hover()
         },
     );
-    resp.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, label));
+    resp.widget_info(|| WidgetInfo::labeled(Role::Button, enabled, label));
     if ui.is_rect_visible(rect) {
         let fill = if enabled && resp.hovered() {
             pal.accent_soft
@@ -205,7 +232,7 @@ pub fn chip(
     let icon_w = if icon.is_some() { 12.0 + 4.0 } else { 0.0 };
     let size = vec2(galley.size().x + icon_w + 20.0, 24.0);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::hover());
-    resp.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, text));
+    resp.widget_info(|| WidgetInfo::labeled(Role::Label, true, text));
     if ui.is_rect_visible(rect) {
         ui.painter().rect_filled(rect, CornerRadius::same(12), bg);
         let mut x = rect.left() + 10.0;

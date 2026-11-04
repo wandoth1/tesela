@@ -70,6 +70,19 @@ fn harness(o: Options) -> Harness<'static, App> {
     h
 }
 
+/// Like `harness`, for tests that lay out text in a script whose fallback font is only loaded one frame later.
+/// egui_kittest (0.37) panics by default on a character no installed font can draw; the real app draws tofu for that
+/// single frame (the default `MissingGlyphPolicy::Tofu`), so these tests opt into the same policy.
+fn harness_allowing_tofu(o: Options) -> Harness<'static, App> {
+    let mut h = Harness::builder()
+        .allow_missing_glyphs()
+        .with_size(vec2(1280.0, 800.0))
+        .with_step_dt(0.02)
+        .build_ui_state(|ui, app: &mut App| app.frame(ui), App { opts: o, ui: None });
+    h.run_steps(6);
+    h
+}
+
 fn user_folder() -> StartScreen {
     StartScreen::Map(MapStart {
         list: false,
@@ -971,7 +984,7 @@ fn los_nombres_en_otros_alfabetos_acaban_en_una_fuente_que_tiene_el_glifo() {
     }
     let mut o = opts(StartScreen::Home);
     o.demo = None;
-    let mut h = harness(o);
+    let mut h = harness_allowing_tofu(o);
     h.state_mut().ui_mut().screen = crate::app::Screen::Explore(Box::new(ex));
     h.run_steps(8); // ensure_fonts requests fallback fonts; they are available from the next frame.
     let dir = crate::platform::fonts_dir().unwrap();
@@ -1016,7 +1029,7 @@ fn los_nombres_en_otros_alfabetos_acaban_en_una_fuente_que_tiene_el_glifo() {
 
 #[test]
 fn escribir_en_el_buscador_en_otra_escritura_carga_su_fuente() {
-    let mut h = harness(opts(StartScreen::Map(MapStart::default())));
+    let mut h = harness_allowing_tofu(opts(StartScreen::Map(MapStart::default())));
     h.get_by_label("Buscar").focus();
     h.run_steps(2);
     h.get_by_label("Buscar").type_text("한국어");
@@ -2160,3 +2173,110 @@ fn la_barra_de_estado_avisa_de_que_las_cifras_son_de_la_cuota_de_la_cuenta() {
 
 mod flow;
 mod select;
+
+/// M1 (egui 0.37): the search `TextEdit` takes a theme `min_size` of `interact_size.y` (32 px) and puts the text at the top;
+/// the row must stay as in 0.36: as tall as its text (not 32 px) and centered with the magnifier, which is centered in the
+/// 34 px box that holds both.
+#[test]
+fn la_barra_de_busqueda_no_crece_y_su_texto_queda_centrado_con_la_lupa() {
+    let h = harness(opts(StartScreen::Map(MapStart::default())));
+    let node = h.get_by_label("Buscar").rect();
+    assert!(
+        node.height() <= 24.0,
+        "el campo de búsqueda mide {} px de alto: debe medir lo que su texto, no el alto de un botón",
+        node.height()
+    );
+    let hint = h
+        .output()
+        .shapes
+        .iter()
+        .find_map(|cs| match &cs.shape {
+            egui::epaint::Shape::Text(ts) if ts.galley.text() == "Buscar…  Ctrl+F" => {
+                Some(ts.pos.y + ts.galley.rect.center().y)
+            }
+            _ => None,
+        })
+        .expect("el texto de ayuda del buscador se pinta");
+    assert!(
+        (hint - node.center().y).abs() <= 1.5,
+        "el texto está en y = {hint} y el campo está centrado en y = {}",
+        node.center().y
+    );
+    // The 34 px box (the magnifier is centered in it).
+    let boxes: Vec<egui::Rect> = h
+        .output()
+        .shapes
+        .iter()
+        .filter_map(|cs| match &cs.shape {
+            egui::epaint::Shape::Rect(r)
+                if (30.0..=40.0).contains(&r.rect.height())
+                    && (200.0..=280.0).contains(&r.rect.width())
+                    && r.rect.contains_rect(node) =>
+            {
+                Some(r.rect)
+            }
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !boxes.is_empty(),
+        "debe haber una caja de unos 34 px que rodea el campo"
+    );
+    for b in boxes {
+        assert!(
+            (b.center().y - hint).abs() <= 1.5,
+            "el texto (y = {hint}) no está centrado con la lupa (y = {}) en la caja {b:?}",
+            b.center().y
+        );
+    }
+}
+
+/// M3 (egui 0.37): the eight resize handles of a resizable window come named in English; Tesela renames them in the interface
+/// language (About window and basket window, in both languages).
+#[test]
+fn las_ventanas_redimensionables_nombran_sus_asas_en_el_idioma() {
+    fn handles(h: &Harness<'static, App>) -> Vec<String> {
+        h.query_all_by_role(egui::accesskit::Role::Splitter)
+            .filter_map(|n| n.accesskit_node().label())
+            .collect()
+    }
+    fn check(h: &Harness<'static, App>, prefix: &str, what: &str) {
+        let names = handles(h);
+        assert!(
+            names.iter().all(|n| !n.starts_with("Resize window ")),
+            "{what}: asas con nombre de egui en inglés: {names:?}"
+        );
+        let ours: Vec<&String> = names.iter().filter(|n| n.starts_with(prefix)).collect();
+        assert_eq!(ours.len(), 8, "{what}: {names:?}");
+    }
+    for (lang, settings, about, prefix) in [
+        (
+            LangPref::Es,
+            "Ajustes",
+            "Acerca de Tesela",
+            "Redimensionar ventana: ",
+        ),
+        (LangPref::En, "Settings", "About Tesela", "Resize window: "),
+    ] {
+        let mut o = opts(StartScreen::Home);
+        o.settings.language = lang;
+        let mut h = harness(o);
+        h.get_by_label(settings).click();
+        h.run_steps(3);
+        h.get_by_label(about).click();
+        h.run_steps(4);
+        check(&h, prefix, "Acerca de");
+    }
+    // Basket window (Spanish).
+    let mut h = harness(opts(user_folder()));
+    h.get_by_label("Lista").click();
+    h.run_steps(3);
+    h.get_by_label_contains("Proyectos, ").click();
+    h.run_steps(2);
+    h.get_by_label("Añadir a la cesta").click();
+    h.run_steps(3);
+    h.get_by_label("Ver").click();
+    h.run_steps(4);
+    h.get_by_label("Cesta");
+    check(&h, "Redimensionar ventana: ", "cesta");
+}

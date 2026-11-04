@@ -21,8 +21,8 @@ use crate::icons::Icon;
 use crate::theme;
 use crate::widgets::{self, ButtonStyle};
 use egui::{
-    Align, Color32, CornerRadius, Layout, Rect, Sense, Stroke, StrokeKind, Ui, UiBuilder,
-    WidgetInfo, WidgetType, pos2, vec2,
+    Align, Color32, CornerRadius, Layout, Rect, Role, Sense, Stroke, StrokeKind, Ui, UiBuilder,
+    WidgetInfo, pos2, vec2,
 };
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -596,7 +596,7 @@ impl Explore {
                             )
                             .truncate(),
                         );
-                        l.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &first));
+                        l.widget_info(|| WidgetInfo::labeled(Role::Label, true, &first));
                         l.on_hover_text(&full_text);
                         if let Some(sec) = second {
                             let l2 = ui.add(
@@ -605,7 +605,7 @@ impl Explore {
                                 )
                                 .truncate(),
                             );
-                            l2.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &sec));
+                            l2.widget_info(|| WidgetInfo::labeled(Role::Label, true, &sec));
                             l2.on_hover_text(full_text);
                         }
                     } else {
@@ -622,7 +622,7 @@ impl Explore {
                             )
                             .truncate(),
                         );
-                        l.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, &text));
+                        l.widget_info(|| WidgetInfo::labeled(Role::Label, true, &text));
                         // The track is cut into narrow windows: complete, in view of the mouse.
                         l.on_hover_text(format!("{text} · {}", tr.t("sel-keys-tip")));
                     }
@@ -684,7 +684,7 @@ impl Explore {
         }
         // With a keyboard, the buttons disappear when you press them: the focus goes to the switch instead of being lost.
         if refocus {
-            ui.memory_mut(|m| m.request_focus(egui::Id::new(TOGGLE_ID)));
+            ui.memory_mut(|m| m.request_focus(egui::Id::unique(TOGGLE_ID)));
         }
     }
 
@@ -705,8 +705,8 @@ impl Explore {
             34.0
         };
         let (rect, _) = ui.allocate_exact_size(vec2(w, 34.0), Sense::hover());
-        let resp = ui.interact(rect, egui::Id::new(TOGGLE_ID), Sense::click());
-        resp.widget_info(|| WidgetInfo::selected(WidgetType::Checkbox, true, on, label.clone()));
+        let resp = ui.interact(rect, egui::Id::unique(TOGGLE_ID), Sense::click());
+        resp.widget_info(|| WidgetInfo::selected(Role::CheckBox, true, on, label.clone()));
         if ui.is_rect_visible(rect) {
             let fill = if on || resp.hovered() {
                 pal.accent_soft

@@ -105,13 +105,22 @@ jobs:
       - name: Install toolchain from rust-toolchain.toml
         run: rustup toolchain install
       # The Rust version comes from rust-toolchain.toml (installed automatically on the first cargo invocation).
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: Formatting
         run: cargo fmt --all --check
       - name: Clippy
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
         env:
           RUSTFLAGS: -D warnings -C target-feature=+crt-static
+      # Copy path and pasting into the search box need the OS clipboard: eframe >= 0.37 only provides it through its
+      # `clipboard` feature (arboard). If that feature is dropped, the app would silently fall back to an in-process
+      # buffer. `cargo tree -i` exits 0 with "nothing to print" when the package is absent, so the output is checked.
+      - name: OS clipboard (arboard) is in the Windows dependency tree
+        shell: pwsh
+        run: |
+          $out = (cargo tree --locked -p tesela-app --target x86_64-pc-windows-msvc -i arboard 2>&1 | Out-String)
+          Write-Host $out
+          if ($LASTEXITCODE -ne 0 -or $out -notmatch '(?m)^arboard v') { throw 'arboard is not in the Windows dependency tree: the eframe clipboard feature was lost' }
       # The `capture` feature (README screenshots) is not part of the normal build; it is checked separately to prevent bit rot.
       - name: Clippy (feature capture)
         run: cargo clippy -p tesela-app --all-targets --features capture --locked -- -D warnings
@@ -178,7 +187,7 @@ jobs:
       # With no arguments, installs the toolchain from rust-toolchain.toml (does not rely on cargo's first-run auto-install).
       - name: Install toolchain from rust-toolchain.toml
         run: rustup toolchain install
-      - uses: taiki-e/install-action@1168f6810a3cb30a3514bf5756a3b7f0422c6df8 # v2.87.28
+      - uses: taiki-e/install-action@5488ac5a951645ce95062214902ac4b6bc1a1037 # v2.87.32
         with:
           tool: cargo-deny@0.20.2
       # `--locked`: check EXACTLY what Cargo.lock pins (do not resolve dependencies again).
@@ -199,7 +208,7 @@ jobs:
         run: rustup toolchain install
       - name: Install Rust 1.95.0
         run: rustup toolchain install 1.95.0 --profile minimal
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: cargo +1.95.0 check
         run: cargo +1.95.0 check --workspace --all-targets --locked
 
@@ -217,7 +226,7 @@ jobs:
         run: rustup toolchain install
       - name: Install ARM64 target
         run: rustup target add aarch64-pc-windows-msvc
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: cargo check (aarch64-pc-windows-msvc)
         run: cargo check --workspace --all-targets --locked --target aarch64-pc-windows-msvc
 
@@ -239,7 +248,7 @@ jobs:
       # With no arguments, installs the toolchain from rust-toolchain.toml (does not rely on cargo's first-run auto-install).
       - name: Install toolchain from rust-toolchain.toml
         run: rustup toolchain install
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       # With the pinned version, use nuget.org only (installer/nuget.config) and verify the package SHA-512.
       - name: Install WiX
         shell: pwsh
