@@ -112,6 +112,15 @@ jobs:
         run: cargo clippy --workspace --all-targets --locked -- -D warnings
         env:
           RUSTFLAGS: -D warnings -C target-feature=+crt-static
+      # Copy path and pasting into the search box need the OS clipboard: eframe >= 0.37 only provides it through its
+      # `clipboard` feature (arboard). If that feature is dropped, the app would silently fall back to an in-process
+      # buffer. `cargo tree -i` exits 0 with "nothing to print" when the package is absent, so the output is checked.
+      - name: OS clipboard (arboard) is in the Windows dependency tree
+        shell: pwsh
+        run: |
+          $out = (cargo tree --locked -p tesela-app --target x86_64-pc-windows-msvc -i arboard 2>&1 | Out-String)
+          Write-Host $out
+          if ($LASTEXITCODE -ne 0 -or $out -notmatch '(?m)^arboard v') { throw 'arboard is not in the Windows dependency tree: the eframe clipboard feature was lost' }
       # The `capture` feature (README screenshots) is not part of the normal build; it is checked separately to prevent bit rot.
       - name: Clippy (feature capture)
         run: cargo clippy -p tesela-app --all-targets --features capture --locked -- -D warnings
