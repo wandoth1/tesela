@@ -192,6 +192,7 @@ fn main() -> eframe::Result {
                 shot_frames: 0,
                 shot_requested: false,
                 shot_image: Default::default(),
+                shot_deadline: None,
                 normalize_scale: normalize,
                 norm_frames: 0,
                 wait_explore,
