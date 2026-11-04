@@ -2230,3 +2230,53 @@ fn la_barra_de_busqueda_no_crece_y_su_texto_queda_centrado_con_la_lupa() {
         );
     }
 }
+
+/// M3 (egui 0.37): the eight resize handles of a resizable window come named in English; Tesela renames them in the interface
+/// language (About window and basket window, in both languages).
+#[test]
+fn las_ventanas_redimensionables_nombran_sus_asas_en_el_idioma() {
+    fn handles(h: &Harness<'static, App>) -> Vec<String> {
+        h.query_all_by_role(egui::accesskit::Role::Splitter)
+            .filter_map(|n| n.accesskit_node().label())
+            .collect()
+    }
+    fn check(h: &Harness<'static, App>, prefix: &str, what: &str) {
+        let names = handles(h);
+        assert!(
+            names.iter().all(|n| !n.starts_with("Resize window ")),
+            "{what}: asas con nombre de egui en inglés: {names:?}"
+        );
+        let ours: Vec<&String> = names.iter().filter(|n| n.starts_with(prefix)).collect();
+        assert_eq!(ours.len(), 8, "{what}: {names:?}");
+    }
+    for (lang, settings, about, prefix) in [
+        (
+            LangPref::Es,
+            "Ajustes",
+            "Acerca de Tesela",
+            "Redimensionar ventana: ",
+        ),
+        (LangPref::En, "Settings", "About Tesela", "Resize window: "),
+    ] {
+        let mut o = opts(StartScreen::Home);
+        o.settings.language = lang;
+        let mut h = harness(o);
+        h.get_by_label(settings).click();
+        h.run_steps(3);
+        h.get_by_label(about).click();
+        h.run_steps(4);
+        check(&h, prefix, "Acerca de");
+    }
+    // Basket window (Spanish).
+    let mut h = harness(opts(user_folder()));
+    h.get_by_label("Lista").click();
+    h.run_steps(3);
+    h.get_by_label_contains("Proyectos, ").click();
+    h.run_steps(2);
+    h.get_by_label("Añadir a la cesta").click();
+    h.run_steps(3);
+    h.get_by_label("Ver").click();
+    h.run_steps(4);
+    h.get_by_label("Cesta");
+    check(&h, "Redimensionar ventana: ", "cesta");
+}

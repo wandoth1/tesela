@@ -11,6 +11,9 @@ use crate::recs::{self, RecRow, Recs};
 use crate::theme::{self, Palette};
 use crate::treepath::Locator;
 use crate::widgets::{self, ButtonStyle};
+
+/// Salt of the id of the basket window.
+const BASKET_WINDOW_ID: &str = "tesela-basket-window";
 use egui::{Align, CornerRadius, Layout, Margin, RichText, Stroke, Ui, vec2};
 use tesela_cleaner::paths::PathKey;
 use tesela_cleaner::{AddOutcome, Browser, CategoryId, Destination, Source, Verdict, rules};
@@ -241,7 +244,7 @@ impl Explore {
         let mut open = true;
         let title = env.tr.t("basket-window-title");
         egui::Window::new(&title)
-            .id(egui::Id::unique("tesela-basket-window"))
+            .id(egui::Id::unique(BASKET_WINDOW_ID))
             .open(&mut open)
             .collapsible(false)
             .resizable(true)
@@ -350,6 +353,7 @@ impl Explore {
                     ui.add_space(10.0);
                 }
             });
+        widgets::localize_resize_handles(ctx, egui::Id::unique(BASKET_WINDOW_ID), env.tr);
         self.locator_cache = Some((key, loc.into_index()));
         if let Some(s) = remove {
             self.flow.basket.remove(&s);
