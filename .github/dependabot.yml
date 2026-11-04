@@ -8,8 +8,15 @@ updates:
     directory: /
     schedule:
       interval: weekly
-  # El spike es un workspace independiente.
-  - package-ecosystem: cargo
-    directory: /spike
-    schedule:
-      interval: monthly
+    # Crates that only work together arrive in one pull request. The `spike/` workspace is historical and is not
+    # maintained, so it has no entry here.
+    groups:
+      egui:
+        patterns:
+          - "egui"
+          - "egui*"
+          - "eframe"
+      windows:
+        patterns:
+          - "windows"
+          - "windows-*"
