@@ -5,8 +5,8 @@ use crate::app::Env;
 use crate::icons::Icon;
 use crate::theme::{self, Palette};
 use egui::{
-    Align2, Color32, CornerRadius, FontId, Pos2, Rect, Response, Sense, Stroke, StrokeKind, Ui,
-    Vec2, WidgetInfo, WidgetType, pos2, vec2,
+    Align2, Color32, CornerRadius, FontId, Pos2, Rect, Response, Role, Sense, Stroke, StrokeKind,
+    Ui, Vec2, WidgetInfo, pos2, vec2,
 };
 
 /// Keyboard focus ring (2 px, accent color, inside `rect`): carried by all elements that are
@@ -91,7 +91,7 @@ pub fn button(
             Sense::hover()
         },
     );
-    resp.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, text));
+    resp.widget_info(|| WidgetInfo::labeled(Role::Button, enabled, text));
     if ui.is_rect_visible(rect) {
         let hovered = enabled && resp.hovered();
         let pressed = enabled && resp.is_pointer_button_down_on();
@@ -149,7 +149,7 @@ pub fn icon_button(ui: &mut Ui, env: &mut Env, icon: Icon, label: &str, enabled:
             Sense::hover()
         },
     );
-    resp.widget_info(|| WidgetInfo::labeled(WidgetType::Button, enabled, label));
+    resp.widget_info(|| WidgetInfo::labeled(Role::Button, enabled, label));
     if ui.is_rect_visible(rect) {
         let fill = if enabled && resp.hovered() {
             pal.accent_soft
@@ -205,7 +205,7 @@ pub fn chip(
     let icon_w = if icon.is_some() { 12.0 + 4.0 } else { 0.0 };
     let size = vec2(galley.size().x + icon_w + 20.0, 24.0);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::hover());
-    resp.widget_info(|| WidgetInfo::labeled(WidgetType::Label, true, text));
+    resp.widget_info(|| WidgetInfo::labeled(Role::Label, true, text));
     if ui.is_rect_visible(rect) {
         ui.painter().rect_filled(rect, CornerRadius::same(12), bg);
         let mut x = rect.left() + 10.0;

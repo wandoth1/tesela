@@ -91,7 +91,7 @@ impl About {
         let mut open = true;
         let mut show_notices = self.notices;
         egui::Window::new(tr.t("about"))
-            .id(Id::new("tesela-about"))
+            .id(Id::unique("tesela-about"))
             .open(&mut open)
             .collapsible(false)
             .resizable(true)

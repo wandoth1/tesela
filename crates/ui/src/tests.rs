@@ -70,6 +70,19 @@ fn harness(o: Options) -> Harness<'static, App> {
     h
 }
 
+/// Like `harness`, for tests that lay out text in a script whose fallback font is only loaded one frame later.
+/// egui_kittest (0.37) panics by default on a character no installed font can draw; the real app draws tofu for that
+/// single frame (the default `MissingGlyphPolicy::Tofu`), so these tests opt into the same policy.
+fn harness_allowing_tofu(o: Options) -> Harness<'static, App> {
+    let mut h = Harness::builder()
+        .allow_missing_glyphs()
+        .with_size(vec2(1280.0, 800.0))
+        .with_step_dt(0.02)
+        .build_ui_state(|ui, app: &mut App| app.frame(ui), App { opts: o, ui: None });
+    h.run_steps(6);
+    h
+}
+
 fn user_folder() -> StartScreen {
     StartScreen::Map(MapStart {
         list: false,
@@ -971,7 +984,7 @@ fn los_nombres_en_otros_alfabetos_acaban_en_una_fuente_que_tiene_el_glifo() {
     }
     let mut o = opts(StartScreen::Home);
     o.demo = None;
-    let mut h = harness(o);
+    let mut h = harness_allowing_tofu(o);
     h.state_mut().ui_mut().screen = crate::app::Screen::Explore(Box::new(ex));
     h.run_steps(8); // ensure_fonts requests fallback fonts; they are available from the next frame.
     let dir = crate::platform::fonts_dir().unwrap();
@@ -1016,7 +1029,7 @@ fn los_nombres_en_otros_alfabetos_acaban_en_una_fuente_que_tiene_el_glifo() {
 
 #[test]
 fn escribir_en_el_buscador_en_otra_escritura_carga_su_fuente() {
-    let mut h = harness(opts(StartScreen::Map(MapStart::default())));
+    let mut h = harness_allowing_tofu(opts(StartScreen::Map(MapStart::default())));
     h.get_by_label("Buscar").focus();
     h.run_steps(2);
     h.get_by_label("Buscar").type_text("한국어");

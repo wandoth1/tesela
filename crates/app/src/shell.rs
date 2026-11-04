@@ -90,6 +90,10 @@ pub struct Shell {
     pub shot_frames: u32,
     #[cfg_attr(not(feature = "capture"), allow(dead_code))]
     pub shot_requested: bool,
+    /// Where the screenshot callback (egui 0.37) leaves the captured image until the next frame picks it up.
+    #[cfg_attr(not(feature = "capture"), allow(dead_code))]
+    pub shot_image:
+        std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<eframe::egui::ColorImage>>>>,
     pub normalize_scale: Option<(f32, f32)>,
     pub norm_frames: u32,
     /// With `--scan`: capture waits for the scan to finish and the map to appear.
@@ -256,16 +260,18 @@ impl Shell {
         self.shot_frames += 1;
         if !self.shot_requested && self.shot_frames > 50 {
             self.shot_requested = true;
-            ctx.send_viewport_cmd(eframe::egui::ViewportCommand::Screenshot(
-                eframe::egui::UserData::default(),
-            ));
+            let slot = std::sync::Arc::clone(&self.shot_image);
+            ctx.request_screenshot(move |image| {
+                if let Ok(mut guard) = slot.lock() {
+                    *guard = Some(image);
+                }
+            });
         }
-        let image = ctx.input(|i| {
-            i.events.iter().find_map(|e| match e {
-                eframe::egui::Event::Screenshot { image, .. } => Some(image.clone()),
-                _ => None,
-            })
-        });
+        let image = self
+            .shot_image
+            .lock()
+            .ok()
+            .and_then(|mut guard| guard.take());
         if let Some(img) = image {
             let [w, h] = img.size;
             let mut rgba = Vec::with_capacity(w * h * 4);

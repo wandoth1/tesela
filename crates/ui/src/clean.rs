@@ -501,13 +501,13 @@ impl CleanFlow {
             toast(ctx, &msg);
             // The warning lasts a few seconds.
             let until = ctx.data_mut(|d| {
-                *d.get_temp_mut_or_insert_with(egui::Id::new("tesela-note-until"), || {
+                *d.get_temp_mut_or_insert_with(egui::Id::unique("tesela-note-until"), || {
                     ctx.input(|i| i.time) + secs
                 })
             });
             if ctx.input(|i| i.time) > until {
                 self.note = None;
-                ctx.data_mut(|d| d.remove::<f64>(egui::Id::new("tesela-note-until")));
+                ctx.data_mut(|d| d.remove::<f64>(egui::Id::unique("tesela-note-until")));
             } else {
                 ctx.request_repaint_after(std::time::Duration::from_millis(250));
             }
@@ -567,7 +567,7 @@ fn blocked_by_elevation(elevated: bool, dry: bool, is_demo: bool) -> bool {
 }
 
 fn toast(ctx: &egui::Context, msg: &str) {
-    egui::Area::new(egui::Id::new("tesela-flow-toast"))
+    egui::Area::new(egui::Id::unique("tesela-flow-toast"))
         .anchor(egui::Align2::CENTER_BOTTOM, vec2(0.0, -110.0))
         .order(egui::Order::Tooltip)
         .show(ctx, |ui| {
@@ -738,14 +738,14 @@ fn confirm_ui(
         .fill(pal.surface)
         .corner_radius(CornerRadius::same(12))
         .inner_margin(Margin::symmetric(0, 0));
-    let modal = egui::Modal::new(egui::Id::new("tesela-confirm")).frame(frame).show(ctx, |ui| {
+    let modal = egui::Modal::new(egui::Id::unique("tesela-confirm")).frame(frame).show(ctx, |ui| {
         ui.set_width(640.0);
         ui.set_max_height(ctx.content_rect().height() - 80.0);
         egui::ScrollArea::vertical().auto_shrink([false, true]).max_height(ctx.content_rect().height() - 190.0).show(ui, |ui| {
             egui::Frame::new().inner_margin(Margin::symmetric(28, 24)).show(ui, |ui| {
                 let title = env.tr.t("confirm-title");
                 let r = ui.label(RichText::new(&title).font(theme::font_semibold(24.0)).color(pal.text));
-                r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, title.clone()));
+                r.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, title.clone()));
                 let kept = plan.kept_unfit_items().count();
                 let actionable = actionable_count(plan.items.len(), kept, plan.bin.is_some());
                 let n_items = actionable as u64;
@@ -1203,7 +1203,7 @@ fn folder_hint(env: &Env, it: &PlanItem) -> (Option<String>, Option<String>) {
 }
 
 fn approving_ui(ctx: &egui::Context, env: &mut Env, progress: &AtomicU64, cancel: &mut bool) {
-    egui::Modal::new(egui::Id::new("tesela-approving")).show(ctx, |ui| {
+    egui::Modal::new(egui::Id::unique("tesela-approving")).show(ctx, |ui| {
         ui.set_width(420.0);
         ui.horizontal(|ui| {
             widgets::busy(ui, env.animate, 18.0, env.pal.accent);
@@ -1235,11 +1235,11 @@ fn running_ui(ctx: &egui::Context, env: &mut Env, r: &mut Running, cancel: &mut 
         .fill(pal.surface)
         .corner_radius(CornerRadius::same(12))
         .inner_margin(Margin::symmetric(28, 24));
-    egui::Modal::new(egui::Id::new("tesela-running")).frame(frame).show(ctx, |ui| {
+    egui::Modal::new(egui::Id::unique("tesela-running")).frame(frame).show(ctx, |ui| {
         ui.set_width(520.0);
         let title = env.tr.t(if r.dry { "run-title-dry" } else { "run-title" });
         let t = ui.label(RichText::new(&title).font(theme::font_semibold(22.0)).color(pal.text));
-        t.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, title.clone()));
+        t.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, title.clone()));
         ui.add_space(10.0);
         let phase = match r.progress.phase() {
             Phase::Preparing => "run-phase-preparing",
@@ -1484,7 +1484,7 @@ fn summary_ui(ui: &mut Ui, env: &mut Env, s: &Summary) -> Option<SummaryClick> {
                     let big_txt = env.tr.size(big);
                     let l = ui.label(RichText::new(&big_txt).font(theme::font_semibold(64.0)).color(pal.text));
                     l.widget_info(|| {
-                        egui::WidgetInfo::labeled(egui::WidgetType::Label, true, format!("{head}: {big_txt}"))
+                        egui::WidgetInfo::labeled(egui::Role::Label, true, format!("{head}: {big_txt}"))
                     });
                     ui.add_space(14.0);
                     // The three accountants.

@@ -165,7 +165,7 @@ fn card(ui: &mut Ui, env: &mut Env, d: &DriveInfo) {
             let (rect, resp) = ui.allocate_exact_size(Vec2::splat(120.0), Sense::hover());
             resp.widget_info(|| {
                 egui::WidgetInfo::labeled(
-                    egui::WidgetType::Label,
+                    egui::Role::Label,
                     true,
                     env.tr.ta("drive-used", args!["pct" => used as u64]),
                 )
@@ -293,7 +293,7 @@ fn wide_button(
 ) -> egui::Response {
     let pal = env.pal;
     let (rect, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 44.0), Sense::click());
-    resp.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+    resp.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Button, true, label));
     let (fill, fg, stroke) = match style {
         ButtonStyle::Primary => (
             pal.accent,

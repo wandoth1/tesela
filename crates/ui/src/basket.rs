@@ -187,7 +187,7 @@ impl Explore {
                 args!["n" => n as u64, "count" => env.tr.int(n as u64), "size" => env.tr.size(bytes)],
             );
             let l = ui.label(RichText::new(&text).color(if n > 0 { pal.text } else { pal.text_muted }));
-            l.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, text.clone()));
+            l.widget_info(|| egui::WidgetInfo::labeled(egui::Role::Label, true, text.clone()));
             if env.dry_run {
                 ui.label(RichText::new(env.tr.t("dry-run-banner")).size(12.0).color(pal.review));
             }
@@ -241,7 +241,7 @@ impl Explore {
         let mut open = true;
         let title = env.tr.t("basket-window-title");
         egui::Window::new(&title)
-            .id(egui::Id::new("tesela-basket-window"))
+            .id(egui::Id::unique("tesela-basket-window"))
             .open(&mut open)
             .collapsible(false)
             .resizable(true)
@@ -501,7 +501,7 @@ impl Explore {
                                 .color(pal.text),
                         );
                         l.widget_info(|| {
-                            egui::WidgetInfo::labeled(egui::WidgetType::Label, true, title.clone())
+                            egui::WidgetInfo::labeled(egui::Role::Label, true, title.clone())
                         });
                         if review > 0 {
                             ui.label(
@@ -665,7 +665,7 @@ impl Explore {
             ui.horizontal_top(|ui| {
                 let cb = ui.add_enabled(!usable.is_empty(), egui::Checkbox::without_text(&mut checked));
                 let label = env.tr.ta("recs-include", args!["name" => name.clone()]);
-                cb.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, !usable.is_empty(), checked, label.clone()));
+                cb.widget_info(|| egui::WidgetInfo::selected(egui::Role::CheckBox, !usable.is_empty(), checked, label.clone()));
                 ui.vertical(|ui| {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(&name).font(theme::font_semibold(15.0)).color(pal.text));
@@ -841,12 +841,7 @@ impl Explore {
             let cb = ui.add_enabled(bytes > 0, egui::Checkbox::without_text(&mut checked));
             let label = env.tr.ta("recs-include", args!["name" => name.clone()]);
             cb.widget_info(|| {
-                egui::WidgetInfo::selected(
-                    egui::WidgetType::Checkbox,
-                    bytes > 0,
-                    checked,
-                    label.clone(),
-                )
+                egui::WidgetInfo::selected(egui::Role::CheckBox, bytes > 0, checked, label.clone())
             });
             ui.vertical(|ui| {
                 ui.horizontal(|ui| {

@@ -146,12 +146,12 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
         let cb = Rect::from_center_size(pos2(hr.left() + 16.0, hr.center().y), vec2(16.0, 16.0));
         let hit = ui.interact(
             cb.expand2(vec2(4.0, 6.0)),
-            ui.id().with("casilla-cabecera"),
+            ui.scope_id().with("casilla-cabecera"),
             Sense::click(),
         );
         let label = env.tr.t("list-select-all-rows");
         hit.widget_info(|| {
-            egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, all, label.clone())
+            egui::WidgetInfo::selected(egui::Role::CheckBox, true, all, label.clone())
         });
         crate::multisel::paint_checkbox(ui.painter(), env, cb, all);
         if marked_here > 0 && !all {
@@ -211,7 +211,7 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
             let sel = Sel::Node(id);
             let (rect, _) =
                 ui.allocate_exact_size(vec2(ui.available_width(), ROW_H), Sense::hover());
-            let resp = ui.interact(rect, ui.id().with(("fila", id)), Sense::click());
+            let resp = ui.interact(rect, ui.scope_id().with(("fila", id)), Sense::click());
             if want_focus == Some(id) {
                 // The row that the keyboard just reached (up/down arrow): is focused and left in view.
                 resp.request_focus();
@@ -275,19 +275,9 @@ pub fn show(ui: &mut Ui, env: &mut Env, ex: &mut Explore) {
             // them, the usual one (`toggled` = active element). The active element is always exposed as `selected`.
             resp.widget_info(|| {
                 if checks {
-                    egui::WidgetInfo::selected(
-                        egui::WidgetType::Checkbox,
-                        true,
-                        marked,
-                        label.clone(),
-                    )
+                    egui::WidgetInfo::selected(egui::Role::CheckBox, true, marked, label.clone())
                 } else {
-                    egui::WidgetInfo::selected(
-                        egui::WidgetType::SelectableLabel,
-                        true,
-                        selected,
-                        label.clone(),
-                    )
+                    egui::WidgetInfo::selected(egui::Role::Button, true, selected, label.clone())
                 }
             });
             ui.ctx()
